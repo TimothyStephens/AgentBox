@@ -22,15 +22,17 @@ DEFAULTS = {
     "agent_cpus": "3",
     "agent_pids": 4096,
     "oom_score_adj": 900,          # agent; containers the gate creates get 1000, so they die first
-    "squid_image": "docker.io/ubuntu/squid:latest",
+    "squid_image": "docker.io/ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",  # 6.13
     "squid_memory": "256m",
     "model_host": "10.0.0.2",
     "model_port": 8080,
+    "lan_targets": ["10.0.0.103:8088", "10.0.0.103:8003"],   # selftest: must be refused, proxied and direct
     "backup_keep": 5,
     "backup_daily_days": 7,
     "backup_warn_mb": 2048,
     "slice_warn_fraction": 0.75,
     "ready_timeout": 60,
+    "token_dir": "",       # empty: the config dir. Where the <agent>-oauth-token files live.
     "git_name": "",        # empty: taken from the host's global git config
     "git_email": "",
 }
@@ -63,7 +65,8 @@ class Settings:
         return os.path.join(self.data_dir, "backups")
 
     def token_file(self, agent):
-        return os.path.join(self.config_dir, f"{agent}-oauth-token")
+        base = os.path.expanduser(self.values.get("token_dir") or "") or self.config_dir
+        return os.path.join(base, f"{agent}-oauth-token")
 
     def seed_dir(self, agent):
         return os.path.join(self.config_dir, agent)

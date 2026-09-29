@@ -15,6 +15,11 @@ itest:
 spikes:
 	./spikes/run_all.sh
 
+# Run by Tim, not by the builder: uses the real token in ~/.config/agentbox/ (read in place).
+# AB_LIVE_EGRESS=packages or open tries another mode (default locked).
+claude-live:
+	python3 -m tests.live.claude_live
+
 # Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
 install-slice:
 	mkdir -p $(HOME)/.config/systemd/user

@@ -29,6 +29,11 @@ def cmd_project_add(s, a):
         entry["data_rw"] = [check_grant(d, kind="data_rw", **kw) for d in a.data_rw]
     if a.egress:
         entry["egress"] = a.egress
+    if a.extra_domain:
+        from .egress import check_domains
+        entry["extra_domains"] = check_domains(a.extra_domain, "--extra-domain")
+    if a.mask_skip:
+        entry["mask_skip"] = list(a.mask_skip)
     # Validate the whole thing (preset exists, lockdown ceiling) before saving.
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
     reg[a.name] = entry
@@ -138,6 +143,8 @@ def parser():
     x.add_argument("--data-ro", action="append", default=[])
     x.add_argument("--data-rw", action="append", default=[])
     x.add_argument("--egress", choices=presets.EGRESS)
+    x.add_argument("--extra-domain", action="append", default=[], help="add a domain to the egress allowlist")
+    x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
     x.set_defaults(fn=cmd_project_add)
     x = proj.add_parser("show")
     x.add_argument("name")

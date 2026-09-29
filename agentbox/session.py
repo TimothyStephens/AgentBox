@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from . import adapters, backup, cgroup, hardening, mounts, paths, presets, registry, tokens
+from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -291,8 +291,119 @@ class Session:
         teardown(self.settings, self.podman, self.name)
 
 
+SQUID_READY = "Accepting HTTP Socket connections"
+
+
+class NetSession(Session):
+    """A session on its own internal network, whose only way out is a squid allowlist proxy.
+
+    <session>-int  internal, isolate=strict: the agent and the proxy; no route anywhere else
+    <session>-egr  isolate=strict bridge: the proxy only; its route out
+    <session>-proxy squid, on both, with this session's egress mode
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.egress = self.project.value("egress")
+
+    @property
+    def int_net(self):
+        return f"{self.name}-int"
+
+    @property
+    def egr_net(self):
+        return f"{self.name}-egr"
+
+    @property
+    def proxy_name(self):
+        return f"{self.name}-proxy"
+
+    def network_args(self):
+        self.networks = [self.int_net]
+        return [f"--network={self.int_net}"]
+
+    def squid_conf(self, dns=None):
+        s = self.settings
+        return egress.squid_conf(self.egress, model_domains=self.adapter.model_domains, model_host=s.model_host,
+                                 model_port=s.model_port, extra_domains=self.project.extra_domains,
+                                 host_addrs=egress.host_addresses(), dns=dns)
+
+    def net_create_args(self, name, internal):
+        args = ["network", "create", "--opt", "isolate=strict"]
+        if internal:
+            args.append("--internal")
+        for k, v in labels_for(self.settings, self.project.name, self.name, "network").items():
+            args += ["--label", f"{k}={v}"]
+        return args + [name]
+
+    def proxy_run_args(self, conf_path):
+        s = self.settings
+        args = ["run", "-d", f"--name={self.proxy_name}", f"--hostname={self.proxy_name}"]
+        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "proxy").items()]
+        args += ["--cap-drop=ALL", "--cap-add=SETUID,SETGID", "--security-opt=no-new-privileges", "--read-only"]
+        for d in ("/var/spool/squid", "/var/log/squid", "/run", "/tmp"):
+            args.append(f"--tmpfs={d}:rw,nosuid,nodev,notmpcopyup")
+        args += [f"--memory={s.squid_memory}", f"--memory-swap={s.squid_memory}", "--pids-limit=256",
+                 f"--oom-score-adj={int(s.oom_score_adj)}"]
+        if s.cgroup_parent:
+            args.append(f"--cgroup-parent={s.cgroup_parent}")
+        args += [f"--network={self.egr_net}", f"--network={self.int_net}",
+                 f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro",
+                 s.squid_image]
+        return args
+
+    def start_infra(self):
+        pm, s = self.podman, self.settings
+        pm.run(self.net_create_args(self.int_net, internal=True))
+        pm.run(self.net_create_args(self.egr_net, internal=False))
+        gw = pm.run(["network", "inspect", self.egr_net, "--format", "{{range .Subnets}}{{.Gateway}} {{end}}"])
+        dns = (gw.stdout or "").split()[0] if (gw.stdout or "").split() else None
+        conf = os.path.join(s.session_run_dir(self.name), "squid.conf")
+        fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(self.squid_conf(dns=dns))
+        pm.run(self.proxy_run_args(conf))
+        self._wait_proxy()
+        self.env.update(egress.proxy_env(self.proxy_name))
+
+    def _wait_proxy(self):
+        deadline = time.time() + float(self.settings.ready_timeout)
+        while time.time() < deadline:
+            logs = self.podman.run(["logs", self.proxy_name], check=False)
+            text = (logs.stdout or "") + (logs.stderr or "")
+            if SQUID_READY in text:
+                return
+            state = self.podman.run(["inspect", "-f", "{{.State.Status}}", self.proxy_name], check=False)
+            if (state.stdout or "").strip() in ("exited", "stopped", "dead"):
+                raise AgentboxError(f"egress proxy exited: {' '.join(text.strip().splitlines()[-3:])}")
+            time.sleep(0.5)
+        raise AgentboxError(f"egress proxy not ready after {self.settings.ready_timeout}s")
+
+    def add_network_cases(self, builder):
+        from .selftest import runner
+        s = self.settings
+        runner.network_cases(builder, self.egress, model=(s.model_host, s.model_port),
+                             lan_targets=list(s.lan_targets), model_domains=self.adapter.model_domains,
+                             extra_domains=self.project.extra_domains)
+
+    def teardown(self):
+        if not self.name:
+            return
+        # Keep the proxy's access log (URLs and verdicts only) for review, then tear down.
+        try:
+            logs = self.podman.run(["logs", self.proxy_name], check=False)
+            if logs.returncode == 0 and logs.stdout:
+                path = os.path.join(self.settings.data_dir, "logs", f"{self.name}-proxy.log")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a") as f:
+                    f.write(logs.stdout)
+        except AgentboxError:
+            pass
+        super().teardown()
+
+
 def make_session(settings, agent, project, **kw):
-    return Session(settings, agent, project, **kw)
+    return NetSession(settings, agent, project, **kw)
 
 
 def teardown(settings, podman, session):

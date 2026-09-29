@@ -49,7 +49,7 @@ class Builder:
         self.cases.append(Case(cid, op, [str(a) for a in args], label, check, after))
 
     def script(self):
-        return "".join(f"{c.id} {c.op} {' '.join(c.args)}\n" for c in self.cases)
+        return "".join(f"{c.id} {c.op} {' '.join(c.args)}\n" for c in self.cases if c.op != "skip")
 
 
 def posture_check(obs):
@@ -158,6 +158,90 @@ def network_none_cases(b):
           lambda obs: ("PASS" if obs.split() == ["lo"] else "FAIL", obs))
 
 
+REFUSED = "403"
+
+
+def refused(obs):
+    return ("PASS" if obs == REFUSED else "FAIL", obs)
+
+
+def allowed(obs):
+    """Anything but a squid refusal or no answer at all; a 502/503/504 means allowed but the target is down."""
+    ok = obs not in (REFUSED, "000", "noproxy", "") and obs.isdigit()
+    return ("PASS" if ok else "FAIL", obs)
+
+
+def blocked_direct(obs):
+    """A direct attempt must fail at the network level. A refusal means a packet reached a host: a leak."""
+    ok = obs in ("unreachable", "timeout", "noresolve") or obs.startswith("error:")
+    return ("PASS" if ok else "FAIL", obs)
+
+
+def nip(host):
+    return host.replace(".", "-") + ".nip.io"
+
+
+def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(), live=None):
+    """Proxied and direct cases for one egress mode. `live(host, port)` is the host-side baseline."""
+    live = live or host_tcp_live
+    mhost, mport = model
+    b.add("ifaces", [], "only loopback and the session network", lambda obs: (
+        "PASS" if "lo" in obs.split() and len(obs.split()) == 2 else "FAIL", obs))
+
+    # --- proxied: refused in every mode --------------------------------------------------
+    b.add("get", [f"http://{mhost}:{mport}/v1/models", f"{mhost}:{mport}"],
+          f"proxied local model http://{mhost}:{mport}/v1/models allowed", allowed)
+    b.add("get", [f"http://{mhost}:22/", f"{mhost}:22"], f"proxied {mhost}:22 refused", refused)
+    for t in lan_targets:
+        b.add("get", [f"http://{t}/", t], f"proxied LAN {t} refused", refused)
+        h, p = t.rsplit(":", 1)
+        b.add("get", [f"http://{nip(h)}:{p}/", f"{nip(h)}:{p}"],
+              f"proxied public name resolving to {h} refused", refused)
+        b.add("get", [f"http://[::ffff:{h}]:{p}/", f"[::ffff:{h}]:{p}"], f"proxied IPv4-mapped {h} refused", refused)
+        b.add("connect", [f"{h}:443"], f"proxied CONNECT {h}:443 refused", refused)
+    for t in ("127.0.0.1:3128", "0.0.0.0:3128", "localhost:3128", "169.254.169.254:80"):
+        b.add("get", [f"http://{t}/", t], f"proxied {t} refused", refused)
+
+    # --- proxied: the model API in every mode ---------------------------------------------
+    for d in model_domains:
+        b.add("connect", [f"{d}:443"], f"proxied CONNECT {d}:443 allowed ({mode})", allowed)
+
+    # --- proxied: by mode --------------------------------------------------------------------
+    want = {"locked": (refused, refused), "packages": (refused, allowed), "open": (allowed, allowed)}[mode]
+    b.add("connect", ["example.com:443"], f"proxied CONNECT example.com:443 {'allowed' if mode == 'open' else 'refused'} "
+          f"({mode})", want[0])
+    b.add("get", ["http://example.com/", "example.com"], f"proxied http://example.com/ "
+          f"{'allowed' if mode == 'open' else 'refused'} ({mode})", want[0])
+    b.add("connect", ["pypi.org:443"], f"proxied CONNECT pypi.org:443 {'refused' if mode == 'locked' else 'allowed'} "
+          f"({mode})", want[1])
+    b.add("connect", ["files.pythonhosted.org:443"], f"proxied CONNECT files.pythonhosted.org:443 "
+          f"{'refused' if mode == 'locked' else 'allowed'} ({mode})", want[1])
+    for d in extra_domains:
+        d = d.lstrip(".")
+        b.add("connect", [f"{d}:443"], f"proxied CONNECT extra domain {d}:443 "
+              f"{'refused' if mode == 'locked' else 'allowed'} ({mode})", want[1])
+    b.add("connect", ["example.com:22"], f"proxied CONNECT to a non-443 port refused ({mode})", refused)
+    b.add("get", ["http://example.com:8080/", "example.com:8080"], f"proxied HTTP to a non-web port refused ({mode})",
+          refused)
+
+    # --- direct, bypassing the proxy ----------------------------------------------------------
+    direct = [(mhost, mport)] + [tuple(t.rsplit(":", 1)) for t in lan_targets]
+    live_count = 0
+    for h, p in direct:
+        if live(h, p):
+            live_count += 1
+            b.add("direct", [h, p], f"direct {h}:{p} unreachable", blocked_direct)
+        else:
+            b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [], f"direct {h}:{p} (not live from the host)",
+                                lambda obs: ("SKIP", "target not answering from the host")))
+    if live_count == 0:
+        b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [], "at least one live direct target",
+                            lambda obs: ("FAIL", "no direct target answers from the host; the direct cases prove nothing")))
+    b.add("direct", ["example.com", "80"], "direct example.com:80 unreachable", blocked_direct)
+    b.add("direct", ["1.1.1.1", "443"], "direct 1.1.1.1:443 (IP literal) unreachable", blocked_direct)
+    b.add("dns", ["example.com"], "direct DNS lookup of a public name fails", expect("failed"))
+
+
 def score(cases, output):
     """Match probe output to cases. Returns a list of Results."""
     obs = {}
@@ -169,6 +253,10 @@ def score(cases, output):
         obs[cid] = rest.strip()
     results = []
     for c in cases:
+        if c.op == "skip":
+            verdict, detail = c.check("")
+            results.append(Result(c.label, verdict, detail))
+            continue
         if c.id not in obs:
             results.append(Result(c.label, "FAIL", "no answer from probe"))
             continue

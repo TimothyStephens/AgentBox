@@ -6,6 +6,9 @@
   FAKE_PODMAN_NETLS     stdout for `network ls`
   FAKE_PODMAN_FAIL      substring: any call whose argv contains it exits 1
   FAKE_PODMAN_RUN_OUT   stdout for `run`
+  FAKE_PODMAN_LOGS      stdout for `logs` (default: squid's ready line)
+  FAKE_PODMAN_STATE     stdout for `inspect -f {{.State.Status}}`
+  FAKE_PODMAN_GATEWAY   stdout for `network inspect`
 """
 import json
 import os
@@ -22,6 +25,14 @@ if argv[:1] == ["ps"]:
     sys.stdout.write(os.environ.get("FAKE_PODMAN_PS", "[]" if "json" in argv else ""))
 elif argv[:2] == ["network", "ls"]:
     sys.stdout.write(os.environ.get("FAKE_PODMAN_NETLS", ""))
+elif argv[:2] == ["network", "inspect"]:
+    sys.stdout.write(os.environ.get("FAKE_PODMAN_GATEWAY", "10.89.9.1") + " \n")
+elif argv[:1] == ["logs"]:
+    sys.stdout.write(os.environ.get("FAKE_PODMAN_LOGS", "Accepting HTTP Socket connections at local=[::]:3128\n"))
+elif argv[:1] == ["inspect"]:
+    sys.stdout.write(os.environ.get("FAKE_PODMAN_STATE", "running") + "\n")
+elif argv[:1] == ["run"] and "-d" in argv:
+    sys.stdout.write("0123456789ab\n")
 elif argv[:1] == ["run"]:
     sys.stdin.read()
     sys.stdout.write(os.environ.get("FAKE_PODMAN_RUN_OUT", ""))

@@ -615,7 +615,8 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [x] Builds reach the project proxy and not the LAN by joining a holder container's network namespace (spike 1 v4).
 - [ ] Gate: pass the proxy to builds as build arguments, and check pip, npm and apt inside a build honour them.
 - [ ] Gate: on every build, confirm the holder PID still belongs to the session's running holder, and drop any namespace path the client sends (an agent could otherwise name a live stack's namespace).
-- [ ] Claude Code with a setup-token token works when its only route out is the squid proxy (replaces spike 4).
+- [ ] Claude Code with a setup-token token works when its only route out is the squid proxy (replaces spike 4): `make claude-live`, run by Tim.
+- [x] DNS on the internal session network does not resolve public names (step 2; kept as a selftest case).
 - [ ] Model key gateway: deferred. LiteLLM forwarding works (spike 4); needed only if a remote model is billed by API key.
 - [ ] OMP's browser and web tools honour the proxy variables (they fail closed if not).
 - [x] podman-compose passes `driver_opts: isolate: "strict"` through to the network, and it isolates (spike 5).

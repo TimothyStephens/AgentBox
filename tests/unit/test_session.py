@@ -37,7 +37,7 @@ class SessionTest(SettingsCase):
         joined = " ".join(argv)
         self.assertEqual(argv[:2], ["run", "--rm"])
         self.assertIn("--name=abt-unit-claude-p1-1", argv)
-        for want in ("--cap-drop=ALL", "--userns=keep-id", "--network=none", f"--workdir={self.root}",
+        for want in ("--cap-drop=ALL", "--userns=keep-id", "--network=abt-unit-claude-p1-1-int", f"--workdir={self.root}",
                      "--label=agentbox-test=1", "--label=agentbox.owner=p1/abt-unit-claude-p1-1",
                      "--env=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env=DISABLE_AUTOUPDATER=1",
                      f"--mount=type=bind,src={self.root},dst={self.root}", "--entrypoint=/bin/sh"):
