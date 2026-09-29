@@ -182,6 +182,41 @@ def check_podman(toks, root, cwd):
                   % ((group + " ") if group else "", verb, ", ".join(bad)))
 
 
+GIT_GLOBAL_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+COMMIT_VALUE_SHORT = set("mFcCt")   # short options of `git commit` that take a value
+COMMIT_VALUE_LONG = {"--message", "--file", "--reuse-message", "--reedit-message", "--template", "--author",
+                     "--date", "--cleanup", "--fixup", "--squash", "--trailer"}
+
+
+def check_git(toks):
+    """Refuse commits that skip hooks: --no-verify, -n (alone or in a cluster), or a hooksPath override."""
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] == "-c" and i + 1 < len(toks) and toks[i + 1].lower().startswith("core.hookspath"):
+            block("git -c core.hooksPath overrides the commit hooks")
+        i += 2 if toks[i] in GIT_GLOBAL_ARG else 1
+    if i >= len(toks) or toks[i] != "commit":
+        return
+    args, j = toks[i + 1:], 0
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            break
+        if a == "--no-verify" or a.startswith("--no-verify="):
+            block("git commit --no-verify skips the pre-commit secret scan")
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            for k, ch in enumerate(a[1:]):
+                if ch == "n":
+                    block("git commit -n skips the pre-commit secret scan")
+                if ch in COMMIT_VALUE_SHORT:
+                    if k == len(a) - 2:
+                        j += 1          # the value is the next token
+                    break
+        elif a in COMMIT_VALUE_LONG:
+            j += 1
+        j += 1
+
+
 def check_compose(toks):
     args = toks[1:]
     proj = None
@@ -222,6 +257,9 @@ def main():
     if re.search(r"\bpodman\b.*\bsystem\s+(reset|prune|migrate|renumber)\b", cmd):
         block("podman system reset/prune/migrate/renumber")
 
+    if re.search(r"\bGIT_PRECOMMIT_CHECK_\w+=", cmd):
+        block("turning off the pre-commit checks")
+
     for toks in segments(cmd):
         prog = os.path.basename(toks[0])
         if prog == "rm":
@@ -234,6 +272,8 @@ def main():
             check_compose(toks)
         elif prog in ("docker",):
             block("use podman, not docker")
+        elif prog == "git":
+            check_git(toks)
     return 0
 
 

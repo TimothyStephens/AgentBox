@@ -68,9 +68,10 @@ class Step1(unittest.TestCase):
         root = os.path.join(ENV.projects, "p2")
         p = ENV.ab("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
                    "-c", "echo change >> README.agent && git add README.agent && git commit -qm agent-commit && "
-                         "git log -1 --format=%s", timeout=300)
+                         "git log -1 --format='%s|%cn'", timeout=300)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("agent-commit", p.stdout)
+        self.assertIn("agent-commit|", p.stdout)
+        self.assertIn(" via agentbox-claude", p.stdout)
         hooks = os.listdir(os.path.join(root, ".git", "hooks"))
         self.assertFalse([h for h in hooks if not h.endswith(".sample")], "no hook was added")
 
@@ -93,7 +94,7 @@ class Step1(unittest.TestCase):
             doc = json.loads(inspect)[0]
             env_names = [e.split("=", 1)[0] for e in doc["Config"]["Env"]]
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env_names)
-            self.assertEqual(doc["HostConfig"]["OomScoreAdj"], 1000)
+            self.assertEqual(doc["HostConfig"]["OomScoreAdj"], 900)
             self.assertEqual(doc["HostConfig"]["Memory"], 4 * 1024 ** 3)
             if ENV.slice:
                 self.assertIn("agentbox.slice", doc["HostConfig"].get("CgroupParent", ""))
@@ -128,10 +129,29 @@ class Step1(unittest.TestCase):
 
     @unittest.skipUnless(harness.slice_installed(), "agentbox.slice not installed (make install-slice)")
     def test_slice_contains_the_session(self):
-        p = ENV.ab("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
-                   "-c", "cat /proc/self/cgroup", timeout=300)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("agentbox.slice", p.stdout)
+        # Seen from the host: inside, the private cgroup namespace shows only "0::/".
+        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+                         "-c", "sleep 120")
+        try:
+            name = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
+                                                   "--filter", "label=agentbox.project=p2",
+                                                   "--filter", "label=agentbox.role=agent").stdout.split())
+            self.assertTrue(name, "session container did not start")
+            pid = podman("inspect", "-f", "{{.State.Pid}}", name[0]).stdout.strip()
+            with open(f"/proc/{pid}/cgroup") as f:
+                cg = f.read().strip()
+            print(f"\nsession {name[0]} pid {pid}: {cg}")
+            self.assertIn("/agentbox.slice/", cg)
+            slice_dir = cg.split("::", 1)[1].split("/agentbox.slice/")[0] + "/agentbox.slice"
+            with open(f"/sys/fs/cgroup{slice_dir}/memory.max") as f:
+                self.assertEqual(int(f.read()), 4400 * 1024 * 1024)
+            with open(f"/sys/fs/cgroup{slice_dir}/memory.swap.max") as f:
+                self.assertEqual(f.read().strip(), "0")
+            ENV.ab("kill", name[0])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate()
 
     def test_zz_no_leftovers(self):
         self.assertEqual(harness.leftovers(), [])

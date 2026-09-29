@@ -53,7 +53,7 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
 ## 2026-09-29 · Resource limits and one slice for all agentbox containers
 
 - **Measured (29 Sep):** 9.8 GB RAM, 6 cores, 23 GB swap; the `cpu`, `memory` and `pids` controllers are delegated to vmuser; the media stack used about 1.35 GB, ollama 3.9 GB with a model loaded, life-updates and one unlabelled container about 0.45 GB.
-- **Agent container:** `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=1000`. Rootless podman can raise the OOM score, so under host memory pressure the kernel kills agent containers before jellyfin or ollama.
+- **Agent container:** `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=900` (see the OOM-order entry below). Rootless podman can raise the OOM score, so under host memory pressure the kernel kills agent containers before live services.
 - **Containers the agent creates** (gate, step 5): `--memory=1g --pids-limit=1024 --oom-score-adj=1000` unless the compose file sets its own.
 - **One cap for everything:** every container `ab` starts, and every container the gate creates, runs with `--cgroup-parent=agentbox.slice`; the gate refuses a client-supplied cgroup parent. `deploy/agentbox.slice` sets `MemoryMax` (RAM − media stack − 3 GB for ollama − 1 GB headroom, capped at 6G), `MemorySwapMax=0` and `TasksMax`. Tim installs it with `make install-slice`. The launcher refuses to start while the slice is not loaded (unless `cgroup_parent` is set to empty), and warns when the slice is above 75% of its memory cap. If rootless `--cgroup-parent` with a user slice does not work on this host, the fallback is a gate budget counted across all sessions.
 
@@ -73,4 +73,24 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
 
 ## 2026-09-29 · Commits from the sandbox use the host's git identity
 
-- **What:** the sandbox has no git config of its own, so `GIT_AUTHOR_*` and `GIT_COMMITTER_*` are set from the host's global `user.name`/`user.email`, or from `git_name`/`git_email` in `agentbox.toml`. No other host git config (hooks, credential helpers) enters the sandbox.
+- **What:** the sandbox has no git config of its own, so only `user.name` and `user.email` are passed, as `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment variables, from the host's global git config or from `git_name`/`git_email` in `agentbox.toml`. `~/.gitconfig` is never mounted; no other host git config (hooks, credential helpers) enters the sandbox.
+- **Committer marked:** the committer name is `<name> via agentbox-<agent>`, so agent commits are identifiable in `git log --format='%cn'`.
+
+## 2026-09-29 · OOM order inside the slice: dev stack first, then the agent
+
+- **What:** the agent container runs with `--oom-score-adj=900`; containers the gate creates get 1000. The slice stays at `MemoryMax=4400M` and the agent's own cap at 4g. When the slice or the host runs out of memory, the kernel kills the dev stack before the agent, and both before any live service (score 0). Rootless podman accepts 900 here: the user's default is 0 and raising it is allowed.
+- **Worst case, accepted:** the nightly model run plus a full slice reaches all of RAM. The cap was kept deliberately, relying on the OOM scores; the slice file's comment says so.
+
+## 2026-09-29 · Builds get a cgroup parent under the slice (gate, step 5)
+
+- **What:** the build API takes `cgroupparent`, but the podman service treats it as a cgroupfs path, not a systemd unit. Tested on this host with a remote build whose `RUN` step read its own cgroup:
+  - `agentbox.slice`: fails, `Permission denied` creating `/sys/fs/cgroup/agentbox.slice`.
+  - The slice's full path while the slice is idle: the runtime creates the directory itself, and the step runs with `memory.max = max`, uncapped.
+  - The slice's full path while the slice is active: fails (cgroup v2 allows no processes in an inner node).
+  - A child of the active slice (`/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`): works. The step lands there, and the slice's cap applies to it as an ancestor.
+- **So:** the gate sets that child path only while the session's holder container keeps the slice active (checked before each build), also sets the build's own `memory` limit, and refuses a client-supplied `cgroupparent`. The cap itself has not been load-tested (open item).
+
+## 2026-09-29 · Commit hooks are never skipped
+
+- **What:** no commit uses `--no-verify`/`-n`, a `core.hooksPath` override, or `GIT_PRECOMMIT_CHECK_*=0`. The guard hook blocks all four, and the integration fixtures commit through the host's hook too.
+- **Open:** the host's secret scanner (a global pre-commit hook) has no allowlist mechanism, so a false positive blocks a commit outright.

@@ -21,7 +21,7 @@ DEFAULTS = {
     "agent_memory": "4g",
     "agent_cpus": "3",
     "agent_pids": 4096,
-    "oom_score_adj": 1000,
+    "oom_score_adj": 900,          # agent; containers the gate creates get 1000, so they die first
     "squid_image": "docker.io/ubuntu/squid:latest",
     "squid_memory": "256m",
     "model_host": "10.0.0.2",

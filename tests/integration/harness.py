@@ -64,7 +64,7 @@ class Env:
             subprocess.run(["git", "init", "-q", root], check=True)
             subprocess.run(["git", "-C", root, "add", "-A"], check=True)
             subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
-                            "-c", "core.hooksPath=/dev/null", "commit", "-qm", "init"], check=True)
+                            "commit", "-qm", "init"], check=True)
         if secrets_files:
             _write(os.path.join(root, ".env"), "GREETING=real-secret\n")
             _write(os.path.join(root, ".env.dev"), "GREETING=dev-value\n")

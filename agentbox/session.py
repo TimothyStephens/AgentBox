@@ -61,8 +61,9 @@ def load_project(settings, name, *, with_secrets=False):
                    swap=dict(p.get("swap", mounts.DEFAULT_SWAP)), eff=eff)
 
 
-def git_identity(settings):
-    """Author and committer for commits made in the sandbox (the sandbox has no git config of its own)."""
+def git_identity(settings, agent):
+    """Author and committer for commits made in the sandbox, as environment variables only; no git config
+    file enters the sandbox. The committer is "<name> via agentbox-<agent>" so agent commits stand out."""
     import subprocess
     out = {}
     for key, setting in (("NAME", "git_name"), ("EMAIL", "git_email")):
@@ -75,6 +76,8 @@ def git_identity(settings):
                 val = ""
         if val and "\n" not in val:
             out[f"GIT_AUTHOR_{key}"] = out[f"GIT_COMMITTER_{key}"] = val
+    if "GIT_COMMITTER_NAME" in out:
+        out["GIT_COMMITTER_NAME"] = f"{out['GIT_COMMITTER_NAME']} via agentbox-{agent}"
     return out
 
 
@@ -214,7 +217,7 @@ class Session:
             opts.append("--tty")
         opts += hardening.fixed_flags(s, cgroup_parent=s.cgroup_parent)
         opts.append(f"--tmpfs={HOME}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
-        env = {"HOME": HOME, **git_identity(s), **a.env, **self.env}
+        env = {"HOME": HOME, **git_identity(s, a.name), **a.env, **self.env}
         if tty and os.environ.get("TERM"):
             env["TERM"] = os.environ["TERM"]
         opts += [f"--env={k}={v}" for k, v in env.items()]

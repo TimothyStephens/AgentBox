@@ -47,6 +47,17 @@ class SessionTest(SettingsCase):
         self.assertNotIn(self.tok, joined, "the token value is never on the command line")
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN=", joined.replace("read -r CLAUDE_CODE_OAUTH_TOKEN", ""))
 
+    def test_git_identity_env_only(self):
+        self.settings.values.update(git_name="Tim Test", git_email="tim@example.com")
+        s = self.make()
+        s.prepare()
+        argv = s.run_args(s.agent_command())
+        for want in ("--env=GIT_AUTHOR_NAME=Tim Test", "--env=GIT_AUTHOR_EMAIL=tim@example.com",
+                     "--env=GIT_COMMITTER_NAME=Tim Test via agentbox-claude",
+                     "--env=GIT_COMMITTER_EMAIL=tim@example.com"):
+            self.assertIn(want, argv)
+        self.assertNotIn(".gitconfig", " ".join(argv))
+
     def test_lockdown_keeps_approvals(self):
         self.project("p2", preset="lockdown")
         s = self.make("p2")

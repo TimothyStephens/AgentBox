@@ -124,7 +124,7 @@ Applied to every session; no adapter or profile can override it.
 - Never `--privileged`, never `seccomp=unconfined` or `apparmor=unconfined`, never `--network=host`.
 - Read-only root filesystem with tmpfs for `/tmp`; PID and memory limits.
 - `--userns=keep-id`, so the agent runs as `vmuser` and written files stay owned by `vmuser`; `HOME` is a tmpfs at the host home path.
-- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=1000` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services.
+- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=900` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services; containers the gate creates get 1000, so inside the slice a dev stack dies before the agent.
 - Every agentbox container, including the ones the gate creates for the agent, runs under `--cgroup-parent=agentbox.slice`, one kernel-enforced memory, swap and task cap for all sessions together (`deploy/agentbox.slice`, installed with `make install-slice`).
 
 ### Harness adapters
@@ -274,6 +274,7 @@ Sockguard can refuse dangerous settings, but it cannot force a network, inspect 
 - any host port publishing is rejected;
 - image pulls (`images/pull`, and pulls a create triggers) are allowed only from listed registries: `docker.io`, `ghcr.io`, `lscr.io`, `quay.io`; builds never pull, so `FROM` images must already exist;
 - every created container gets `--cgroup-parent=agentbox.slice` (a client-supplied cgroup parent is refused) and, unless the compose file sets its own, `--memory=1g --pids-limit=1024`, plus `--oom-score-adj=1000`;
+- builds run inside the podman service, not under `ab`, so the gate sets the build API's `cgroupparent` to a child of the slice, as a full cgroupfs path: `/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`. The service treats the value as a path, not a systemd unit: `agentbox.slice` alone fails (`Permission denied` on `/sys/fs/cgroup/agentbox.slice`); the slice's own path fails while the slice is active (cgroup v2 allows no processes in an inner node) and, while it is idle, is created by the runtime with no cap. A child path works while the slice is active, which it is whenever the session's holder runs, and the gate checks that before every build. The gate also sets the build's `memory` limit and refuses a client-supplied `cgroupparent`;
 - exec is scoped: before creating an exec session the gate inspects the target container and requires the project's compose label or the session's owner label, and it only starts, resizes or removes exec sessions it created;
 - joining a pod, or another container's namespaces, is allowed only for pods and containers the session owns;
 - proxy variables are injected into every container, so app containers reach the internet only through the proxy.
@@ -621,13 +622,15 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [x] Squid IP-literal rules for `10.0.0.2:8080`, and private-address refusal after DNS resolution, behave as written (spike 3, 14 of 14).
 - [ ] OMP's shared browser works with `run` as a real tmpfs (the probe's tmpfs was shadowed by the overlay).
 - [ ] OMP's session directory naming follows the real project path once mounted there.
-- [ ] Claude Code's config splits cleanly into read-only credentials plus per-project state.
+- [x] Claude Code's config splits cleanly into a read-only token plus per-project state (step 1: token mounted read-only and exported at start; whole `CLAUDE_CONFIG_DIR` per project, seeded by copy).
 - [ ] Identify the python3 servers on `8004`/`8006`.
 - [ ] OMP's flag for turning its approval prompts off, so the preset's approval setting can map to it.
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
 - [ ] Gate strips restart policies from agent-created containers, so dev stacks never come back on their own.
 - [ ] Gate: refuse joining pods or container namespaces the session does not own (found while testing the gate prototype).
+- [ ] Commits made in a session skip the host's pre-commit secret scanner (it is a global git hook, and the sandbox has no git config). When a session ends, `ab` should run the same scanner over the commits the session added and warn if it finds anything.
+- [ ] Build memory cap: confirm with a build that allocates past a small per-build `memory` limit that the gate-set limit and the slice cap both hold (spike, 29 Sep: build steps land in `agentbox.slice/<child>` as intended; the cap itself was not load-tested, the host had 2 GB free).
 
 **Future options**
 
