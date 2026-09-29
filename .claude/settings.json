@@ -1,0 +1,63 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(make *)",
+      "Bash(./spikes/run_all.sh *)",
+      "Bash(spikes/run_all.sh *)",
+      "Bash(python3 -m pytest *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/pytest *)",
+      "Bash(python3 .claude/hooks/test_guard.py)",
+      "Bash(shellcheck *)",
+      "Bash(bash -n *)",
+      "Bash(podman ps *)",
+      "Bash(podman pod ps *)",
+      "Bash(podman inspect *)",
+      "Bash(podman logs *)",
+      "Bash(podman images *)",
+      "Bash(podman image exists *)",
+      "Bash(podman network ls *)",
+      "Bash(podman network inspect *)",
+      "Bash(podman volume ls *)",
+      "Bash(podman version *)",
+      "Bash(podman info *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(pip install *)",
+      "Bash(npm install *)"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Read(~/.ssh/**)",
+      "Read(~/.config/agentbox/claude-oauth-token)",
+      "Read(~/.config/claude-container/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.omp/**)",
+      "Read(~/**/.env)",
+      "Edit(~/.bashrc)",
+      "Edit(~/.profile)",
+      "Edit(~/.config/systemd/**)",
+      "Edit(~/.config/containers/**)",
+      "Edit(~/.config/claude-container/**)",
+      "Edit(~/.omp/**)",
+      "Edit(~/.claude/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\"" }
+        ]
+      }
+    ]
+  }
+}
