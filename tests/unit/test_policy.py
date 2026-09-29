@@ -1,0 +1,144 @@
+"""Registry, presets and the path validator."""
+import os
+import unittest
+
+from agentbox import presets, registry
+from agentbox.errors import AgentboxError
+from agentbox.paths import check_grant
+
+from .helpers import TempCase
+
+
+class RegistryTest(TempCase):
+    def test_round_trip(self):
+        path = os.path.join(self.tmp, "projects.toml")
+        projects = {
+            "helper": {"root": "/x/helper", "preset": "pods"},
+            "data-proc": {"root": '/x/we"ird\\path', "preset": "python", "data_ro": ["/d/raw"],
+                          "data_rw": [], "egress": "open", "swap": {".env": ".env.dev", "a.env": "a.dev.env"}},
+        }
+        registry.save(path, projects)
+        self.assertEqual(registry.load(path), projects)
+
+    def test_missing_file_is_empty(self):
+        self.assertEqual(registry.load(os.path.join(self.tmp, "nope.toml")), {})
+
+    def test_names(self):
+        for bad in ("", "A", "has space", "../x", "x" * 41, "-lead"):
+            with self.assertRaises(AgentboxError, msg=bad):
+                registry.check_name(bad)
+        registry.check_name("life-updates_2")
+
+
+class PresetTest(unittest.TestCase):
+    P = presets.BUILTIN
+
+    def eff(self, project, **kw):
+        return presets.effective("t", project, self.P, **kw)
+
+    def test_preset_values_and_provenance(self):
+        e = self.eff({"preset": "python"})
+        self.assertEqual(e["egress"], ("packages", "preset python"))
+        self.assertEqual(e["approvals"], ("off", "preset python"))
+
+    def test_project_override_wins(self):
+        e = self.eff({"preset": "python", "egress": "locked"})
+        self.assertEqual(e["egress"], ("locked", "project"))
+
+    def test_pods_defaults_to_packages(self):
+        self.assertEqual(self.eff({"preset": "pods"})["egress"][0], "packages")
+
+    def test_open_only_when_the_project_says_so(self):
+        self.assertEqual(self.eff({"preset": "pods", "egress": "open"})["egress"], ("open", "project"))
+        custom = dict(self.P, wide=dict(self.P["python"], egress="open"))
+        e = presets.effective("t", {"preset": "wide"}, custom)
+        self.assertEqual(e["egress"][0], "packages")
+
+    def test_lockdown_is_a_ceiling(self):
+        self.assertEqual(self.eff({"preset": "lockdown"})["egress"][0], "locked")
+        for loosen in ({"egress": "packages"}, {"egress": "open"}, {"approvals": "off"}, {"compose": "rw"},
+                       {"caps": "opt-in"}, {"secrets": "masked"}, {"podman": {"tier": "dev"}}):
+            with self.assertRaises(AgentboxError, msg=loosen):
+                self.eff({"preset": "lockdown", **loosen})
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "lockdown", "data_rw": ["/x"]})
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "lockdown"}, with_secrets=True)
+
+    def test_with_secrets(self):
+        self.assertEqual(self.eff({"preset": "python"}, with_secrets=True)["secrets"][0], "exposed")
+
+    def test_bad_values(self):
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "python", "egress": "wide"})
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "nope"})
+
+
+class CustomPresetTest(TempCase):
+    def test_custom_preset_file(self):
+        self.write("presets/web.toml", 'egress = "locked"\napprovals = "on"\n')
+        ps = presets.load_presets(os.path.join(self.tmp, "presets"))
+        self.assertEqual(ps["web"]["egress"], "locked")
+        self.assertEqual(ps["web"]["compose"], "ro")
+
+    def test_lockdown_cannot_be_redefined(self):
+        self.write("presets/lockdown.toml", 'egress = "open"\n')
+        with self.assertRaises(AgentboxError):
+            presets.load_presets(os.path.join(self.tmp, "presets"))
+
+
+class PathTest(TempCase):
+    def setUp(self):
+        super().setUp()
+        self.home = self.mkdir("home", "u")
+        for d in (".ssh", ".config/containers", ".local/share/containers", "repos/a", "repos/b/sub", "data"):
+            self.mkdir("home", "u", d)
+
+    def check(self, path, **kw):
+        return check_grant(path, home=self.home, **kw)
+
+    def test_ok(self):
+        self.assertEqual(self.check(os.path.join(self.home, "repos/a")), os.path.join(self.home, "repos/a"))
+
+    def test_refuses_root_home_and_ancestors(self):
+        for p in ("/", self.home, os.path.dirname(self.home), self.tmp):
+            with self.assertRaises(AgentboxError, msg=p):
+                self.check(p)
+
+    def test_refuses_system_dirs(self):
+        for p in ("/etc", "/usr/share", "/var/tmp", "/run", "/boot", "/dev"):
+            if os.path.isdir(p):
+                with self.assertRaises(AgentboxError, msg=p):
+                    self.check(p)
+
+    def test_refuses_protected_and_their_parents(self):
+        for p in (".ssh", ".config/containers", ".local/share/containers", ".config", ".local/share"):
+            with self.assertRaises(AgentboxError, msg=p):
+                self.check(os.path.join(self.home, p))
+
+    def test_extra_protected(self):
+        with self.assertRaises(AgentboxError):
+            self.check(os.path.join(self.home, "data"), extra_protected=[os.path.join(self.home, "data")])
+
+    def test_symlink_into_forbidden_is_resolved(self):
+        link = os.path.join(self.home, "repos", "sneaky")
+        os.symlink(os.path.join(self.home, ".ssh"), link)
+        with self.assertRaises(AgentboxError):
+            self.check(link)
+
+    def test_overlap_with_other_projects(self):
+        b = os.path.join(self.home, "repos/b")
+        with self.assertRaises(AgentboxError):
+            self.check(os.path.join(b, "sub"), other_roots=[("b", b)])
+        with self.assertRaises(AgentboxError):
+            self.check(os.path.join(self.home, "repos"), other_roots=[("b", b)])
+        self.check(os.path.join(self.home, "repos/a"), other_roots=[("b", b)])
+
+    def test_missing_dir(self):
+        with self.assertRaises(AgentboxError):
+            self.check(os.path.join(self.home, "nope"))
+
+
+if __name__ == "__main__":
+    unittest.main()

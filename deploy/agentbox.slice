@@ -1,0 +1,17 @@
+# agentbox.slice - one kernel-enforced cap for every agentbox container, across all sessions.
+# Installed to ~/.config/systemd/user/ by `make install-slice` (run by Tim, not by the builder).
+#
+# MemoryMax, from measurement on ubuntu-dev (29 Sep 2026):
+#   9.8 GB RAM - 1.35 GB media stack - 3 GB local model server - 1 GB headroom = ~4.4 GB (cap 6G).
+# MemorySwapMax=0: agent containers never push the host into swap.
+[Unit]
+Description=agentbox sandboxes (all sessions)
+Before=slices.target
+
+[Slice]
+MemoryAccounting=yes
+MemoryMax=4400M
+MemorySwapMax=0
+TasksAccounting=yes
+TasksMax=8192
+CPUAccounting=yes

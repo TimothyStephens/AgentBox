@@ -1,17 +1,26 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard
+.PHONY: test itest spikes clean guard install-slice claude-live
 
 guard:
 	python3 .claude/hooks/test_guard.py
 
 test: guard
-	@echo "unit tests: add them under tests/ (no podman needed)"
+	python3 -m unittest discover -s tests/unit -t . $(if $(V),-v,)
 
+# Real podman. Every resource is named abt-<run>-* and labelled agentbox-test=1 plus
+# agentbox-test-run=<run>; the suite removes its own run even on failure.
 itest:
-	@echo "integration tests: add them under tests/integration/ (real podman, abt-* names, label agentbox-test=1)"
+	python3 -m unittest discover -s tests/integration -t . -v
 
 spikes:
 	./spikes/run_all.sh
+
+# Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
+install-slice:
+	mkdir -p $(HOME)/.config/systemd/user
+	install -m 644 deploy/agentbox.slice $(HOME)/.config/systemd/user/agentbox.slice
+	systemctl --user daemon-reload
+	systemctl --user show agentbox.slice -p LoadState -p MemoryMax -p MemorySwapMax -p TasksMax
 
 # Removes only what the tests created (label agentbox-test=1).
 clean:

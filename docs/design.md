@@ -59,7 +59,7 @@ The design defends against mistakes and misdirected agents, not a determined ker
 | Lateral network access | Hitting another project's ports, the media stack, the LAN | Internal session network; proxy refuses private and host addresses in every egress mode |
 | Agent-built images and containers | A Containerfile `RUN curl 10.0.0.103:8088`, a container on podman's default network | Host-side gate pins every container and build to the project network and proxy |
 | Over-broad pod access | `podman run -v ~:/h`, `rm -f` on a live pod | Gate + sockguard: own dev stack only, binds inside the project |
-| Exfiltration over open egress | An injected agent sending data out | No secrets in the sandbox; model keys held by the gateway; `locked` or `packages` for sensitive projects |
+| Exfiltration over open egress | An injected agent sending data out | No host secrets in the sandbox (only a dedicated, revocable model token); `packages` by default, `open` only when the project says so; `locked` for sensitive projects; image pulls allowlisted by registry |
 | Prompt injection | Web page or repo text telling the agent to escape | Same controls; injection gains nothing the agent could not already do |
 | Deferred execution | Git hooks, compose volume lines, downloaded code run later by you | Read-only hooks and config, `ab deploy` diff and policy check, lockfiles |
 
@@ -123,7 +123,9 @@ Applied to every session; no adapter or profile can override it.
 - `--cap-drop=ALL`, `--security-opt=no-new-privileges`, podman's default seccomp profile.
 - Never `--privileged`, never `seccomp=unconfined` or `apparmor=unconfined`, never `--network=host`.
 - Read-only root filesystem with tmpfs for `/tmp`; PID and memory limits.
-- `--userns=keep-id` where the image supports a non-root user, so written files stay owned by `vmuser`.
+- `--userns=keep-id`, so the agent runs as `vmuser` and written files stay owned by `vmuser`; `HOME` is a tmpfs at the host home path.
+- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=1000` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services.
+- Every agentbox container, including the ones the gate creates for the agent, runs under `--cgroup-parent=agentbox.slice`, one kernel-enforced memory, swap and task cap for all sessions together (`deploy/agentbox.slice`, installed with `make install-slice`).
 
 ### Harness adapters
 
@@ -131,7 +133,7 @@ The only per-agent code. An adapter declares, and the launcher validates:
 
 - image and launch command;
 - read-only config paths; the launcher rewrites the model config so cloud providers point at the key gateway with no keys;
-- read-write state, scoped per project, under `~/.local/share/agentbox/<agent>/`;
+- read-write state, scoped per project, under `~/.local/share/agentbox/<project>/<agent>/`;
 - secrets as read-only single files, only where the harness cannot use the gateway;
 - paths that must be tmpfs (OMP's `run`);
 - a generated `AGENTS.md` describing the real sandbox, including the project's preset and egress mode;
@@ -152,6 +154,8 @@ preset  = "python"
 data_ro = ["~/data/raw"]
 data_rw = ["~/data/processed"]
 egress  = "open"                  # override: this project may search the web
+mask_skip = ["data/cache"]        # folders the secret-mask walk skips (huge trees)
+extra_domains = ["huggingface.co"] # added to the egress allowlist
 ```
 
 - A project names a preset; any setting written on the project overrides the preset's value. Fixed hardening is never overridable.
@@ -164,10 +168,10 @@ egress  = "open"                  # override: this project may search the web
 - Validator: `realpath` every grant; refuse `/`, `$HOME`, its ancestors, `/etc`, `/var`, `/usr`, `/boot`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, podman storage.
 - A grant may not contain or overlap another registered project.
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
-- `.env` files are masked with `/dev/null` unless `--with-secrets`.
-- `.git/hooks` and `.git/config` are overlaid read-only on any read-write repo.
+- `.env` files are masked with `/dev/null` unless `--with-secrets` (see Project secrets for the full mask list).
+- `.git/hooks` and `.git/config` are overlaid read-only on any read-write repo, and the same for each submodule under `.git/modules/`.
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
-- Read-write grants are rsynced to `~/.local/share/agentbox/backups/<session>/` before the session starts.
+- Read-write grants are rsynced to `~/.local/share/agentbox/backups/<project>/<timestamp>-<session>/` before the session starts, as `--link-dest` snapshots (unchanged files shared). `.git` is kept; `.venv`, `venv`, `node_modules`, `__pycache__`, build caches and the project's `mask_skip` folders are not. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory.
 
 ### Network and egress
 
@@ -178,19 +182,29 @@ egress  = "open"                  # override: this project may search the web
 | Egress mode | Reachable | Use for |
 | --- | --- | --- |
 | `locked` | Model endpoints only | Sensitive projects, review-only work |
-| `packages` | + PyPI, npm, crates.io, GitHub release downloads, container registries | Scripting and builds that need dependencies |
+| `packages` (default) | + PyPI, npm, crates.io, GitHub, Debian/Ubuntu/Alpine, conda, CRAN, Bioconductor | Scripting and builds that need dependencies |
 | `open` | + any public host | Web search, fetching fixes, trying new packages |
+
+- Egress is `packages` unless the project's own config says `egress = "open"`; no preset grants `open` by itself. `lockdown` is always `locked`.
+- Container registries are not on the squid list: image pulls run on the host, and the gate allowlists registries (see Host-side gate).
+- Project-specific domains go in the project's `extra_domains`.
 
 ```
 # always
 acl localmodel dst 10.0.0.2
 acl modelport  port 8080
-acl private    dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10 ::1
-acl remoteapi  dstdomain <remote model hosts from models.yml>
+acl private    dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12
+               192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4
+               ::/128 ::1 fc00::/7 fe80::/10 ff00::/8 <the VM's own addresses>
+acl sslport    port 443
+acl webports   port 80 443
+acl models     dstdomain <adapter model hosts, e.g. api.anthropic.com>
 http_access allow localmodel modelport
 http_access deny  private
-http_access allow CONNECT remoteapi
-# packages: + http_access allow dstdomain <registry list>
+http_access deny  CONNECT !sslport
+http_access deny  !webports
+http_access allow models
+# packages: + http_access allow <package list> and <extra_domains>
 # open:     + http_access allow all
 http_access deny  all
 ```
@@ -209,7 +223,8 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 **Project secrets**
 
-- Masked by default: each project has `mask = [".env", ".env.*", "secrets/"]`; files get `/dev/null` bound over them, directories a tmpfs.
+- Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get `/dev/null` bound over them, `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks.
+- Masks are computed at session start: a secret file created during a session is not masked.
 - **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; `ab deploy` uses it on the host.
 - Other file names use a per-project mapping, e.g. `swap = { ".env" = ".env.dev", "secrets.env" = "secrets.dev.env" }`. A masked file with no mapped dev file stays empty.
 - The dev file is mounted read-write so the agent can add variables. `ab deploy` compares variable names (never values) between the dev and real files and refuses to deploy while the real file is missing any, listing them.
@@ -223,7 +238,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 - One keys file, `~/.config/agentbox/keys.env` (mode `0600`), set with `ab keys set <provider>`. Keys are removed from `~/.omp/agent/models.yml` so there is one place to update.
 - The gateway watches the keys file: an updated key applies to every running session at once, and never enters a sandbox.
-- Claude Code uses an API key through the gateway. A subscription login refreshes its token by writing its credentials file, so in a sandbox it would either break mid-session (read-only) or be exposed to the agent (read-write). Subscription use stays on the host.
+- Claude Code uses a dedicated subscription token from `claude setup-token`, kept in `~/.config/agentbox/claude-oauth-token` (0600) and rotated with `ab keys rotate claude`. It is mounted read-only into the session and exported as `CLAUDE_CODE_OAUTH_TOKEN` just before the agent starts, so it is never in podman's container config. The agent can read it; that is accepted because it only makes model requests and is revocable. It never lands in session directories, logs, backups or selftest output. The host's own login (`~/.claude`) is never mounted.
 
 **How host edits reach a running session**
 
@@ -257,6 +272,8 @@ Sockguard can refuse dangerous settings, but it cannot force a network, inspect 
 - every container the agent creates goes onto `<project>_app`; any other network is rejected;
 - builds run on that network by joining a per-session holder container's network namespace: the gate sets the build's network entry in `nsoptions` to `/proc/<pid>/ns/net`, drops every other namespace entry except the client's `user` one, re-checks the holder's PID on every build (PIDs are reused), and passes the proxy in as build arguments;
 - any host port publishing is rejected;
+- image pulls (`images/pull`, and pulls a create triggers) are allowed only from listed registries: `docker.io`, `ghcr.io`, `lscr.io`, `quay.io`; builds never pull, so `FROM` images must already exist;
+- every created container gets `--cgroup-parent=agentbox.slice` (a client-supplied cgroup parent is refused) and, unless the compose file sets its own, `--memory=1g --pids-limit=1024`, plus `--oom-score-adj=1000`;
 - exec is scoped: before creating an exec session the gate inspects the target container and requires the project's compose label or the session's owner label, and it only starts, resizes or removes exec sessions it created;
 - joining a pod, or another container's namespaces, is allowed only for pods and containers the session owns;
 - proxy variables are injected into every container, so app containers reach the internet only through the proxy.
@@ -265,7 +282,7 @@ Without the gate, a container created with no network, or a `podman build`, runs
 
 ### Session lifecycle
 
-- Sessions are named `<agent>-<project>-<n>`; everything the session creates carries the owner label `<project>/<session>`.
+- Sessions are named `<prefix><agent>-<project>-<n>` (prefix `ab-`; tests use `abt-<run>-`); everything the session creates carries the owner label `agentbox.owner=<project>/<session>`, plus `agentbox.session`, `agentbox.project`, `agentbox.role` and the configured extra labels (`agentbox=1`).
 - `ab kill` removes the container, its network, proxy, gateway, gate, sockguard instance and every labelled container.
 
 ### Preview and deploy
@@ -288,7 +305,7 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 | Compose files | Read-only, changes via outbox | Read-write; live stack changes only via `ab deploy` | Read-only, changes via outbox |
 | Data grants | Read-only only | None unless declared | As declared (`data_ro`, `data_rw`) |
 | `.env` files | Masked; `--with-secrets` refused | Masked unless `--with-secrets` | Masked unless `--with-secrets` |
-| Egress | `locked` | `open` | `packages` |
+| Egress | `locked` | `packages` (`open` only if the project says so) | `packages` |
 | Podman tier | none | dev on `<project>-dev`, observe on the live stack | none |
 | Extra capabilities, devices | Refused | Opt-in per project | Refused |
 | Agent approval prompts | On | Off (`--auto`) | Off (`--auto`) |
@@ -296,7 +313,7 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 **Overrides**
 
 - Any setting written on the project, or passed as a flag, overrides the preset: e.g. `python` with `egress = "open"` for web search.
-- `pods` defaults to `open`, the widest egress. A stack that holds personal data (e.g. life-updates) should use `pods` with `egress = "packages"`, or `lockdown`, so an injected agent cannot send that data out.
+- Every preset defaults to `packages` or tighter. `open` comes only from `egress = "open"` written on the project, never from a preset. A stack that holds personal data (e.g. life-updates) should stay on `packages`, or use `lockdown`.
 - `lockdown` is a ceiling: overrides may only tighten it. To loosen, switch the project to another preset.
 - `ab project show <project>` prints every effective setting and whether it came from the preset or an override.
 
@@ -305,7 +322,7 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 ```toml
 # ~/.config/agentbox/presets/pods.toml
 compose   = "rw"
-egress    = "open"
+egress    = "packages"
 podman    = { tier = "dev", live = "observe" }
 caps      = "opt-in"
 secrets   = "masked"
@@ -359,7 +376,9 @@ A power loss or reboot ends every running session, but everything written to the
 | Check | Expected |
 | --- | --- |
 | `/proc/self/status` | `CapEff 0`, `NoNewPrivs 1`, `Seccomp 2` |
-| Model API keys in the sandbox environment or files | Absent |
+| Model API keys in the sandbox environment or files | Absent (the session's own model token is the only credential) |
+| The model token in podman's container config, logs, backups, session directories, selftest output | Absent |
+| Direct DNS lookup of a public name | Fails |
 | Write outside grants, write to `.git/hooks`, read `~/.ssh` | Fail |
 | Read another project's root or session bucket | Fail |
 | Proxied `http://10.0.0.2:8080/v1/models` | Not `403` |
@@ -401,8 +420,10 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening (the existing script's flags) |
-| Model access | API key through the key gateway; no credentials in the sandbox. Subscription login is used only on the host. |
-| Per-project state | `projects/` subdirectory per project, read-write |
+| Model access | Dedicated `claude setup-token` token, mounted read-only and exported as `CLAUDE_CODE_OAUTH_TOKEN` at start; the host's `~/.claude` is never mounted |
+| Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/<project>/claude/`, read-write and persistent (history, `--resume`); `settings.json`, `CLAUDE.md` and `commands/` copied in from `~/.config/agentbox/claude/` at each start |
+| User | `vmuser` via `keep-id` (Claude Code refuses to skip permissions as root) |
+| Network settings | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`; model domain `api.anthropic.com` |
 | Approval prompts | Follow the preset (`--dangerously-skip-permissions` when off) |
 | Internal sandbox | Off; the container is the boundary |
 
@@ -433,7 +454,7 @@ Every compose network change needs a `down`/`up`, so each step briefly takes tha
 Build against a dummy compose project (two nginx containers) first; real stacks come last.
 
 1. **Core launcher:** registry, presets, path validator, fixed hardening, Claude adapter. Gate: filesystem and posture selftest cases pass.
-2. **Network:** per-session internal network, squid sidecar with the three egress modes, model key gateway. Gate: proxied and direct cases pass in every mode, keys absent from the sandbox.
+2. **Network:** per-session internal network, squid sidecar with the three egress modes (the model key gateway is deferred). Gate: proxied and direct cases pass in every mode; no keys in the sandbox except the session's own model token; the token appears in no log, session directory, backup or selftest output.
 3. **OMP adapter:** rebuilt image, `~/.omp` split, `run` tmpfs, generated `AGENTS.md`. Gate: OMP boots, debugger and shared browser work through the proxy.
 4. **Sockguard, observe tier:** audit mode first, then enforce. Gate: label scoping verified, including exec on another project's container.
 5. **Host-side gate and dev tier:** network pinning, build network, port rejection, proxy injection. Gate: the gate and build cases pass on a dummy two-container compose project.
