@@ -630,7 +630,7 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
 - [ ] Gate strips restart policies from agent-created containers, so dev stacks never come back on their own.
 - [ ] Gate: refuse joining pods or container namespaces the session does not own (found while testing the gate prototype).
-- [ ] Commits made in a session skip the host's pre-commit secret scanner (it is a global git hook, and the sandbox has no git config). When a session ends, `ab` should run the same scanner over the commits the session added and warn if it finds anything.
+- [ ] Commits made in a session skip the host's pre-commit secret scanner (it is a global git hook, and the sandbox has no git config). When a session ends, `ab` should run the same scanner over the commits the session added and warn if it finds anything. That scan ignores the `scanner:allow` marker the host hook honours: an agent in a sandbox must not be able to exempt its own lines.
 - [ ] Build memory cap: confirm with a build that allocates past a small per-build `memory` limit that the gate-set limit and the slice cap both hold (spike, 29 Sep: build steps land in `agentbox.slice/<child>` as intended; the cap itself was not load-tested, the host had 2 GB free).
 
 **Future options**

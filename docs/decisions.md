@@ -90,6 +90,16 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
   - A child of the active slice (`/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`): works. The step lands there, and the slice's cap applies to it as an ancestor.
 - **So:** the gate sets that child path only while the session's holder container keeps the slice active (checked before each build), also sets the build's own `memory` limit, and refuses a client-supplied `cgroupparent`. The cap itself has not been load-tested (open item).
 
+## 2026-09-29 · The OOM score is a tie-breaker inside the slice, not a guarantee
+
+- **What:** for a kill inside a cgroup, the kernel scales `oom_score_adj` to that cgroup's limit. With `MemoryMax=4400M`, the agent's 900 against a dev container's 1000 is worth 10% of 4400M, about 440 MB. A dev container dies first only while its usage is more than the agent's minus 440 MB; a much bigger agent is killed before a small dev container. `make itest-oom` (run by Tim) tests the dev-bigger case and reports the agent-bigger case.
+- **Why it matters:** "dev stack dies before the agent" holds for the usual case (a dev stack that grows), not for every case.
+
+## 2026-09-29 · The build cap check, and when a slice is idle
+
+- **What:** `agentbox/buildcap.py` is the part of the step 5 gate that caps builds: before every build it requires the slice to be active (`systemctl --user` reports it active and its cgroup has a finite `memory.max`), refuses a client-supplied `cgroupparent`, drops the client's memory and CPU settings, and sets `cgroupparent` to `<slice path>/<session>-build` plus its own `memory`/`memswap` (so a build is capped twice: its own limit and the slice). `make itest` proves it against a real podman service: an inactive slice refuses the build, and an active one gives the `RUN` step the gate's limit in a cgroup under the slice.
+- **Found:** systemd keeps a slice active once it has been used, even when empty. `agentbox.slice` is idle only after a boot (or a manager restart) until the first session, which is exactly when an unchecked build would run uncapped. The integration test uses a never-started slice name for the idle case, since stopping `agentbox.slice` would be a systemd change.
+
 ## 2026-09-29 · Commit hooks are never skipped
 
 - **What:** no commit uses `--no-verify`/`-n`, a `core.hooksPath` override, or `GIT_PRECOMMIT_CHECK_*=0`. The guard hook blocks all four, and the integration fixtures commit through the host's hook too.

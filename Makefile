@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -19,6 +19,11 @@ spikes:
 # AB_LIVE_EGRESS=packages or open tries another mode (default locked).
 claude-live:
 	python3 -m tests.live.claude_live
+
+# Run by Tim, not by the builder, at a quiet time (model server unloaded, available > 5 GB):
+# pushes agentbox.slice past its cap and checks who is OOM-killed.
+itest-oom:
+	python3 -m tests.oom.itest_oom
 
 # Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
 install-slice:
