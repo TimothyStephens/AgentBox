@@ -68,6 +68,9 @@ def host_addresses():
 def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(), host_addrs=(), dns=None):
     if mode not in MODES:
         raise AgentboxError(f"unknown egress mode {mode!r}")
+    if not host_addrs:
+        raise AgentboxError("squid_conf: no host addresses to refuse; refusing to build a config without them")
+    host_addrs = [str(ipaddress.ip_address(a)) for a in host_addrs]
     model_domains = check_domains(model_domains, "model domains")
     extra = check_domains(extra_domains, "extra_domains")
     ipaddress.ip_address(model_host)
@@ -87,8 +90,7 @@ def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(),
         f"acl modelport port {int(model_port)}",
         "acl private dst " + " ".join(PRIVATE),
     ]
-    if host_addrs:
-        lines.append("acl hostaddr dst " + " ".join(host_addrs))
+    lines.append("acl hostaddr dst " + " ".join(host_addrs))
     lines += [
         "acl CONNECT method CONNECT",
         "acl sslport port 443",
@@ -108,8 +110,7 @@ def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(),
         "http_access allow localmodel modelport",
         "http_access deny private",
     ]
-    if host_addrs:
-        lines.append("http_access deny hostaddr")
+    lines.append("http_access deny hostaddr")
     lines += [
         "http_access deny CONNECT !sslport",
         "http_access deny !webports",
@@ -117,7 +118,9 @@ def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(),
         "http_access deny all",
         "cache deny all",
         "cache_mem 8 MB",
-        "logformat agentbox %ts.%03tu %>a %rm %ru %>Hs %<a %Ss/%Sh",
+        # destinations only (host:port), never URL paths or queries, which can carry data
+        "strip_query_terms on",
+        "logformat agentbox %ts.%03tu %>a %rm %>rd:%>rP %>Hs %<a %Ss/%Sh",
         "access_log stdio:/dev/stdout agentbox",
         "cache_log stdio:/dev/stderr",
         "pid_filename none",

@@ -9,6 +9,7 @@ from .helpers import SettingsCase
 
 def conf(mode, **kw):
     kw.setdefault("model_domains", ["api.anthropic.com"])
+    kw.setdefault("host_addrs", ["10.0.0.103"])
     return egress.squid_conf(mode, model_host="10.0.0.2", model_port=8080, **kw)
 
 
@@ -19,7 +20,7 @@ def access_lines(text):
 class SquidConfTest(SettingsCase):
     def test_rule_order_every_mode(self):
         for mode in egress.MODES:
-            rules = access_lines(conf(mode, host_addrs=["10.0.0.103"]))
+            rules = access_lines(conf(mode))
             self.assertEqual(rules[0], "http_access allow localmodel modelport", mode)
             self.assertEqual(rules[1], "http_access deny private", mode)
             self.assertEqual(rules[2], "http_access deny hostaddr", mode)

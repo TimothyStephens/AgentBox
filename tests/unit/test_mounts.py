@@ -72,6 +72,8 @@ class MountPlanTest(TempCase):
         sub = self.mkdir("proj", ".git", "modules", "lib")
         self.write("proj/.git/modules/lib/HEAD", "ref: refs/heads/main\n")
         self.write("proj/.git/modules/lib/config", "[core]\n")
+        self.mkdir("proj", ".git", "modules", "lib", "objects")
+        self.mkdir("proj", ".git", "modules", "lib", "refs")
         p = mounts.plan(root=self.root)
         self.assertIn(os.path.join(self.root, ".git", "hooks"), p.create_dirs)
         m = self.by_dst(p)

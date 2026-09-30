@@ -111,6 +111,24 @@ class Step1(unittest.TestCase):
                 proc.kill()
             proc.communicate()
 
+    def test_sigterm_tears_the_session_down(self):
+        import signal
+        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+                         "-c", "sleep 300")
+        try:
+            up = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
+                                                 "--filter", "label=agentbox.project=p2",
+                                                 "--filter", "label=agentbox.role=agent").stdout.split())
+            self.assertTrue(up, "session did not start")
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=120)
+            left = [x for x in harness.leftovers() if x.startswith(up[0])]
+            self.assertEqual(left, [], "everything the session created is gone after SIGTERM")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate()
+
     def test_refusals(self):
         bad = ENV.ab("project", "add", "home", os.path.expanduser("~"), "--preset", "python")
         self.assertNotEqual(bad.returncode, 0)

@@ -12,6 +12,7 @@ def base(extra=()):
 
 def audit(argv, **kw):
     kw.setdefault("allowed_mount_srcs", ["/proj"])
+    kw.setdefault("allowed_mount_dsts", ["/proj"])
     kw.setdefault("networks", ["sess-int"])
     return hardening.audit(argv, **kw)
 

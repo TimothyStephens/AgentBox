@@ -87,30 +87,89 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None):
     return mounts, create
 
 
-def git_overlays(grant):
-    """Read-only .git/hooks and .git/config for a writable repo, and for each submodule's git dir."""
-    mounts, create_dirs, notes = [], [], []
-    gitdir = os.path.join(grant, ".git")
-    if os.path.isfile(gitdir):
-        notes.append(f"{grant}: .git is a file (worktree or submodule checkout); its git dir is not mounted")
-        return mounts, create_dirs, notes
-    if not os.path.isdir(gitdir):
-        return mounts, create_dirs, notes
-    gitdirs = [gitdir]
-    modules = os.path.join(gitdir, "modules")
-    if os.path.isdir(modules):
-        for dirpath, dirnames, filenames in os.walk(modules, followlinks=False):
-            if "HEAD" in filenames and "config" in filenames:
-                gitdirs.append(dirpath)
-    for g in gitdirs:
+def _inside(path, parent):
+    return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
+def _is_git_dir(path):
+    """A git directory (a repo's .git, a separate git dir, or a bare repo): HEAD, config, objects/, refs/."""
+    return all(os.path.isfile(os.path.join(path, f)) for f in ("HEAD", "config")) and \
+        all(os.path.isdir(os.path.join(path, d)) for d in ("objects", "refs"))
+
+
+def _gitfile_target(path):
+    """The git dir a `.git` file points to (`gitdir: <path>`), resolved, or None."""
+    try:
+        with open(path) as f:
+            line = f.readline().strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    target = line[len("gitdir:"):].strip()
+    return os.path.realpath(os.path.join(os.path.dirname(path), target))
+
+
+def find_git_dirs(grant, skip_rel=()):
+    """Every git directory reachable from the grant: .git dirs of nested repos, the targets of .git files
+    (worktrees, submodule checkouts, --separate-git-dir), bare repos, and submodule git dirs under modules/,
+    plus each one's commondir. Returns (set of real paths, [(checkout, target outside this grant)])."""
+    found, outside = set(), []
+    skip_abs = {os.path.normpath(os.path.join(grant, s)) for s in skip_rel}
+
+    def add(g):
+        g = os.path.realpath(g)
+        if g in found or not _is_git_dir(g):
+            return
+        found.add(g)
+        common = os.path.join(g, "commondir")
+        if os.path.isfile(common):
+            with open(common) as f:
+                add(os.path.join(g, f.read().strip()))
+        modules = os.path.join(g, "modules")
+        if os.path.isdir(modules):
+            for dirpath, _dirnames, _filenames in os.walk(modules, followlinks=False):
+                if dirpath != modules and _is_git_dir(dirpath):
+                    add(dirpath)
+
+    for dirpath, dirnames, filenames in os.walk(grant, topdown=True, followlinks=False):
+        dot = os.path.join(dirpath, ".git")
+        if ".git" in dirnames and not os.path.islink(dot):
+            add(dot)
+        elif ".git" in filenames and not os.path.islink(dot):
+            target = _gitfile_target(dot)
+            if target:
+                add(target)
+                if not _inside(target, grant):
+                    outside.append((dirpath, target))
+        if dirpath != grant and _is_git_dir(dirpath):
+            add(dirpath)                                    # a bare repo or separate git dir
+        keep = []
+        for d in dirnames:
+            full = os.path.join(dirpath, d)
+            if d in WALK_SKIP or full in skip_abs or os.path.islink(full):
+                continue
+            keep.append(d)
+        dirnames[:] = keep
+    return found, outside
+
+
+def git_overlays(git_dirs, grants):
+    """Read-only hooks/, config and config.worktree for every git dir that sits inside a writable grant.
+    A git dir outside every grant is not mounted, so the agent cannot reach it at all."""
+    mounts, create_dirs = [], []
+    for g in sorted(git_dirs):
+        if not any(_inside(g, gr) for gr in grants):
+            continue
         hooks = os.path.join(g, "hooks")
         if not os.path.isdir(hooks):
             create_dirs.append(hooks)
         mounts.append(Mount("bind", hooks, hooks, ro=True))
-        cfg = os.path.join(g, "config")
-        if os.path.isfile(cfg):
-            mounts.append(Mount("bind", cfg, cfg, ro=True))
-    return mounts, create_dirs, notes
+        for name in ("config", "config.worktree"):
+            cfg = os.path.join(g, name)
+            if os.path.isfile(cfg) and not os.path.islink(cfg):
+                mounts.append(Mount("bind", cfg, cfg, ro=True))
+    return mounts, create_dirs
 
 
 def compose_overlays(grant, skip_rel=()):
@@ -131,11 +190,18 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", secrets="masked", mask_s
         mounts.append(Mount("bind", g, g))
     for g in data_ro:
         mounts.append(Mount("bind", g, g, ro=True))
+    git_dirs = set()
     for g in rw_grants:
-        m, d, n = git_overlays(g)
-        mounts += m
-        dirs += d
-        notes += n
+        found, outside = find_git_dirs(g, _rel_skips(root, g, mask_skip))
+        git_dirs |= found
+        # a .git file in one grant may point into another grant: protected there; otherwise not mounted
+        for checkout, target in outside:
+            if not any(_inside(target, gr) for gr in rw_grants):
+                notes.append(f"{checkout}: .git points to {target}, which is not mounted (git will not work "
+                             "there, and its hooks are out of the agent's reach)")
+    m, d = git_overlays(git_dirs, rw_grants)
+    mounts += m
+    dirs += d
     if compose == "ro":
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
     if secrets != "exposed":

@@ -27,6 +27,7 @@ DEFAULTS = {
     "model_host": "10.0.0.2",
     "model_port": 8080,
     "build_memory": "2g",   # per-build memory limit the gate sets (step 5); a project may override it
+    "host_addrs": ["10.0.0.103"],   # the VM's own addresses, always refused by the proxy (plus any found)
     "lan_targets": ["10.0.0.103:8088", "10.0.0.103:8003"],   # selftest: must be refused, proxied and direct
     "backup_keep": 5,
     "backup_daily_days": 7,

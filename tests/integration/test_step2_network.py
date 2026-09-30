@@ -51,6 +51,8 @@ class Step2(unittest.TestCase):
         with open(os.path.join(logs, proxy_logs[-1])) as f:
             text = f.read()
         self.assertIn(" 403 - TCP_DENIED", text)
+        self.assertNotIn("http://", text, "the kept log holds destinations (host:port), not URLs")
+        self.assertIn(" GET example.com:80 ", text)
         self.assertNotIn(FAKE_TOKEN, text)
 
     def test_locked(self):

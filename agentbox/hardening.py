@@ -43,7 +43,7 @@ def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
-def audit(argv, *, allowed_mount_srcs, networks, tmpfs_dirs=("/tmp",)):
+def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",)):
     """Refuse any argv that weakens the fixed hardening. `argv` starts after `podman run`."""
     # Everything before the image is an option; the audit sees options as `--flag=value` only.
     opts = []
@@ -73,7 +73,7 @@ def audit(argv, *, allowed_mount_srcs, networks, tmpfs_dirs=("/tmp",)):
             if val != "none" and val not in networks:
                 raise AgentboxError(f"audit: network {val!r} is not a session network")
         if o.startswith("--mount="):
-            _audit_mount(o[len("--mount="):], allowed_mount_srcs)
+            _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts)
         if o.startswith("--tmpfs="):
             dst, _, tmpfs_opts = o[len("--tmpfs="):].partition(":")
             if dst not in tmpfs_dirs:
@@ -83,9 +83,14 @@ def audit(argv, *, allowed_mount_srcs, networks, tmpfs_dirs=("/tmp",)):
     return True
 
 
-def _audit_mount(spec, allowed):
+def _audit_mount(spec, allowed, allowed_dsts):
     fields = dict(f.split("=", 1) if "=" in f else (f, "") for f in spec.split(","))
     kind = fields.get("type")
+    dst = fields.get("dst") or fields.get("destination") or fields.get("target") or ""
+    if not dst.startswith("/") or os.path.normpath(dst) != dst or "/../" in dst + "/":
+        raise AgentboxError(f"audit: mount destination {dst!r} is not a clean absolute path")
+    if not any(_inside(dst, a) for a in allowed_dsts):
+        raise AgentboxError(f"audit: mount destination {dst} is outside the session's grants")
     if kind == "tmpfs":
         # podman copies what is under a tmpfs into it by default, which would un-hide a masked directory
         if "notmpcopyup" not in fields:

@@ -170,7 +170,8 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - A grant may not contain or overlap another registered project.
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
 - `.env` files are masked with `/dev/null` unless `--with-secrets` (see Project secrets for the full mask list).
-- `.git/hooks` and `.git/config` are overlaid read-only on any read-write repo, and the same for each submodule under `.git/modules/`.
+- `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory inside a read-write grant: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched.
+- Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
 - Read-write grants are rsynced to `~/.local/share/agentbox/backups/<project>/<timestamp>-<session>/` before the session starts, as `--link-dest` snapshots (unchanged files shared). `.git` is kept; `.venv`, `venv`, `node_modules`, `__pycache__`, build caches and the project's `mask_skip` folders are not. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory.
 
@@ -178,7 +179,8 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 
 - Each session gets its own `internal: true` network with `isolate=strict`: no route out except through the proxy.
 - An allowlist proxy (squid) sits on that network and on an egress network. The agent, and every container it starts, gets `HTTPS_PROXY`/`HTTP_PROXY`. A client that ignores the proxy simply cannot connect.
-- Every egress mode refuses private, loopback, link-local and the VM's own addresses. Squid checks the resolved IP, so a public name pointing at `10.0.0.x` is refused too. Every request is logged.
+- Every egress mode refuses private, loopback, link-local and the VM's own addresses (a configured list, `host_addrs`, plus those found at session start; a session refuses to start if the list is empty). Squid checks the resolved IP, so a public name pointing at `10.0.0.x` is refused too. Every request is logged, as a destination (`host:port`), never a URL path or query.
+- The session networks are IPv4-only by decision, so no IPv6 destination is routable from a session. (A deny rule for global IPv6 is not used: squid's `dst` ACL matches if any address of a name matches, so it would refuse every dual-stack host.) The selftest checks a proxied IPv6 literal fails.
 
 | Egress mode | Reachable | Use for |
 | --- | --- | --- |
@@ -233,13 +235,13 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 - `.env.dev` holds low-value dev credentials (separate keys with spending limits, throwaway passwords). The agent sees them and the dev stack uses them.
 - Podman secrets do not hide values from the agent: it can exec into its own containers and read `/run/secrets/`.
 - The live stack stays opaque at the `observe` tier, since sockguard redacts container environment in `inspect` by default. The `exec` tier exposes it.
-- Masking does not cover git history: a `.env` ever committed is visible through `git log -p`.
+- Masking does not cover git history: a `.env` ever committed is visible through `git log -p`. The launcher warns at session start, listing masked file names found anywhere in the repo's history.
 
 **Model credentials**
 
 - One keys file, `~/.config/agentbox/keys.env` (mode `0600`), set with `ab keys set <provider>`. Keys are removed from `~/.omp/agent/models.yml` so there is one place to update.
 - The gateway watches the keys file: an updated key applies to every running session at once, and never enters a sandbox.
-- Claude Code uses a dedicated subscription token from `claude setup-token`, kept in `~/.config/agentbox/claude-oauth-token` (0600) and rotated with `ab keys rotate claude`. It is mounted read-only into the session and exported as `CLAUDE_CODE_OAUTH_TOKEN` just before the agent starts, so it is never in podman's container config. The agent can read it; that is accepted because it only makes model requests and is revocable. It never lands in session directories, logs, backups or selftest output. The host's own login (`~/.claude`) is never mounted.
+- Claude Code uses a dedicated subscription token from `claude setup-token`, kept in `~/.config/agentbox/claude-oauth-token` (0600) and rotated with `ab keys rotate claude`. It is mounted read-only into the session and exported as `CLAUDE_CODE_OAUTH_TOKEN` just before the agent starts, so it is never in podman's container config. The agent can read it; that is accepted because it only makes model requests and is revocable. It never lands in session directories, logs, backups or selftest output: `make itest` checks what the launcher writes with a fake token, and runs Claude against a local stub API that accepts that token, so Claude's own post-authentication writes are checked too; `make claude-live` repeats the check with the real token and API. The host's own login (`~/.claude`) is never mounted.
 
 **How host edits reach a running session**
 
@@ -349,7 +351,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 **Bringing sessions back**
 
-- `ab gc` removes everything carrying a dead session's owner label: containers, networks, sockets. The launcher runs it automatically on its first use after boot.
+- `ab gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot.
 - `ab resume <session>` recreates the session with the same project, preset and agent, and starts the agent with its continue flag.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
@@ -381,6 +383,7 @@ A power loss or reboot ends every running session, but everything written to the
 | Model API keys in the sandbox environment or files | Absent (the session's own model token is the only credential) |
 | The model token in podman's container config, logs, backups, session directories, selftest output | Absent |
 | Direct DNS lookup of a public name | Fails |
+| Proxied IPv6 literal | Not reachable (IPv4-only networks) |
 | Write outside grants, write to `.git/hooks`, read `~/.ssh` | Fail |
 | Read another project's root or session bucket | Fail |
 | Proxied `http://10.0.0.2:8080/v1/models` | Not `403` |

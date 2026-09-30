@@ -7,7 +7,7 @@
 #
 # Worst case: the nightly model run plus a full slice (1.35 + 3.9 + 0.45 + 4.4 GB) reaches all of
 # RAM. The cap was kept at 4.4 GB deliberately: under memory pressure the kernel kills agentbox
-# containers first, because they run with a raised OOM score (agent 900, containers it creates 1000).
+# containers first, because they run with a raised OOM score (agent 500, containers it creates 1000).
 # MemorySwapMax=0: agent containers never push the host into swap.
 [Unit]
 Description=agentbox sandboxes (all sessions)

@@ -1,6 +1,7 @@
 """Sessions: build, start and tear down everything one agent session needs."""
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -59,8 +60,37 @@ def load_project(settings, name, *, with_secrets=False):
         _no_commas(g, "grant")
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
-                   swap=dict(p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
+                   swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
                    build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)))
+
+
+SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def check_swap(name, swap):
+    """swap maps a file name to its dev stand-in in the same directory: plain file names only."""
+    for k, v in dict(swap).items():
+        for x in (k, v):
+            if not isinstance(x, str) or not SWAP_NAME.match(x) or x in (".", ".."):
+                raise AgentboxError(f"project {name}: swap entry {k!r} = {v!r}: use plain file names "
+                                    "(no '/', no '..')")
+    return dict(swap)
+
+
+def committed_secrets(root, swap, timeout=30):
+    """Paths in the repo's history (all refs) whose names the masks cover: readable through git, masked or not."""
+    import subprocess
+    if not os.path.isdir(os.path.join(root, ".git")):
+        return []
+    try:
+        p = subprocess.run(["git", "--no-pager", "-C", root, "-c", "core.fsmonitor=false", "log", "--all",
+                            "--format=", "--name-only", "--diff-filter=AM"],
+                           capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    names = sorted({line for line in p.stdout.splitlines() if line})
+    return [n for n in names if mounts._masked(os.path.basename(n), swap)
+            or any(part in mounts.MASK_DIRS for part in n.split("/")[:-1])]
 
 
 def check_build_memory(settings, name, value):
@@ -192,6 +222,11 @@ class Session:
             _no_commas(m.dst, "mount")
         for n in self.plan.notes:
             self.warn(f"agentbox: {n}")
+        if p.value("secrets") != "exposed":
+            leaked = committed_secrets(p.root, p.swap)
+            if leaked:
+                self.warn(f"agentbox: {len(leaked)} masked file name(s) are in {p.name}'s git history and readable "
+                          f"there despite the masks: {', '.join(leaked[:10])}" + (" ..." if len(leaked) > 10 else ""))
         if do_backup:
             grants = [p.root] + p.data_rw
             skip = lambda g: mounts._rel_skips(p.root, g, p.mask_skip)
@@ -206,8 +241,10 @@ class Session:
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
                 "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": time.time(), "preset_egress": self.project.value("egress")}
         path = os.path.join(self.settings.session_run_dir(self.name), "session.json")
-        with open(path, "w") as f:
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(meta, f)
+        os.replace(path + ".tmp", path)
 
     # ---- the agent container ------------------------------------------------------------
     def allowed_mount_srcs(self, extra=()):
@@ -248,6 +285,7 @@ class Session:
             extra_srcs.append(src)
         opts.append("--entrypoint=/bin/sh")
         hardening.audit(opts + [a.image], allowed_mount_srcs=self.allowed_mount_srcs(extra_srcs),
+                        allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"],
                         networks=self.networks, tmpfs_dirs=("/tmp", HOME))
         return args + opts + [a.image, "-c", self.wrapper(), "agentbox"] + list(command)
 
@@ -268,30 +306,42 @@ class Session:
     def start_infra(self):
         """Networks and sidecars (step 2). Nothing in step 1."""
 
-    def run_interactive(self, command, tty):
-        old = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    def _guarded(self, body, *, agent_owns_ctrl_c):
+        """Run body() and always tear down: on return, error, Ctrl-C, SIGTERM or SIGHUP (terminal closed).
+        Teardown itself runs with those signals ignored, so a second signal cannot cut it short."""
+        sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        old = {sig: signal.getsignal(sig) for sig in sigs}
 
         def stop(signum, frame):
             raise KeyboardInterrupt
         try:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)   # Ctrl-C belongs to the agent
+            signal.signal(signal.SIGINT, signal.SIG_IGN if agent_owns_ctrl_c else stop)
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGHUP, stop)
+            return body()
+        finally:
+            for sig in sigs:
+                signal.signal(sig, signal.SIG_IGN)
+            try:
+                self.teardown()
+            finally:
+                for sig, h in old.items():
+                    signal.signal(sig, h)
+
+    def run_interactive(self, command, tty):
+        def body():
             self.start_infra()
             return self.podman.interactive(self.run_args(command, interactive=True, tty=tty))
-        finally:
-            for sig, h in old.items():
-                signal.signal(sig, h)
-            self.teardown()
+        return self._guarded(body, agent_owns_ctrl_c=True)   # Ctrl-C belongs to the agent
 
-    def run_captured(self, command, stdin="", timeout=600):
-        try:
+    def run_captured(self, command, stdin="", timeout=600, before=None):
+        def body():
             self.start_infra()
-            p = self.podman.run(self.run_args(command, interactive=True, extra_mounts=self.probe_mounts),
-                                check=False, input=stdin, timeout=timeout)
-            return p
-        finally:
-            self.teardown()
+            if before:
+                before()
+            return self.podman.run(self.run_args(command, interactive=True, extra_mounts=self.probe_mounts),
+                                   check=False, input=stdin, timeout=timeout)
+        return self._guarded(body, agent_owns_ctrl_c=False)
 
     probe_mounts = ()
 
@@ -338,12 +388,17 @@ class NetSession(Session):
 
     def squid_conf(self, dns=None):
         s = self.settings
+        addrs = sorted(set(s.host_addrs) | set(egress.host_addresses()))
+        if not addrs:
+            raise AgentboxError("cannot tell the VM's own addresses (enumeration failed and host_addrs is empty); "
+                                "refusing to start a proxy without a host-address rule")
         return egress.squid_conf(self.egress, model_domains=self.adapter.model_domains, model_host=s.model_host,
                                  model_port=s.model_port, extra_domains=self.project.extra_domains,
-                                 host_addrs=egress.host_addresses(), dns=dns)
+                                 host_addrs=addrs, dns=dns)
 
     def net_create_args(self, name, internal):
-        args = ["network", "create", "--opt", "isolate=strict"]
+        # IPv4 only, by decision (docs/decisions.md): no IPv6 destination is routable from the session
+        args = ["network", "create", "--ipv6=false", "--opt", "isolate=strict"]
         if internal:
             args.append("--internal")
         for k, v in labels_for(self.settings, self.project.name, self.name, "network").items():
@@ -484,9 +539,17 @@ def sessions(settings, podman):
     return out
 
 
-def gc(settings, podman):
+def gc(settings, podman, warn=lambda m: None):
+    """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
+    alone even if its metadata is missing or unreadable (ab kill removes it explicitly); an orphaned proxy
+    or network with no running agent is removed."""
     removed = []
     for s, info in sessions(settings, podman).items():
+        agent_running = [c["name"] for c in info["containers"]
+                         if c.get("state") == "running" and c.get("role") == "agent"]
+        if not info["alive"] and agent_running:
+            warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab kill {s}`)")
+            continue
         if not info["alive"]:
             teardown(settings, podman, s)
             removed.append(s)

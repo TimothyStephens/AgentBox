@@ -61,16 +61,43 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     sess.prepare()
     b = build_cases(sess, settings)
     sess.probe_mounts = ((runner.PROBE, sessionmod.PROBE_PATH),)
-    proc = sess.run_captured(["bash", sessionmod.PROBE_PATH], stdin=b.script(), timeout=900)
+    config_check = []
+    proc = sess.run_captured(["bash", sessionmod.PROBE_PATH], stdin=b.script(), timeout=900,
+                             before=lambda: config_check.append(podman_config_check(sess)))
     out = (proc.stdout or "")
     results = runner.score(b.cases, out)
     if proc.returncode != 0 and not out.strip():
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
+    results += config_check
     results += host_checks(sess, settings, out + (proc.stderr or ""))
     token = _token_value(sess.token_file)
     for r in results:
         r.detail = runner.scrub(r.detail, [token])
     return results, runner.scrub(out, [token])
+
+
+def podman_config_check(sess):
+    """Create (not start) a container from the session's exact argv and read podman's stored config: the
+    token must not be in it, under any name."""
+    token = _token_value(sess.token_file)
+    args = sess.run_args(["true"], extra_mounts=sess.probe_mounts)
+    name = f"{sess.name}-cfgcheck"
+    args = ["create"] + [f"--name={name}" if a.startswith("--name=") else a for a in args[2:]]
+    created = sess.podman.run(args, check=False)
+    if created.returncode != 0:
+        return Result("model token not in podman's container config", "FAIL",
+                      f"could not create the check container: {(created.stderr or '').strip()[-200:]}")
+    try:
+        doc = sess.podman.run(["inspect", name], check=False).stdout or ""
+    finally:
+        sess.podman.run(["rm", "-f", name], check=False)
+    bad = []
+    if token and token in doc:
+        bad.append("token value present")
+    if f'"{sess.adapter.token_env}=' in doc:
+        bad.append(f"{sess.adapter.token_env} set in the stored environment")
+    return Result("model token not in podman's container config", "FAIL" if bad else "PASS",
+                  "; ".join(bad) or "absent")
 
 
 def host_checks(sess, settings, output):

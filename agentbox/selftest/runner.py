@@ -220,6 +220,8 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
         d = d.lstrip(".")
         b.add("connect", [f"{d}:443"], f"proxied CONNECT extra domain {d}:443 "
               f"{'refused' if mode == 'locked' else 'allowed'} ({mode})", want[1])
+    b.add("connect", ["[2606:4700:4700::1111]:443"], f"proxied IPv6 literal not reachable ({mode}; IPv4-only networks)",
+          lambda obs: ("PASS" if obs.isdigit() and obs not in ("200", "000") else "FAIL", obs))
     b.add("connect", ["example.com:22"], f"proxied CONNECT to a non-443 port refused ({mode})", refused)
     b.add("get", ["http://example.com:8080/", "example.com:8080"], f"proxied HTTP to a non-web port refused ({mode})",
           refused)
