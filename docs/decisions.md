@@ -135,3 +135,18 @@ The independent review (`docs/reviews/2026-09-30-steps-1-2.md`, annotated per fi
 - **Mount destinations (#8):** `swap` entries must be plain file names; the argv audit now checks every mount destination is a clean path inside a grant or `/run/agentbox`.
 - **Proxy log (#9):** destinations only (`host:port`); `strip_query_terms on` is explicit.
 - **Not changed (#5):** `.envrc` and other files that run later are documented, not overlaid (reason in the review file and the design's filesystem policy).
+
+## 2026-09-30 · A stale `claude-live` pass is flagged (decision #1)
+
+- **What:** `make claude-live` (Tim, real token) records the commit it passed on in `tests/live/claude-live-pass.txt`, and only when no token-handling file has uncommitted changes. `make itest` ends with a warning when any token-handling file changed since that commit (committed, uncommitted or new): `agentbox/tokens.py`, `keys.py`, `session.py`, `hardening.py`, `backup.py`, `podman.py`, `adapters/`, `selftest/`, `tests/live/claude_live.py` (list in `tests/live/freshness.py`). No record also warns.
+- **Why:** `claude-live` is the only end-to-end check with the real token; without a record nobody can tell whether it still describes the code.
+
+## 2026-09-30 · Masked names in git history refuse the project until accepted (decision #2)
+
+- **What:** `ab project add` refuses a project when the history of any git repo inside its grants (root, nested repos, `data_rw`, `data_ro`) holds a masked file name (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/...`, swap targets). The message names the files and says to rotate them. `--accept-history-secrets` registers it anyway and stores the names as `history_secrets_accepted`; `ab project accept-history-secrets <project>` does the same for a registered project. A session refuses a name that is in history but not accepted, before it creates anything. If git cannot read a history, the launcher refuses instead of guessing. `--with-secrets` sessions skip the check (they see the files anyway).
+- **Why:** the warning alone (review #2) was easy to scroll past; the files are exposed to the agent in every session, so the choice belongs at registration, once, with the advice to rotate.
+
+## 2026-09-30 · End-of-session scan also lists files that run later (step 5)
+
+- **What:** besides the secret scan over the session's commits, the report lists changed files that run later on the host: `Makefile`, `package.json` scripts, `pyproject.toml`/`setup.py`/`setup.cfg` scripts and build hooks, `.pre-commit-config.yaml`, `.vscode/tasks.json`, `.envrc`, git config, and files that became executable. It informs; it does not block.
+- **Why:** these are documented, not overlaid (review #5), so the report is where the reviewer finds them.

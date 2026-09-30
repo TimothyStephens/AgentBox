@@ -169,25 +169,6 @@ class F9ProxyLogHasNoPaths(TempCase):
         self.assertIn("strip_query_terms on", text)
 
 
-class F2CommittedSecretsWarned(SettingsCase):
-    """#2: a masked file that was ever committed is readable through git; say so at session start."""
-
-    def test_warns_about_history(self):
-        root = self.project("p1")
-        self.token()
-        with open(os.path.join(root, ".env"), "w") as f:
-            f.write("REAL=1\n")
-        subprocess.run(["git", "-C", root, "add", ".env"], check=True)
-        subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "oops"],
-                       check=True, capture_output=True)
-        subprocess.run(["git", "-C", root, "rm", "-q", "--cached", ".env"], check=True)
-        warnings = []
-        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
-                                 warn=warnings.append)
-        s.prepare()
-        self.assertTrue(any(".env" in w and "git history" in w for w in warnings), warnings)
-
-
 class OrphansAndSignals(SettingsCase):
     """Found while checking an interrupted itest-oom run (30 Sep): a --no-tty session killed by SIGTERM left
     its proxy running, and gc must still remove a proxy whose agent is gone."""

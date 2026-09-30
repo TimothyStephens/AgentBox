@@ -9,6 +9,8 @@ Two sessions, both in the chosen egress mode (AB_LIVE_EGRESS, default locked):
      worked is read from Claude's own event stream (stream-json tool results), not from its reply.
 For each, it prints the proxy's access log and the destinations squid denied, so the `locked` list
 can be adjusted from evidence. It checks the token is in no log, state file or output.
+On a pass it records the commit in tests/live/claude-live-pass.txt; `make itest` warns once token-handling
+files change after it (tests/live/freshness.py).
 """
 import json
 import os
@@ -16,6 +18,7 @@ import re
 import sys
 
 from tests.integration import harness
+from tests.live import freshness
 from tests.live.parse import denied, tool_outcomes
 
 MODE = os.environ.get("AB_LIVE_EGRESS", "locked")
@@ -126,7 +129,10 @@ def main():
           + (f": {', '.join(leaks)}" if leaks else ""))
     print(f"{'PASS' if not left else 'FAIL'}  sessions torn down" + (f": {left}" if left else ""))
     harness.cleanup()
-    return 0 if ok1 and outcomes.get("Bash", (False,))[0] and not leaks and not left else 1
+    passed = ok1 and outcomes.get("Bash", (False,))[0] and not leaks and not left
+    if passed:
+        freshness.record(MODE)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

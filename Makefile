@@ -9,8 +9,9 @@ test: guard
 
 # Real podman. Every resource is named abt-<run>-* and labelled agentbox-test=1 plus
 # agentbox-test-run=<run>; the suite removes its own run even on failure.
+# Ends with a warning if token-handling files changed since the last passing make claude-live.
 itest:
-	python3 -m unittest discover -s tests/integration -t . -v
+	python3 -m unittest discover -s tests/integration -t . -v; rc=$$?; python3 -m tests.live.freshness check; exit $$rc
 
 spikes:
 	./spikes/run_all.sh

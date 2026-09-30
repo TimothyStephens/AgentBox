@@ -40,9 +40,39 @@ def cmd_project_add(s, a):
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
     if "build_memory" in entry:
         session.check_build_memory(s, a.name, entry["build_memory"])
+    found = _history_secrets(entry)
+    if found and not a.accept_history_secrets:
+        raise AgentboxError(session.history_secrets_message(a.name, found))
+    if found:
+        entry["history_secrets_accepted"] = found
+        warn(f"ab: accepted {len(found)} masked file name(s) in git history: {', '.join(found[:15])}. "
+             "The agent can read them through git: rotate them if you have not already.")
     reg[a.name] = entry
     registry.save(s.registry_path, reg)
     print(f"added project {a.name} ({entry['root']}, preset {a.preset})")
+
+
+def _history_secrets(entry):
+    from .mounts import DEFAULT_SWAP
+    grants = [entry["root"]] + entry.get("data_rw", []) + entry.get("data_ro", [])
+    return session.history_secrets(entry["root"], grants, entry.get("swap", DEFAULT_SWAP),
+                                   entry.get("mask_skip", []))
+
+
+def cmd_project_accept_history_secrets(s, a):
+    reg = registry.load(s.registry_path)
+    if a.name not in reg:
+        raise AgentboxError(f"no project named {a.name}")
+    found = _history_secrets(reg[a.name])
+    if not found:
+        reg[a.name].pop("history_secrets_accepted", None)
+        registry.save(s.registry_path, reg)
+        print(f"project {a.name}: no masked file names in git history; nothing to accept")
+        return
+    reg[a.name]["history_secrets_accepted"] = found
+    registry.save(s.registry_path, reg)
+    print(f"project {a.name}: accepted {len(found)} masked file name(s) in git history: {', '.join(found)}.\n"
+          "The agent can read them through git: rotate them if you have not already.")
 
 
 def cmd_project_show(s, a):
@@ -63,6 +93,8 @@ def cmd_project_show(s, a):
         print(f"  mask_skip      {', '.join(p.mask_skip)}")
     if p.extra_domains:
         print(f"  extra_domains  {', '.join(p.extra_domains)}")
+    if p.history_secrets_accepted:
+        print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
 
 
 def cmd_project_ls(s, a):
@@ -152,7 +184,13 @@ def parser():
     x.add_argument("--extra-domain", action="append", default=[], help="add a domain to the egress allowlist")
     x.add_argument("--build-memory", help="memory limit for each build in the dev tier (default 2g)")
     x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
+    x.add_argument("--accept-history-secrets", action="store_true",
+                   help="register even though masked file names (.env, *.key, ...) are in git history")
     x.set_defaults(fn=cmd_project_add)
+    x = proj.add_parser("accept-history-secrets",
+                        help="accept (after rotating them) the masked file names now in a project's git history")
+    x.add_argument("name")
+    x.set_defaults(fn=cmd_project_accept_history_secrets)
     x = proj.add_parser("show")
     x.add_argument("name")
     x.set_defaults(fn=cmd_project_show)

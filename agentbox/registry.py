@@ -9,7 +9,8 @@ NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 # Settings a project may carry. Preset settings (presets.SETTINGS) may also be written here as overrides.
 PATH_KEYS = ("root", "data_ro", "data_rw")
-PROJECT_KEYS = {"root", "preset", "data_ro", "data_rw", "mask_skip", "extra_domains", "swap", "build_memory"}
+PROJECT_KEYS = {"root", "preset", "data_ro", "data_rw", "mask_skip", "extra_domains", "swap", "build_memory",
+                "history_secrets_accepted"}
 
 
 def load(path):

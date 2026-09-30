@@ -28,6 +28,7 @@ class Project:
     swap: dict
     eff: dict                      # setting -> (value, source)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
+    history_secrets_accepted: list = field(default_factory=list)
 
     def value(self, key):
         return self.eff[key][0]
@@ -61,7 +62,8 @@ def load_project(settings, name, *, with_secrets=False):
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
-                   build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)))
+                   build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
+                   history_secrets_accepted=list(p.get("history_secrets_accepted", [])))
 
 
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -77,20 +79,46 @@ def check_swap(name, swap):
     return dict(swap)
 
 
-def committed_secrets(root, swap, timeout=30):
-    """Paths in the repo's history (all refs) whose names the masks cover: readable through git, masked or not."""
+def _history_masked(git_dir, swap, timeout):
+    """Paths in one repo's history (all refs) whose names the masks cover. Raises if git cannot tell."""
     import subprocess
-    if not os.path.isdir(os.path.join(root, ".git")):
-        return []
     try:
-        p = subprocess.run(["git", "--no-pager", "-C", root, "-c", "core.fsmonitor=false", "log", "--all",
-                            "--format=", "--name-only", "--diff-filter=AM"],
+        p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", "-c", "core.fsmonitor=false", "log",
+                            "--all", "--format=", "--name-only", "--diff-filter=AM", "--no-renames"],
                            capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AgentboxError(f"cannot read the git history of {git_dir} ({e}); refusing rather than guessing")
+    if p.returncode != 0 and "does not have any commits" not in p.stderr:
+        raise AgentboxError(f"cannot read the git history of {git_dir}: {p.stderr.strip()[-200:]}")
     names = sorted({line for line in p.stdout.splitlines() if line})
     return [n for n in names if mounts._masked(os.path.basename(n), swap)
             or any(part in mounts.MASK_DIRS for part in n.split("/")[:-1])]
+
+
+def history_secrets(root, grants, swap, mask_skip=(), timeout=120):
+    """Masked file names found in the history of every git repo the session can read: the masks hide the
+    working tree, never git's objects. Names are shown relative to the project root (`<repo>/<path>` for a
+    nested repo). Raises if a history cannot be read."""
+    found = set()
+    for g in grants:
+        dirs, _outside = mounts.find_git_dirs(g, mounts._rel_skips(root, g, mask_skip))
+        for gd in dirs:
+            if not any(gd == x or gd.startswith(x.rstrip("/") + "/") for x in grants):
+                continue                                    # not mounted, so not readable
+            work = os.path.dirname(gd) if os.path.basename(gd) == ".git" else gd
+            prefix = os.path.relpath(work, root)
+            for n in _history_masked(gd, swap, timeout):
+                found.add(n if prefix == "." else os.path.join(prefix, n))
+    return sorted(found)
+
+
+def history_secrets_message(project, names):
+    shown = ", ".join(names[:15]) + (f" (and {len(names) - 15} more)" if len(names) > 15 else "")
+    return (f"project {project}: {len(names)} masked file name(s) are in git history: {shown}. The agent can "
+            "read them through git (`git log -p`, `git show`) even though the working-tree files are masked. "
+            "Treat these secrets as exposed and rotate them (and consider rewriting the history). To go "
+            "ahead once they are rotated, accept them with --accept-history-secrets "
+            f"(`ab project accept-history-secrets {project}` for a registered project)")
 
 
 def check_build_memory(settings, name, value):
@@ -212,9 +240,17 @@ class Session:
         cgroup.check(self.settings, self.warn)
         if self.token_file:
             tokens.check_token_file(self.token_file)
+        p = self.project
+        if p.value("secrets") != "exposed":
+            found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.swap, p.mask_skip)
+            new = [n for n in found if n not in p.history_secrets_accepted]
+            if new:
+                raise AgentboxError(history_secrets_message(p.name, new))
+            if found:
+                self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
+                          "are readable by the agent (accepted as rotated)")
         self.reserve_name()
         self._write_meta()
-        p = self.project
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), secrets=p.value("secrets"),
                                 mask_skip=p.mask_skip, swap=p.swap)
@@ -222,11 +258,6 @@ class Session:
             _no_commas(m.dst, "mount")
         for n in self.plan.notes:
             self.warn(f"agentbox: {n}")
-        if p.value("secrets") != "exposed":
-            leaked = committed_secrets(p.root, p.swap)
-            if leaked:
-                self.warn(f"agentbox: {len(leaked)} masked file name(s) are in {p.name}'s git history and readable "
-                          f"there despite the masks: {', '.join(leaked[:10])}" + (" ..." if len(leaked) > 10 else ""))
         if do_backup:
             grants = [p.root] + p.data_rw
             skip = lambda g: mounts._rel_skips(p.root, g, p.mask_skip)
