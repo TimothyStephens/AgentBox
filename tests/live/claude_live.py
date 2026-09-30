@@ -19,7 +19,7 @@ import sys
 
 from tests.integration import harness
 from tests.live import freshness
-from tests.live.parse import denied, tool_outcomes
+from tests.live.parse import denied, empty_proxy_logs, tool_outcomes
 
 MODE = os.environ.get("AB_LIVE_EGRESS", "locked")
 REAL_DIR = os.path.expanduser("~/.config/agentbox")
@@ -39,7 +39,8 @@ def read_token():
 
 
 def proxy_log(env, before):
-    """Access-log text of the sessions that ended since `before` (a set of file names)."""
+    """Access-log text of the sessions that ended since `before` (a set of file names). Each session's log
+    has its own file (<session>-<start time>-proxy.log), so a reused session name cannot hide one."""
     logs = os.path.join(env.data, "logs")
     text, names = "", set()
     for fn in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
@@ -115,6 +116,9 @@ def main():
             leaks.append(label)
 
     ok1 = re.search(r"^AB_OK\s*$", p1.stdout, re.M) is not None
+    # A session that reached the model went through squid, so its log cannot be empty; an empty one means
+    # the capture is broken and the denied list above proves nothing.
+    empty_logs = empty_proxy_logs([("1", ok1, access1), ("2", bool(outcomes), access2)])
     left = harness.leftovers()
     print("\n--- result ---")
     print(f"{'PASS' if ok1 else 'FAIL'}  1. Claude answered AB_OK through the proxy (egress {MODE})")
@@ -125,11 +129,13 @@ def main():
         match = all(outcomes.get(k, (None,))[0] == v for k, v in exp.items())
         print(f"INFO  2. matches the expectation for locked (search works, fetch does not, bash works): "
               f"{'yes' if match else 'no'}")
+    print(f"{'PASS' if not empty_logs else 'FAIL'}  every session that answered has a proxy access log"
+          + (f" (empty for session {', '.join(empty_logs)})" if empty_logs else ""))
     print(f"{'PASS' if not leaks else 'FAIL'}  token in no log, state file or output"
           + (f": {', '.join(leaks)}" if leaks else ""))
     print(f"{'PASS' if not left else 'FAIL'}  sessions torn down" + (f": {left}" if left else ""))
     harness.cleanup()
-    passed = ok1 and outcomes.get("Bash", (False,))[0] and not leaks and not left
+    passed = ok1 and outcomes.get("Bash", (False,))[0] and not leaks and not left and not empty_logs
     if passed:
         freshness.record(MODE)
     return 0 if passed else 1

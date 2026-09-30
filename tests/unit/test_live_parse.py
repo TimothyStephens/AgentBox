@@ -39,3 +39,11 @@ class LiveParseTest(unittest.TestCase):
                "1.2 10.89.3.3 GET http://example.com/ 403 - TCP_DENIED/HIER_NONE\n"
                "1.3 10.89.3.3 CONNECT claude.ai:443 403 - TCP_DENIED/HIER_NONE\n")
         self.assertEqual(denied(log), ["claude.ai:443", "http://example.com/"])
+
+
+class EmptyProxyLogs(unittest.TestCase):
+    def test_answered_with_empty_log_is_flagged(self):
+        from tests.live.parse import empty_proxy_logs
+        runs = [("1", True, "1.0 10.89.0.2 CONNECT api.anthropic.com:443 200\n"), ("2", True, ""),
+                ("3", False, ""), ("4", True, "  \n")]
+        self.assertEqual(empty_proxy_logs(runs), ["2", "4"])

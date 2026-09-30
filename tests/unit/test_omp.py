@@ -119,54 +119,82 @@ class BuildModels(TempCase):
 
 
 class OmpMounts(TempCase):
+    """Against the real layout (tests/ompfake.py): plugins -> versions/19760485e9c2, repos and pylibs ->
+    versions/c1b51fef8911, a plugin linked to /root/.omp/versions/19760485e9c2/repos/..., legacy unused."""
+
     def setUp(self):
         super().setUp()
         self.home = ompfake.build(self.mkdir("omp"))
 
-    def test_only_named_pieces_are_mounted(self):
-        mounts = omp.omp_mounts(self.home, lambda m: None)
-        dsts = [d for _s, d in mounts]
+    def mounts(self):
+        return omp.omp_mounts(self.home, lambda m: None)
+
+    def test_each_link_mounted_from_its_real_target(self):
+        mounts, _check = self.mounts()
         c = os.path.join(HOME, ".omp")
-        self.assertEqual(sorted(dsts), sorted([
-            f"{c}/versions/{ompfake.ACTIVE}", f"{c}/plugins", f"{c}/repos", f"{c}/pylibs",
+        by_dst = {d: s for s, d in mounts}
+        v = lambda ver, name: os.path.join(self.home, "versions", ver, name)
+        self.assertEqual(by_dst[f"{c}/plugins"], v(ompfake.PLUGINS_VERSION, "plugins"))
+        self.assertEqual(by_dst[f"{c}/repos"], v(ompfake.ACTIVE, "repos"))
+        self.assertEqual(by_dst[f"{c}/pylibs"], v(ompfake.ACTIVE, "pylibs"))
+        self.assertEqual(sorted(by_dst), sorted([
+            f"{c}/versions/{ompfake.ACTIVE}", f"{c}/versions/{ompfake.PLUGINS_VERSION}",
+            f"{c}/plugins", f"{c}/repos", f"{c}/pylibs",
             f"{c}/agent/config.yml", f"{c}/bin/mags-codedev", f"{c}/.cache/ms-playwright"]))
         srcs = [s for s, _d in mounts]
         for s in srcs:
-            rel = os.path.relpath(s, self.home)
-            self.assertTrue(ompfake.is_mounted(rel) or rel == f"versions/{ompfake.ACTIVE}", rel)
-        # never: other versions, models.yml and its backup, .mcp.json, sessions, databases, extensions
+            self.assertTrue(ompfake.is_mounted(os.path.relpath(s, self.home)) or
+                            os.path.relpath(s, self.home) in (f"versions/{ompfake.ACTIVE}",
+                                                              f"versions/{ompfake.PLUGINS_VERSION}"), s)
+        # never: an unreferenced version, models.yml and its backup, .mcp.json, sessions, databases, extensions
         for bad in ("agent/models.yml", "agent/models.yml.backup", "agent/.mcp.json", "agent/mags-codedev.yaml",
-                    "agent/sessions", "agent/agent.db", "agent/extensions", "versions/19760485e9c2", "run",
-                    "logs", "puppeteer", ".cache/pip", ".omp-sandbox.json"):
+                    "agent/sessions", "agent/agent.db", "agent/extensions", "versions/legacy-20260905172136",
+                    "run", "logs", "puppeteer", ".cache/pip", ".omp-sandbox.json"):
             self.assertFalse(any(s == os.path.join(self.home, bad) or s.startswith(os.path.join(self.home, bad) + "/")
                                  for s in srcs), bad)
 
-    def test_link_out_of_versions_refused(self):
+    def test_version_reached_only_through_a_plugin_link_is_mounted(self):
+        nm = os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION, "plugins", "node_modules")
+        os.makedirs(os.path.join(nm, "@scope"))
+        os.symlink("/root/.omp/versions/legacy-20260905172136/plugins", os.path.join(nm, "@scope", "old"))
+        mounts, _check = self.mounts()
+        self.assertIn(os.path.join(HOME, ".omp", "versions", "legacy-20260905172136"), [d for _s, d in mounts])
+
+    def test_missing_target_refused(self):
+        os.rename(os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs"),
+                  os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs.gone"))
+        with self.assertRaises(AgentboxError) as cm:
+            self.mounts()
+        self.assertIn("missing", str(cm.exception))
+
+    def test_link_changed_during_startup_refused(self):
+        _mounts, check = self.mounts()
+        check()                                              # unchanged: fine
+        os.unlink(os.path.join(self.home, "pylibs"))
+        os.makedirs(os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION, "pylibs"))
+        os.symlink(f"versions/{ompfake.PLUGINS_VERSION}/pylibs", os.path.join(self.home, "pylibs"))
+        with self.assertRaises(AgentboxError) as cm:
+            check()
+        self.assertIn("changed while the session was starting", str(cm.exception))
+
+    def test_link_out_of_omp_refused(self):
         os.unlink(os.path.join(self.home, "pylibs"))
         os.symlink(self.mkdir("elsewhere"), os.path.join(self.home, "pylibs"))
         with self.assertRaises(AgentboxError):
-            omp.omp_mounts(self.home, lambda m: None)
-
-    def test_links_into_two_versions_refused(self):
-        os.makedirs(os.path.join(self.home, "versions", "19760485e9c2", "pylibs"))
-        os.unlink(os.path.join(self.home, "pylibs"))
-        os.symlink("versions/19760485e9c2/pylibs", os.path.join(self.home, "pylibs"))
-        with self.assertRaises(AgentboxError) as cm:
-            omp.omp_mounts(self.home, lambda m: None)
-        self.assertIn("different versions", str(cm.exception))
+            self.mounts()
 
     def test_symlinked_config_refused(self):
         cfg = os.path.join(self.home, "agent", "config.yml")
         os.unlink(cfg)
         os.symlink(os.path.join(self.home, "agent", "models.yml"), cfg)
         with self.assertRaises(AgentboxError):
-            omp.omp_mounts(self.home, lambda m: None)
+            self.mounts()
 
     def test_unprovisioned_home_warns(self):
         for name in ("plugins", "repos", "pylibs"):
             os.unlink(os.path.join(self.home, name))
         warnings = []
-        mounts = omp.omp_mounts(self.home, warnings.append)
+        mounts, _check = omp.omp_mounts(self.home, warnings.append)
         self.assertTrue(warnings)
         self.assertFalse(any("/versions/" in d for _s, d in mounts))
 
@@ -248,6 +276,30 @@ class OmpSession(SettingsCase):
         self.assertIn(f"--mount=type=tmpfs,dst={c},tmpfs-mode=0700,U=true,notmpcopyup", mounts)  # user-owned ~/.omp
         self.assertIn("--approval-mode=yolo", argv)                        # python preset: approvals off
         self.assertIn(f"--env=PYTHONPATH={c}/pylibs", argv)
+
+    def test_user_files_mounted_only_when_created(self):
+        warnings = []
+        self.project("p1")
+        s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
+                                 warn=warnings.append)
+        s.prepare()
+        self.addCleanup(s.teardown)
+        self.assertEqual([w for w in warnings if "mcp.json" in w],
+                         [w for w in warnings if "mcp.json or mags-codedev.yaml" in w])
+        self.assertEqual(len([w for w in warnings if "mcp.json" in w]), 1, "one line when both are missing")
+        c = os.path.join(HOME, ".omp")
+        self.assertFalse([m for m in s.setup.mounts if m[1] in (f"{c}/agent/.mcp.json", f"{c}/agent/mags-codedev.yaml")])
+        s.teardown()
+        # the host's ~/.omp copies are never used, even though they exist in the fake home
+        with open(os.path.join(self.cfg, "omp", "mcp.json"), "w") as f:
+            f.write('{"mcpServers": {}}\n')
+        s2 = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
+                                  warn=warnings.append)
+        s2.prepare()
+        self.addCleanup(s2.teardown)
+        m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
+        self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
+        self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
 
     def test_lockdown_asks(self):
         s = self.make(preset="lockdown")

@@ -1,12 +1,18 @@
 """A fake ~/.omp built from tests/fixtures/omp/tree.txt (Tim's real layout, names only).
 
-Every file holds a canary line naming its path, so a test can prove which files a session can read. The
-provisioned links (plugins, repos, pylibs) point into the active version, as `omp-env install` leaves them.
+Every file holds a canary line naming its path, so a test can prove which files a session can read.
+
+The provisioned links mirror Tim's real ~/.omp (30 Sep): plugins -> versions/19760485e9c2/plugins while
+repos and pylibs -> versions/c1b51fef8911/. A plugin in node_modules links to an absolute
+/root/.omp/versions/19760485e9c2/repos/... path, the way `omp-env install` (run as root) writes links, and
+versions/legacy-20260905172136 is referenced by nothing.
 """
 import os
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "omp")
-ACTIVE = "c1b51fef8911"
+ACTIVE = "c1b51fef8911"            # repos and pylibs
+PLUGINS_VERSION = "19760485e9c2"   # plugins (and the repos its plugin links point into)
+LINKS = {"plugins": PLUGINS_VERSION, "repos": ACTIVE, "pylibs": ACTIVE}
 CANARY = "OMPCANARY"
 
 
@@ -29,25 +35,43 @@ def build(dest):
                 f.write(canary(rel) + "\n")
         elif kind == "l":
             os.makedirs(os.path.dirname(full), exist_ok=True)
-            os.symlink(f"versions/{ACTIVE}/{os.path.basename(rel)}", full)
+            name = os.path.basename(rel)
+            os.symlink(f"versions/{LINKS[name]}/{name}", full)
     # Plausible contents where OMP reads them.
     with open(os.path.join(dest, "agent", "config.yml"), "w") as f:
         f.write(f"# {canary('agent/config.yml')}\n{{}}\n")
     with open(os.path.join(dest, "bin", "mags-codedev"), "w") as f:
         f.write(f"#!/bin/sh\n# {canary('bin/mags-codedev')}\necho mags-codedev-stub\n")
     os.chmod(os.path.join(dest, "bin", "mags-codedev"), 0o755)
-    for name in ("plugins", "repos", "pylibs"):
-        d = os.path.join(dest, "versions", ACTIVE, name)
+    for version, name in ((ACTIVE, "plugins"), (ACTIVE, "repos"), (ACTIVE, "pylibs"),
+                          (PLUGINS_VERSION, "plugins"), (PLUGINS_VERSION, "repos")):
+        d = os.path.join(dest, "versions", version, name)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "MARKER"), "w") as f:
-            f.write(canary(f"versions/{ACTIVE}/{name}/MARKER") + "\n")
+            f.write(canary(f"versions/{version}/{name}/MARKER") + "\n")
+    # a linked plugin, as `omp plugin link` leaves it: an absolute /root/.omp path into its own version
+    ext = os.path.join(dest, "versions", PLUGINS_VERSION, "repos", "pi-fake-ext")
+    os.makedirs(ext, exist_ok=True)
+    with open(os.path.join(ext, "index.js"), "w") as f:
+        f.write(f"// {canary(f'versions/{PLUGINS_VERSION}/repos/pi-fake-ext/index.js')}\n")
+    nm = os.path.join(dest, "versions", PLUGINS_VERSION, "plugins", "node_modules")
+    os.makedirs(nm, exist_ok=True)
+    os.symlink(f"/root/.omp/versions/{PLUGINS_VERSION}/repos/pi-fake-ext", os.path.join(nm, "pi-fake-ext"))
+    with open(os.path.join(dest, "versions", PLUGINS_VERSION, "plugins", "package.json"), "w") as f:
+        f.write('{"dependencies": {"pi-fake-ext": "link:/root/.omp/versions/%s/repos/pi-fake-ext"}}\n'
+                % PLUGINS_VERSION)
+    legacy = os.path.join(dest, "versions", "legacy-20260905172136", "plugins")
+    os.makedirs(legacy, exist_ok=True)
+    with open(os.path.join(legacy, "MARKER"), "w") as f:
+        f.write(canary("versions/legacy-20260905172136/plugins/MARKER") + "\n")
     with open(os.path.join(dest, "versions", ACTIVE, "pylibs", "abt_pylib_probe.py"), "w") as f:
         f.write("VALUE = 'pylibs-importable'\n")
     return dest
 
 
 # Files that must never be readable in a session (all of ~/.omp except the mounted pieces).
-MOUNTED_PREFIXES = (f"versions/{ACTIVE}/", "plugins/", "repos/", "pylibs/", "agent/config.yml",
+MOUNTED_PREFIXES = (f"versions/{ACTIVE}/", f"versions/{PLUGINS_VERSION}/", "plugins/", "repos/", "pylibs/",
+                    "agent/config.yml",
                     "bin/mags-codedev", ".cache/ms-playwright/")
 
 

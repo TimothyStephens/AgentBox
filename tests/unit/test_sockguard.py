@@ -29,6 +29,15 @@ class Config(TempCase):
         self.assertEqual(doc["listen"]["socket_mode"], "0600")
         self.assertEqual(doc["upstream"]["flavor"], "podman")
 
+    def test_logs_only_when_asked(self):
+        paths = lambda doc: [r["match"]["path"] for r in json.loads(doc)["clients"]["profiles"][0]["rules"]
+                             if r["action"] == "allow"]
+        self.assertFalse([p for p in paths(sockguard.config("shop")) if p.endswith("/logs")])
+        self.assertEqual(sorted(p for p in paths(sockguard.config("shop", logs=True)) if p.endswith("/logs")),
+                         ["/containers/*/logs", "/libpod/containers/*/logs"])
+        rules = json.loads(sockguard.config("shop", logs=True))["clients"]["profiles"][0]["rules"]
+        self.assertEqual(rules[-1]["action"], "deny", "deny-all stays last")
+
     def test_bad_labels_and_modes(self):
         for bad in ("", "a=b", "a,b"):
             with self.subTest(bad=bad), self.assertRaises(AgentboxError):
@@ -131,3 +140,38 @@ class ServiceStop(TempCase):
 
     def test_missing_pidfile(self):
         self.assertFalse(sockguard.stop_service(self.mkdir("run", "s3")))
+
+
+class OrphanedServices(SettingsCase):
+    """Decision 30 Sep: ab gc finds and stops podman services left by a crashed session, even when the
+    session's run dir and containers are gone; it leaves a live session's service alone."""
+
+    def fake_service(self, session_name):
+        sock = f"unix://{os.path.join(self.settings.run_dir, 'sessions', session_name, 'podman', 'podman.sock')}"
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "system", "service", sock])
+        self.addCleanup(p.wait)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        return p
+
+    def test_scan_finds_services_by_run_dir(self):
+        p = self.fake_service("abt-unit-claude-p1-1")
+        found = sockguard.services_under(self.settings.run_dir)
+        self.assertEqual(found.get(p.pid), "abt-unit-claude-p1-1")
+        self.assertEqual(sockguard.services_under(os.path.join(self.tmp, "other-run")), {})
+
+    def test_gc_stops_an_orphan_with_no_run_dir(self):
+        p = self.fake_service("abt-unit-claude-p1-7")
+        removed = session.gc(self.settings, session.Podman(self.settings.podman))
+        p.wait(timeout=15)
+        self.assertIn("abt-unit-claude-p1-7 (podman service)", removed)
+
+    def test_gc_keeps_a_live_sessions_service(self):
+        self.project("p1")
+        self.token()
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                 warn=lambda m: None)
+        s.prepare()
+        self.addCleanup(s.teardown)
+        p = self.fake_service(s.name)
+        session.gc(self.settings, session.Podman(self.settings.podman))
+        self.assertIsNone(p.poll(), "the live session's service is still running")

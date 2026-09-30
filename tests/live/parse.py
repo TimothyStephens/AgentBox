@@ -35,3 +35,9 @@ def tool_outcomes(stream):
             ok = False
         out[name] = (ok, " ".join(detail.split())[:240])
     return out
+
+
+def empty_proxy_logs(runs):
+    """Names of runs that answered (so went through squid) but whose captured proxy log is empty.
+    `runs` is [(name, answered, access_log_text)]. Any such run means the log capture is broken."""
+    return [name for name, answered, access in runs if answered and not (access or "").strip()]

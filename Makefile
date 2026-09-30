@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image omp-live
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image omp-live verify-sockguard
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -30,6 +30,23 @@ itest-oom:
 # AB_LIVE_EGRESS=locked|packages|open (default packages); AB_LIVE_MODEL=<provider/model> picks the model.
 omp-live:
 	python3 -m tests.live.omp_live
+
+# Run by Tim (needs cosign v3 on PATH): verifies the pinned sockguard image was signed by sockguard's release
+# workflow (identity from its docs/verification.mdx at the pinned release). Tries the pinned digest, then the
+# image's other repo digests (the signature may sit on the multi-arch index), and says which one verified.
+SG_IDENTITY := ^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$$
+SG_ISSUER := https://token.actions.githubusercontent.com
+verify-sockguard:
+	@command -v cosign >/dev/null || { echo "cosign not on PATH: install cosign v3 (https://docs.sigstore.dev), then rerun"; exit 2; }
+	@pin=$$(python3 -c 'from agentbox.config import DEFAULTS; print(DEFAULTS["sockguard_image"])'); \
+	repo=$${pin%@*}; \
+	others=$$(podman image inspect "$$pin" --format '{{range .RepoDigests}}{{.}} {{end}}'); \
+	for ref in "$$pin" $$others; do \
+	  echo "== cosign verify $$ref"; \
+	  if cosign verify --certificate-identity-regexp '$(SG_IDENTITY)' \
+	       --certificate-oidc-issuer '$(SG_ISSUER)' "$$ref" >/dev/null; then \
+	    echo "VERIFIED: $$ref (pinned: $$pin)"; exit 0; fi; \
+	done; echo "NOT VERIFIED: no digest of $$repo carries a signature from the release workflow"; exit 1
 
 # The OMP session image, derived from localhost/omp-env (images/omp/Containerfile explains each change).
 omp-image:

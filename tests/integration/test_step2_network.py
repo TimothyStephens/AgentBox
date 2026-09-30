@@ -55,6 +55,24 @@ class Step2(unittest.TestCase):
         self.assertIn(" GET example.com:80 ", text)
         self.assertNotIn(FAKE_TOKEN, text)
 
+    def test_reused_session_names_keep_separate_logs(self):
+        """claude-live, 30 Sep: two sessions in a row reuse one name; the second session's proxy log was
+        appended to the first one's file and looked empty to the live test."""
+        logs = os.path.join(ENV.data, "logs")
+        before = set(os.listdir(logs)) if os.path.isdir(logs) else set()
+        for _ in range(2):
+            p = ENV.ab("run", "--agent", "claude", "--project", "n-open", "--shell", "--no-tty", "--",
+                       "-c", 'hp=${HTTPS_PROXY#http://}; hp=${hp%/}; exec 3<>"/dev/tcp/${hp%:*}/${hp##*:}"; '
+                       "printf 'GET http://example.com/ HTTP/1.0\\r\\nHost: example.com\\r\\n\\r\\n' >&3; "
+                       "head -1 <&3", timeout=300)
+            self.assertEqual(p.returncode, 0, p.stderr)
+        new = sorted(f for f in set(os.listdir(logs)) - before if f.endswith("-proxy.log"))
+        print("\nnew proxy logs:", new)
+        self.assertEqual(len(new), 2, "one log file per session")
+        for fn in new:
+            with open(os.path.join(logs, fn)) as f:
+                self.assertIn("example.com:80", f.read(), fn)
+
     def test_locked(self):
         self.check_mode("locked")
 

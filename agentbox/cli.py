@@ -40,6 +40,8 @@ def cmd_project_add(s, a):
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
         entry["compose_project"] = session.check_compose_project(a.name, a.compose_project)
+    if a.observe_logs:
+        entry["observe_logs"] = True
     # Validate the whole thing (preset exists, lockdown ceiling) before saving.
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
     if "build_memory" in entry:
@@ -97,6 +99,9 @@ def cmd_project_show(s, a):
         print(f"  mask_skip      {', '.join(p.mask_skip)}")
     if p.extra_domains:
         print(f"  extra_domains  {', '.join(p.extra_domains)}")
+    if p.value("podman") and p.value("podman").get("tier", "none") != "none" or (p.value("podman") or {}).get("live"):
+        print(f"  compose_project {p.compose_project}")
+        print(f"  observe_logs   {'true' if p.observe_logs else 'false (default)'}")
     if p.history_secrets_accepted:
         print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
 
@@ -149,7 +154,7 @@ def cmd_kill(s, a):
 
 
 def cmd_gc(s, a):
-    removed = session.gc(s, Podman(s.podman))
+    removed = session.gc(s, Podman(s.podman), warn=warn)
     print("removed: " + (" ".join(removed) if removed else "nothing"))
 
 
@@ -211,6 +216,9 @@ def parser():
     x.add_argument("--podman", choices=presets.PODMAN_TIERS,
                    help="podman tier (observe: read the live stack; exec and dev arrive with step 5)")
     x.add_argument("--compose-project", help="the live stack's compose project name (default: the project name)")
+    x.add_argument("--observe-logs", action="store_true",
+                   help="let the observe tier read the live stack's logs (off by default: logs can hold secrets, "
+                        "and what the agent reads goes to its model provider)")
     x.add_argument("--accept-history-secrets", action="store_true",
                    help="register even though masked file names (.env, *.key, ...) are in git history")
     x.set_defaults(fn=cmd_project_add)

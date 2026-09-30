@@ -245,7 +245,7 @@ class Step3(unittest.TestCase):
                         # agent/ and logs/ are the project's own state (OMP creates its databases there),
                         # so the host's files are checked there by canary only, above.
                         "for f in agent/models.yml.backup agent/.mcp.json agent/mags-codedev.yaml "
-                        "agent/extensions/pi-permission-system versions/19760485e9c2 logs/omp.2026-07-30.log "
+                        "agent/extensions/pi-permission-system versions/legacy-20260905172136 logs/omp.2026-07-30.log "
                         "puppeteer stats.db .omp-sandbox.json; do "
                         "test -e ~/.omp/$f && echo VISIBLE:$f; done; "
                         "touch ~/.omp/plugins/x 2>/dev/null && echo WRITABLE:plugins; "
@@ -253,11 +253,12 @@ class Step3(unittest.TestCase):
                         "touch ~/.omp/agent/models.yml 2>/dev/null && echo WRITABLE:models; "
                         "touch ~/.omp/agent/newfile && echo AGENT_DIR_WRITABLE; "
                         "python -c 'import abt_pylib_probe as m; print(m.VALUE)'; "
+                        "grep -q OMPCANARY ~/.omp/plugins/node_modules/pi-fake-ext/index.js && echo PLUGIN_LINK_OK; "
                         "cat ~/.omp/agent/models.yml | head -c 0; grep -c apiKey ~/.omp/agent/models.yml")
         print(f"\n{redact(p.stdout)}\n{redact(p.stderr)[-800:]}")
         self.assertEqual(p.returncode, 0, p.stderr)
         seen = [l.strip() for l in p.stdout.splitlines() if l.strip() and ":" not in l and not l.isdigit()
-                and l.strip() not in ("AGENT_DIR_WRITABLE", "pylibs-importable")]
+                and l.strip() not in ("AGENT_DIR_WRITABLE", "pylibs-importable", "PLUGIN_LINK_OK")]
         for rel in seen:
             self.assertTrue(ompfake.is_mounted(rel), f"{rel} is visible but not in the mount list")
         self.assertIn("agent/config.yml", seen)
@@ -265,6 +266,7 @@ class Step3(unittest.TestCase):
         self.assertNotIn("WRITABLE:", p.stdout)
         self.assertIn("AGENT_DIR_WRITABLE", p.stdout)
         self.assertIn("pylibs-importable", p.stdout)
+        self.assertIn("PLUGIN_LINK_OK", p.stdout, "a plugin's /root/.omp/versions/... link resolves in the session")
 
     def test_debugger(self):
         root = os.path.join(ENV.projects, "o1")

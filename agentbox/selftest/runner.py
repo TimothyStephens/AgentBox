@@ -158,7 +158,7 @@ def _status(obs):
     return obs.split(" ", 1)[0]
 
 
-def podman_cases(b, *, socket_path, compose_project, own, canary):
+def podman_cases(b, *, socket_path, compose_project, own, canary, logs=False):
     """Tier observe: only the live stack's containers are visible, readable and nothing is writable.
     `own` are the live stack's container names (seen from the host); `canary` is a container the selftest
     created in another compose project, standing in for every other project on the host."""
@@ -194,8 +194,13 @@ def podman_cases(b, *, socket_path, compose_project, own, canary):
         b.add("api", ["GET", f"/libpod/containers/{mine}/json", "env"],
               f"inspect {mine} allowed, environment redacted",
               lambda obs: ("PASS" if obs in ("200 empty", "200 none") else "FAIL", obs))
-        b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"], f"logs of {mine} allowed",
-              lambda obs: ("PASS" if _status(obs) == "200" else "FAIL", obs))
+        if logs:
+            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"],
+                  f"logs of {mine} allowed (observe_logs on)",
+                  lambda obs: ("PASS" if _status(obs) == "200" else "FAIL", obs))
+        else:
+            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"],
+                  f"logs of {mine} refused (observe_logs off)", denied)
         b.add("api", ["POST", f"/libpod/containers/{mine}/exec"], f"exec on {mine} refused (observe tier)", denied)
         b.add("api", ["POST", f"/libpod/containers/{mine}/stop"], f"stop {mine} refused (observe tier)", denied)
 

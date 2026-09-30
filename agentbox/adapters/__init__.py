@@ -40,6 +40,7 @@ class SessionSetup:
     env: dict = field(default_factory=dict)             # plain values only; never a secret
     model_domains: list = field(default_factory=list)   # added to the proxy's model allowlist
     keys: dict = field(default_factory=dict)            # provider -> host key file, exported at start
+    verify: list = field(default_factory=list)          # callables run just before the container starts
 
 
 def get(name):

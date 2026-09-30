@@ -256,12 +256,12 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev). Until the gate exists (step 5), the observe tier mounts sockguard's socket directly at `/run/agentbox/podman.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. Until the gate exists (step 5), the observe tier mounts sockguard's socket directly at `/run/agentbox/podman.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |
 | none (default) | Nothing | No socket mounted |
-| observe | list, inspect, logs, top, stats (per container) on the live compose project | Visibility scoped by `io.podman.compose.project` label; everything else denied; `podman stats` refused (host-wide endpoint) |
+| observe | list, inspect (environment redacted), top, stats (per container) on the live compose project; logs only with the project's `observe_logs = true` (off by default: logs can hold secrets, and what the agent reads goes to its model provider) | Visibility scoped by `io.podman.compose.project` label; everything else denied; `podman stats` refused (host-wide endpoint) |
 | exec | observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
@@ -312,7 +312,7 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 | Data grants | Read-only only | None unless declared | As declared (`data_ro`, `data_rw`) |
 | `.env` files | Masked; `--with-secrets` refused | Masked unless `--with-secrets` | Masked unless `--with-secrets` |
 | Egress | `locked` | `packages` (`open` only if the project says so) | `packages` |
-| Podman tier | none | dev on `<project>-dev`, observe on the live stack | none |
+| Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | none |
 | Extra capabilities, devices | Refused | Opt-in per project | Refused |
 | Agent approval prompts | On | Off (`--auto`) | Off (`--auto`) |
 
@@ -413,7 +413,8 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | --- | --- |
 | Security flags | Fixed hardening only |
 | Image | `localhost/agentbox-omp`, derived from `omp-env` (`make omp-image`): `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`, plus `python-is-python3`, `debugpy`, Chromium and the compose tool for the dev tier |
-| What comes from the host's `~/.omp` | A whitelist, all read-only: the active `versions/<sha>/` with `plugins`, `repos`, `pylibs`; `agent/config.yml`; `bin/mags-codedev`; `.cache/ms-playwright`. Nothing else (decisions.md lists what is left out and why) |
+| What comes from the host's `~/.omp` | A whitelist, all read-only: `plugins`, `repos`, `pylibs` from their actual link targets (they may be in different versions), the `versions/<v>/` directories those live in or the plugins link into; `agent/config.yml`; `bin/mags-codedev`; `.cache/ms-playwright`. Nothing else (decisions.md lists what is left out and why) |
+| MCP and MAGS config | Only if Tim creates `~/.config/agentbox/omp/mcp.json` / `mags-codedev.yaml` himself: mounted read-only at OMP's paths, never copied from `~/.omp` (the credential rule in decisions.md) |
 | `~/.omp` in the session | A tmpfs owned by the agent, with the pieces above mounted on it; `run/` and caches live there and vanish with the session |
 | Model config (`models.yml`) | Generated per session from a keyless seed (`~/.config/agentbox/omp/models.yml`): only providers with a key file (`ab keys set`), plus the local model server always; keys are named by variable, exported at start like the Claude token |
 | Sessions, OMP's databases, logs | Per project, read-write: `~/.local/share/agentbox/<project>/omp/{agent,logs}` at `~/.omp/agent` and `~/.omp/logs`; sessions are named after the project's real path |

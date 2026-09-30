@@ -18,6 +18,7 @@ import shutil
 import sys
 
 from tests.integration import harness
+from tests.live.parse import empty_proxy_logs
 
 MODE = os.environ.get("AB_LIVE_EGRESS", "packages")
 MODEL = os.environ.get("AB_LIVE_MODEL", "")
@@ -65,20 +66,31 @@ def main():
             s = s.replace(k, "[REDACTED]")
         return s
 
+    logs = os.path.join(env.data, "logs")
+
+    def new_proxy_logs(seen):
+        """Access-log text of sessions that ended since `seen`; each session has its own file."""
+        text = ""
+        for fn in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
+            if fn.endswith("-proxy.log") and fn not in seen:
+                seen.add(fn)
+                with open(os.path.join(logs, fn)) as f:
+                    text += f.read()
+        return text
+
+    seen = set()
     model = ["--model", MODEL] if MODEL else []
     p1 = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--",
                 "-p", "--no-title", *model, "Reply with exactly: AB_OK", timeout=900)
     section("1. omp -p output", redact(p1.stdout + p1.stderr)[-3000:])
+    access1 = new_proxy_logs(seen)
+    section("1. proxy access log", access1[-3000:])
     p2 = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--",
                 "-p", "--no-title", *model, TOOLS_PROMPT, timeout=1200)
     section("2. omp tools output", redact(p2.stdout + p2.stderr)[-4000:])
-    logs = os.path.join(env.data, "logs")
-    access = ""
-    for fn in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
-        if fn.endswith("-proxy.log"):
-            with open(os.path.join(logs, fn)) as f:
-                access += f.read()
-    section("proxy access log", access[-4000:])
+    access2 = new_proxy_logs(seen)
+    section("2. proxy access log", access2[-4000:])
+    access = access1 + access2
     section("denied destinations", "\n".join(sorted({l.split()[3] for l in access.splitlines()
                                                     if len(l.split()) > 4 and l.split()[4] == "403"})))
 
@@ -98,16 +110,21 @@ def main():
             leaks.append(label)
 
     ok1 = re.search(r"^AB_OK\s*$", p1.stdout, re.M) is not None
+    # OMP only reaches a model through squid (the local one included), so an answer with an empty log means
+    # the capture is broken.
+    empty = empty_proxy_logs([("1", ok1, access1), ("2", p2.returncode == 0 and bool(p2.stdout.strip()), access2)])
     left = harness.leftovers()
     print("\n--- result ---")
     print(f"{'PASS' if ok1 else 'FAIL'}  1. OMP answered AB_OK through the proxy (egress {MODE})")
     print(f"INFO  2. browser: {'worked' if re.search(r'BROWSER (?!fail)', p2.stdout) else 'failed or unclear'}; "
           f"debugpy: {'worked' if 'DEBUGPY ok' in p2.stdout or 'AB_DEBUGPY_OK' in p2.stdout else 'failed or unclear'}")
+    print(f"{'PASS' if not empty else 'FAIL'}  every session that answered has a proxy access log"
+          + (f" (empty for session {', '.join(empty)})" if empty else ""))
     print(f"{'PASS' if not leaks else 'FAIL'}  no key in any log, state file or output ({len(keys)} key(s) checked)"
           + (f": {', '.join(leaks)}" if leaks else ""))
     print(f"{'PASS' if not left else 'FAIL'}  sessions torn down" + (f": {left}" if left else ""))
     harness.cleanup()
-    return 0 if ok1 and not leaks and not left else 1
+    return 0 if ok1 and not leaks and not left and not empty else 1
 
 
 if __name__ == "__main__":

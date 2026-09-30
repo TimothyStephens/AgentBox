@@ -32,6 +32,7 @@ class Project:
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
     compose_project: str = ""      # the live stack's compose project (default: the project name)
+    observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
 
     def value(self, key):
         return self.eff[key][0]
@@ -72,7 +73,8 @@ def load_project(settings, name, *, with_secrets=False):
                    swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
                    build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
-                   compose_project=check_compose_project(name, p.get("compose_project", name)))
+                   compose_project=check_compose_project(name, p.get("compose_project", name)),
+                   observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)))
 
 
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -82,6 +84,12 @@ COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 def check_compose_project(name, value):
     if not isinstance(value, str) or not COMPOSE_NAME.match(value):
         raise AgentboxError(f"project {name}: compose_project {value!r}: lower-case letters, digits, '-', '_'")
+    return value
+
+
+def _bool(name, key, value):
+    if not isinstance(value, bool):
+        raise AgentboxError(f"project {name}: {key} must be true or false")
     return value
 
 
@@ -194,6 +202,7 @@ def labels_for(settings, project, session, role):
 
 
 def sandbox_notes(project, egress, podman_live=None):
+    logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
         "",
@@ -222,9 +231,10 @@ def sandbox_notes(project, egress, podman_live=None):
                      "variables cannot connect at all.")
     lines += [
         (f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
-         f"it): read-only access (list, inspect, logs, top, stats) to the containers of compose project "
+         f"it): read-only access (list, inspect, {logs}top, stats) to the containers of compose project "
          f"`{podman_live}`, the project's live stack. Container environments are redacted. Everything else "
-         "(exec, create, start, stop, remove, pull, build, other projects' containers) is refused. "
+         f"(exec, create, start, stop, remove, pull, build, {'' if logs else 'logs, '}other projects' "
+         "containers) is refused. "
          "`podman stats` is refused too (its endpoint covers every container on the host); read one "
          "container's stats with `curl --unix-socket /run/agentbox/podman.sock "
          "'http://d/containers/<name>/stats?stream=false'`."
@@ -249,6 +259,7 @@ class Session:
         self.env = {}
         self.setup = adapters.SessionSetup()
         self.podman_live = None          # compose project the agent may observe through sockguard
+        self.started = time.time()       # reset when the session is reserved; names its kept logs
         self.egress = "none"
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
@@ -346,9 +357,16 @@ class Session:
     def model_domains(self):
         return sorted(set(self.adapter.model_domains) | set(self.setup.model_domains))
 
+    def log_path(self, kind):
+        """Where a sidecar's log is kept after the session. Session names are reused once a session ends, so
+        the start time is part of the name: two sessions never share a log file."""
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started))
+        return os.path.join(self.settings.data_dir, "logs", f"{self.name}-{stamp}-{kind}.log")
+
     def _write_meta(self):
+        self.started = time.time()
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
-                "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": time.time(), "preset_egress": self.project.value("egress")}
+                "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": self.started, "preset_egress": self.project.value("egress")}
         path = os.path.join(self.settings.session_run_dir(self.name), "session.json")
         fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -371,6 +389,8 @@ class Session:
     def run_args(self, command, *, interactive=False, tty=False, extra_mounts=()):
         """The complete argv after `podman`, audited."""
         s, a, p = self.settings, self.adapter, self.project
+        for check in self.setup.verify:
+            check()                          # e.g. OMP's provisioned links still point where they did
         args = ["run", "--rm", f"--name={self.name}", f"--hostname={self.name}"]
         opts = [f"--label={k}={v}" for k, v in labels_for(s, p.name, self.name, "agent").items()]
         if interactive:
@@ -596,11 +616,13 @@ class NetSession(Session):
         return args
 
     def sockguard_config(self):
-        return sockguard.config(self.podman_live)
+        return sockguard.config(self.podman_live, logs=self.project.observe_logs)
 
     def _start_podman_access(self):
         s, run = self.settings, self.settings.session_run_dir(self.name)
-        service, self._service_proc = sockguard.start_service(s.podman, run, float(s.ready_timeout))
+        service, self._service_proc = sockguard.start_service(
+            s.podman, run, float(s.ready_timeout), slice_name=s.cgroup_parent,
+            unit=f"{self.name}-podman-{int(self.started)}")
         os.makedirs(os.path.dirname(self.sockguard_socket), mode=0o700, exist_ok=True)
         conf = os.path.join(run, "sockguard.yaml")
         fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -648,12 +670,15 @@ class NetSession(Session):
             try:
                 logs = self.podman.run(["logs", name], check=False)
                 if logs.returncode == 0 and logs.stdout:
-                    path = os.path.join(self.settings.data_dir, "logs", f"{self.name}-{suffix}.log")
+                    path = self.log_path(suffix)
                     os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "a") as f:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "w") as f:
                         f.write(logs.stdout)
-            except AgentboxError:
-                pass
+            except FileExistsError:
+                pass                 # a second teardown of the same session: its log is already kept
+            except (AgentboxError, OSError) as e:
+                self.warn(f"agentbox: could not keep the {suffix} log: {e}")
         super().teardown()
         if getattr(self, "_service_proc", None):
             self._service_proc.poll()        # stop_service reaped it by PID; let the Popen object know
@@ -732,14 +757,22 @@ def gc(settings, podman, warn=lambda m: None):
     """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
     alone even if its metadata is missing or unreadable (ab kill removes it explicitly); an orphaned proxy
     or network with no running agent is removed."""
-    removed = []
+    removed, kept = [], set()
     for s, info in sessions(settings, podman).items():
         agent_running = [c["name"] for c in info["containers"]
                          if c.get("state") == "running" and c.get("role") == "agent"]
         if not info["alive"] and agent_running:
             warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab kill {s}`)")
+            kept.add(s)
             continue
         if not info["alive"]:
             teardown(settings, podman, s)
             removed.append(s)
+    # A podman service whose session is dead, even if its run dir and containers are already gone.
+    live = {s for s, info in sessions(settings, podman).items() if info["alive"]} | kept
+    for pid, s in sockguard.services_under(settings.run_dir).items():
+        if s not in live:
+            sockguard.kill_service(pid)
+            warn(f"agentbox: stopped an orphaned podman service of {s} (pid {pid})")
+            removed.append(f"{s} (podman service)")
     return removed

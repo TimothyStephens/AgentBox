@@ -67,7 +67,8 @@ def build_cases(sess, settings):
                             required_tools=sess.adapter.required_tools)
     sess.add_network_cases(b)
     runner.podman_cases(b, socket_path=sockguard.AGENT_SOCKET, compose_project=sess.podman_live,
-                        own=getattr(sess, "live_containers", []), canary=getattr(sess, "canary", None))
+                        own=getattr(sess, "live_containers", []), canary=getattr(sess, "canary", None),
+                        logs=sess.project.observe_logs)
     return b
 
 

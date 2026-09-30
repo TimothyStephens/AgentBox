@@ -220,3 +220,38 @@ Per project, read-write and persistent: `~/.local/share/agentbox/<project>/omp/a
   - The observe commands work under enforce and list only the live stack. `podman --remote exec/logs/inspect` on another project's container and `exec`/`stop` on the live stack are refused, as are `rm`, `run -v $HOME:/h` and `pull`. A raw API exec create on another project's container gets `403`.
   - The selftest passes for Claude (node client) and OMP (podman client).
   - No podman service or sockguard is left after teardown.
+
+## 2026-09-30 · The credential rule (Tim)
+
+This rule settles what may enter a sandbox. No protections are added beyond it.
+
+- **LLM provider keys and the Claude token: accepted risk.** They enter as environment variables, as built (file → variable just before exec). If one leaks, Tim rotates it. Paid keys should be dedicated and spend-capped; `ab keys set` warns.
+- **Every other credential never enters a sandbox through agentbox.** That covers GitHub tokens, home-server or service passwords, SSH keys and anything in MCP configs. The only way one gets in is a file Tim creates himself under `~/.config/agentbox/`.
+- **The existing checks stay:** keys and the token are kept out of logs, state, backups and `podman inspect`, and the selftest and `make itest` check that.
+
+## 2026-09-30 · OMP: user config files, pi-permission-system, the real ~/.omp layout
+
+- **`.mcp.json` and `mags-codedev.yaml`** (the latter holds API keys on the host): never copied from `~/.omp`, never parsed or cleaned. If Tim creates `~/.config/agentbox/omp/mcp.json` or `~/.config/agentbox/omp/mags-codedev.yaml`, it is mounted read-only at `~/.omp/agent/.mcp.json` or `~/.omp/agent/mags-codedev.yaml`; he is responsible for what is in them (the credential rule). If neither exists, the session prints one line saying so and mounts nothing.
+- **pi-permission-system:** not used. OMP's `--approval-mode` is the preset mapping; the extension is not mounted.
+- **The real layout** (found by `make omp-live`, 30 Sep): `plugins -> versions/19760485e9c2/plugins`, while `repos` and `pylibs -> versions/c1b51fef8911/`. The earlier check that all three share one version refused it. Now:
+  - each link's actual target is mounted read-only at `~/.omp/<name>`;
+  - every version directory those targets live in is mounted whole at `~/.omp/versions/<v>`;
+  - so is any version the plugins' own links or `package.json`/`omp-plugins.lock.json` point into, since `omp-env install` writes absolute `/root/.omp/versions/<v>/...` paths;
+  - an unreferenced version (`legacy-...`) is not mounted.
+
+  The session is refused only if a target is missing, or if the links change between session start and container start (an install or rollback running). `tests/ompfake.py` mirrors this layout, including a plugin linked by an absolute `/root/.omp` path.
+
+## 2026-09-30 · Observe tier: logs off by default; the podman service in the slice
+
+- **`observe_logs`** (project setting, `ab project add --observe-logs`), default false. Live-stack logs can hold secrets (an `apikey=` in a logged URL), and whatever the agent reads also goes to its model provider. With it off, sockguard's rules have no log endpoint at all. Inspect with the environment redacted stays on regardless. The `pods` preset's observe access follows this default.
+- **Where the podman service runs:** until now as a child of `ab`, so in the launcher's own cgroup (the terminal's session scope), outside `agentbox.slice`. It now starts with `systemd-run --user --scope --slice=agentbox.slice --unit=<session>-podman-<start>`. That is a transient scope, not a configuration change: systemd-run registers the scope and execs podman in place, so the PID `ab` holds is the service's. Its memory and tasks count against the slice. When `cgroup_parent` is empty (tests without the slice), it is a plain child.
+- **gc of orphaned services:** `ab gc` scans `/proc` for `podman system service` processes whose socket is in a session run dir under this `AB_RUN_DIR`. It stops each whose session is not alive and was not left alone because its agent still runs, even when the run dir and containers are already gone. Tested by killing a launcher with SIGKILL, removing its agent and run dir, then running `ab gc`.
+
+## 2026-09-30 · Each session's kept logs have their own file
+
+- **What:** proxy and sockguard logs are kept as `<session>-<start time>-proxy.log` / `-sockguard.log`, created exclusively (a second teardown of the same session leaves the file alone).
+- **Why (bug found by `make claude-live`, 30 Sep):** session names are reused once a session ends. The second session's proxy log was appended to the first one's file, so claude-live showed "(none)" for session 2, and its denied list proved nothing. `claude-live` and `omp-live` now FAIL when a session that answered has an empty proxy log. The step 2 itest runs two sessions with the same name and checks each has its own non-empty log.
+
+## 2026-09-30 · Sockguard's signature: `make verify-sockguard`
+
+- **What:** Tim installs cosign v3; `make verify-sockguard` runs `cosign verify` with the identity sockguard's docs give (`release-from-tag.yml@refs/tags/*`, issuer `token.actions.githubusercontent.com`). It tries the pinned digest first, then the image's other repo digests, because the signature may sit on the multi-arch index rather than the platform manifest pinned here. It says which one verified; if that is not the pinned one, the pin moves to it. Without cosign on PATH, it says so and fails.

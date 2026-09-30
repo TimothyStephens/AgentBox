@@ -6,40 +6,41 @@ The builder's running state, updated in every commit, so a crashed session loses
 
 ## Current step
 
-Stopped before step 5 (host-side gate and dev tier), which gets its own review. Steps 1-4 are committed, with their gates passing.
+Follow-ups to steps 3-4 are committed. Waiting on Tim to rerun `make omp-live` (and `make claude-live`). Then a review of steps 3-4, then step 5.
 
 ## Done
 
-- **Step 1, core launcher** and **step 2, network:** gates passed. Review fixes: `e35bc69`.
-- **Decisions #1 and #2** (`f60e728`): `make itest` flags a stale `claude-live` pass; masked names in git history refuse a project until `--accept-history-secrets`.
-- **Step 3, OMP adapter** (`32e980f`):
-  - provider keys (`ab keys set|ls|rm`), exported like the Claude token;
-  - `models.yml` with keyed providers plus the local model;
-  - the derived image `localhost/agentbox-omp`;
-  - a whitelist of `~/.omp` mounts on a user tmpfs;
-  - approvals mapped to `--approval-mode`.
-- **Step 4, sockguard observe tier:**
-  - a per-session podman service, with sockguard 2.2.1 (pinned by digest) in front;
-  - read-only access to the live compose stack, environments redacted, everything else denied;
-  - audit-mode discovery in the itest only;
-  - selftest cases against a canary container.
-  - Gate: `make itest` step 4 module (label scoping, including exec on another project's container, refused).
+- **Steps 1-2**, gates passed; review fixes `e35bc69`. **Decisions #1 and #2**: `f60e728`.
+- **Step 3, OMP adapter** (`32e980f`) and **step 4, sockguard observe tier** (`2b8adb7`).
+- **claude-live** passed on 30 Sep and was recorded in `9d8fa85`.
+- **Follow-ups (this commit):**
+  - Kept logs are one file per session (`<session>-<start>-proxy.log`). A reused session name had merged claude-live's two sessions into one file.
+  - `claude-live` and `omp-live` FAIL when a session that answered has an empty proxy log.
+  - The OMP whitelist is reworked from the real `~/.omp` layout: each link's actual target; the versions those live in or the plugins link into; refused only if a target is missing or changes during start. The fixture mirrors that layout.
+  - `~/.config/agentbox/omp/mcp.json` and `mags-codedev.yaml` are mounted read-only only if Tim creates them; otherwise the session prints one line.
+  - The credential rule is in `decisions.md`. pi-permission-system is not used.
+  - `observe_logs` is a project setting, off by default.
+  - The podman service runs in `agentbox.slice` (transient `systemd-run --user --scope`), and `ab gc` stops orphaned services (crash test).
+  - `make verify-sockguard` checks the image signature with cosign (on PATH).
 
 ## Next
 
-1. **Step 5** (after its review): host-side gate (start from `spikes/spike_gate.py`), dev tier, build network, port rejection, proxy injection, exec scoping, image pull allowlist, the build cap (`agentbox/buildcap.py`), and the end-of-session scan (secret scan over the session's commits, plus changed files that run later on the host).
-2. **Carried into step 5:**
-   - The OMP image's podman client is 4.3.1; step 4 showed it works against the 5.7 service for reads. Check it for creates and builds.
+1. Tim reruns `make omp-live` and `make claude-live`.
+2. Review of steps 3-4.
+3. **Step 5:** host-side gate (from `spikes/spike_gate.py`), dev tier, build network, port rejection, proxy injection, exec scoping, image pull allowlist, the build cap (`agentbox/buildcap.py`), and the end-of-session scan (secret scan plus changed files that run later).
+4. **Carried into step 5:**
+   - The OMP image's podman client is 4.3.1 against a 5.7 service. Reads work; a logs stream once printed "channel 123 … lost synchronization". Check creates, builds and logs.
    - `exec` tier stays refused until the gate scopes it.
 
 ## Open decisions (Tim)
 
-- `~/.omp/agent/.mcp.json` and `agent/mags-codedev.yaml`: may they be mounted read-only? They may hold credentials, which I can't check (`~/.omp` is off limits to me). Not mounted until you say.
-- `pi-permission-system`: bring it in (read-only, with a policy per preset) or leave it out? Approvals already map to OMP's own `--approval-mode`.
-- Sockguard's release signature: verify it with cosign? It isn't installed on the host, and installing it is your call.
+- None.
 
 ## Waiting on Tim
 
-- **Run `make claude-live`** and commit `tests/live/claude-live-pass.txt`: no pass is recorded, and token-handling code changed in steps 3 and 4.
-- **Run `make omp-live`** (real `~/.omp`, keys and local model). Before it: copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every `apiKey` line removed, and `ab keys set <provider>` for each provider you want (use dedicated, spend-capped keys). Without a seed, only the local model is offered.
-- **Two empty network config files** left by the 10:33 crash: `~/.local/share/containers/storage/networks/abt-4d8752-claude-n-open-1-{egr,int}.json` (0 bytes). podman cannot remove them and warns about them on every call; deleting the two files fixes it. I have not touched podman's storage.
+- **Rerun `make omp-live`.**
+  - Optional: create `~/.config/agentbox/omp/models.yml` (your `~/.omp/agent/models.yml` with the `apiKey` lines removed), and run `ab keys set <provider>` for providers you want. Without a seed, only the local model is offered.
+  - `omp-live` runs without `mcp.json`/`mags-codedev.yaml` (it uses a temporary config dir) and prints the one-line notice.
+- **Rerun `make claude-live`:** the log fix changed `session.py` (token-handling), so `make itest` warns until a new pass is recorded; session 2 should now show its access log and denied list.
+- **Install cosign v3** and run `make verify-sockguard`; tell me which digest verified.
+- **Two empty network config files** left by the 10:33 crash: `~/.local/share/containers/storage/networks/abt-4d8752-claude-n-open-1-{egr,int}.json`. podman can't remove them; deleting the two files fixes the warning.

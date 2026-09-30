@@ -66,6 +66,7 @@ def setUpModule():
     with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
         f.write(f'omp_home = "{omp_home}"\n')
     ENV.make_project("sgobs", extra=["--podman", "observe", "--compose-project", LIVE])
+    ENV.make_project("sglogs", extra=["--podman", "observe", "--compose-project", LIVE, "--observe-logs"])
     ENV.make_project("sgnone")
     print(f"\n[itest run {harness.RUN}: step 4, live {names(LIVE)}, other {names(OTHER)}]")
 
@@ -99,8 +100,7 @@ def run_in_session(project, script, *, agent="omp", discovery=False):
 
 
 def sockguard_log(sess):
-    path = os.path.join(ENV.data, "logs", f"{sess.name}-sockguard.log")
-    with open(path) as f:
+    with open(sess.log_path("sockguard")) as f:
         return f.read()
 
 
@@ -128,8 +128,12 @@ class Step4(unittest.TestCase):
         p, sess = run_in_session("sgobs", OBSERVE.replace("WEB", web))
         out = p.stdout
         print(f"\n{out[-2500:]}\n{p.stderr[-800:]}")
-        for rc in ("PS_RC", "INSPECT_RC", "LOGS_RC", "TOP_RC", "PODPS_RC", "VERSION_RC"):
+        for rc in ("PS_RC", "INSPECT_RC", "TOP_RC", "PODPS_RC", "VERSION_RC"):
             self.assertIn(f"{rc}=0", out, rc)
+        self.assertRegex(out, r"LOGS_RC=[1-9]", "logs are off by default (observe_logs)")
+        p2, _s2 = run_in_session("sglogs", f"podman --remote logs {web} | head -3; echo LOGS_RC=${{PIPESTATUS[0]}}")
+        print(f"\nwith observe_logs: {p2.stdout[-400:]}")
+        self.assertIn("LOGS_RC=0", p2.stdout, "observe_logs = true allows the live stack's logs")
         self.assertIn("STATS=200", out, "per-container stats through the Docker API")
         self.assertRegex(out, r"PODMAN_STATS_RC=[1-9]", "podman stats (host-wide endpoint) is refused")
         listed = out.partition("PS_RC")[0].split()
@@ -173,6 +177,7 @@ class Step4(unittest.TestCase):
             self.assertFalse(fails, harness.report(fails) + "\n" + p.stderr[-1500:])
             labels = " | ".join(r["label"] for r in results)
             for want in ("podman socket present", "exec on another project's container refused",
+                         "refused (observe_logs off)",
                          "logs of another project's container refused", f"shows only {LIVE}'s containers",
                          "environment redacted", "create a container refused"):
                 self.assertIn(want, labels)
@@ -180,6 +185,42 @@ class Step4(unittest.TestCase):
         results, _p = ENV.selftest("claude", "sgnone")
         self.assertIn(("no podman socket in this session", "PASS"),
                       [(r["label"], r["verdict"]) for r in results])
+
+    def test_f_gc_stops_what_a_crashed_session_left(self):
+        import signal
+        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "sgobs", "--shell", "--no-tty", "--",
+                         "-c", "sleep 300")
+        try:
+            sg = harness.wait_for(lambda: harness.podman("ps", "--format", "{{.Names}}", "--filter",
+                                                         f"label={harness.LABEL}", "--filter",
+                                                         "label=agentbox.role=sockguard").stdout.split(), timeout=180)
+            self.assertTrue(sg, "the session's sockguard did not start")
+            session_name = sg[0][:-len("-sockguard")]
+            services = {pid: s for pid, s in sockguard.services_under(ENV.run_dir).items() if s == session_name}
+            self.assertEqual(len(services), 1, services)
+            pid = next(iter(services))
+            with open(f"/proc/{pid}/cgroup") as f:
+                cg = f.read()
+            print(f"\nservice pid {pid}: {cg.strip()}")
+            if ENV.slice:
+                self.assertIn("/agentbox.slice/", cg, "the podman service runs in agentbox.slice")
+            # the crash: launcher killed outright, its agent gone, its run dir lost
+            proc.send_signal(signal.SIGKILL)
+            proc.wait(timeout=30)
+            harness.podman("rm", "-f", "-t", "1", session_name)
+            shutil.rmtree(os.path.join(ENV.run_dir, "sessions", session_name), ignore_errors=True)
+            self.assertTrue(os.path.exists(f"/proc/{pid}"), "the service outlived the launcher")
+            g = ENV.ab("gc")
+            print(g.stdout, g.stderr)
+            self.assertEqual(g.returncode, 0, g.stderr)
+            self.assertIn(f"{session_name} (podman service)", g.stdout)
+            self.assertTrue(harness.wait_for(lambda: not os.path.exists(f"/proc/{pid}"), timeout=30),
+                            "gc stopped the orphaned service")
+            self.assertEqual([x for x in harness.leftovers() if x.startswith(session_name)], [])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate()
 
     def test_e_service_and_sockguard_gone_after_teardown(self):
         p = subprocess.run(["pgrep", "-af", "system service"], capture_output=True, text=True)
