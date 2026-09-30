@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
 from . import keys as keysmod
+from . import sockguard
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -30,6 +31,7 @@ class Project:
     eff: dict                      # setting -> (value, source)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
+    compose_project: str = ""      # the live stack's compose project (default: the project name)
 
     def value(self, key):
         return self.eff[key][0]
@@ -69,10 +71,35 @@ def load_project(settings, name, *, with_secrets=False):
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
                    build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
-                   history_secrets_accepted=list(p.get("history_secrets_accepted", [])))
+                   history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
+                   compose_project=check_compose_project(name, p.get("compose_project", name)))
 
 
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+
+def check_compose_project(name, value):
+    if not isinstance(value, str) or not COMPOSE_NAME.match(value):
+        raise AgentboxError(f"project {name}: compose_project {value!r}: lower-case letters, digits, '-', '_'")
+    return value
+
+
+def podman_access(project, warn):
+    """The compose project the session may observe, or None. Tiers beyond observe need the host-side gate
+    (step 5): `exec` is refused until then, and `dev` gives only the live-stack observe access for now."""
+    podman = project.value("podman") or {}
+    tier, live = podman.get("tier", "none"), podman.get("live")
+    if "exec" in (tier, live):
+        raise AgentboxError(f"project {project.name}: the exec tier needs the host-side gate (build step 5); "
+                            "use observe for now")
+    if tier == "dev":
+        warn("agentbox: the dev tier (own dev stack) arrives with the host-side gate (step 5); "
+             + ("this session gets observe access to the live stack only" if live == "observe"
+                else "this session gets no podman access"))
+    if "observe" in (tier, live):
+        return project.compose_project
+    return None
 
 
 def check_swap(name, swap):
@@ -166,7 +193,7 @@ def labels_for(settings, project, session, role):
     return out
 
 
-def sandbox_notes(project, egress):
+def sandbox_notes(project, egress, podman_live=None):
     lines = [
         "# agentbox sandbox",
         "",
@@ -194,7 +221,14 @@ def sandbox_notes(project, egress):
                      f"{desc}. Private and LAN addresses are always refused. Tools that ignore the proxy "
                      "variables cannot connect at all.")
     lines += [
-        "- No podman or docker socket is available in this session.",
+        (f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
+         f"it): read-only access (list, inspect, logs, top, stats) to the containers of compose project "
+         f"`{podman_live}`, the project's live stack. Container environments are redacted. Everything else "
+         "(exec, create, start, stop, remove, pull, build, other projects' containers) is refused. "
+         "`podman stats` is refused too (its endpoint covers every container on the host); read one "
+         "container's stats with `curl --unix-socket /run/agentbox/podman.sock "
+         "'http://d/containers/<name>/stats?stream=false'`."
+         if podman_live else "- No podman or docker socket is available in this session."),
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
     ]
@@ -214,6 +248,7 @@ class Session:
         self.networks = []
         self.env = {}
         self.setup = adapters.SessionSetup()
+        self.podman_live = None          # compose project the agent may observe through sockguard
         self.egress = "none"
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
@@ -281,7 +316,8 @@ class Session:
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
-        notes = sandbox_notes(p, self.egress)
+        self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
+        notes = sandbox_notes(p, self.egress, self.podman_live)
         self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
@@ -360,6 +396,8 @@ class Session:
         for provider, path in sorted(self.setup.keys.items()):
             opts.append(f"--mount=type=bind,src={os.path.realpath(path)},"
                         f"dst={keysmod.CONTAINER_DIR}/{provider},ro")
+        if self.podman_live:
+            opts.append(f"--mount=type=bind,src={self.sockguard_socket},dst={sockguard.AGENT_SOCKET}")
         extra_srcs = []
         for src, dst in extra_mounts:
             opts.append(f"--mount=type=bind,src={src},dst={dst},ro")
@@ -529,8 +567,57 @@ class NetSession(Session):
         pm.run(self.proxy_run_args(conf))
         self._wait_proxy()
         self.env.update(egress.proxy_env(self.proxy_name))
+        if self.podman_live:
+            self._start_podman_access()
         for var in self.adapter.proxy_url_env:
             self.env[var] = self.env["HTTPS_PROXY"]
+
+    @property
+    def sockguard_name(self):
+        return f"{self.name}-sockguard"
+
+    @property
+    def sockguard_socket(self):
+        return os.path.join(self.settings.session_run_dir(self.name), "sg", "sockguard.sock")
+
+    def sockguard_run_args(self, service_sock, conf_path):
+        s = self.settings
+        args = ["run", "-d", f"--name={self.sockguard_name}", f"--hostname={self.sockguard_name}"]
+        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "sockguard").items()]
+        args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
+                 "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
+                 f"--memory-swap={s.sockguard_memory}", "--pids-limit=128", f"--oom-score-adj={int(s.oom_score_adj)}"]
+        if s.cgroup_parent:
+            args.append(f"--cgroup-parent={s.cgroup_parent}")
+        args += [f"--mount=type=bind,src={service_sock},dst={sockguard.UPSTREAM}",
+                 f"--mount=type=bind,src={os.path.dirname(self.sockguard_socket)},dst={os.path.dirname(sockguard.LISTEN)}",
+                 f"--mount=type=bind,src={conf_path},dst=/etc/sockguard/sockguard.yaml,ro",
+                 s.sockguard_image, "serve", "-c", "/etc/sockguard/sockguard.yaml"]
+        return args
+
+    def sockguard_config(self):
+        return sockguard.config(self.podman_live)
+
+    def _start_podman_access(self):
+        s, run = self.settings, self.settings.session_run_dir(self.name)
+        service, self._service_proc = sockguard.start_service(s.podman, run, float(s.ready_timeout))
+        os.makedirs(os.path.dirname(self.sockguard_socket), mode=0o700, exist_ok=True)
+        conf = os.path.join(run, "sockguard.yaml")
+        fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(self.sockguard_config())
+        self.podman.run(self.sockguard_run_args(service, conf))
+
+        def running():
+            st = self.podman.run(["inspect", "-f", "{{.State.Status}}", self.sockguard_name], check=False)
+            return (st.stdout or "").strip() not in ("exited", "stopped", "dead")
+        try:
+            sockguard.wait_socket(self.sockguard_socket, float(s.ready_timeout), "sockguard", alive=running)
+        except AgentboxError:
+            logs = self.podman.run(["logs", self.sockguard_name], check=False)
+            raise AgentboxError(f"sockguard did not start: {' '.join(((logs.stderr or '') + (logs.stdout or '')).strip().splitlines()[-3:])}")
+        url = f"unix://{sockguard.AGENT_SOCKET}"
+        self.env.update({"CONTAINER_HOST": url, "DOCKER_HOST": url})
 
     def _wait_proxy(self):
         deadline = time.time() + float(self.settings.ready_timeout)
@@ -555,17 +642,21 @@ class NetSession(Session):
     def teardown(self):
         if not self.name:
             return
-        # Keep the proxy's access log (URLs and verdicts only) for review, then tear down.
-        try:
-            logs = self.podman.run(["logs", self.proxy_name], check=False)
-            if logs.returncode == 0 and logs.stdout:
-                path = os.path.join(self.settings.data_dir, "logs", f"{self.name}-proxy.log")
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "a") as f:
-                    f.write(logs.stdout)
-        except AgentboxError:
-            pass
+        # Keep the proxy's access log (destinations and verdicts only) and sockguard's audit log (API calls
+        # and decisions) for review, then tear down.
+        for name, suffix in ((self.proxy_name, "proxy"), (self.sockguard_name, "sockguard")):
+            try:
+                logs = self.podman.run(["logs", name], check=False)
+                if logs.returncode == 0 and logs.stdout:
+                    path = os.path.join(self.settings.data_dir, "logs", f"{self.name}-{suffix}.log")
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "a") as f:
+                        f.write(logs.stdout)
+            except AgentboxError:
+                pass
         super().teardown()
+        if getattr(self, "_service_proc", None):
+            self._service_proc.poll()        # stop_service reaped it by PID; let the Popen object know
 
 
 def make_session(settings, agent, project, **kw):
@@ -574,6 +665,7 @@ def make_session(settings, agent, project, **kw):
 
 def teardown(settings, podman, session):
     sel = {"agentbox.session": session, **settings.labels}
+    sockguard.stop_service(settings.session_run_dir(session))
     for c in podman.ids("container", sel):
         podman.run(["rm", "-f", "-t", "5", c], check=False)
     for n in podman.ids("network", sel):

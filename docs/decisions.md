@@ -200,3 +200,23 @@ Per project, read-write and persistent: `~/.local/share/agentbox/<project>/omp/a
 
 - **What:** approvals off → `omp --approval-mode=yolo`; on (lockdown) → `--approval-mode=always-ask`. OMP's `tools.approvalMode` defaults to `yolo`, so without the flag a lockdown session would never ask.
 - **pi-permission-system** (`~/.omp/agent/extensions/`) is a third-party extension (npm `pi-permission-system`, MIT) that enforces allow/ask/deny policies per tool, bash command pattern, MCP server and skill from a `pi-permissions.jsonc` file, forwards subagent `ask` prompts to the main session, and has its own yolo toggle. It is a policy layer on top of OMP, not its approval switch. It is not mounted; whether to bring it in (read-only, with a policy per preset) is Tim's call.
+
+## 2026-09-30 · Step 4: sockguard observe tier, as built
+
+- **A podman service per session.** No podman API socket runs for vmuser (`podman.socket` is disabled, and enabling it is a systemd change). A session with podman access starts its own `podman system service --time=0` on `<run dir>/podman/podman.sock` (the run dir is 0700), records its PID, and stops it at teardown; `ab gc` stops it for dead sessions. A stop checks the PID's command line first (PIDs are reused). Only the sockguard container mounts that socket.
+- **Sockguard 2.2.1, pinned by digest** (`docker.io/codeswhat/sockguard@sha256:3ae41b2f…`), per session: `--network=none`, keep-id as the user, `--cap-drop=ALL`, no-new-privileges, read-only root, 64 MB, 128 pids, the agent's OOM score, in the slice, labelled `agentbox.role=sockguard`. It listens on a 0600 socket in the run dir, mounted into the agent at `/run/agentbox/podman.sock`; `CONTAINER_HOST` and `DOCKER_HOST` point at it. Its JSON audit log is kept in `~/.local/share/agentbox/logs/<session>-sockguard.log`. The release signature is not verified yet (no cosign on the host); still an open item.
+- **Observe = reads of the live stack only.** Visibility: `io.podman.compose.project=<compose_project>` (a new project setting, default the project name; `ab project add --compose-project`). Allowed, on both API surfaces: `_ping`, `version`, container list, inspect, logs, top and stats, and pod list/inspect. Everything else is denied, including exec on the live stack. Environments, mount paths, network and host topology are redacted. `insecure_allow_read_exfiltration` is on because logs and top need it; the visibility label bounds them.
+- **Audit mode never runs in a session.** Sockguard's `mode: audit` forwards everything its rules would deny (visibility included), which would hand the agent the raw socket. "Audit first" is therefore a discovery test: a deny-all profile in audit mode, the test's own two compose stacks, and the observe commands. It found `podman --remote` needs exactly: `_ping` (both surfaces), `libpod/version`, `libpod/containers/json`, a container's `json`, `logs` and `top`, and `libpod/pods/json`. Those rules then run in enforce mode.
+- **`podman stats` does not work under observe.** Its endpoint (`GET /libpod/containers/stats`) reports every container on the host with no label filter, and sockguard refuses it outright. Per-container stats via the Docker API (`/containers/<name>/stats`) are scoped and allowed; the session's notes tell the agent.
+- **Tiers until the gate exists (step 5):** `observe` works. `exec` (tier or live) is refused at session start, because sockguard does not scope exec. `dev` (the `pods` preset) gives only its `live: observe` part, with a warning.
+- **Selftest:** with podman access, it creates a stopped canary container in a compose project of its own (busybox, no network, the session's labels) and checks from inside the sandbox:
+  - the list shows exactly the live stack;
+  - inspect, logs, exec, stop and remove on the canary are refused;
+  - create and pull are refused;
+  - on the live stack, inspect is allowed with an empty environment and logs are allowed, while exec and stop are refused.
+
+  The canary stands in for other projects, so the selftest never probes a real service. Without podman access, it checks that no socket is present.
+- **Gate (`make itest`, step 4 module):**
+  - The observe commands work under enforce and list only the live stack. `podman --remote exec/logs/inspect` on another project's container and `exec`/`stop` on the live stack are refused, as are `rm`, `run -v $HOME:/h` and `pull`. A raw API exec create on another project's container gets `403`.
+  - The selftest passes for Claude (node client) and OMP (podman client).
+  - No podman service or sockguard is left after teardown.

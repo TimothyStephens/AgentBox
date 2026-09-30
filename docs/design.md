@@ -256,12 +256,12 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to `$XDG_RUNTIME_DIR/podman/podman.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev). Until the gate exists (step 5), the observe tier mounts sockguard's socket directly at `/run/agentbox/podman.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |
 | none (default) | Nothing | No socket mounted |
-| observe | inspect, logs, top, stats on the live compose project | Visibility scoped by `io.podman.compose.project` label |
+| observe | list, inspect, logs, top, stats (per container) on the live compose project | Visibility scoped by `io.podman.compose.project` label; everything else denied; `podman stats` refused (host-wide endpoint) |
 | exec | observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
@@ -399,7 +399,8 @@ A power loss or reboot ends every running session, but everything written to the
 | Create a container with no network, or on another network | Lands on `<project>_app`, or denied |
 | Create a container with a published port | Denied |
 | Build with `RUN curl 10.0.0.103:8088` | Build step fails |
-| `podman logs`/`exec` on another project's container | Denied |
+| `podman logs`/`exec` on another project's container | Denied (checked against a canary container the selftest creates in a project of its own) |
+| Observe tier: list shows only the live stack; inspect redacts the environment; exec, stop, create, pull | Only the live stack; empty environment; all denied |
 | Adapter's required tools (e.g. `python`, `debugpy`) | Present |
 
 ## Adapters
@@ -617,7 +618,7 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 **To verify during the build**
 
 - [x] Sockguard's label visibility blocks `exec` on non-visible containers: it does not against a raw API client (spike 2), so the gate scopes exec; the gate refused it in run 3.
-- [ ] Sockguard maturity: a small project at a security boundary; pin a version and verify its release signature.
+- [ ] Sockguard maturity: a small project at a security boundary. Pinned by digest to 2.2.1 (step 4); its release signature is not verified yet (no cosign on the host).
 - [x] Host-side gate: a thin rewrite layer in front of sockguard works for container creates (spike 1).
 - [x] Builds reach the project proxy and not the LAN by joining a holder container's network namespace (spike 1 v4).
 - [ ] Gate: pass the proxy to builds as build arguments, and check pip, npm and apt inside a build honour them.

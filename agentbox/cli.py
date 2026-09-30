@@ -36,6 +36,10 @@ def cmd_project_add(s, a):
         entry["build_memory"] = a.build_memory
     if a.mask_skip:
         entry["mask_skip"] = list(a.mask_skip)
+    if a.podman:
+        entry["podman"] = {"tier": a.podman}
+    if a.compose_project:
+        entry["compose_project"] = session.check_compose_project(a.name, a.compose_project)
     # Validate the whole thing (preset exists, lockdown ceiling) before saving.
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
     if "build_memory" in entry:
@@ -204,6 +208,9 @@ def parser():
     x.add_argument("--extra-domain", action="append", default=[], help="add a domain to the egress allowlist")
     x.add_argument("--build-memory", help="memory limit for each build in the dev tier (default 2g)")
     x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
+    x.add_argument("--podman", choices=presets.PODMAN_TIERS,
+                   help="podman tier (observe: read the live stack; exec and dev arrive with step 5)")
+    x.add_argument("--compose-project", help="the live stack's compose project name (default: the project name)")
     x.add_argument("--accept-history-secrets", action="store_true",
                    help="register even though masked file names (.env, *.key, ...) are in git history")
     x.set_defaults(fn=cmd_project_add)

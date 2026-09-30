@@ -2,6 +2,7 @@
 import os
 
 from .. import session as sessionmod
+from .. import sockguard
 from ..config import HOME
 from ..registry import load as load_registry
 from . import runner
@@ -65,7 +66,30 @@ def build_cases(sess, settings):
                             host_protected=host_protected, uid=os.getuid(),
                             required_tools=sess.adapter.required_tools)
     sess.add_network_cases(b)
+    runner.podman_cases(b, socket_path=sockguard.AGENT_SOCKET, compose_project=sess.podman_live,
+                        own=getattr(sess, "live_containers", []), canary=getattr(sess, "canary", None))
     return b
+
+
+CANARY_IMAGE = "docker.io/library/busybox:1.36"
+
+
+def make_canary(sess, settings):
+    """A stopped container in a compose project of its own, standing in for every other project on the host.
+    It carries the session's labels, so teardown removes it. Returns its name, or None if it cannot be made."""
+    name = f"{sess.name}-canary"
+    args = ["create", f"--name={name}", "--network=none", "--pull=never", "--cap-drop=ALL"]
+    args += [f"--label={k}={v}" for k, v in sessionmod.labels_for(settings, sess.project.name, sess.name,
+                                                                  "canary").items()]
+    args += [f"--label={sockguard.COMPOSE_LABEL}={name}", "--env=CANARY_SECRET=canary", CANARY_IMAGE, "true"]
+    p = sess.podman.run(args, check=False)
+    return name if p.returncode == 0 else None
+
+
+def live_containers(sess):
+    p = sess.podman.run(["ps", "-a", "--format", "{{.Names}}", "--filter",
+                         f"label={sockguard.COMPOSE_LABEL}={sess.podman_live}"], check=False)
+    return sorted((p.stdout or "").split())
 
 
 def run(settings, agent, project_name, *, podman=None, warn=None):
@@ -73,6 +97,13 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     project = sessionmod.load_project(settings, project_name)
     sess = sessionmod.make_session(settings, agent, project, podman=podman, warn=warn)
     sess.prepare()
+    extra = []
+    if sess.podman_live:
+        sess.live_containers = live_containers(sess)
+        sess.canary = make_canary(sess, settings)
+        if not sess.canary:
+            extra.append(Result("canary container in another project", "SKIP",
+                                f"could not create it ({CANARY_IMAGE} not present?); cross-project cases skipped"))
     b = build_cases(sess, settings)
     sess.probe_mounts = ((runner.PROBE, sessionmod.PROBE_PATH),)
     config_check = []
@@ -82,7 +113,7 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     results = runner.score(b.cases, out)
     if proc.returncode != 0 and not out.strip():
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
-    results += config_check
+    results += config_check + extra
     results += host_checks(sess, settings, out + (proc.stderr or ""))
     secrets = _secret_values(sess)
     for r in results:

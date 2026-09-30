@@ -24,6 +24,8 @@ DEFAULTS = {
     "oom_score_adj": 500,          # agent and proxy; containers the gate creates get 1000 (decisions.md: OOM order)
     "squid_image": "docker.io/ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",  # 6.13
     "squid_memory": "256m",
+    "sockguard_image": "docker.io/codeswhat/sockguard@sha256:3ae41b2fd646132de4fe212326d72fe3786ffd89f65e4500eff1124ac34587ef",  # 2.2.1
+    "sockguard_memory": "64m",
     "model_host": "10.0.0.2",
     "model_port": 8080,
     "build_memory": "2g",   # per-build memory limit the gate sets (step 5); a project may override it

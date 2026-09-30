@@ -23,6 +23,27 @@ proxy_req() {
   printf '%s' "${code:-000}"
 }
 
+# api METHOD PATH [names|env] -> HTTP status through the session's podman socket, plus container names or
+# whether the inspected container's environment is empty. node is in every agent image; curl is not.
+SOCKJS='
+const [method, path, mode] = process.argv.slice(1);
+const req = require("http").request({socketPath: "/run/agentbox/podman.sock", method, path: "/v5.0.0" + path,
+  headers: {"content-type": "application/json"}}, res => {
+  let b = ""; res.on("data", d => b += d); res.on("end", () => {
+    let extra = "";
+    try {
+      const j = JSON.parse(b);
+      if (mode === "names") extra = " " + (Array.isArray(j) ? j.map(c => (c.Names || [c.Name])[0].replace(/^\//, "")).sort().join(",") : "?");
+      if (mode === "env") { const e = (j.Config || {}).Env; extra = " " + (e === undefined ? "none" : (!e || e.length === 0) ? "empty" : "nonempty"); }
+    } catch (e) { if (mode) extra = " ?"; }
+    console.log(res.statusCode + extra);
+  });
+});
+req.on("error", e => console.log("error:" + e.code));
+req.setTimeout(30000, () => { console.log("timeout"); req.destroy(); });
+if (method !== "GET" && method !== "HEAD") req.write(JSON.stringify({Cmd: ["true"], image: "docker.io/library/busybox:1.36"}));
+req.end();'
+
 # direct HOST PORT -> connected | refused | unreachable | timeout | noresolve | error:<msg>
 direct() {
   local out rc
@@ -39,8 +60,8 @@ direct() {
   fi
 }
 
-while read -r id op a b; do
-  a="${a:-}"; b="${b:-}"
+while read -r id op a b c; do
+  a="${a:-}"; b="${b:-}"; c="${c:-}"
   case "$op" in
     status)   r=$(grep -E '^(CapEff|NoNewPrivs|Seccomp):' /proc/self/status | tr -d ' \t' | tr '\n' ' ') ;;
     write)    if ( : >>"$a" ) 2>/dev/null; then r=ok; else r=fail; fi ;;
@@ -61,6 +82,7 @@ while read -r id op a b; do
     get)      r=$(proxy_req GET "$a" "$b") ;;
     connect)  r=$(proxy_req CONNECT "$a" "$a") ;;
     direct)   r=$(direct "$a" "$b") ;;
+    api)      r=$(timeout 40 node -e "$SOCKJS" "$a" "$b" "$c" 2>&1 | tail -1) ;;
     *)        r="unknown-op" ;;
   esac
   printf '%s %s\n' "$id" "$r"

@@ -315,7 +315,11 @@ class Step3(unittest.TestCase):
         self.assertIn("PI_PROXY_UNSET", p.stdout)
         self.assertRegex(p.stdout, r"STATUS (200|502|503|504)", "answered by the model or by squid, not refused")
         logs = os.path.join(ENV.data, "logs")
-        text = "".join(open(os.path.join(logs, f)).read() for f in os.listdir(logs) if f.endswith("-proxy.log"))
+        text = ""
+        for fn in os.listdir(logs):
+            if fn.endswith("-proxy.log"):
+                with open(os.path.join(logs, fn)) as f:
+                    text += f.read()
         self.assertIn("10.0.0.2:8080", text, "the request went through squid")
 
     def test_zz_no_leftovers(self):
