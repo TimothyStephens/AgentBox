@@ -32,10 +32,14 @@ def cmd_project_add(s, a):
     if a.extra_domain:
         from .egress import check_domains
         entry["extra_domains"] = check_domains(a.extra_domain, "--extra-domain")
+    if a.build_memory:
+        entry["build_memory"] = a.build_memory
     if a.mask_skip:
         entry["mask_skip"] = list(a.mask_skip)
     # Validate the whole thing (preset exists, lockdown ceiling) before saving.
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
+    if "build_memory" in entry:
+        session.check_build_memory(s, a.name, entry["build_memory"])
     reg[a.name] = entry
     registry.save(s.registry_path, reg)
     print(f"added project {a.name} ({entry['root']}, preset {a.preset})")
@@ -53,6 +57,8 @@ def cmd_project_show(s, a):
         v, src = p.eff[k]
         v = v.get("tier") + (f" (live: {v['live']})" if v.get("live") else "") if isinstance(v, dict) else v
         print(f"  {k:<14} {v:<24} from {src}")
+    src = "project" if "build_memory" in registry.load(s.registry_path)[p.name] else "default"
+    print(f"  build_memory   {p.build_memory >> 20} MB{'':<17} from {src}")
     if p.mask_skip:
         print(f"  mask_skip      {', '.join(p.mask_skip)}")
     if p.extra_domains:
@@ -144,6 +150,7 @@ def parser():
     x.add_argument("--data-rw", action="append", default=[])
     x.add_argument("--egress", choices=presets.EGRESS)
     x.add_argument("--extra-domain", action="append", default=[], help="add a domain to the egress allowlist")
+    x.add_argument("--build-memory", help="memory limit for each build in the dev tier (default 2g)")
     x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
     x.set_defaults(fn=cmd_project_add)
     x = proj.add_parser("show")

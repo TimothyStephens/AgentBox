@@ -54,3 +54,37 @@ class BuildCapTest(unittest.TestCase):
             f.write("4613734400\n")
         self.assertEqual(buildcap.slice_state("x.slice", root=root, uid=5, systemctl=False)[0], True)
         self.assertFalse(buildcap.slice_state("y.slice", root=root, uid=5, systemctl=False)[0])
+
+
+class BuildMemoryTest(unittest.TestCase):
+    def setUp(self):
+        from agentbox import config
+        self.s = config.Settings(config_dir="/c", data_dir="/d", run_dir="/r", podman="podman",
+                                 values=dict(config.DEFAULTS))
+
+    def check(self, value, cap):
+        from unittest import mock
+        from agentbox import session
+        with mock.patch("agentbox.cgroup.slice_memory_max", return_value=cap):
+            return session.check_build_memory(self.s, "p", value)
+
+    def test_default_is_2g(self):
+        self.assertEqual(self.s.build_memory, "2g")
+        self.assertEqual(self.check(self.s.build_memory, 4400 << 20), 2 << 30)
+
+    def test_sizes(self):
+        from agentbox.cgroup import parse_size
+        self.assertEqual([parse_size(x) for x in ("2g", "512m", "1024k", "1.5g", "100")],
+                         [2 << 30, 512 << 20, 1 << 20, 3 << 29, 100])
+        for bad in ("lots", "", "2x"):
+            with self.assertRaises(AgentboxError, msg=bad):
+                parse_size(bad)
+
+    def test_within_the_slice_cap(self):
+        self.assertEqual(self.check("4g", 4400 << 20), 4 << 30)
+        with self.assertRaises(AgentboxError) as e:
+            self.check("5g", 4400 << 20)
+        self.assertIn("over the agentbox.slice cap", str(e.exception))
+        with self.assertRaises(AgentboxError):
+            self.check("0", 4400 << 20)
+        self.assertEqual(self.check("8g", None), 8 << 30, "no slice, no cap to check (builds are refused anyway)")

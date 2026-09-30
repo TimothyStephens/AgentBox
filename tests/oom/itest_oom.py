@@ -3,12 +3,17 @@
 Needs: agentbox.slice installed, MemAvailable > 5 GB (the model server unloaded). Everything it creates is
 abt-<run>-*, labelled agentbox-test=1, and removed afterwards; it only reads other containers' state.
 
-Scenario 1 (PASS/FAIL): the agent holds ~1.2 GB; a dev-stack container (OOM score 1000) grows to ~3.9 GB.
-  Together they pass the slice's 4400M cap. Expected: the dev container is OOM-killed inside the slice,
-  the agent keeps running, no kill happens outside the slice, and no media_server container restarts.
-Scenario 2 (INFO): the agent holds ~3.0 GB, the dev container ~1.6 GB. Inside a cgroup, the OOM killer
-  scales oom_score_adj to the cgroup's limit, so 900 vs 1000 is worth only 10% of 4400M = 440 MB: here
-  the agent is expected to die. Reported, not judged.
+The agent runs with oom_score_adj 500, a dev-stack stand-in with 1000. Inside the slice the kernel scales
+oom_score_adj to the slice's limit, so the 500-point gap is worth 0.5 x 4400 MB = 2200 MB: the dev container
+dies first unless the agent uses more than 2200 MB beyond it.
+
+Scenario 1 (PASS/FAIL): agent ~1.2 GB, dev grows to ~3.9 GB  -> dev killed, agent survives.
+Scenario 2 (PASS/FAIL): agent ~3.0 GB, dev grows to ~1.6 GB  -> dev killed, agent survives (the agent is the
+  bigger one, but by less than 2200 MB).
+Scenario 3 (INFO): agent ~3.6 GB, dev grows to ~0.8 GB -> the slice fills with the agent ~2.9 GB ahead, past
+  the margin: the agent is expected to die. Reported, not judged: it shows where the margin ends.
+Every scenario also checks the kill stayed inside agentbox.slice; the run checks that no live-stack container
+(or any other container outside the tests) restarted.
 """
 import json
 import os
@@ -134,6 +139,15 @@ def oom_killed(name):
     return podman("inspect", "-f", "{{.State.OOMKilled}}", name).stdout.strip() == "true"
 
 
+def oom_adj(name):
+    pid = podman("inspect", "-f", "{{.State.Pid}}", name).stdout.strip()
+    try:
+        with open(f"/proc/{pid}/oom_score_adj") as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return None
+
+
 def scenario(env, n, agent_gb, dev_gb, judged):
     print(f"\n--- scenario {n}: agent {agent_gb} GB, dev container up to {dev_gb} GB ---", flush=True)
     harness.wait_for(lambda: not podman("ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
@@ -141,8 +155,11 @@ def scenario(env, n, agent_gb, dev_gb, judged):
     slice_before = events(os.path.join(SLICE_DIR, "memory.events"))
     host_before = vmstat_oom_kills()
     proc, agent = agent_session(env, agent_gb)
+    agent_adj = oom_adj(agent)
     dev = f"abt-{harness.RUN}-dev-hog-{n}"
     dev_hog(dev, dev_gb)
+    harness.wait_for(lambda: oom_adj(dev) is not None or not running(dev) or None, timeout=30)
+    dev_adj = oom_adj(dev)
     # wait until one of them dies or the dev container holds everything it wanted
     harness.wait_for(lambda: (not running(dev) or not running(agent) or
                               "HOLDING" in podman("logs", dev).stdout) or None, timeout=180)
@@ -154,16 +171,19 @@ def scenario(env, n, agent_gb, dev_gb, judged):
     agent_alive, dev_alive = running(agent), running(dev)
     slice_kills = slice_after.get("oom_kill", 0) - slice_before.get("oom_kill", 0)
     host_kills = host_after - host_before
+    print(f"      oom_score_adj: agent {agent_adj}, dev {dev_adj}")
     print(f"      dev reached {reached} MB; dev running={dev_alive} OOMKilled={oom_killed(dev)}; "
           f"agent running={agent_alive}; OOM kills: slice +{slice_kills}, host total +{host_kills}", flush=True)
+    tag = f"[{n}: agent {agent_gb} GB, dev {dev_gb} GB]"
+    result(agent_adj == 500, f"{tag} the agent runs with oom_score_adj 500 (got {agent_adj})")
+    result(slice_kills >= 1, f"{tag} the kill happened inside agentbox.slice (memory.events oom_kill +{slice_kills})")
+    result(host_kills == slice_kills, f"{tag} no OOM kill outside the slice (host +{host_kills}, slice +{slice_kills})")
     if judged:
-        result(oom_killed(dev) and not dev_alive, "the dev container was OOM-killed (its OOMKilled field is true)")
-        result(slice_kills >= 1, f"the kill happened inside agentbox.slice (memory.events oom_kill +{slice_kills})")
-        result(host_kills == slice_kills, f"no OOM kill outside the slice (host +{host_kills}, slice +{slice_kills})")
-        result(agent_alive, "the agent survived (the dev container was the bigger one)")
+        result(oom_killed(dev) and not dev_alive, f"{tag} the dev container was OOM-killed (OOMKilled is true)")
+        result(agent_alive, f"{tag} the agent survived")
     else:
         who = "the agent" if not agent_alive else ("the dev container" if not dev_alive else "nobody")
-        result(None, f"with the agent bigger, {who} was killed (expected: the agent; 900 vs 1000 is worth 440 MB)")
+        result(None, f"{tag} {who} was killed (expected: the agent, ~2.9 GB ahead is past the 2.2 GB margin)")
     podman("rm", "-f", "-t", "2", dev)
     if agent_alive:
         env.ab("kill", agent)
@@ -194,7 +214,8 @@ def main():
     before = outside_containers()
     try:
         scenario(env, 1, agent_gb=1.2, dev_gb=3.9, judged=True)
-        scenario(env, 2, agent_gb=3.0, dev_gb=1.6, judged=False)
+        scenario(env, 2, agent_gb=3.0, dev_gb=1.6, judged=True)
+        scenario(env, 3, agent_gb=3.6, dev_gb=0.8, judged=False)
     finally:
         after = outside_containers()
         changed = {n: (before[n], after.get(n)) for n in before if after.get(n) != before[n]}

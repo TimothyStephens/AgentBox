@@ -124,7 +124,7 @@ Applied to every session; no adapter or profile can override it.
 - Never `--privileged`, never `seccomp=unconfined` or `apparmor=unconfined`, never `--network=host`.
 - Read-only root filesystem with tmpfs for `/tmp`; PID and memory limits.
 - `--userns=keep-id`, so the agent runs as `vmuser` and written files stay owned by `vmuser`; `HOME` is a tmpfs at the host home path.
-- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=900` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services; containers the gate creates get 1000, so inside the slice a dev stack dies before the agent.
+- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=500` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services (host-wide, 500 is worth about 17 GB of RAM plus swap); containers the gate creates get 1000, so inside the slice a dev stack dies before the agent unless the agent uses more than 2.2 GB beyond it (see decisions.md).
 - Every agentbox container, including the ones the gate creates for the agent, runs under `--cgroup-parent=agentbox.slice`, one kernel-enforced memory, swap and task cap for all sessions together (`deploy/agentbox.slice`, installed with `make install-slice`).
 
 ### Harness adapters
@@ -155,6 +155,7 @@ data_ro = ["~/data/raw"]
 data_rw = ["~/data/processed"]
 egress  = "open"                  # override: this project may search the web
 mask_skip = ["data/cache"]        # folders the secret-mask walk skips (huge trees)
+build_memory = "4g"               # per-build memory limit in the dev tier (default 2g, at most the slice cap)
 extra_domains = ["huggingface.co"] # added to the egress allowlist
 ```
 
@@ -274,7 +275,7 @@ Sockguard can refuse dangerous settings, but it cannot force a network, inspect 
 - any host port publishing is rejected;
 - image pulls (`images/pull`, and pulls a create triggers) are allowed only from listed registries: `docker.io`, `ghcr.io`, `lscr.io`, `quay.io`; builds never pull, so `FROM` images must already exist;
 - every created container gets `--cgroup-parent=agentbox.slice` (a client-supplied cgroup parent is refused) and, unless the compose file sets its own, `--memory=1g --pids-limit=1024`, plus `--oom-score-adj=1000`;
-- builds run inside the podman service, not under `ab`, so the gate sets the build API's `cgroupparent` to a child of the slice, as a full cgroupfs path: `/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`. The service treats the value as a path, not a systemd unit: `agentbox.slice` alone fails (`Permission denied` on `/sys/fs/cgroup/agentbox.slice`); the slice's own path fails while the slice is active (cgroup v2 allows no processes in an inner node) and, while it is idle, is created by the runtime with no cap. A child path works while the slice is active, which it is whenever the session's holder runs, and the gate checks that before every build. The gate also sets the build's `memory` limit and refuses a client-supplied `cgroupparent`;
+- builds run inside the podman service, not under `ab`, so the gate sets the build API's `cgroupparent` to a child of the slice, as a full cgroupfs path: `/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`. The service treats the value as a path, not a systemd unit: `agentbox.slice` alone fails (`Permission denied` on `/sys/fs/cgroup/agentbox.slice`); the slice's own path fails while the slice is active (cgroup v2 allows no processes in an inner node) and, while it is idle, is created by the runtime with no cap. A child path works while the slice is active, which it is whenever the session's holder runs, and the gate checks that before every build. The gate also sets the build's own `memory` limit from the project's `build_memory` (default `2g`, at most the slice's cap), refuses a client-supplied `cgroupparent`, and refuses the build if the slice is not active (only possible before any session exists);
 - exec is scoped: before creating an exec session the gate inspects the target container and requires the project's compose label or the session's owner label, and it only starts, resizes or removes exec sessions it created;
 - joining a pod, or another container's namespaces, is allowed only for pods and containers the session owns;
 - proxy variables are injected into every container, so app containers reach the internet only through the proxy.

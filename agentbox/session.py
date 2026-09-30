@@ -26,6 +26,7 @@ class Project:
     extra_domains: list
     swap: dict
     eff: dict                      # setting -> (value, source)
+    build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
 
     def value(self, key):
         return self.eff[key][0]
@@ -58,7 +59,20 @@ def load_project(settings, name, *, with_secrets=False):
         _no_commas(g, "grant")
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
-                   swap=dict(p.get("swap", mounts.DEFAULT_SWAP)), eff=eff)
+                   swap=dict(p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
+                   build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)))
+
+
+def check_build_memory(settings, name, value):
+    """A build's memory limit: positive, and within the slice's cap (a build over it could never finish)."""
+    size = cgroup.parse_size(value)
+    if size <= 0:
+        raise AgentboxError(f"project {name}: build_memory must be positive")
+    cap = cgroup.slice_memory_max(settings.cgroup_parent)
+    if cap is not None and size > cap:
+        raise AgentboxError(f"project {name}: build_memory {value} is over the {settings.cgroup_parent} cap "
+                            f"({cap >> 20} MB)")
+    return size
 
 
 def git_identity(settings, agent):

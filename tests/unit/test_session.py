@@ -58,6 +58,11 @@ class SessionTest(SettingsCase):
             self.assertIn(want, argv)
         self.assertNotIn(".gitconfig", " ".join(argv))
 
+    def test_build_memory_per_project(self):
+        self.assertEqual(self.make().project.build_memory, 2 << 30)
+        self.project("big", build_memory="3g")
+        self.assertEqual(self.make("big").project.build_memory, 3 << 30)
+
     def test_lockdown_keeps_approvals(self):
         self.project("p2", preset="lockdown")
         s = self.make("p2")

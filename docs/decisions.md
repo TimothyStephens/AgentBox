@@ -78,7 +78,7 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
 
 ## 2026-09-29 · OOM order inside the slice: dev stack first, then the agent
 
-- **What:** the agent container runs with `--oom-score-adj=900`; containers the gate creates get 1000. The slice stays at `MemoryMax=4400M` and the agent's own cap at 4g. When the slice or the host runs out of memory, the kernel kills the dev stack before the agent, and both before any live service (score 0). Rootless podman accepts 900 here: the user's default is 0 and raising it is allowed.
+- **What:** the agent container (and its proxy) run with `--oom-score-adj=500` (was 900, changed 30 Sep; see "The OOM score margin" below); containers the gate creates get 1000. The slice stays at `MemoryMax=4400M` and the agent's own cap at 4g. Rootless podman accepts these here: the user's default is 0 and raising it is allowed.
 - **Worst case, accepted:** the nightly model run plus a full slice reaches all of RAM. The cap was kept deliberately, relying on the OOM scores; the slice file's comment says so.
 
 ## 2026-09-29 · Builds get a cgroup parent under the slice (gate, step 5)
@@ -88,17 +88,25 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
   - The slice's full path while the slice is idle: the runtime creates the directory itself, and the step runs with `memory.max = max`, uncapped.
   - The slice's full path while the slice is active: fails (cgroup v2 allows no processes in an inner node).
   - A child of the active slice (`/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`): works. The step lands there, and the slice's cap applies to it as an ancestor.
-- **So:** the gate sets that child path only while the session's holder container keeps the slice active (checked before each build), also sets the build's own `memory` limit, and refuses a client-supplied `cgroupparent`. The cap itself has not been load-tested (open item).
+- **So:** the gate sets that child path only while the session's holder container keeps the slice active (checked before each build), also sets the build's own `memory` limit, and refuses a client-supplied `cgroupparent`. The slice cap itself was load-tested by `make itest-oom` (30 Sep, containers; builds use the same kernel mechanism).
 
-## 2026-09-29 · The OOM score is a tie-breaker inside the slice, not a guarantee
+## 2026-09-29 · The OOM score margin (agent 900 → 500 on 30 Sep)
 
-- **What:** for a kill inside a cgroup, the kernel scales `oom_score_adj` to that cgroup's limit. With `MemoryMax=4400M`, the agent's 900 against a dev container's 1000 is worth 10% of 4400M, about 440 MB. A dev container dies first only while its usage is more than the agent's minus 440 MB; a much bigger agent is killed before a small dev container. `make itest-oom` (run by Tim) tests the dev-bigger case and reports the agent-bigger case.
-- **Why it matters:** "dev stack dies before the agent" holds for the usual case (a dev stack that grows), not for every case.
+The kernel picks the process with the highest `usage + oom_score_adj × total / 1000`, where `usage` is RAM plus swap and `total` is the memory the kill is about: the cgroup's limit for a kill inside a cgroup, RAM plus swap for a host-wide kill.
+
+- **29 Sep, agent 900:** inside the slice, 900 against a dev container's 1000 was worth 0.1 × 4400 MB = 440 MB. `make itest-oom` (Tim, 29 Sep) confirmed both sides: agent 1.2 GB with dev 3.9 GB, the dev container died; agent 3.0 GB with dev 1.6 GB, the agent died.
+- **30 Sep, agent 500, created containers 1000.** With this host's numbers (RAM 9,360 MB, swap 24,576 MB, slice 4,400 MB):
+  - **Inside the slice:** the gap is 0.5 × 4,400 = 2,200 MB. The dev container dies first unless the agent uses more than 2,200 MB beyond it. For agent 3.0 GB and dev 1.6 GB, the slice fills when the dev container is at about 1.3 GB: agent 3,072 + 2,200 = 5,272 against dev 1,330 + 4,400 = 5,730, so the dev container dies (margin about 450 MB). An agent near its 4 GB cap with a small dev container is still killed first (for example agent 3.6 GB, dev 0.7 GB: 5,886 against 5,100); that is the remaining case, reported by `make itest-oom` as information.
+  - **Host-wide, against live services at 0:** `total` is 33,936 MB, so 500 is worth 16,968 MB. A live process is picked before even an idle agent only if its own RAM plus swap exceeds about 17 GB; RAM is 9.4 GB, so that needs more than 7.6 GB of it in swap. The model server holds 3.9 GB. agentbox containers never swap (`MemorySwapMax=0` on the slice, `--memory-swap` equal to `--memory` on the agent), so their usage is RAM only. Gate-created containers at 1000 are always ahead of live services (they would need a live process over 33.9 GB).
+  - **Lower than 500 was not chosen:** a full guarantee inside the slice (agent at its 4 GB cap against any dev container) needs a gap of about 930 points, which would leave the agent at ~70 and worth only ~2.4 GB host-wide, less than the model server holds.
+- `make itest-oom` now checks agent 3.0 GB with dev 1.6 GB as pass/fail (dev dies, agent survives) and checks the agent's `oom_score_adj` is 500.
 
 ## 2026-09-29 · The build cap check, and when a slice is idle
 
 - **What:** `agentbox/buildcap.py` is the part of the step 5 gate that caps builds: before every build it requires the slice to be active (`systemctl --user` reports it active and its cgroup has a finite `memory.max`), refuses a client-supplied `cgroupparent`, drops the client's memory and CPU settings, and sets `cgroupparent` to `<slice path>/<session>-build` plus its own `memory`/`memswap` (so a build is capped twice: its own limit and the slice). `make itest` proves it against a real podman service: an inactive slice refuses the build, and an active one gives the `RUN` step the gate's limit in a cgroup under the slice.
 - **Found:** systemd keeps a slice active once it has been used, even when empty. `agentbox.slice` is idle only after a boot (or a manager restart) until the first session, which is exactly when an unchecked build would run uncapped. The integration test uses a never-started slice name for the idle case, since stopping `agentbox.slice` would be a systemd change.
+- **The window, stated plainly (30 Sep):** the only time a build could run uncapped is before any session exists. The gate only runs inside a session, and every session's containers sit in the slice, so whenever the gate is there to forward a build, the slice is active. The check before each build is the second line: it turns any case we have not thought of into a refused build instead of a silent uncapped one.
+- **Build memory (30 Sep):** each build's own limit is the project's `build_memory`, default `2g` (compiled scientific Python and conda builds need more than 1g). It is refused at `ab project add` and at session start if it is not positive or is above the slice's `MemoryMax`.
 
 ## 2026-09-29 · Commit hooks are never skipped
 

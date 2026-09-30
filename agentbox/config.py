@@ -21,11 +21,12 @@ DEFAULTS = {
     "agent_memory": "4g",
     "agent_cpus": "3",
     "agent_pids": 4096,
-    "oom_score_adj": 900,          # agent; containers the gate creates get 1000, so they die first
+    "oom_score_adj": 500,          # agent and proxy; containers the gate creates get 1000 (decisions.md: OOM order)
     "squid_image": "docker.io/ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",  # 6.13
     "squid_memory": "256m",
     "model_host": "10.0.0.2",
     "model_port": 8080,
+    "build_memory": "2g",   # per-build memory limit the gate sets (step 5); a project may override it
     "lan_targets": ["10.0.0.103:8088", "10.0.0.103:8003"],   # selftest: must be refused, proxied and direct
     "backup_keep": 5,
     "backup_daily_days": 7,

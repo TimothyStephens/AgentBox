@@ -21,6 +21,26 @@ def unit_props(name):
     return dict(line.split("=", 1) for line in p.stdout.splitlines() if "=" in line)
 
 
+def parse_size(value):
+    """'2g', '512m', '1024k' or a byte count -> bytes."""
+    s = str(value).strip().lower()
+    mult = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
+    try:
+        if s and s[-1] in mult:
+            return int(float(s[:-1]) * mult[s[-1]])
+        return int(s)
+    except ValueError:
+        raise AgentboxError(f"bad size {value!r} (use e.g. 2g or 512m)")
+
+
+def slice_memory_max(name):
+    """The installed slice's MemoryMax in bytes, or None when there is no slice or no cap."""
+    if not name:
+        return None
+    v = unit_props(name).get("MemoryMax", "")
+    return int(v) if v.isdigit() else None
+
+
 def _read(path):
     try:
         with open(path) as f:

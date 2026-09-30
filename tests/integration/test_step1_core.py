@@ -94,7 +94,7 @@ class Step1(unittest.TestCase):
             doc = json.loads(inspect)[0]
             env_names = [e.split("=", 1)[0] for e in doc["Config"]["Env"]]
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env_names)
-            self.assertEqual(doc["HostConfig"]["OomScoreAdj"], 900)
+            self.assertEqual(doc["HostConfig"]["OomScoreAdj"], 500)
             self.assertEqual(doc["HostConfig"]["Memory"], 4 * 1024 ** 3)
             if ENV.slice:
                 self.assertIn("agentbox.slice", doc["HostConfig"].get("CgroupParent", ""))
