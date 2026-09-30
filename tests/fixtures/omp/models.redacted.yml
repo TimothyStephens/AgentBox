@@ -1,0 +1,96 @@
+providers:
+  llama-cpp:
+    api: openai-completions
+    baseUrl: http://10.0.0.2:8080/v1
+    apiKey: REDACTED
+    models:
+      - id: DeepSeek-R1-Distill-Qwen-32B-Q4_K_M
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: Qwen3.6-27B-Q4_K_M
+        contextWindow: 180000
+        maxOut: 16000
+        reasoning: true
+      - id: Qwen3.6-27B-UD-Q4_K_XL
+        contextWindow: 180000
+        maxOut: 16000
+        reasoning: true
+      - id: Qwen3.6-27B-Q8_0
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: qwen3.6-27B-Q8_0-nvfp4-MTP-alt
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: gemma-4-26B-A4B-it-MXFP4_MOE
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: gemma-4-26B-A4B-it-UD-Q4_K_M
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: Qwen3.6-35B-A3B-UD-Q4_K_XL
+        contextWindow: 128000
+        maxOut: 16000
+      - id: Qwen3-Coder-Next-Q4_K_M
+        contextWindow: 128000
+        maxOut: 16000
+      - id: Qwen3.8-27B-UD-Q8_K_XL
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+      - id: Qwen3.8-27B-UD-Q4_K_XL
+        contextWindow: 180000
+        maxOut: 16000
+        reasoning: true
+      - id: Codestral-22B-v0.1-Q4_K_M
+        contextWindow: 128000
+        maxOut: 16000
+      - id: DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M
+        contextWindow: 128000
+        maxOut: 16000
+  gemini:
+    api: google-generative-ai
+    apiKey: REDACTED
+  openai:
+    api: openai-completions
+    baseUrl: https://api.openai.com/v1
+    apiKey: REDACTED
+    models:
+      - id: gpt-4o
+        contextWindow: 128000
+        maxOut: 16000
+      - id: gpt-4o-mini
+        contextWindow: 128000
+        maxOut: 16000
+      - id: o3-mini
+        contextWindow: 128000
+        maxOut: 16000
+        reasoning: true
+  anthropic:
+    api: anthropic-messages
+    baseUrl: https://api.anthropic.com
+    apiKey: REDACTED
+    models:
+      - id: claude-sonnet-4-20250514
+        contextWindow: 200000
+        maxOut: 16000
+      - id: claude-opus-4-20250514
+        contextWindow: 200000
+        maxOut: 16000
+      - id: claude-haiku-4-20250929
+        contextWindow: 200000
+        maxOut: 16000
+  openrouter:
+    baseUrl: "https://openrouter.ai/api/v1"
+    apiKey: REDACTED
+    api: "openai-responses"
+    auth: "apiKey"
+    models:
+      - id: "anthropic/claude-3.5-sonnet"
+        name: "Claude 3.5 Sonnet (OpenRouter)"
+        contextWindow: 200000
+        maxTokens: 8192

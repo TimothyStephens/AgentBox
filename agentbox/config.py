@@ -3,7 +3,7 @@
 Every path can be moved with an environment variable so tests never touch the real
 ~/.config/agentbox or ~/.local/share/agentbox:
 
-  AB_CONFIG_DIR   default ~/.config/agentbox        (projects.toml, agentbox.toml, presets/, claude/, tokens)
+  AB_CONFIG_DIR   default ~/.config/agentbox        (projects.toml, agentbox.toml, presets/, <agent>/ seeds, tokens, keys/)
   AB_DATA_DIR     default ~/.local/share/agentbox   (per-project agent state, backups)
   AB_RUN_DIR      default $XDG_RUNTIME_DIR/agentbox (live session metadata, generated configs; tmpfs)
   AB_PODMAN       default podman
@@ -37,6 +37,8 @@ DEFAULTS = {
     "token_dir": "",       # empty: the config dir. Where the <agent>-oauth-token files live.
     "git_name": "",        # empty: taken from the host's global git config
     "git_email": "",
+    "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
+    "omp_home": "~/.omp",  # the host's OMP install; only named pieces of it are mounted (adapters/omp.py)
 }
 
 

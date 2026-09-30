@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
+from . import keys as keysmod
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -39,8 +40,13 @@ def _no_commas(path, what):
         raise AgentboxError(f"{what} {path!r}: paths with commas or newlines cannot be mounted safely")
 
 
+def _inside(path, parent):
+    return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
 def protected_extra(settings):
-    return [settings.config_dir, settings.data_dir, settings.run_dir]
+    from .keys import keys_dir
+    return [settings.config_dir, settings.data_dir, settings.run_dir, keys_dir(settings)]
 
 
 def load_project(settings, name, *, with_secrets=False):
@@ -207,6 +213,7 @@ class Session:
         self.plan = None
         self.networks = []
         self.env = {}
+        self.setup = adapters.SessionSetup()
         self.egress = "none"
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
@@ -250,6 +257,14 @@ class Session:
                 self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
                           "are readable by the agent (accepted as rotated)")
         self.reserve_name()
+        try:
+            self._prepare_reserved(do_backup)
+        except BaseException:
+            self.teardown()                  # nothing is running yet; remove the run dir it reserved
+            raise
+
+    def _prepare_reserved(self, do_backup):
+        p = self.project
         self._write_meta()
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), secrets=p.value("secrets"),
@@ -266,7 +281,34 @@ class Session:
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
-        self.adapter.seed_state(self.settings, self.state_dir, p.root, sandbox_notes(p, self.egress))
+        notes = sandbox_notes(p, self.egress)
+        self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
+        self.setup = self.adapter.prepare_session(self, notes)
+        self._check_setup()
+
+    def _check_setup(self):
+        """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
+        key names that are safe in a path and a shell variable."""
+        st = self.setup
+        for dst in st.tmpfs:
+            _no_commas(dst, "adapter tmpfs")
+            if not st.mount_root or not _inside(dst, st.mount_root):
+                raise AgentboxError(f"adapter tmpfs {dst} is not under the adapter's root {st.mount_root!r}")
+        for src, dst, _ro in st.mounts:
+            _no_commas(src, "adapter mount")
+            _no_commas(dst, "adapter mount")
+            if not st.mount_root or not _inside(dst, st.mount_root) or dst == st.mount_root:
+                raise AgentboxError(f"adapter mount {dst} is not under the adapter's root {st.mount_root!r}")
+        for provider, path in st.keys.items():
+            keysmod.env_name(provider)
+            _no_commas(os.path.realpath(path), "key file")
+        for k, v in st.env.items():
+            if not re.match(r"^[A-Z_][A-Z0-9_]*$", k) or "\n" in str(v):
+                raise AgentboxError(f"adapter env {k!r} is not a plain variable")
+
+    @property
+    def model_domains(self):
+        return sorted(set(self.adapter.model_domains) | set(self.setup.model_domains))
 
     def _write_meta(self):
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
@@ -283,6 +325,8 @@ class Session:
         out = [p.root] + p.data_ro + p.data_rw + [self.state_dir, self.settings.session_run_dir(self.name)]
         if self.token_file:
             out.append(os.path.realpath(self.token_file))
+        out += [os.path.realpath(src) for src, _dst, _ro in self.setup.mounts]
+        out += [os.path.realpath(k) for k in self.setup.keys.values()]
         return out + list(extra)
 
     def network_args(self):
@@ -299,7 +343,7 @@ class Session:
             opts.append("--tty")
         opts += hardening.fixed_flags(s, cgroup_parent=s.cgroup_parent)
         opts.append(f"--tmpfs={HOME}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
-        env = {"HOME": HOME, **git_identity(s, a.name), **a.env, **self.env}
+        env = {"HOME": HOME, **git_identity(s, a.name), **a.env, **self.setup.env, **self.env}
         if tty and os.environ.get("TERM"):
             env["TERM"] = os.environ["TERM"]
         opts += [f"--env={k}={v}" for k, v in env.items()]
@@ -310,23 +354,43 @@ class Session:
             opts.append(f"--mount=type=bind,src={self.state_dir},dst={a.state_mount}")
         if self.token_file:
             opts.append(f"--mount=type=bind,src={os.path.realpath(self.token_file)},dst={TOKEN_PATH},ro")
+        opts += [mounts.Mount("tmpfs", d).podman_arg() for d in self.setup.tmpfs]
+        for src, dst, ro in self.setup.mounts:
+            opts.append(f"--mount=type=bind,src={os.path.realpath(src)},dst={dst}" + (",ro" if ro else ""))
+        for provider, path in sorted(self.setup.keys.items()):
+            opts.append(f"--mount=type=bind,src={os.path.realpath(path)},"
+                        f"dst={keysmod.CONTAINER_DIR}/{provider},ro")
         extra_srcs = []
         for src, dst in extra_mounts:
             opts.append(f"--mount=type=bind,src={src},dst={dst},ro")
             extra_srcs.append(src)
         opts.append("--entrypoint=/bin/sh")
         hardening.audit(opts + [a.image], allowed_mount_srcs=self.allowed_mount_srcs(extra_srcs),
-                        allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"],
+                        allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"]
+                        + ([self.setup.mount_root] if self.setup.mount_root else []),
                         networks=self.networks, tmpfs_dirs=("/tmp", HOME))
         return args + opts + [a.image, "-c", self.wrapper(), "agentbox"] + list(command)
 
     def wrapper(self):
-        """Exports the token from its read-only mount just before exec; it is never in podman's config."""
-        if not self.token_file:
-            return 'exec "$@"'
-        var = self.adapter.token_env
-        return (f'if [ -r {TOKEN_PATH} ]; then IFS= read -r {var} < {TOKEN_PATH}; export {var}; fi; '
-                f'exec "$@"')
+        """Exports the token and provider keys from their read-only mounts just before exec; they are never
+        on a command line or in podman's config."""
+        files = []
+        if self.token_file:
+            files.append((self.adapter.token_env, TOKEN_PATH))
+        for provider in sorted(self.setup.keys):
+            files.append((keysmod.env_name(provider), f"{keysmod.CONTAINER_DIR}/{provider}"))
+        return "".join(f'if [ -r {path} ]; then IFS= read -r {var} < {path}; export {var}; fi; '
+                       for var, path in files) + 'exec "$@"'
+
+    @property
+    def secret_env_names(self):
+        """The environment variables that legitimately hold a credential in this session."""
+        out = [self.adapter.token_env] if self.token_file else []
+        return out + [keysmod.env_name(p) for p in sorted(self.setup.keys)]
+
+    def secret_files(self):
+        """Host files whose contents are this session's credentials."""
+        return ([self.token_file] if self.token_file else []) + [self.setup.keys[k] for k in sorted(self.setup.keys)]
 
     def agent_command(self, shell=False, extra=()):
         if shell:
@@ -423,7 +487,7 @@ class NetSession(Session):
         if not addrs:
             raise AgentboxError("cannot tell the VM's own addresses (enumeration failed and host_addrs is empty); "
                                 "refusing to start a proxy without a host-address rule")
-        return egress.squid_conf(self.egress, model_domains=self.adapter.model_domains, model_host=s.model_host,
+        return egress.squid_conf(self.egress, model_domains=self.model_domains, model_host=s.model_host,
                                  model_port=s.model_port, extra_domains=self.project.extra_domains,
                                  host_addrs=addrs, dns=dns)
 
@@ -465,6 +529,8 @@ class NetSession(Session):
         pm.run(self.proxy_run_args(conf))
         self._wait_proxy()
         self.env.update(egress.proxy_env(self.proxy_name))
+        for var in self.adapter.proxy_url_env:
+            self.env[var] = self.env["HTTPS_PROXY"]
 
     def _wait_proxy(self):
         deadline = time.time() + float(self.settings.ready_timeout)
@@ -483,7 +549,7 @@ class NetSession(Session):
         from .selftest import runner
         s = self.settings
         runner.network_cases(builder, self.egress, model=(s.model_host, s.model_port),
-                             lan_targets=list(s.lan_targets), model_domains=self.adapter.model_domains,
+                             lan_targets=list(s.lan_targets), model_domains=self.model_domains,
                              extra_domains=self.project.extra_domains)
 
     def teardown(self):

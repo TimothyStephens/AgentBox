@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image omp-live
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -25,6 +25,16 @@ claude-live:
 # pushes agentbox.slice past its cap and checks who is OOM-killed.
 itest-oom:
 	python3 -m tests.oom.itest_oom
+
+# Run by Tim, not by the builder: OMP with the real ~/.omp, real keys (read in place) and the real models.
+# AB_LIVE_EGRESS=locked|packages|open (default packages); AB_LIVE_MODEL=<provider/model> picks the model.
+omp-live:
+	python3 -m tests.live.omp_live
+
+# The OMP session image, derived from localhost/omp-env (images/omp/Containerfile explains each change).
+omp-image:
+	podman build --pull=never --build-arg AB_HOME=$(HOME) -t localhost/agentbox-omp:latest \
+	  -t localhost/agentbox-omp:$$(date +%Y%m%d) images/omp
 
 # Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
 install-slice:

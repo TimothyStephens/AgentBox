@@ -216,6 +216,8 @@ http_access deny  all
 
 ### Model key gateway
 
+Deferred (decisions.md, 30 Sep): keys enter the session as dedicated, spend-capped files instead. The gateway returns if a provider's key cannot be capped or scoped.
+
 - API keys for cloud models live in a small gateway on the session network (a LiteLLM-style proxy), never in the agent container.
 - The agent's model config points at the gateway with no keys; the gateway adds them and forwards through the proxy.
 - With open egress, the most an injected agent can send out is what the sandbox holds: project code and granted data, not your credentials.
@@ -239,8 +241,8 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 **Model credentials**
 
-- One keys file, `~/.config/agentbox/keys.env` (mode `0600`), set with `ab keys set <provider>`. Keys are removed from `~/.omp/agent/models.yml` so there is one place to update.
-- The gateway watches the keys file: an updated key applies to every running session at once, and never enters a sandbox.
+- One file per provider, `~/.config/agentbox/keys/<provider>` (0600), set with `ab keys set <provider>`, which warns that a pay-per-use key should be dedicated to agentbox and spend-capped at the provider. Keys are removed from `~/.omp/agent/models.yml` so there is one place to update.
+- A key enters a session like the Claude token: its file is mounted read-only and exported as `AB_KEY_<PROVIDER>` just before the agent starts, so it is never on a command line or in podman's config; the generated model config names the variable. Only providers with a key are offered, and their API domains are allowed in every egress mode (decisions.md lists them). The agent can read the keys it holds; with a dedicated, capped key that is bounded by the cap, so the key gateway below stays deferred.
 - Claude Code uses a dedicated subscription token from `claude setup-token`, kept in `~/.config/agentbox/claude-oauth-token` (0600) and rotated with `ab keys rotate claude`. It is mounted read-only into the session and exported as `CLAUDE_CODE_OAUTH_TOKEN` just before the agent starts, so it is never in podman's container config. The agent can read it; that is accepted because it only makes model requests and is revocable. It never lands in session directories, logs, backups or selftest output: `make itest` checks what the launcher writes with a fake token, and runs Claude against a local stub API that accepts that token, so Claude's own post-authentication writes are checked too; `make claude-live` repeats the check with the real token and API. The host's own login (`~/.claude`) is never mounted.
 
 **How host edits reach a running session**
@@ -250,7 +252,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 | Directory bind mount (install dirs, session history) | Visible immediately |
 | Single-file bind mount (`config.yml`, `settings.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. Use `ab reload <session>`. |
 | Generated at session start (`models.yml`, `AGENTS.md`, squid rules) | Next session, or `ab reload <session>` |
-| Keys file | Live, through the gateway |
+| Key files | Next session (they are read at start) |
 
 ### Podman access via sockguard
 
@@ -409,16 +411,15 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening only |
-| Image | Add `python-is-python3`, `debugpy`, and the podman remote client + podman-compose for the dev tier |
-| Install and cache (`versions`, `plugins`, `repos`, `pylibs`, `.cache`) | Read-only; only `omp-env install` writes them |
-| Config (`config.yml`) | Read-only |
-| Model config (`models.yml`) | Generated per session: cloud providers point at the key gateway, `10.0.0.2:8080` goes through the proxy |
-| Sessions | Per project, read-write |
-| `run` | tmpfs, as its own mount (not under an overlay of `~/.omp`) |
-| Browser profile | Inside the `run` tmpfs, or a per-project directory to keep logins |
-| Approval prompts | Follow the preset |
+| Image | `localhost/agentbox-omp`, derived from `omp-env` (`make omp-image`): `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`, plus `python-is-python3`, `debugpy`, Chromium and the compose tool for the dev tier |
+| What comes from the host's `~/.omp` | A whitelist, all read-only: the active `versions/<sha>/` with `plugins`, `repos`, `pylibs`; `agent/config.yml`; `bin/mags-codedev`; `.cache/ms-playwright`. Nothing else (decisions.md lists what is left out and why) |
+| `~/.omp` in the session | A tmpfs owned by the agent, with the pieces above mounted on it; `run/` and caches live there and vanish with the session |
+| Model config (`models.yml`) | Generated per session from a keyless seed (`~/.config/agentbox/omp/models.yml`): only providers with a key file (`ab keys set`), plus the local model server always; keys are named by variable, exported at start like the Claude token |
+| Sessions, OMP's databases, logs | Per project, read-write: `~/.local/share/agentbox/<project>/omp/{agent,logs}` at `~/.omp/agent` and `~/.omp/logs`; sessions are named after the project's real path |
+| Browser | The image's Chromium through `PUPPETEER_EXECUTABLE_PATH`, proxied with `PUPPETEER_PROXY`; its shared daemon runs in the session's `run` tmpfs |
+| Approval prompts | OMP's own `--approval-mode`: `yolo` when the preset turns approvals off, `always-ask` when on (OMP's default is `yolo`) |
 | `AGENTS.md` | Generated per session, read-only |
-| Old `--workspace--` and `-tmp*` buckets | Archived on the host, never mounted |
+| Old `--workspace--` and `-tmp*` buckets | Never mounted (the host's `agent/sessions` is not mounted at all) |
 
 **Claude Code**
 
@@ -486,7 +487,9 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab ls` | Running sessions, their project, preset and uptime |
 | `ab kill <session>` | Tear down everything the session created |
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
-| `ab keys set <provider>` | Set or rotate a model API key; applies to running sessions through the gateway |
+| `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
+| `ab keys rotate claude` | Replace the Claude subscription token |
+| `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
 | `ab gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
@@ -622,14 +625,15 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [ ] Claude Code with a setup-token token works when its only route out is the squid proxy (replaces spike 4): `make claude-live`, run by Tim.
 - [x] DNS on the internal session network does not resolve public names (step 2; kept as a selftest case).
 - [ ] Model key gateway: deferred. LiteLLM forwarding works (spike 4); needed only if a remote model is billed by API key.
-- [ ] OMP's browser and web tools honour the proxy variables (they fail closed if not).
+- [x] OMP's browser and web tools honour the proxy variables: OMP runs on bun, whose fetch honours `HTTPS_PROXY`/`NO_PROXY`; its browser gets the proxy through `PUPPETEER_PROXY` (step 3, `make itest`). OMP's own `PI_PROXY` is not set: it bypasses private ranges, so the local model would go direct and fail.
 - [x] podman-compose passes `driver_opts: isolate: "strict"` through to the network, and it isolates (spike 5).
 - [x] Squid IP-literal rules for `10.0.0.2:8080`, and private-address refusal after DNS resolution, behave as written (spike 3, 14 of 14).
-- [ ] OMP's shared browser works with `run` as a real tmpfs (the probe's tmpfs was shadowed by the overlay).
-- [ ] OMP's session directory naming follows the real project path once mounted there.
+- [x] OMP's shared browser works with `run` as a real tmpfs (step 3: `~/.omp` is a tmpfs of its own; OMP opened example.com through the proxy in its shared headless browser).
+- [x] OMP's session directory naming follows the real project path once mounted there (step 3).
 - [x] Claude Code's config splits cleanly into a read-only token plus per-project state (step 1: token mounted read-only and exported at start; whole `CLAUDE_CONFIG_DIR` per project, seeded by copy).
 - [ ] Identify the python3 servers on `8004`/`8006`.
-- [ ] OMP's flag for turning its approval prompts off, so the preset's approval setting can map to it.
+- [x] OMP's flag for turning its approval prompts off: `--approval-mode=yolo|write|always-ask` (step 3). The third-party `pi-permission-system` extension in `~/.omp/agent/extensions/` is a separate policy layer; not mounted, Tim to decide.
+- [ ] OMP with the real `~/.omp`, keys and local model: `make omp-live`, run by Tim.
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
 - [ ] Gate strips restart policies from agent-created containers, so dev stacks never come back on their own.

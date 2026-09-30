@@ -1,0 +1,32 @@
+# agentbox OMP image: localhost/omp-env plus what the sandbox needs.
+#
+# Build with `make omp-image` (tags localhost/agentbox-omp:latest and :<date>). The base image is Tim's
+# omp-env (~/repos/omp-env); nothing here changes it.
+#
+# Why each change:
+#   * /root is 0700 in the base, and bun lives in /root/.bun. The sandbox runs as the host user
+#     (--userns=keep-id), so /root is opened to 0755 (it holds nothing secret in this image).
+#   * /root/.omp -> $AB_HOME/.omp: plugin links written by `omp-env install` (which runs as root) are
+#     absolute /root/.omp/... paths; inside a session ~/.omp is under the host user's home.
+#   * python-is-python3, debugpy: the debugger probe needed both (design: OMP adapter).
+#   * chromium: OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is not mounted.
+#   * podman-compose: the dev tier (step 5); the image already has the podman client.
+ARG BASE=localhost/omp-env:latest
+FROM ${BASE}
+ARG AB_HOME=/home/vmuser
+ARG DEBUGPY_VERSION=1.8.22
+ARG PODMAN_COMPOSE_VERSION=1.5.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium && apt-get clean
+RUN pip install --no-cache-dir --break-system-packages \
+        "debugpy==${DEBUGPY_VERSION}" "podman-compose==${PODMAN_COMPOSE_VERSION}"
+RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PIP_CACHE_DIR=/tmp/pip-cache
+LABEL agentbox=1 \
+      org.opencontainers.image.title="agentbox-omp" \
+      org.opencontainers.image.description="omp-env for agentbox sessions (keep-id user, chromium, debugpy)"
+WORKDIR /
+ENTRYPOINT []
+CMD ["omp"]

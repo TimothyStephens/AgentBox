@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from . import config, presets, registry, session, tokens
+from . import config, keys, presets, registry, session, tokens
 from .config import HOME
 from .errors import AgentboxError
 from .paths import check_grant
@@ -163,6 +163,26 @@ def cmd_selftest(s, a):
     return 1 if fails else 0
 
 
+def cmd_keys_set(s, a):
+    if a.provider == "claude":
+        raise AgentboxError("Claude Code uses a subscription token: `ab keys rotate claude`")
+    keys.set_key(s, a.provider)
+
+
+def cmd_keys_ls(s, a):
+    found = keys.present(s)
+    for provider in found:
+        known = ", ".join(keys.PROVIDER_DOMAINS.get(provider, [])) or "domain from the model config's baseUrl"
+        print(f"{provider:<16} {keys.env_name(provider):<24} {known}")
+    tok = s.token_file("claude")
+    print(f"{'claude (token)':<16} {'CLAUDE_CODE_OAUTH_TOKEN':<24} "
+          f"{'set' if os.path.exists(tok) else 'not set'} ({tok})")
+
+
+def cmd_keys_rm(s, a):
+    keys.remove(s, a.provider)
+
+
 def cmd_keys_rotate(s, a):
     if a.agent != "claude":
         raise AgentboxError("only `ab keys rotate claude` is supported")
@@ -221,10 +241,18 @@ def parser():
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_selftest)
 
-    keys = sub.add_parser("keys", help="model tokens").add_subparsers(dest="sub", required=True)
-    x = keys.add_parser("rotate")
+    ks = sub.add_parser("keys", help="model tokens and provider API keys").add_subparsers(dest="sub",
+                                                                                           required=True)
+    x = ks.add_parser("rotate", help="replace the Claude subscription token")
     x.add_argument("agent")
     x.set_defaults(fn=cmd_keys_rotate)
+    x = ks.add_parser("set", help="set a provider's API key (pay-per-use: make it dedicated and spend-capped)")
+    x.add_argument("provider")
+    x.set_defaults(fn=cmd_keys_set)
+    ks.add_parser("ls", help="providers with a key (names only, never values)").set_defaults(fn=cmd_keys_ls)
+    x = ks.add_parser("rm", help="remove a provider's key file")
+    x.add_argument("provider")
+    x.set_defaults(fn=cmd_keys_rm)
     return p
 
 

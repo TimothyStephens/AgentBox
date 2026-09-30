@@ -15,6 +15,20 @@ def _token_value(path):
         return f.read().strip()
 
 
+def _secret_values(sess):
+    return [v for v in (_token_value(p) for p in sess.secret_files()) if v]
+
+
+def _state_mounts(sess):
+    if sess.adapter.state_mount:
+        return [sess.adapter.state_mount]
+    return [dst for src, dst, ro in sess.setup.mounts if not ro and _inside(src, sess.state_dir)]
+
+
+def _inside(path, parent):
+    return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
 def _grep_tree(root, needle):
     """Paths under root whose contents contain needle (bytes)."""
     hits = []
@@ -47,7 +61,7 @@ def build_cases(sess, settings):
                       settings.data_dir, settings.backups_dir]
     b = runner.Builder()
     runner.filesystem_cases(b, project=p, plan=sess.plan, other_roots=others, other_state_dirs=other_state,
-                            token_env=sess.adapter.token_env, state_mount=sess.adapter.state_mount,
+                            secret_envs=sess.secret_env_names, state_mounts=_state_mounts(sess),
                             host_protected=host_protected, uid=os.getuid(),
                             required_tools=sess.adapter.required_tools)
     sess.add_network_cases(b)
@@ -70,33 +84,34 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
     results += config_check
     results += host_checks(sess, settings, out + (proc.stderr or ""))
-    token = _token_value(sess.token_file)
+    secrets = _secret_values(sess)
     for r in results:
-        r.detail = runner.scrub(r.detail, [token])
-    return results, runner.scrub(out, [token])
+        r.detail = runner.scrub(r.detail, secrets)
+    return results, runner.scrub(out, secrets)
 
 
 def podman_config_check(sess):
-    """Create (not start) a container from the session's exact argv and read podman's stored config: the
-    token must not be in it, under any name."""
-    token = _token_value(sess.token_file)
+    """Create (not start) a container from the session's exact argv and read podman's stored config: no token
+    or key may be in it, under any name."""
+    secrets = _secret_values(sess)
     args = sess.run_args(["true"], extra_mounts=sess.probe_mounts)
     name = f"{sess.name}-cfgcheck"
     args = ["create"] + [f"--name={name}" if a.startswith("--name=") else a for a in args[2:]]
     created = sess.podman.run(args, check=False)
     if created.returncode != 0:
-        return Result("model token not in podman's container config", "FAIL",
+        return Result("model token and keys not in podman's container config", "FAIL",
                       f"could not create the check container: {(created.stderr or '').strip()[-200:]}")
     try:
         doc = sess.podman.run(["inspect", name], check=False).stdout or ""
     finally:
         sess.podman.run(["rm", "-f", name], check=False)
     bad = []
-    if token and token in doc:
-        bad.append("token value present")
-    if f'"{sess.adapter.token_env}=' in doc:
-        bad.append(f"{sess.adapter.token_env} set in the stored environment")
-    return Result("model token not in podman's container config", "FAIL" if bad else "PASS",
+    if any(v in doc for v in secrets):
+        bad.append("a token or key value is present")
+    for var in sess.secret_env_names:
+        if f'"{var}=' in doc:
+            bad.append(f"{var} set in the stored environment")
+    return Result("model token and keys not in podman's container config", "FAIL" if bad else "PASS",
                   "; ".join(bad) or "absent")
 
 
@@ -109,14 +124,15 @@ def host_checks(sess, settings, output):
     leftovers = sess.podman.ids("container", {"agentbox.session": sess.name, **settings.labels})
     leftovers += sess.podman.ids("network", {"agentbox.session": sess.name, **settings.labels})
     res.append(Result("session torn down", "PASS" if not leftovers else "FAIL", " ".join(leftovers) or "clean"))
-    token = _token_value(sess.token_file).encode()
-    if token:
+    secrets = [v.encode() for v in _secret_values(sess)]
+    if secrets:
         hits = []
-        for where in (sess.state_dir, snaps, os.path.join(settings.data_dir, "logs"),
-                      settings.session_run_dir(sess.name)):
-            hits += _grep_tree(where, token)
-        if token in output.encode():
-            hits.append("selftest output")
-        res.append(Result("model token not on disk (state, backups, logs) or in output",
-                          "PASS" if not hits else "FAIL", " ".join(hits) or "absent"))
+        for secret in secrets:
+            for where in (sess.state_dir, snaps, os.path.join(settings.data_dir, "logs"),
+                          settings.session_run_dir(sess.name)):
+                hits += _grep_tree(where, secret)
+            if secret in output.encode():
+                hits.append("selftest output")
+        res.append(Result("model token and keys not on disk (state, backups, logs) or in output",
+                          "PASS" if not hits else "FAIL", " ".join(sorted(set(hits))) or "absent"))
     return res

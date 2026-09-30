@@ -59,7 +59,7 @@ def posture_check(obs):
     return ("PASS" if ok else "FAIL", obs)
 
 
-def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, token_env, state_mount,
+def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, secret_envs, state_mounts,
                      host_protected, uid, required_tools):
     b.add("status", [], "posture: CapEff 0, NoNewPrivs 1, Seccomp 2", posture_check)
 
@@ -122,14 +122,14 @@ def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, token_e
           expect("no"))
     b.add("exists", ["/run/podman/podman.sock"], "rootful podman socket not present", expect("no"))
 
-    b.add("envnames", [], "no credential-like variables except the session token",
-          lambda obs: _env_names_check(obs, token_env))
-    b.add("envmatch", [SECRET_VALUE_RE], "no API-key-shaped values in the environment",
-          lambda obs: ("PASS" if not obs.strip() else "FAIL", obs or "none"))
-    if token_env:
-        b.add("envset", [token_env], f"{token_env} is set for the agent", expect("set"))
-    if state_mount:
-        b.add("write", [os.path.join(state_mount, ".abt-selftest")], "agent state dir writable", expect("ok"))
+    b.add("envnames", [], "no credential-like variables except the session's own token and keys",
+          lambda obs: _env_names_check(obs, secret_envs))
+    b.add("envmatch", [SECRET_VALUE_RE], "no API-key-shaped values in the environment (except the session's keys)",
+          lambda obs: _env_names_check(obs, secret_envs, any_name=True))
+    for var in secret_envs:
+        b.add("envset", [var], f"{var} is set for the agent", expect("set"))
+    for m in state_mounts:
+        b.add("write", [os.path.join(m, ".abt-selftest")], f"agent state dir {m} writable", expect("ok"))
     for t in required_tools:
         b.add("which", [t], f"tool {t} present", expect_not("missing"))
 
@@ -148,8 +148,9 @@ def _sha(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def _env_names_check(obs, token_env):
-    bad = [n for n in obs.split() if n != token_env and any(w in n.upper() for w in SECRET_NAME_WORDS)]
+def _env_names_check(obs, allowed, any_name=False):
+    bad = [n for n in obs.split() if n not in allowed
+           and (any_name or any(w in n.upper() for w in SECRET_NAME_WORDS))]
     return ("PASS" if not bad else "FAIL", "found: " + " ".join(bad) if bad else "none")
 
 

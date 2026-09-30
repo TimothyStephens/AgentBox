@@ -46,7 +46,7 @@ class Step1(unittest.TestCase):
         results = self.assertSelftest("p1")
         labels = " | ".join(r["label"] for r in results)
         for want in ("posture", ".git/hooks", "read-only data", "masked", ".env shows .env.dev",
-                     "other project p2 root not visible", "model token not on disk"):
+                     "other project p2 root not visible", "model token and keys not on disk"):
             self.assertIn(want, labels)
 
     def test_selftest_lockdown(self):

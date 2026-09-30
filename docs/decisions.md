@@ -150,3 +150,53 @@ The independent review (`docs/reviews/2026-09-30-steps-1-2.md`, annotated per fi
 
 - **What:** besides the secret scan over the session's commits, the report lists changed files that run later on the host: `Makefile`, `package.json` scripts, `pyproject.toml`/`setup.py`/`setup.cfg` scripts and build hooks, `.pre-commit-config.yaml`, `.vscode/tasks.json`, `.envrc`, git config, and files that became executable. It informs; it does not block.
 - **Why:** these are documented, not overlaid (review #5), so the report is where the reviewer finds them.
+
+## 2026-09-30 · Provider API keys: one file each, exported like the Claude token (step 3)
+
+- **What:** each pay-per-use provider key lives in `~/.config/agentbox/keys/<provider>` (0600, owned by the user, not a symlink; the directory is 0700), set with `ab keys set <provider>`, listed (names only) with `ab keys ls`, removed with `ab keys rm`. A key enters a session exactly like the Claude token: its file is bind-mounted read-only at `/run/agentbox/keys/<provider>`, and the session wrapper exports it as `AB_KEY_<PROVIDER>` just before exec. It is never on a command line, in podman's container config, in the generated model config (which names the variable), or in logs, state or backups. The selftest and `make itest` check all of these with fake keys, as for the token. A key file that fails the checks refuses the session rather than being skipped.
+- **Only providers with a key are offered.** The OMP model config is generated from a keyless seed, `~/.config/agentbox/omp/models.yml` (same format as OMP's; the launcher refuses a seed holding `apiKey`, a credential-like header, or a `!command` value). A provider without a key file is left out. The local model server (`10.0.0.2:8080`) is always included, with its key if `keys/llama-cpp` exists; if the seed has no provider for it, a default `llama-cpp` entry is added. A key whose provider is not in the seed is not mounted.
+- **Domains:** a keyed provider's API domains join the proxy's model allowlist, allowed in every egress mode (including `locked`):
+
+  | Provider | Domains |
+  | --- | --- |
+  | `anthropic` | `api.anthropic.com` |
+  | `openai` | `api.openai.com` |
+  | `gemini`, `google` | `generativelanguage.googleapis.com` |
+  | `openrouter` | `openrouter.ai` |
+  | `mistral` | `api.mistral.ai` |
+  | `groq` | `api.groq.com` |
+  | `deepseek` | `api.deepseek.com` |
+  | `xai` | `api.x.ai` |
+  | any other | the host of its `baseUrl` (a name, not an IP); without one the provider is left out |
+
+  A `baseUrl` host is added for a known provider too. A provider whose `baseUrl` is a private or LAN address other than the local model server is left out (squid would refuse it anyway).
+- **Accepted risk, and why the key gateway stays deferred:** the agent can read the keys its session holds. `ab keys set` says so and asks for a key made only for agentbox, with a spending cap at the provider. With dedicated, spend-capped, revocable keys, the worst case is bounded by the cap, which is what the LiteLLM gateway would otherwise buy; it stays deferred until a key cannot be capped or scoped.
+
+## 2026-09-30 · What the OMP session mounts from ~/.omp (step 3)
+
+A whitelist, not "everything minus exclusions". Read-only, from the host's `~/.omp` (setting `omp_home`):
+
+| Mounted | Why |
+| --- | --- |
+| `versions/<active>/` | The provisioned plugins, repos and pylibs. Plugin links written by `omp-env install` are absolute `/root/.omp/versions/<sha>/...` paths |
+| `plugins`, `repos`, `pylibs` | Their symlinks resolved; each must point into the same `versions/<active>/` (otherwise refused, e.g. during an install) |
+| `agent/config.yml` | OMP settings (design: read-only) |
+| `bin/mags-codedev` | The MAGS-CodeDev CLI wrapper |
+| `.cache/ms-playwright` | Playwright's Chromium, for Python tools in `pylibs` |
+
+Each is refused if it is a symlink or resolves outside `~/.omp`. Never mounted: `agent/models.yml` and `models.yml.backup` (keys), `agent/.mcp.json` and `agent/mags-codedev.yaml` (may hold credentials; waiting on Tim), `agent/extensions/` (see the approvals entry), `agent/sessions` and every database, blob and terminal file (other projects' history), other `versions/`, `logs`, `run`, `cache`, `.cache/pip`, `puppeteer` (the image's Chromium is used instead), `stats.db`, `.omp-sandbox.json`, `.omp-env.json`, `gpu_cache.json`.
+
+Per project, read-write and persistent: `~/.local/share/agentbox/<project>/omp/agent` at `~/.omp/agent` and `.../omp/logs` at `~/.omp/logs`. Generated per session, read-only on top: `agent/models.yml`, `agent/AGENTS.md`. `~/.omp` itself is a tmpfs owned by the agent (`notmpcopyup`), so `run/` and caches are real tmpfs, per session. Found by the step 3 itest: without it the runtime creates `~/.omp` root-owned as a parent for the mounts, and OMP fails with `EACCES: mkdir ~/.omp/run`.
+
+**Proxy:** OMP runs on bun, whose fetch honours `HTTPS_PROXY`/`NO_PROXY`, so model calls, including those to `10.0.0.2:8080`, go through squid (itest: bun's fetch to the local model shows in the proxy log). OMP's own `PI_PROXY` is deliberately not set: it bypasses private ranges, so the local model would go direct and find no route.
+
+## 2026-09-30 · The OMP image is derived, not rebuilt (step 3)
+
+- **What:** `images/omp/Containerfile` builds `localhost/agentbox-omp` from Tim's `localhost/omp-env` (`make omp-image`). It opens `/root` to 0755 (bun lives in `/root/.bun`, and the session user is not root), links `/root/.omp` to `$HOME/.omp`, and adds `python-is-python3`, `debugpy` 1.8.22, Debian's `chromium` and the compose tool at 1.5.0. `omp-env` itself is unchanged. The podman client in the image is 4.3.1 (Debian bookworm), talking to podman 5.7 on the host; to be checked in step 5.
+- **Browser:** OMP's browser tool uses `PUPPETEER_EXECUTABLE_PATH` (the image's Chromium) and passes a proxy to Chromium only through `PUPPETEER_PROXY`, so the session sets that to the squid URL too (an adapter's `proxy_url_env`).
+- **Why:** OMP's own install stays the source of truth for extensions; the derived image only fixes what a non-root, read-only, proxied session needs. The apt lists are left in the image (about 20 MB): the guard hook matched the usual apt-lists cleanup line in the Containerfile text.
+
+## 2026-09-30 · OMP approvals map to OMP's own flag, not pi-permission-system (step 3)
+
+- **What:** approvals off → `omp --approval-mode=yolo`; on (lockdown) → `--approval-mode=always-ask`. OMP's `tools.approvalMode` defaults to `yolo`, so without the flag a lockdown session would never ask.
+- **pi-permission-system** (`~/.omp/agent/extensions/`) is a third-party extension (npm `pi-permission-system`, MIT) that enforces allow/ask/deny policies per tool, bash command pattern, MCP server and skill from a `pi-permissions.jsonc` file, forwards subagent `ask` prompts to the main session, and has its own yolo toggle. It is a policy layer on top of OMP, not its approval switch. It is not mounted; whether to bring it in (read-only, with a policy per preset) is Tim's call.

@@ -95,9 +95,11 @@ def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(),
         "acl CONNECT method CONNECT",
         "acl sslport port 443",
         "acl webports port 80 443",
-        "acl models dstdomain " + " ".join(dedupe(model_domains)),
     ]
-    allow = ["http_access allow models"]
+    allow = []
+    if model_domains:       # none for an agent that only uses the local model server
+        lines.append("acl models dstdomain " + " ".join(dedupe(model_domains)))
+        allow.append("http_access allow models")
     if mode in ("packages", "open"):
         lines.append("acl packages dstdomain " + " ".join(dedupe(PACKAGES)))
         allow.append("http_access allow packages")
