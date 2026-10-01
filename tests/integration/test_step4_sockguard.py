@@ -222,6 +222,23 @@ class Step4(unittest.TestCase):
                 proc.kill()
             proc.communicate()
 
+    def test_g_client_versions_match_the_server(self):
+        """Both agent images carry podman-remote (first on PATH) of the server's major version, and the
+        compose tool at the host's version."""
+        import re
+        host = subprocess.run(["podman-compose", "--version"], capture_output=True, text=True).stdout
+        host_compose = re.search(r"podman-compose version (\S+)", host).group(1)
+        script = ("command -v podman; podman --remote version --format 'CLIENT={{.Client.Version}} "
+                  "SERVER={{.Server.Version}}'; podman-compose version 2>/dev/null | grep -i 'podman-compose version'")
+        for agent in ("claude", "omp"):
+            p, _sess = run_in_session("sgobs", script, agent=agent)
+            print(f"\n{agent}: {p.stdout.strip()}\n{p.stderr[-300:]}")
+            self.assertIn("/usr/local/bin/podman\n", p.stdout, f"{agent}: podman-remote is first on PATH")
+            m = re.search(r"CLIENT=(\d+)\.\S* SERVER=(\d+)\.", p.stdout)
+            self.assertTrue(m, f"{agent}: podman --remote version answered")
+            self.assertEqual(m.group(1), m.group(2), f"{agent}: client major version differs from the server's")
+            self.assertIn(f"podman-compose version {host_compose}", p.stdout, f"{agent}: compose tool version")
+
     def test_e_service_and_sockguard_gone_after_teardown(self):
         p = subprocess.run(["pgrep", "-af", "system service"], capture_output=True, text=True)
         mine = [l for l in p.stdout.splitlines() if harness.BASE in l]

@@ -1,0 +1,27 @@
+# agentbox Claude image: localhost/claudecode plus the podman clients the session's podman access needs.
+#
+# Build with `make claude-image` (tags localhost/agentbox-claude:latest and :<date>). The base image is
+# unchanged. The podman-remote version and checksum come from the Makefile, shared with images/omp, so both
+# agent images carry the same client (matching the host's podman service major version; tests check it).
+#
+#   * podman-remote, static, pinned, verified by ADD --checksum before it is used, at /usr/local/bin/podman
+#     (first on PATH);
+#   * python3 and the compose tool at the host's version (1.5.0), which needs python.
+ARG BASE=localhost/claudecode:latest
+FROM ${BASE}
+ARG PODMAN_REMOTE_VERSION
+ARG PODMAN_REMOTE_SHA256
+ARG PODMAN_COMPOSE_VERSION=1.5.0
+
+ADD --checksum=sha256:${PODMAN_REMOTE_SHA256} \
+    https://github.com/podman-container-tools/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz \
+    /tmp/podman-remote.tar.gz
+RUN tar -xzf /tmp/podman-remote.tar.gz -C /tmp \
+    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
+    && rm -f /tmp/podman-remote.tar.gz /tmp/bin/podman-remote-static-linux_amd64
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && apt-get clean
+RUN pip3 install --no-cache-dir --break-system-packages "podman-compose==${PODMAN_COMPOSE_VERSION}"
+
+LABEL agentbox=1 \
+      org.opencontainers.image.title="agentbox-claude" \
+      org.opencontainers.image.description="claudecode for agentbox sessions (podman-remote, compose tool)"

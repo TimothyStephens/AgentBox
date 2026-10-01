@@ -412,7 +412,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening only |
-| Image | `localhost/agentbox-omp`, derived from `omp-env` (`make omp-image`): `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`, plus `python-is-python3`, `debugpy`, Chromium and the compose tool for the dev tier |
+| Image | `localhost/agentbox-omp`, derived from `omp-env` (`make omp-image`): `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`, plus `python-is-python3`, `debugpy`, Chromium, podman-remote 5.7.0 (pinned, checksum-verified, first on PATH) and the compose tool 1.5.0 |
 | What comes from the host's `~/.omp` | A whitelist, all read-only: `plugins`, `repos`, `pylibs` from their actual link targets (they may be in different versions), the `versions/<v>/` directories those live in or the plugins link into; `agent/config.yml`; `bin/mags-codedev`; `.cache/ms-playwright`. Nothing else (decisions.md lists what is left out and why) |
 | MCP and MAGS config | Only if Tim creates `~/.config/agentbox/omp/mcp.json` / `mags-codedev.yaml` himself: mounted read-only at OMP's paths, never copied from `~/.omp` (the credential rule in decisions.md) |
 | `~/.omp` in the session | A tmpfs owned by the agent, with the pieces above mounted on it; `run/` and caches live there and vanish with the session |
@@ -428,6 +428,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening (the existing script's flags) |
+| Image | `localhost/agentbox-claude`, derived from `claudecode` (`make claude-image`): podman-remote 5.7.0 (pinned, checksum-verified, first on PATH), python3 and the compose tool 1.5.0 |
 | Model access | Dedicated `claude setup-token` token, mounted read-only and exported as `CLAUDE_CODE_OAUTH_TOKEN` at start; the host's `~/.claude` is never mounted |
 | Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/<project>/claude/`, read-write and persistent (history, `--resume`); `settings.json`, `CLAUDE.md` and `commands/` copied in from `~/.config/agentbox/claude/` at each start |
 | User | `vmuser` via `keep-id` (Claude Code refuses to skip permissions as root) |

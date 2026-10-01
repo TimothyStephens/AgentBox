@@ -62,7 +62,7 @@ def _mark_onboarded(path, project_root):
 
 ADAPTER = ClaudeAdapter(
     name="claude",
-    image="localhost/claudecode:latest",
+    image="localhost/agentbox-claude:latest",   # derived from localhost/claudecode (make claude-image)
     command=["claude"],
     model_domains=["api.anthropic.com"],
     env={
@@ -72,7 +72,7 @@ ADAPTER = ClaudeAdapter(
     },
     token_env="CLAUDE_CODE_OAUTH_TOKEN",
     state_mount="/run/agentbox/claude",
-    required_tools=["bash", "git", "node", "claude"],
+    required_tools=["bash", "git", "node", "claude", "podman", "podman-compose"],
     approvals_off_args=["--dangerously-skip-permissions"],
 )
 ADAPTER.env["CLAUDE_CONFIG_DIR"] = ADAPTER.state_mount

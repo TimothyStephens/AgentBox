@@ -64,6 +64,7 @@ class BuildModels(TempCase):
         self.assertEqual(len(doc["providers"]["llama-cpp"]["models"]), 13)
         self.assertEqual((domains, used), ([], {}))
         self.assertTrue(any("'openai' left out: no key" in w for w in warnings))
+        self.assertTrue(any("local model provider 'llama-cpp' has no key" in w for w in warnings))
 
     def test_keyed_providers_included_by_variable_name(self):
         doc, domains, used = self.build(["openai", "gemini", "llama-cpp"])

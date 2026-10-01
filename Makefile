@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image omp-live verify-sockguard
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -48,10 +48,23 @@ verify-sockguard:
 	    echo "VERIFIED: $$ref (pinned: $$pin)"; exit 0; fi; \
 	done; echo "NOT VERIFIED: no digest of $$repo carries a signature from the release workflow"; exit 1
 
+# The podman client in every agent image: podman-remote, static, matching the host's podman service (5.7.0).
+# The checksum is the release's own `shasums` entry, checked against the download on 30 Sep; the build's
+# ADD --checksum refuses anything else.
+PODMAN_REMOTE_VERSION := 5.7.0
+PODMAN_REMOTE_SHA256 := 0d1759e3fc42b0e3a4496176dabc7b65f0f334a0ab2b22eaed7c36afeece8b0c
+PODMAN_REMOTE_ARGS := --build-arg PODMAN_REMOTE_VERSION=$(PODMAN_REMOTE_VERSION) \
+	--build-arg PODMAN_REMOTE_SHA256=$(PODMAN_REMOTE_SHA256)
+
 # The OMP session image, derived from localhost/omp-env (images/omp/Containerfile explains each change).
 omp-image:
-	podman build --pull=never --build-arg AB_HOME=$(HOME) -t localhost/agentbox-omp:latest \
+	podman build --pull=never --build-arg AB_HOME=$(HOME) $(PODMAN_REMOTE_ARGS) -t localhost/agentbox-omp:latest \
 	  -t localhost/agentbox-omp:$$(date +%Y%m%d) images/omp
+
+# The Claude session image, derived from localhost/claudecode (images/claude/Containerfile).
+claude-image:
+	podman build --pull=never $(PODMAN_REMOTE_ARGS) -t localhost/agentbox-claude:latest \
+	  -t localhost/agentbox-claude:$$(date +%Y%m%d) images/claude
 
 # Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
 install-slice:

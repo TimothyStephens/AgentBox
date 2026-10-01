@@ -223,6 +223,8 @@ def build_models(seed, *, keys, model_host, model_port, warn):
                 used[name] = keys[name]
             else:
                 conf["apiKey"] = "none"
+                warn(f"agentbox: OMP local model provider {name!r} has no key; if the server needs one, "
+                     f"`ab keys set {name}`")
             providers[name] = conf
             continue
         if name not in keys:
@@ -343,7 +345,7 @@ ADAPTER = OmpAdapter(
     command=["omp"],
     model_domains=[],
     env={"NO_UPDATE_NOTIFIER": "1"},
-    required_tools=["bash", "git", "omp", "bun", "python", "chromium", "podman-compose"],
+    required_tools=["bash", "git", "omp", "bun", "python", "chromium", "podman", "podman-compose"],
     approvals_off_args=["--approval-mode=yolo"],
     approvals_on_args=["--approval-mode=always-ask"],
     proxy_url_env=["PUPPETEER_PROXY"],      # OMP passes only this to Chromium as --proxy-server

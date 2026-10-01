@@ -22,6 +22,17 @@ RUN pip install --no-cache-dir --break-system-packages \
         "debugpy==${DEBUGPY_VERSION}" "podman-compose==${PODMAN_COMPOSE_VERSION}"
 RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
 
+# podman-remote 5.x, pinned and checksum-verified (version and checksum from the Makefile, shared with
+# images/claude), at /usr/local/bin/podman, ahead of Debian's podman 4.3 in /usr/bin on PATH.
+ARG PODMAN_REMOTE_VERSION
+ARG PODMAN_REMOTE_SHA256
+ADD --checksum=sha256:${PODMAN_REMOTE_SHA256} \
+    https://github.com/podman-container-tools/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz \
+    /tmp/podman-remote.tar.gz
+RUN tar -xzf /tmp/podman-remote.tar.gz -C /tmp \
+    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
+    && rm -f /tmp/podman-remote.tar.gz /tmp/bin/podman-remote-static-linux_amd64
+
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     PIP_CACHE_DIR=/tmp/pip-cache
 LABEL agentbox=1 \

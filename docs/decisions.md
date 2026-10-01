@@ -255,3 +255,11 @@ This rule settles what may enter a sandbox. No protections are added beyond it.
 ## 2026-09-30 · Sockguard's signature: `make verify-sockguard`
 
 - **What:** Tim installs cosign v3; `make verify-sockguard` runs `cosign verify` with the identity sockguard's docs give (`release-from-tag.yml@refs/tags/*`, issuer `token.actions.githubusercontent.com`). It tries the pinned digest first, then the image's other repo digests, because the signature may sit on the multi-arch index rather than the platform manifest pinned here. It says which one verified; if that is not the pinned one, the pin moves to it. Without cosign on PATH, it says so and fails.
+- **Result (Tim, 30 Sep):** the pinned digest `sha256:3ae41b2f…` verified against the release workflow identity. The pin stays.
+
+## 2026-09-30 · Agent images carry podman-remote 5.7.0 and the compose tool 1.5.0
+
+- **What:** the OMP image's Debian podman (4.3.1) is replaced as the client, not just checked. Both agent images get podman-remote 5.7.0, static, at `/usr/local/bin/podman`, first on PATH. The server on the host is 5.7.0. The download is checked by the build's `ADD --checksum=sha256:0d1759e3…`, the value from the release's own `shasums` file, which I verified against the download on 30 Sep. The version and checksum are set once in the Makefile (`PODMAN_REMOTE_VERSION`, `PODMAN_REMOTE_SHA256`) and passed to both builds.
+- **Claude image:** `localhost/claudecode` had no podman, python or curl, so it now has a derived image too, `localhost/agentbox-claude` (`make claude-image`). It adds podman-remote, python3 and the compose tool 1.5.0 (pip, the host's version). The Claude adapter uses it; `claudecode` itself is unchanged.
+- **Checked:** `make itest` (step 4) runs `podman --remote version` and `podman-compose version` through sockguard in both images, and fails if the client's major version differs from the server's, if `podman` is not `/usr/local/bin/podman`, or if the compose version differs from the host's. Both adapters list `podman` and `podman-compose` as required tools, so every selftest checks they are present.
+- **Why:** step 4 saw the 4.3 client lose sync on a logs stream from the 5.7 server; step 5 (creates, builds, compose) should not run on a mismatched client.
