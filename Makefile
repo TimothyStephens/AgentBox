@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -65,6 +65,12 @@ omp-image:
 claude-image:
 	podman build --pull=never $(PODMAN_REMOTE_ARGS) -t localhost/agentbox-claude:latest \
 	  -t localhost/agentbox-claude:$$(date +%Y%m%d) images/claude
+
+# Run by Tim, not by the builder: puts `agentbox` and an `ab` alias in ~/.local/bin (BINDIR=... to change).
+# Refuses to overwrite an `ab` or `agentbox` that is not ours (ApacheBench installs `ab`).
+BINDIR ?= $(HOME)/.local/bin
+install:
+	python3 -m agentbox.install --bindir "$(BINDIR)" --repo "$(CURDIR)"
 
 # Run by Tim, not by the builder: installs the cgroup slice every agentbox container runs in.
 install-slice:

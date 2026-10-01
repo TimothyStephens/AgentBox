@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from unittest import mock
 
 from agentbox import session, sockguard
 from agentbox.errors import AgentboxError
@@ -122,7 +123,7 @@ class ServiceStop(TempCase):
         self.addCleanup(other.wait)
         self.addCleanup(other.kill)
         os.makedirs(os.path.join(run, "podman"))
-        with open(os.path.join(run, "podman", "service.pid"), "w") as f:
+        with open(os.path.join(run, "service.pid"), "w") as f:
             f.write(f"{other.pid}\n")
         self.assertFalse(sockguard.stop_service(run))
         self.assertIsNone(other.poll(), "an unrelated process was left alone")
@@ -133,7 +134,7 @@ class ServiceStop(TempCase):
         # a stand-in whose command line looks like `<bin> system service ... unix://<run>/...`
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "system", "service",
                                  f"unix://{run}/podman/podman.sock"])
-        with open(os.path.join(run, "podman", "service.pid"), "w") as f:
+        with open(os.path.join(run, "service.pid"), "w") as f:
             f.write(f"{proc.pid}\n")
         self.assertTrue(sockguard.stop_service(run))
         self.assertIsNotNone(proc.poll())
@@ -147,7 +148,7 @@ class OrphanedServices(SettingsCase):
     session's run dir and containers are gone; it leaves a live session's service alone."""
 
     def fake_service(self, session_name):
-        sock = f"unix://{os.path.join(self.settings.run_dir, 'sessions', session_name, 'podman', 'podman.sock')}"
+        sock = f"unix://{os.path.join(self.settings.run_dir, 'services', session_name, 'podman.sock')}"
         p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "system", "service", sock])
         self.addCleanup(p.wait)
         self.addCleanup(lambda: p.poll() is None and p.kill())
@@ -175,3 +176,70 @@ class OrphanedServices(SettingsCase):
         p = self.fake_service(s.name)
         session.gc(self.settings, session.Podman(self.settings.podman))
         self.assertIsNone(p.poll(), "the live session's service is still running")
+
+
+class RawSocketNeverMounted(SettingsCase):
+    """Review 2026-10-01 #6: the raw podman socket lives outside the session run dir, and the argv audit
+    refuses any socket as a bind source except sockguard's."""
+
+    def test_service_dir_is_outside_the_session_run_dir(self):
+        svc, run = self.settings.service_dir("abt-x-1"), self.settings.session_run_dir("abt-x-1")
+        self.assertFalse(svc.startswith(run.rstrip("/") + "/") or svc == run)
+
+    def test_audit_refuses_other_sockets(self):
+        import socket as _socket
+        from agentbox import hardening
+        d = self.mkdir("grant")
+        path = os.path.join(d, "raw.sock")
+        srv = _socket.socket(_socket.AF_UNIX)
+        srv.bind(path)
+        self.addCleanup(srv.close)
+        argv = ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1",
+                f"--mount=type=bind,src={path},dst={d}/raw.sock", "img"]
+        with self.assertRaises(AgentboxError) as cm:
+            hardening.audit(argv, allowed_mount_srcs=[d], allowed_mount_dsts=[d], networks=[])
+        self.assertIn("socket", str(cm.exception))
+        hardening.audit(argv, allowed_mount_srcs=[d], allowed_mount_dsts=[d], networks=[], allowed_sockets=[path])
+
+
+class LiveStackOwnership(SettingsCase):
+    """Review 2026-10-01 #7: a defaulted compose project must be this project's own stack."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+
+    def make(self, workdir, **extra):
+        root = self.project("shop", podman={"tier": "observe"}, **extra)
+        ps = [{"Names": ["shop_web_1"], "Labels": {"io.podman.compose.project": "shop",
+               "com.docker.compose.project.working_dir": workdir or root}}]
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(ps)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "shop"),
+                                 warn=lambda m: None)
+        self.addCleanup(s.teardown)
+        return s
+
+    def test_another_directorys_stack_refused(self):
+        s = self.make(os.path.join(self.tmp, "another-repo"))
+        with self.assertRaises(AgentboxError) as cm:
+            s.prepare()
+        self.assertIn("not this project's stack", str(cm.exception))
+
+    def test_own_stack_fine(self):
+        self.make(None).prepare()
+
+    def test_explicit_compose_project_is_trusted(self):
+        self.make(os.path.join(self.tmp, "another-repo"), compose_project="shop").prepare()
+
+
+class GcOncePerBoot(SettingsCase):
+    """Review 2026-10-01 (doc claims): gc runs by itself on the first use after boot, once."""
+
+    def test_first_use_runs_gc_then_not_again(self):
+        from agentbox import cli
+        with mock.patch.object(session, "gc", return_value=[]) as gc:
+            self.assertTrue(cli.gc_once_per_boot(self.settings))
+            self.assertFalse(cli.gc_once_per_boot(self.settings))
+        self.assertEqual(gc.call_count, 1)

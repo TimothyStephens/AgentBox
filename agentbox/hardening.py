@@ -4,6 +4,7 @@ The audit runs on the complete `podman run` argv just before it executes, so no 
 preset or future code path can slip in a flag that weakens the sandbox.
 """
 import os
+import stat
 
 from .errors import AgentboxError
 
@@ -43,7 +44,7 @@ def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
-def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",)):
+def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",), allowed_sockets=()):
     """Refuse any argv that weakens the fixed hardening. `argv` starts after `podman run`."""
     # Everything before the image is an option; the audit sees options as `--flag=value` only.
     opts = []
@@ -73,7 +74,7 @@ def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=
             if val != "none" and val not in networks:
                 raise AgentboxError(f"audit: network {val!r} is not a session network")
         if o.startswith("--mount="):
-            _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts)
+            _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts, allowed_sockets)
         if o.startswith("--tmpfs="):
             dst, _, tmpfs_opts = o[len("--tmpfs="):].partition(":")
             if dst not in tmpfs_dirs:
@@ -83,7 +84,7 @@ def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=
     return True
 
 
-def _audit_mount(spec, allowed, allowed_dsts):
+def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=()):
     fields = dict(f.split("=", 1) if "=" in f else (f, "") for f in spec.split(","))
     kind = fields.get("type")
     dst = fields.get("dst") or fields.get("destination") or fields.get("target") or ""
@@ -106,6 +107,13 @@ def _audit_mount(spec, allowed, allowed_dsts):
     real = os.path.realpath(src)
     if not any(_inside(real, a) for a in allowed):
         raise AgentboxError(f"audit: bind source {src} is outside the session's grants")
+    # The only socket a sandbox may get is sockguard's; a raw podman socket would bypass it (review #6).
+    try:
+        is_socket = stat.S_ISSOCK(os.stat(real).st_mode)
+    except OSError:
+        is_socket = False
+    if is_socket and real not in [os.path.realpath(x) for x in allowed_sockets]:
+        raise AgentboxError(f"audit: bind source {src} is a socket other than sockguard's")
     for bad in ("propagation", "bind-propagation", "relabel"):
         if bad in fields:
             raise AgentboxError(f"audit: mount option {bad} not allowed")

@@ -184,6 +184,58 @@ class OmpMounts(TempCase):
         with self.assertRaises(AgentboxError):
             self.mounts()
 
+    def test_targets_must_be_their_own_versions_entry(self):
+        """Review 2026-10-01 #3: `pylibs -> .` or `plugins -> agent` would have mounted all of ~/.omp (keys
+        included) or every project's agent dir, because only "inside ~/.omp" was checked."""
+        for name, target in (("pylibs", "."), ("plugins", "agent"), ("repos", f"versions/{ompfake.ACTIVE}"),
+                             ("pylibs", f"versions/{ompfake.ACTIVE}/repos")):
+            with self.subTest(name=name, target=target):
+                link = os.path.join(self.home, name)
+                old = os.readlink(link)
+                os.unlink(link)
+                os.symlink(target, link)
+                try:
+                    with self.assertRaises(AgentboxError):
+                        self.mounts()
+                finally:
+                    os.unlink(link)
+                    os.symlink(old, link)
+
+    def test_version_symlink_leading_out_of_versions_refused(self):
+        vdir = os.path.join(self.home, "versions", ompfake.ACTIVE)
+        elsewhere = os.path.join(self.home, "agent", "stash")
+        os.rename(vdir, elsewhere)
+        os.symlink(elsewhere, vdir)
+        with self.assertRaises(AgentboxError):
+            self.mounts()
+
+    def test_version_dir_swapped_during_startup_refused(self):
+        _mounts, check = self.mounts()
+        vdir = os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION)
+        os.rename(vdir, vdir + ".moved")
+        os.symlink(os.path.join(self.home, "agent"), vdir)
+        with self.assertRaises(AgentboxError):
+            check()
+
+    def test_hard_linked_credential_file_refused(self):
+        os.link(os.path.join(self.home, "agent", "models.yml"),
+                os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs", "innocent.txt"))
+        with self.assertRaises(AgentboxError) as cm:
+            self.mounts()
+        self.assertIn("hard link", str(cm.exception))
+
+    def test_repo_with_credentials_in_a_remote_url_refused(self):
+        git = os.path.join(self.home, "versions", ompfake.ACTIVE, "repos", "mags-codedev", ".git")
+        os.makedirs(git)
+        with open(os.path.join(git, "config"), "w") as f:
+            f.write('[remote "origin"]\n\turl = https://x-access-token:ghp_FAKE@github.com/t/r.git\n')
+        with self.assertRaises(AgentboxError) as cm:
+            self.mounts()
+        self.assertIn("mags-codedev", str(cm.exception))
+        with open(os.path.join(git, "config"), "w") as f:
+            f.write('[remote "origin"]\n\turl = https://github.com/t/r.git\n')
+        self.mounts()
+
     def test_symlinked_config_refused(self):
         cfg = os.path.join(self.home, "agent", "config.yml")
         os.unlink(cfg)
@@ -289,7 +341,10 @@ class OmpSession(SettingsCase):
                          [w for w in warnings if "mcp.json or mags-codedev.yaml" in w])
         self.assertEqual(len([w for w in warnings if "mcp.json" in w]), 1, "one line when both are missing")
         c = os.path.join(HOME, ".omp")
-        self.assertFalse([m for m in s.setup.mounts if m[1] in (f"{c}/agent/.mcp.json", f"{c}/agent/mags-codedev.yaml")])
+        self.assertFalse([m for m in s.setup.mounts if m[1] == f"{c}/agent/mags-codedev.yaml"])
+        mcp = [m for m in s.setup.mounts if m[1] == f"{c}/agent/.mcp.json"]
+        self.assertEqual(len(mcp), 1)
+        self.assertTrue(mcp[0][0].endswith("omp-empty") and mcp[0][2], "absent: an empty read-only placeholder")
         s.teardown()
         # the host's ~/.omp copies are never used, even though they exist in the fake home
         with open(os.path.join(self.cfg, "omp", "mcp.json"), "w") as f:
@@ -301,6 +356,20 @@ class OmpSession(SettingsCase):
         m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
         self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
+
+    def test_code_paths_in_agent_state_are_read_only(self):
+        """Review 2026-10-01 #2: a session cannot plant an extension, hook, tool or MCP server in the
+        project's persistent agent dir for later sessions to run."""
+        s = self.make()
+        s.start_infra()
+        argv = s.run_args(s.agent_command())
+        c = os.path.join(HOME, ".omp")
+        for d in ("extensions", "hooks", "tools"):
+            self.assertIn(f"--mount=type=tmpfs,dst={c}/agent/{d},tmpfs-mode=0700,U=true,notmpcopyup,ro", argv)
+        for f in (".mcp.json", "mcp.json", "settings.json"):
+            m = [a for a in argv if a.startswith("--mount=") and f"dst={c}/agent/{f}," in a]
+            self.assertEqual(len(m), 1, f)
+            self.assertTrue(m[0].endswith(",ro") and "omp-empty" in m[0], m[0])
 
     def test_lockdown_asks(self):
         s = self.make(preset="lockdown")

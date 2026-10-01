@@ -271,12 +271,37 @@ def parser():
     return p
 
 
+GC_ON_FIRST_USE = {"cmd_run", "cmd_selftest", "cmd_ls"}
+
+
+def gc_once_per_boot(s):
+    """The design's "gc runs automatically on the launcher's first use after boot": a marker named after the
+    kernel's boot id, in the run dir (review 2026-10-01, doc claims)."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            boot = f.read().strip()
+    except OSError:
+        return False
+    marker = os.path.join(s.run_dir, f".gc-{boot}")
+    if os.path.exists(marker):
+        return False
+    removed = session.gc(s, Podman(s.podman), warn=warn)
+    if removed:
+        warn(f"ab: first use since boot: removed what dead sessions left: {' '.join(removed)}")
+    os.makedirs(s.run_dir, mode=0o700, exist_ok=True)
+    with open(marker, "w"):
+        pass
+    return True
+
+
 def main(argv=None):
     a = parser().parse_args(argv)
     if getattr(a, "args", None) and a.args[:1] == ["--"]:
         a.args = a.args[1:]
     try:
         s = config.load()
+        if a.fn.__name__ in GC_ON_FIRST_USE:
+            gc_once_per_boot(s)
         rc = a.fn(s, a)
         return rc or 0
     except AgentboxError as e:

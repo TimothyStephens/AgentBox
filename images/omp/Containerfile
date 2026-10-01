@@ -5,21 +5,27 @@
 #
 # Why each change:
 #   * /root is 0700 in the base, and bun lives in /root/.bun. The sandbox runs as the host user
-#     (--userns=keep-id), so /root is opened to 0755 (it holds nothing secret in this image).
+#     (--userns=keep-id), so /root is opened to 0755, after a build step that fails if /root holds
+#     credential-like files (review 2026-10-01 #8).
 #   * /root/.omp -> $AB_HOME/.omp: plugin links written by `omp-env install` (which runs as root) are
 #     absolute /root/.omp/... paths; inside a session ~/.omp is under the host user's home.
 #   * python-is-python3, debugpy: the debugger probe needed both (design: OMP adapter).
 #   * chromium: OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is not mounted.
-#   * podman-compose: the dev tier (step 5); the image already has the podman client.
+#   * the compose tool (dev tier) and debugpy, from requirements.txt: every package and dependency pinned
+#     with hashes (pip --require-hashes);
+#   * podman-remote 5.7.0 (below), replacing Debian's 4.3 client on PATH.
 ARG BASE=localhost/omp-env:latest
 FROM ${BASE}
 ARG AB_HOME=/home/vmuser
-ARG DEBUGPY_VERSION=1.8.22
-ARG PODMAN_COMPOSE_VERSION=1.5.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium && apt-get clean
-RUN pip install --no-cache-dir --break-system-packages \
-        "debugpy==${DEBUGPY_VERSION}" "podman-compose==${PODMAN_COMPOSE_VERSION}"
+COPY requirements.txt /tmp/agentbox-requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/agentbox-requirements.txt
+# /root is about to become readable by the session user: refuse to build if it holds credentials.
+RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o -name .netrc -o -name .pypirc \
+        -o -name credentials -o -name '*.pem' -o -name 'id_*' -o -path '/root/.ssh/*' -o -path '/root/.config/gh/*' \
+        -o -path /root/.docker/config.json -o -path '/root/.aws/*' -o -path '/root/.claude/*' \) -print); \
+    if [ -n "$found" ]; then echo "credential-like files in /root: $found" >&2; exit 1; fi
 RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
 
 # podman-remote 5.x, pinned and checksum-verified (version and checksum from the Makefile, shared with

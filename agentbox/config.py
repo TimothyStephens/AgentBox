@@ -80,6 +80,11 @@ class Settings:
     def state_dir(self, project, agent):
         return os.path.join(self.data_dir, project, agent)
 
+    def service_dir(self, session):
+        """A session's podman API service: socket, PID, log. Kept apart from the session run dir, whose
+        files may be mounted into the sandbox."""
+        return os.path.join(self.run_dir, "services", session)
+
     def session_run_dir(self, session):
         return os.path.join(self.run_dir, "sessions", session)
 

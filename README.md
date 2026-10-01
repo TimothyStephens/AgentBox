@@ -1,0 +1,39 @@
+# agentbox
+
+`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session. The spec is `docs/design.md`; decisions and deviations are in `docs/decisions.md`; the build's running state is in `docs/progress.md`.
+
+## Setup (ubuntu-dev)
+
+Run these yourself; each touches your own config or `~/.local/bin`.
+
+1. **The cgroup slice** every agentbox container runs in:
+   ```bash
+   make install-slice
+   ```
+2. **The agent images**, derived from `localhost/claudecode` and `localhost/omp-env` (which must exist):
+   ```bash
+   make claude-image omp-image
+   ```
+3. **The launcher on PATH.** This writes `~/.local/bin/agentbox` and `~/.local/bin/ab`, a symlink to it (`BINDIR=...` to change the directory):
+   ```bash
+   make install
+   ```
+   It refuses to overwrite an `ab` or `agentbox` that is not its own; ApacheBench installs `ab`, and so would a wrapper you made by hand. Remove such a file yourself first, or just use `agentbox`. It tells you if another `ab` on PATH shadows its own, or is shadowed by it.
+4. **Model credentials:**
+   - Claude: `ab keys rotate claude` (a `claude setup-token` token).
+   - Pay-per-use providers: `ab keys set <provider>`, once per provider. Use dedicated, spend-capped keys.
+   - Your local model server, if it needs a key: `ab keys set llama-cpp`.
+5. **OMP model list:** copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every `apiKey` line removed. Only providers with a key are offered in a session.
+6. **Optional:** create `~/.config/agentbox/omp/mcp.json` or `mags-codedev.yaml` yourself if OMP sessions should have them. They are mounted read-only as you wrote them.
+7. **Register a project and check it:**
+   ```bash
+   ab project add <name> <root> --preset python|pods|lockdown
+   ab selftest --agent claude --project <name>
+   ```
+
+## Tests
+
+- `make test`: fast, no podman.
+- `make itest`: real podman, cleans up after itself. It ends with a warning when `make claude-live` needs rerunning.
+- `make claude-live`, `make omp-live`: run by you, with your real token, keys and `~/.omp`.
+- `make verify-sockguard`: checks the pinned sockguard image's signature (needs cosign).

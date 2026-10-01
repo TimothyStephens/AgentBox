@@ -8,9 +8,18 @@ import json
 import os
 import shutil
 
-from . import Adapter
+from . import Adapter, SessionSetup
 
 SEEDED = ("settings.json", "CLAUDE.md", "commands")
+MANAGED_DIR = "/etc/claude-code"
+# With approvals on (lockdown), Claude Code's managed policy: bypass mode cannot be entered, and only managed
+# hooks and permission rules apply, so a repo's own .claude/settings.json hooks and allow rules do nothing
+# (review 2026-10-01 #2). Key names checked against the image's Claude Code build.
+MANAGED_APPROVALS_ON = {
+    "permissions": {"disableBypassPermissionsMode": "disable"},
+    "allowManagedHooksOnly": True,
+    "allowManagedPermissionRulesOnly": True,
+}
 
 
 class ClaudeAdapter(Adapter):
@@ -35,11 +44,24 @@ class ClaudeAdapter(Adapter):
                 user_md = f.read()
         with open(md, "w") as f:
             f.write(user_md.rstrip() + ("\n\n" if user_md.strip() else "") + sandbox_notes)
-        _mark_onboarded(os.path.join(state_dir, ".claude.json"), project_root)
+
+    def prepare_session(self, sess, sandbox_notes):
+        approvals_off = sess.project.value("approvals") == "off"
+        _mark_onboarded(os.path.join(sess.state_dir, ".claude.json"), sess.project.root, trusted=approvals_off)
+        setup = SessionSetup()
+        if not approvals_off:
+            path = os.path.join(sess.settings.session_run_dir(sess.name), "claude-managed-settings.json")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(MANAGED_APPROVALS_ON, f, indent=2)
+            setup.mount_root = MANAGED_DIR
+            setup.mounts.append((path, f"{MANAGED_DIR}/managed-settings.json", True))
+        return setup
 
 
-def _mark_onboarded(path, project_root):
-    """Skip first-run onboarding and the folder trust prompt; keep everything else in the file."""
+def _mark_onboarded(path, project_root, trusted):
+    """Skip first-run onboarding. Folder trust and bypass mode are pre-accepted only when approvals are off;
+    with approvals on Claude asks, and a repo's settings and hooks wait for that answer."""
     doc = {}
     if os.path.isfile(path):
         try:
@@ -48,10 +70,10 @@ def _mark_onboarded(path, project_root):
         except ValueError:
             doc = {}
     doc["hasCompletedOnboarding"] = True
-    doc["bypassPermissionsModeAccepted"] = True
+    doc["bypassPermissionsModeAccepted"] = trusted
     projects = doc.setdefault("projects", {})
     proj = projects.setdefault(project_root, {})
-    proj["hasTrustDialogAccepted"] = True
+    proj["hasTrustDialogAccepted"] = trusted
     proj.setdefault("hasCompletedProjectOnboarding", True)
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

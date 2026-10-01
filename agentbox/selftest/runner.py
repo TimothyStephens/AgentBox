@@ -189,11 +189,15 @@ def podman_cases(b, *, socket_path, compose_project, own, canary, logs=False):
     b.add("api", ["POST", "/libpod/containers/create"], "create a container refused (observe tier)", denied)
     b.add("api", ["POST", "/libpod/images/pull?reference=docker.io/library/alpine:3.20"], "image pull refused",
           denied)
+    b.add("api", ["GET", "/libpod/pods/json"], "pod list refused (not label-scoped)", denied)
     if own:
         mine = sorted(own)[0]
-        b.add("api", ["GET", f"/libpod/containers/{mine}/json", "env"],
-              f"inspect {mine} allowed, environment redacted",
+        b.add("api", ["GET", f"/containers/{mine}/json", "env"],
+              f"inspect {mine} allowed (Docker API), environment redacted",
               lambda obs: ("PASS" if obs in ("200 empty", "200 none") else "FAIL", obs))
+        b.add("api", ["GET", f"/libpod/containers/{mine}/json"],
+              f"libpod inspect of {mine} refused (its create command holds -e values)", denied)
+        b.add("api", ["GET", f"/containers/{mine}/top?ps_args=eww"], f"top on {mine} refused", denied)
         if logs:
             b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"],
                   f"logs of {mine} allowed (observe_logs on)",

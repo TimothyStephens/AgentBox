@@ -37,6 +37,7 @@ class SessionSetup:
     mounts: list = field(default_factory=list)          # (host src, container dst, read_only)
     mount_root: str = ""                                # every adapter mount dst must sit under this
     tmpfs: list = field(default_factory=list)           # container dirs (under mount_root) made user tmpfs
+    ro_empty_dirs: list = field(default_factory=list)   # container dirs (under mount_root) covered empty, read-only
     env: dict = field(default_factory=dict)             # plain values only; never a secret
     model_domains: list = field(default_factory=list)   # added to the proxy's model allowlist
     keys: dict = field(default_factory=dict)            # provider -> host key file, exported at start

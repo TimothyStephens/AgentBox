@@ -27,14 +27,17 @@ OTHER = f"abt-{harness.RUN}-other"
 STACKS = os.path.join(harness.BASE, "stacks")
 # WEB is replaced by a container name (str.format would eat the Go templates' braces).
 OBSERVE = ("podman --remote ps -a --format '{{.Names}}'; echo PS_RC=$?; "
-           "podman --remote inspect --format '{{.Name}} env={{len .Config.Env}}' WEB; echo INSPECT_RC=$?; "
+           # inspect through the Docker API (libpod inspect returns the create command with -e values)
+           "curl -s --unix-socket /run/agentbox/podman.sock 'http://d/v5.0.0/containers/WEB/json' | "
+           "python3 -c 'import json,sys; c=json.load(sys.stdin)[\"Config\"]; print(\"INSPECT env=%d\" % len(c.get(\"Env\") or []))'; "
+           "podman --remote inspect WEB >/dev/null 2>&1; echo PODMAN_INSPECT_RC=$?; "
            "podman --remote logs WEB | head -3; echo LOGS_RC=${PIPESTATUS[0]}; "
-           "podman --remote top WEB | head -3; echo TOP_RC=${PIPESTATUS[0]}; "
+           "podman --remote top WEB >/dev/null 2>&1; echo TOP_RC=$?; "
            # podman stats uses GET /libpod/containers/stats, host-wide and unscopable: sockguard refuses it
            "podman --remote stats --no-stream WEB >/dev/null 2>&1; echo PODMAN_STATS_RC=$?; "
            "curl -s --unix-socket /run/agentbox/podman.sock -o /dev/null -w 'STATS=%{http_code}\\n' "
            "'http://d/v5.0.0/containers/WEB/stats?stream=false'; "
-           "podman --remote pod ps; echo PODPS_RC=$?; "
+           "podman --remote pod ps >/dev/null 2>&1; echo PODPS_RC=$?; "
            "podman --remote version --format '{{.Server.Version}}'; echo VERSION_RC=$?")
 
 
@@ -59,6 +62,12 @@ def setUpModule():
         shutil.copytree(harness.FIXTURE, d)
         with open(os.path.join(d, ".env"), "w") as f:
             f.write(f"GREETING=secret-of-{project}\n")
+        # review 1 #1: a value given as `environment:` reaches podman as `-e KEY=VALUE` on the create command
+        with open(os.path.join(d, "compose.yml")) as f:
+            text = f.read()
+        text = text.replace("    env_file: .env\n", f"    env_file: .env\n    environment:\n      - LIVE_SECRET=envsecret-of-{project}\n")
+        with open(os.path.join(d, "compose.yml"), "w") as f:
+            f.write(text)
         p = compose(project, "up", "-d")
         if p.returncode != 0:
             raise AssertionError(f"compose up {project}: {p.stdout}\n{p.stderr}")
@@ -128,8 +137,10 @@ class Step4(unittest.TestCase):
         p, sess = run_in_session("sgobs", OBSERVE.replace("WEB", web))
         out = p.stdout
         print(f"\n{out[-2500:]}\n{p.stderr[-800:]}")
-        for rc in ("PS_RC", "INSPECT_RC", "TOP_RC", "PODPS_RC", "VERSION_RC"):
+        for rc in ("PS_RC", "VERSION_RC"):
             self.assertIn(f"{rc}=0", out, rc)
+        for rc in ("PODMAN_INSPECT_RC", "TOP_RC", "PODPS_RC"):
+            self.assertRegex(out, rf"{rc}=[1-9]", f"{rc}: refused under observe (review 2026-10-01)")
         self.assertRegex(out, r"LOGS_RC=[1-9]", "logs are off by default (observe_logs)")
         p2, _s2 = run_in_session("sglogs", f"podman --remote logs {web} | head -3; echo LOGS_RC=${{PIPESTATUS[0]}}")
         print(f"\nwith observe_logs: {p2.stdout[-400:]}")
@@ -138,7 +149,7 @@ class Step4(unittest.TestCase):
         self.assertRegex(out, r"PODMAN_STATS_RC=[1-9]", "podman stats (host-wide endpoint) is refused")
         listed = out.partition("PS_RC")[0].split()
         self.assertEqual(sorted(listed), names(LIVE), "only the live stack is listed")
-        self.assertIn(f"{web} env=0", out, "the environment is redacted")
+        self.assertIn("INSPECT env=0", out, "Docker-API inspect works, with the environment redacted")
         denied = [l for l in sockguard_log(sess).splitlines() if '"decision":"deny"' in l]
         print("denied under enforce:", len(denied))
 
@@ -209,6 +220,8 @@ class Step4(unittest.TestCase):
             proc.wait(timeout=30)
             harness.podman("rm", "-f", "-t", "1", session_name)
             shutil.rmtree(os.path.join(ENV.run_dir, "sessions", session_name), ignore_errors=True)
+            # and its service dir: only the /proc scan can find the service now
+            shutil.rmtree(os.path.join(ENV.run_dir, "services", session_name), ignore_errors=True)
             self.assertTrue(os.path.exists(f"/proc/{pid}"), "the service outlived the launcher")
             g = ENV.ab("gc")
             print(g.stdout, g.stderr)
@@ -238,6 +251,38 @@ class Step4(unittest.TestCase):
             self.assertTrue(m, f"{agent}: podman --remote version answered")
             self.assertEqual(m.group(1), m.group(2), f"{agent}: client major version differs from the server's")
             self.assertIn(f"podman-compose version {host_compose}", p.stdout, f"{agent}: compose tool version")
+
+    def test_h_live_stack_secrets_do_not_leak(self):
+        """Review 2026-10-01 #1 and #4: the live stack's secrets (env_file and environment:) must not appear in
+        any observe response, including top with ps arguments and libpod inspect's CreateCommand; another
+        project's pod must not be listed."""
+        web = names(LIVE)[0]
+        pod = f"abt-{harness.RUN}-otherpod"
+        harness.podman("pod", "create", "--name", pod, "--label", "agentbox-test=1", "--label", harness.LABEL,
+                       "--label", f"io.podman.compose.project={OTHER}")
+        try:
+            paths = [f"/libpod/containers/{web}/json", f"/containers/{web}/json",
+                     f"/libpod/containers/{web}/top?ps_args=eww", f"/containers/{web}/top?ps_args=eww",
+                     "/libpod/containers/json?all=true", "/containers/json?all=true",
+                     "/libpod/pods/json", f"/libpod/pods/{pod}/json"]
+            script = "; ".join(
+                f"echo '=== {p}'; curl -s --unix-socket /run/agentbox/podman.sock -w '\\nHTTP=%{{http_code}}\\n' "
+                f"'http://d/v5.0.0{p}'" for p in paths)
+            script += f"; echo '=== podman inspect'; podman --remote inspect {web}"
+            p, _sess = run_in_session("sgobs", script)
+            out = p.stdout + p.stderr
+            leaks = []
+            for block in out.split("=== ")[1:]:
+                head = block.splitlines()[0]
+                for secret in (f"secret-of-{LIVE}", f"envsecret-of-{LIVE}"):
+                    if secret in block:
+                        leaks.append(f"{head}: {secret}")
+            print("\n" + "\n".join(f"{b.splitlines()[0]} -> " + (b.strip().splitlines()[-1] if b.strip() else "")
+                                    for b in out.split("=== ")[1:]))
+            self.assertEqual(leaks, [], "the live stack's secrets leaked through observe")
+            self.assertNotIn(pod, out.replace(f"/libpod/pods/{pod}/json", ""), "another project's pod is visible")
+        finally:
+            harness.podman("pod", "rm", "-f", pod)
 
     def test_e_service_and_sockguard_gone_after_teardown(self):
         p = subprocess.run(["pgrep", "-af", "system service"], capture_output=True, text=True)

@@ -263,3 +263,33 @@ This rule settles what may enter a sandbox. No protections are added beyond it.
 - **Claude image:** `localhost/claudecode` had no podman, python or curl, so it now has a derived image too, `localhost/agentbox-claude` (`make claude-image`). It adds podman-remote, python3 and the compose tool 1.5.0 (pip, the host's version). The Claude adapter uses it; `claudecode` itself is unchanged.
 - **Checked:** `make itest` (step 4) runs `podman --remote version` and `podman-compose version` through sockguard in both images, and fails if the client's major version differs from the server's, if `podman` is not `/usr/local/bin/podman`, or if the compose version differs from the host's. Both adapters list `podman` and `podman-compose` as required tools, so every selftest checks they are present.
 - **Why:** step 4 saw the 4.3 client lose sync on a logs stream from the 5.7 server; step 5 (creates, builds, compose) should not run on a mismatched client.
+
+## 2026-10-01 · Review of steps 3-4: what changed
+
+The review (`docs/reviews/2026-10-01-steps-3-4.md`, annotated per finding) led to these changes. Each one has a test that failed before the fix, except where noted.
+
+- **Observe narrowed (#1 HIGH, #4):**
+  - libpod inspect leaked the live stack's `env_file` and `environment:` values through `CreateCommand`, and another project's pod was readable.
+  - Observe now allows container lists, Docker-API inspect, per-container stats and (with `observe_logs`) logs. No libpod inspect, `top` or pods.
+  - `podman inspect`, `top` and `pod ps` no longer work under observe; the session notes give the curl alternative.
+- **Approvals in lockdown (#2):**
+  - Claude: no pre-trust or bypass acceptance when approvals are on, and a read-only managed policy (bypass mode disabled, only managed hooks and permission rules).
+  - OMP: the persistent agent dir's code-loading places are covered read-only and empty.
+  - Open for Tim: OMP's repo-provided extensions, hooks, tools and MCP in lockdown (accept, or `--no-extensions` and lose the plugins).
+- **`~/.omp` targets (#3):**
+  - Each must be exactly `versions/<v>/<name>`, with `<v>` a real directory; version directories are re-checked at container start.
+  - Refused if a credential file in `~/.omp` is hard-linked, or a mounted repo's git config has credentials in a URL.
+- **Raw podman socket (#6):** the service moves to `<run>/services/<session>/`, outside the mountable session run dir; the argv audit refuses any socket as a bind source except sockguard's.
+- **Defaulted compose project (#7):** the stack's containers must come from inside the project root; an explicit `compose_project` is trusted.
+- **Images (#8):** pip installs pinned with hashes (`--require-hashes`); the OMP build fails on credential-like files in `/root` before opening it.
+- **gc on first use after boot:** implemented (the design claimed it). The first `ab run`, `ab selftest` or `ab ls` after a boot runs it, keyed to the kernel's boot id.
+- **Not changed:**
+  - #5: not reproduced. OMP's 400 dumps hold no key; the test stays.
+  - #9: rejected under the credential rule. The "never in logs" checks cover accidental leaks; an agent can always send its own key somewhere.
+
+## 2026-10-01 · `make install`
+
+- **What:** `make install` (run by Tim) writes `~/.local/bin/agentbox`, a two-line launcher for this checkout marked as ours, and `~/.local/bin/ab`, a symlink to it (`BINDIR=` to change).
+  - It refuses to overwrite an `ab` or `agentbox` that is not ours; ApacheBench installs `ab`, and so would a hand-made wrapper.
+  - It notes when another `ab` on PATH shadows its own, or is shadowed by it.
+  - `README.md` has the setup steps.

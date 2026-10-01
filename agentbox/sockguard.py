@@ -6,9 +6,9 @@ The podman service is started per session by the launcher (no user unit is enabl
 enabling one would be a systemd change), listens only in the session's 0700 run dir, and is stopped at
 teardown. Only the sockguard container mounts it. The agent gets sockguard's socket.
 
-Tier `observe` (step 4): list, inspect, top and stats, only on containers and pods of the project's live
-compose project (`io.podman.compose.project=<compose_project>`); container environments are redacted in
-inspect. Logs only when the project sets `observe_logs = true`. No writes, no exec, no image pulls. Sockguard's `mode: audit` forwards what the rules would deny,
+Tier `observe` (step 4): list, inspect (Docker API) and per-container stats, only on containers of the
+project's live compose project (`io.podman.compose.project=<compose_project>`); environments are redacted.
+Logs only when the project sets `observe_logs = true`. No libpod inspect, top or pods (review 2026-10-01). No writes, no exec, no image pulls. Sockguard's `mode: audit` forwards what the rules would deny,
 so it is never used in a session; `discovery_config` is for a test that harvests what a client calls.
 """
 import json
@@ -36,13 +36,18 @@ def _allow(method, *paths):
 # json, logs and top, libpod/pods/json. `podman stats` calls GET /libpod/containers/stats, which reports every
 # container on the host with no label filter; sockguard refuses it in every mode, so stats are per container
 # through the Docker API (/containers/<name>/stats), which is scoped.
+#
+# Review 2026-10-01 #1 and #4 (reproduced in test_step4_sockguard.test_h): libpod inspect returns
+# `CreateCommand` with every `-e KEY=VALUE` the container was created with (sockguard redacts only
+# Config.Env), so the live stack's secrets leaked; pod list and inspect are not label-scoped (another
+# project's pod was readable); `top` runs ps inside a live container and takes caller-chosen ps flags.
+# So: lists on both surfaces (no create command in them), inspect and stats through the Docker API only,
+# no top, no pods.
 OBSERVE_RULES = (
     _allow("GET", "/_ping", "/libpod/_ping", "/version", "/libpod/version")
     + _allow("HEAD", "/_ping", "/libpod/_ping")
-    + _allow("GET", "/containers/json", "/containers/*/json", "/containers/*/top", "/containers/*/stats")
-    + _allow("GET", "/libpod/containers/json", "/libpod/containers/*/json", "/libpod/containers/*/top",
-             "/libpod/containers/*/stats")
-    + _allow("GET", "/libpod/pods/json", "/libpod/pods/*/json")
+    + _allow("GET", "/containers/json", "/containers/*/json", "/containers/*/stats")
+    + _allow("GET", "/libpod/containers/json")
 )
 # Only with the project's `observe_logs = true`: live-stack logs can hold secrets (an apikey= in a logged
 # URL), and whatever the agent reads also goes to its model provider.
@@ -109,14 +114,16 @@ def wait_socket(path, timeout, what, alive=lambda: True):
     raise AgentboxError(f"{what} socket {path} not ready after {timeout}s")
 
 
-def start_service(podman_bin, run_dir, timeout, *, slice_name="", unit=""):
-    """Start `podman system service` on <run_dir>/podman/podman.sock. Returns (socket path, process); the PID
-    is kept in <run_dir>/podman/service.pid for teardown and gc.
+def start_service(podman_bin, service_dir, timeout, *, slice_name="", unit=""):
+    """Start `podman system service` on <service_dir>/podman.sock. Returns (socket path, process); the PID is
+    kept in <service_dir>/service.pid for teardown and gc. The service dir is <run>/services/<session>, outside
+    the session's run dir, so no launcher mount rule can reach the raw socket (review 2026-10-01 #6).
 
     With a slice, it runs in a transient scope under it (`systemd-run --user --scope`, which registers the
     scope and then execs podman in place, so the PID is the service's): its memory and tasks count against
     agentbox.slice like every container of the session. Nothing is written to systemd's configuration."""
-    d = os.path.join(run_dir, "podman")
+    d = service_dir
+    os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)
     os.makedirs(d, mode=0o700, exist_ok=True)
     sock = os.path.join(d, "podman.sock")
     log = open(os.path.join(d, "service.log"), "ab")
@@ -142,9 +149,9 @@ def _cmdline(pid):
 
 
 def services_under(run_root):
-    """{pid: session} for every running `podman system service` whose socket is in a session run dir under
-    <run_root>/sessions/, whether or not that run dir still exists."""
-    prefix = f"unix://{os.path.join(run_root, 'sessions')}/"
+    """{pid: session} for every running `podman system service` whose socket is in a session's service dir
+    under <run_root>/services/, whether or not that dir still exists."""
+    prefix = f"unix://{os.path.join(run_root, 'services')}/"
     out = {}
     for d in os.listdir("/proc"):
         if not d.isdigit():
@@ -153,7 +160,7 @@ def services_under(run_root):
         if not cmd or "system" not in cmd or "service" not in cmd:
             continue
         for a in cmd:
-            if a.startswith(prefix) and a.endswith("/podman/podman.sock"):
+            if a.startswith(prefix) and a.endswith("/podman.sock"):
                 out[int(d)] = a[len(prefix):].split("/", 1)[0]
     return out
 
@@ -180,11 +187,12 @@ def kill_service(pid):
     return True
 
 
-def stop_service(run_dir):
-    """Stop the session's podman service, if its PID file names a live `podman system service` on this run
-    dir's socket (the PID may have been reused by something else)."""
+def stop_service(service_dir):
+    """Stop the session's podman service, if its PID file names a live `podman system service` on this
+    service dir's socket (the PID may have been reused by something else)."""
+    run_dir = service_dir
     try:
-        with open(os.path.join(run_dir, "podman", "service.pid")) as f:
+        with open(os.path.join(service_dir, "service.pid")) as f:
             pid = int(f.read().strip())
     except (OSError, ValueError):
         return False

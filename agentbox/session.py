@@ -33,6 +33,7 @@ class Project:
     history_secrets_accepted: list = field(default_factory=list)
     compose_project: str = ""      # the live stack's compose project (default: the project name)
     observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
+    compose_project_explicit: bool = False
 
     def value(self, key):
         return self.eff[key][0]
@@ -74,7 +75,8 @@ def load_project(settings, name, *, with_secrets=False):
                    build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
                    compose_project=check_compose_project(name, p.get("compose_project", name)),
-                   observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)))
+                   observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)),
+                   compose_project_explicit="compose_project" in p)
 
 
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -231,13 +233,13 @@ def sandbox_notes(project, egress, podman_live=None):
                      "variables cannot connect at all.")
     lines += [
         (f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
-         f"it): read-only access (list, inspect, {logs}top, stats) to the containers of compose project "
-         f"`{podman_live}`, the project's live stack. Container environments are redacted. Everything else "
-         f"(exec, create, start, stop, remove, pull, build, {'' if logs else 'logs, '}other projects' "
-         "containers) is refused. "
-         "`podman stats` is refused too (its endpoint covers every container on the host); read one "
-         "container's stats with `curl --unix-socket /run/agentbox/podman.sock "
-         "'http://d/containers/<name>/stats?stream=false'`."
+         f"it): read-only access to the containers of compose project `{podman_live}`, the project's live "
+         f"stack: `podman ps`{', `podman logs`' if logs else ''}, and through the Docker API with "
+         "`curl --unix-socket /run/agentbox/podman.sock http://d/containers/<name>/json` (inspect, "
+         "environment redacted) and `.../containers/<name>/stats?stream=false`. `podman inspect`, `top`, "
+         f"`stats` and pods are refused (they would expose the create command or other projects), and so is "
+         f"everything else (exec, create, start, stop, remove, pull, build, {'' if logs else 'logs, '}"
+         "other projects' containers)."
          if podman_live else "- No podman or docker socket is available in this session."),
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
@@ -328,6 +330,8 @@ class Session:
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
         self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
+        if self.podman_live and not p.compose_project_explicit:
+            self._check_live_stack_is_ours()
         notes = sandbox_notes(p, self.egress, self.podman_live)
         self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
         self.setup = self.adapter.prepare_session(self, notes)
@@ -337,7 +341,7 @@ class Session:
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
         key names that are safe in a path and a shell variable."""
         st = self.setup
-        for dst in st.tmpfs:
+        for dst in st.tmpfs + st.ro_empty_dirs:
             _no_commas(dst, "adapter tmpfs")
             if not st.mount_root or not _inside(dst, st.mount_root):
                 raise AgentboxError(f"adapter tmpfs {dst} is not under the adapter's root {st.mount_root!r}")
@@ -356,6 +360,21 @@ class Session:
     @property
     def model_domains(self):
         return sorted(set(self.adapter.model_domains) | set(self.setup.model_domains))
+
+    def _check_live_stack_is_ours(self):
+        """The observed stack defaults to the project's name, so a project that happens to share a name with
+        another stack on the host would observe it. Unless compose_project is set explicitly, every container
+        of that compose project must have been brought up from inside the project root (review 2026-10-01 #7)."""
+        p = self.project
+        for c in self.podman.containers_json({sockguard.COMPOSE_LABEL: p.compose_project}):
+            wd = (c.get("Labels") or {}).get("com.docker.compose.project.working_dir", "")
+            real = os.path.realpath(wd) if wd else ""
+            if not real or not _inside(real, p.root):
+                name = (c.get("Names") or ["?"])[0]
+                raise AgentboxError(
+                    f"project {p.name}: compose project {p.compose_project!r} has container {name} from "
+                    f"{wd or 'an unknown directory'}, outside {p.root}; it is not this project's stack. If it "
+                    "should be observed anyway, set compose_project explicitly (`--compose-project`)")
 
     def log_path(self, kind):
         """Where a sidecar's log is kept after the session. Session names are reused once a session ends, so
@@ -411,6 +430,7 @@ class Session:
         if self.token_file:
             opts.append(f"--mount=type=bind,src={os.path.realpath(self.token_file)},dst={TOKEN_PATH},ro")
         opts += [mounts.Mount("tmpfs", d).podman_arg() for d in self.setup.tmpfs]
+        opts += [mounts.Mount("tmpfs", d, ro=True).podman_arg() for d in self.setup.ro_empty_dirs]
         for src, dst, ro in self.setup.mounts:
             opts.append(f"--mount=type=bind,src={os.path.realpath(src)},dst={dst}" + (",ro" if ro else ""))
         for provider, path in sorted(self.setup.keys.items()):
@@ -426,7 +446,8 @@ class Session:
         hardening.audit(opts + [a.image], allowed_mount_srcs=self.allowed_mount_srcs(extra_srcs),
                         allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"]
                         + ([self.setup.mount_root] if self.setup.mount_root else []),
-                        networks=self.networks, tmpfs_dirs=("/tmp", HOME))
+                        networks=self.networks, tmpfs_dirs=("/tmp", HOME),
+                        allowed_sockets=[self.sockguard_socket] if self.podman_live else [])
         return args + opts + [a.image, "-c", self.wrapper(), "agentbox"] + list(command)
 
     def wrapper(self):
@@ -621,7 +642,7 @@ class NetSession(Session):
     def _start_podman_access(self):
         s, run = self.settings, self.settings.session_run_dir(self.name)
         service, self._service_proc = sockguard.start_service(
-            s.podman, run, float(s.ready_timeout), slice_name=s.cgroup_parent,
+            s.podman, s.service_dir(self.name), float(s.ready_timeout), slice_name=s.cgroup_parent,
             unit=f"{self.name}-podman-{int(self.started)}")
         os.makedirs(os.path.dirname(self.sockguard_socket), mode=0o700, exist_ok=True)
         conf = os.path.join(run, "sockguard.yaml")
@@ -690,7 +711,9 @@ def make_session(settings, agent, project, **kw):
 
 def teardown(settings, podman, session):
     sel = {"agentbox.session": session, **settings.labels}
-    sockguard.stop_service(settings.session_run_dir(session))
+    sockguard.stop_service(settings.service_dir(session))
+    import shutil
+    shutil.rmtree(settings.service_dir(session), ignore_errors=True)
     for c in podman.ids("container", sel):
         podman.run(["rm", "-f", "-t", "5", c], check=False)
     for n in podman.ids("network", sel):

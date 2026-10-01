@@ -30,6 +30,11 @@ READONLY_DIRS = (".cache/ms-playwright",)
 # Files Tim creates himself under ~/.config/agentbox/omp/ (never copied from ~/.omp, never parsed or cleaned:
 # he is responsible for what is in them), mounted read-only at OMP's own path when they exist.
 USER_FILES = (("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags-codedev.yaml"))
+# Places in the per-project agent dir OMP loads code or code-running config from. They are covered read-only
+# (empty) so one session cannot plant something every later session of the project runs (review 2026-10-01
+# #2). Prompt-only dirs (skills, rules, prompts, agents, commands) stay writable: OMP's autolearn writes there.
+CODE_DIRS = ("agent/extensions", "agent/hooks", "agent/tools")
+CODE_FILES = ("agent/.mcp.json", "agent/mcp.json", "agent/settings.json")
 SECRET_HEADER = re.compile(r"auth|key|token|secret|cookie|session", re.I)
 LOCAL_PROVIDER = "llama-cpp"
 PATH = f"{C_OMP}/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -52,9 +57,18 @@ def _plain(path, omp_home, what):
 VERSION_REF = re.compile(r"\.omp/versions/([A-Za-z0-9._-]+)/")
 
 
+def _version_dir(omp_home, v):
+    """~/.omp/versions/<v>, which must be a real directory (not a symlink) directly in versions/."""
+    vdir = os.path.join(omp_home, "versions", v)
+    if v in ("", ".", "..") or "/" in v or os.path.islink(vdir) or not os.path.isdir(vdir):
+        raise AgentboxError(f"{vdir} is not a real version directory; refusing to mount it")
+    return vdir
+
+
 def provisioned_targets(omp_home):
     """{name: real dir} for plugins, repos and pylibs: each link's actual target (they may point into different
-    versions). A target must exist and resolve inside ~/.omp; a missing one refuses the session."""
+    versions). Each must be exactly ~/.omp/versions/<v>/<name> with <v> a real directory (review 2026-10-01
+    #3: "anywhere inside ~/.omp" let `pylibs -> .` mount the whole of it, keys included)."""
     omp_home = os.path.realpath(omp_home)
     out = {}
     for name in PROVISIONED:
@@ -65,10 +79,47 @@ def provisioned_targets(omp_home):
         if not os.path.isdir(real):
             raise AgentboxError(f"{link} points to {os.readlink(link) if os.path.islink(link) else link}, "
                                 "which is missing; run omp-env install")
-        if not _inside(real, omp_home):
-            raise AgentboxError(f"{link} resolves outside {omp_home} ({real}); refusing to mount it")
+        v = _version_of(real, omp_home)
+        if not v or real != os.path.join(omp_home, "versions", v, name):
+            raise AgentboxError(f"{link} resolves to {real}, not to {omp_home}/versions/<version>/{name}; "
+                                "refusing to mount it")
+        _version_dir(omp_home, v)
         out[name] = real
     return out
+
+
+# Credential files in ~/.omp. A hard link to one inside a mounted version would carry it into the sandbox.
+CREDENTIAL_FILES = ("agent/models.yml", "agent/models.yml.backup", "agent/mags-codedev.yaml", "agent/.mcp.json",
+                    "agent/mcp.json")
+URL_CREDENTIALS = re.compile(r"^\s*(?:url|pushurl)\s*=\s*\S*://[^/\s@]+@", re.M | re.I)
+
+
+def check_no_credentials(omp_home, version_dirs):
+    """Refuse if a credential file in ~/.omp has another hard link, or if a git repo in a mounted version has
+    credentials in a remote URL (the credential rule: they never enter a sandbox)."""
+    for rel in CREDENTIAL_FILES:
+        p = os.path.join(omp_home, rel)
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            raise AgentboxError(f"{p} has {st.st_nlink - 1} other hard link(s); one may sit in a mounted "
+                                "version. Find it with `find ~/.omp -samefile <file>`; refusing to start")
+    for vdir in version_dirs:
+        repos = os.path.join(vdir, "repos")
+        if not os.path.isdir(repos):
+            continue
+        for name in sorted(os.listdir(repos)):
+            cfg = os.path.join(repos, name, ".git", "config")
+            try:
+                with open(cfg) as f:
+                    text = f.read()
+            except OSError:
+                continue
+            if URL_CREDENTIALS.search(text):
+                raise AgentboxError(f"{cfg} has credentials in a remote URL; they would enter the sandbox. "
+                                    "Remove them (e.g. `git remote set-url`), then start again")
 
 
 def _version_of(path, omp_home):
@@ -127,13 +178,17 @@ def omp_mounts(omp_home, warn):
         out.append((real, os.path.join(C_OMP, name)))
     if "plugins" in targets:
         versions |= referenced_versions(omp_home, targets["plugins"])
+    mounted_versions = []
     for v in sorted(versions):
         vdir = os.path.join(versions_dir, v)
-        if not os.path.isdir(vdir) or os.path.islink(vdir):
+        if not os.path.lexists(vdir):
             warn(f"agentbox: {omp_home}/plugins refers to version {v}, which is missing; those plugins will "
                  "not load (run omp-env install)")
             continue
+        _version_dir(omp_home, v)
+        mounted_versions.append(vdir)
         out.insert(0, (vdir, os.path.join(C_OMP, "versions", v)))
+    check_no_credentials(omp_home, mounted_versions)
     if not targets:
         warn(f"agentbox: {omp_home} has no provisioned plugins/repos/pylibs; OMP runs without extensions "
              "(run omp-env install)")
@@ -151,6 +206,8 @@ def omp_mounts(omp_home, warn):
 
     def unchanged():
         now = provisioned_targets(omp_home)
+        for vdir in mounted_versions:
+            _version_dir(omp_home, os.path.basename(vdir))
         if now != targets:
             raise AgentboxError(f"{omp_home}: plugins/repos/pylibs changed while the session was starting "
                                 "(an omp-env install or rollback?); start it again")
@@ -310,6 +367,18 @@ class OmpAdapter(Adapter):
         setup.mounts.append((agent_dir, os.path.join(C_OMP, "agent"), False))
         setup.mounts.append((logs_dir, os.path.join(C_OMP, "logs"), False))
         setup.mounts += [(src, dst, True) for src, dst in mounts]
+        for rel in CODE_DIRS:
+            setup.ro_empty_dirs.append(os.path.join(C_OMP, rel))
+        empty = os.path.join(run_dir, "omp-empty")
+        os.close(os.open(empty, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        user_dsts = {os.path.join(C_OMP, rel) for fn, rel in USER_FILES
+                     if os.path.isfile(os.path.join(s.seed_dir(self.name), fn))
+                     and not os.path.islink(os.path.join(s.seed_dir(self.name), fn))}
+        for rel in CODE_FILES:
+            dst = os.path.join(C_OMP, rel)
+            if dst not in user_dsts:
+                _prepare_file(os.path.join(agent_dir, os.path.basename(rel)))
+                setup.mounts.append((empty, dst, True))
         missing = []
         for fn, rel in USER_FILES:
             src = os.path.join(s.seed_dir(self.name), fn)

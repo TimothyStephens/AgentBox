@@ -38,7 +38,8 @@ function sse(res, chunks) {
 const base = {id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 1, model: 'stub-model'};
 const usage = {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2};
 // OMP 18's browser is the `browser` object inside its eval tool, not a tool of its own.
-const BROWSER_JS = "const tab = await browser.open({ name: 'abt', url: 'https://example.com/' });\n" +
+// OMP's own browser-open default is 30 s, which a loaded host can exceed (seen 1 Oct).
+const BROWSER_JS = "const tab = await browser.open({ name: 'abt', url: 'https://example.com/', timeout: 120 });\n" +
   "const t = await tab.title();\nconsole.log('TITLE=' + t);\nawait tab.close();\nt";
 http.createServer((req, res) => {
   let body = '';
@@ -56,6 +57,10 @@ http.createServer((req, res) => {
     const toolMsg = msgs.find(m => m.role === 'tool');
     const text = JSON.stringify(msgs.filter(m => m.role === 'user'));
     let delta, finish;
+    if (text.includes('FAIL400')) {
+      res.writeHead(400, {'content-type': 'application/json'});
+      return res.end(JSON.stringify({error: {message: 'stub bad request', type: 'invalid_request_error'}}));
+    }
     if (toolMsg) {
       fs.appendFileSync('/tmp/stub-tool.txt', JSON.stringify(toolMsg.content) + '\n');
       delta = {role: 'assistant', content: 'STUB_TOOL_DONE'}; finish = 'stop';
@@ -240,11 +245,36 @@ class Step3(unittest.TestCase):
                         hits.append(os.path.relpath(path, harness.BASE))
         self.assertEqual(hits, [], "a key was found at rest")
 
+    def test_key_not_at_rest_after_an_http_400(self):
+        """Review 2026-10-01 #5: OMP keeps http-400-requests/*.json in ~/.omp/logs, persistent per project."""
+        root = os.path.join(ENV.projects, "o1")
+        p = shell("o1", f"node {root}/stub.js & sleep 1; "
+                        "omp -p --no-title --model stubai/stub-model 'FAIL400 please'; echo OMP_EXIT=$?; "
+                        "cat /tmp/stub.log; find ~/.omp/logs -type f | head -20")
+        print(f"\n{redact(p.stdout)[-1500:]}\n{redact(p.stderr)[-600:]}")
+        self.assertRegex(p.stdout, r"POST \S*chat/completions KEY", "OMP sent the key and got the 400")
+        hits = []
+        for where in (ENV.data, ENV.run_dir):
+            for dirpath, _dirs, files in os.walk(where):
+                for fn in files:
+                    try:
+                        with open(os.path.join(dirpath, fn), "rb") as f:
+                            if any(v.encode() in f.read() for v in KEYS.values()):
+                                hits.append(os.path.relpath(os.path.join(dirpath, fn), harness.BASE))
+                    except OSError:
+                        pass
+        state_logs = os.path.join(ENV.data, "o1", "omp", "logs")
+        print("omp logs kept:", sorted(os.path.relpath(os.path.join(d, f), state_logs)
+                                       for d, _, fs in os.walk(state_logs) for f in fs)[:20])
+        self.assertEqual(hits, [], "a key was written at rest on the error path")
+
     def test_only_named_omp_files_are_visible(self):
         p = shell("o1", "grep -rRso 'OMPCANARY:[^ ]*' ~/.omp/ /root/.omp/ | sed 's/.*OMPCANARY://' | sort -u; "
                         # agent/ and logs/ are the project's own state (OMP creates its databases there),
                         # so the host's files are checked there by canary only, above.
-                        "for f in agent/models.yml.backup agent/.mcp.json agent/mags-codedev.yaml "
+                        # .mcp.json exists as an empty read-only placeholder (review 2026-10-01 #2)
+                        "test -s ~/.omp/agent/.mcp.json && echo VISIBLE:nonempty-mcp; "
+                        "for f in agent/models.yml.backup agent/mags-codedev.yaml "
                         "agent/extensions/pi-permission-system versions/legacy-20260905172136 logs/omp.2026-07-30.log "
                         "puppeteer stats.db .omp-sandbox.json; do "
                         "test -e ~/.omp/$f && echo VISIBLE:$f; done; "
