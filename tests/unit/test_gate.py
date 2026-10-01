@@ -6,7 +6,7 @@ from urllib.parse import parse_qsl, urlsplit
 from agentbox import gate
 from agentbox.errors import AgentboxError
 
-CFG = {"session": "abt-s-1", "network": "abt-s-1-int", "labels": {"agentbox": "1", "agentbox.session": "abt-s-1"},
+CFG = {"subnets": ["10.89.3.0/24"], "session": "abt-s-1", "network": "abt-s-1-int", "labels": {"agentbox": "1", "agentbox.session": "abt-s-1"},
        "proxy_env": {"http_proxy": "http://p:3128", "https_proxy": "http://p:3128", "no_proxy": "localhost"},
        "bind_roots": ["/proj"], "cgroup_parent": "agentbox.slice", "slice": "agentbox.slice", "memory": 1 << 30,
        "pids": 1024, "build_memory": 2 << 30, "holder": "abt-s-1-holder",
@@ -27,6 +27,9 @@ class FakeGate(gate.Gate):
 
     def holder_ns(self):
         return "/proc/4242/ns/net", 4242, "net:[1]"
+
+    def network_names(self):
+        return {"proj_web_1", "web", "db"}
 
     def slice_state(self, name):
         return True, "active"
@@ -210,3 +213,74 @@ class Scoping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoProxy(unittest.TestCase):
+    def test_names_on_the_network_and_own_aliases_go_direct(self):
+        spec = FakeGate().rewrite_libpod_container({"name": "proj_api_1",
+                                                    "Networks": {"proj_default": {"aliases": ["api"]}}})
+        parts = spec["env"]["no_proxy"].split(",")
+        self.assertEqual(parts[:3], ["localhost", "127.0.0.1", "10.89.3.0/24"])
+        for name in ("web", "db", "proj_web_1", "api", "proj_api_1"):
+            self.assertIn(name, parts)
+        self.assertNotIn("NO_PROXY", spec["env"], "one spelling only (sockguard refuses case variants)")
+
+    def test_the_compose_files_own_value_wins(self):
+        spec = FakeGate().rewrite_libpod_container({"env": {"no_proxy": "mine"}})
+        self.assertEqual(spec["env"]["no_proxy"], "mine")
+        spec = FakeGate().rewrite_compat_container({"Env": ["no_proxy=mine"], "HostConfig": {}})
+        self.assertEqual([e for e in spec["Env"] if e.startswith("no_proxy=")], ["no_proxy=mine"])
+
+
+class SpellingAndVerification(unittest.TestCase):
+    """Found 1 Oct (from the step 5 review brief, item 7): "PortMappings" got a published host port past the
+    gate and sockguard, because podman matches JSON field names case-insensitively."""
+
+    def decide(self, path, body):
+        return FakeGate().decide("POST", path, [], json.dumps(body).encode())
+
+    def test_case_variants_are_checked_like_the_exact_spelling(self):
+        for body in ({"image": "x", "PortMappings": [{"host_port": 18081, "container_port": 80}]},
+                     {"image": "x", "PRIVILEGED": True}, {"image": "x", "Cap_Add": ["NET_ADMIN"]},
+                     {"image": "x", "NetNS": {"NsMode": "host"}},
+                     {"image": "x", "Mounts": [{"Type": "bind", "Source": "/etc", "Destination": "/e"}]}):
+            with self.subTest(body=body), self.assertRaises(gate.Deny):
+                self.decide("/v5/libpod/containers/create", body)
+        for hc in ({"portbindings": {"80/tcp": [{}]}}, {"privileged": True}, {"NETWORKMODE": "host"}):
+            with self.subTest(hc=hc), self.assertRaises(gate.Deny):
+                self.decide("/v5/containers/create", {"Image": "x", "hostconfig": hc})
+
+    def test_keys_differing_only_in_case_are_refused(self):
+        with self.assertRaises(gate.Deny):
+            FakeGate().decide("POST", "/v5/libpod/containers/create", [],
+                              b'{"image": "x", "privileged": false, "Privileged": true}')
+        with self.assertRaises(gate.Deny):
+            FakeGate().decide("POST", "/v5/libpod/volumes/create", [], b'{"Name": "v", "Options": {}, "options": {"o": "bind"}}')
+
+    def test_volume_options_in_any_spelling_refused(self):
+        with self.assertRaises(gate.Deny):
+            self.decide("/v5/libpod/volumes/create", {"name": "v", "options": {"o": "bind", "device": "/"}})
+
+    def good_doc(self):
+        return {"Config": {"Labels": DEV}, "Mounts": [], "NetworkSettings": {"Networks": {"abt-s-1-int": {}}},
+                "HostConfig": {"PortBindings": {}, "CgroupParent": "/user.slice/x/agentbox.slice", "OomScoreAdj": 1000,
+                               "RestartPolicy": {"Name": "no"}, "NetworkMode": "bridge"}}
+
+    def test_post_create_verification(self):
+        g = FakeGate()
+        self.assertEqual(g.container_violations(self.good_doc()), [])
+        for change, what in (({"PortBindings": {"80/tcp": [{"HostPort": "18081"}]}}, "published ports"),
+                             ({"Privileged": True}, "privileged"), ({"CapAdd": ["CAP_NET_ADMIN"]}, "capabilities"),
+                             ({"PidMode": "host"}, "PidMode"), ({"NetworkMode": "ns:/proc/1/ns/net"}, "NetworkMode"),
+                             ({"CgroupParent": "/"}, "cgroup parent"), ({"OomScoreAdj": 0}, "OOM"),
+                             ({"RestartPolicy": {"Name": "always"}}, "restart")):
+            doc = self.good_doc()
+            doc["HostConfig"].update(change)
+            with self.subTest(change=change):
+                self.assertTrue(any(what in v for v in g.container_violations(doc)), g.container_violations(doc))
+        doc = self.good_doc()
+        doc["NetworkSettings"]["Networks"] = {"abt-s-1-int": {}, "podman": {}}
+        self.assertTrue(g.container_violations(doc))
+        doc = self.good_doc()
+        doc["Mounts"] = [{"Type": "bind", "Source": "/home/vmuser"}]
+        self.assertTrue(g.container_violations(doc))

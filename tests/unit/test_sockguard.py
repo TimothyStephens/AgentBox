@@ -258,3 +258,29 @@ class GcOncePerBoot(SettingsCase):
             self.assertTrue(cli.gc_once_per_boot(self.settings))
             self.assertFalse(cli.gc_once_per_boot(self.settings))
         self.assertEqual(gc.call_count, 1)
+
+
+class ImageGc(SettingsCase):
+    """Decision 1 Oct: ab gc removes a project's session-built images older than 7 days, keeping the newest
+    image of each tag."""
+
+    def test_old_untagged_go_newest_per_tag_stays(self):
+        day = 86400
+        now = 100 * day
+        dev = {"agentbox.role": "dev", "agentbox.project": "p1", "agentbox.session": "s"}
+        imgs = [
+            {"Id": "a" * 64, "Names": ["localhost/app:latest"], "Created": now - 30 * day, "Labels": dev},
+            {"Id": "b" * 64, "Names": [], "Created": now - 30 * day, "Labels": dev},
+            {"Id": "c" * 64, "Names": [], "Created": now - 2 * day, "Labels": dev},
+            {"Id": "d" * 64, "Names": ["localhost/app:v1"], "Created": now - 20 * day, "Labels": dev},
+            {"Id": "e" * 64, "Names": ["localhost/app:v1"], "Created": now - 10 * day, "Labels": dev},
+        ]
+        os.environ["FAKE_PODMAN_IMAGES"] = json.dumps(imgs)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGES", None)
+        removed = session.gc_images(self.settings, session.Podman(self.settings.podman), now=now)
+        rmi = [c[1] for c in self.podman_calls() if c[:1] == ["rmi"]]
+        self.assertEqual(sorted(rmi), ["b" * 64, "d" * 64])
+        self.assertEqual(len(removed), 2)
+        images_call = [c for c in self.podman_calls() if c[:1] == ["images"]][0]
+        self.assertIn("label=agentbox.role=dev", images_call)
+        self.assertIn("label=agentbox-test=1", images_call)

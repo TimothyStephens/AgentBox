@@ -337,3 +337,53 @@ The review (`docs/reviews/2026-10-01-steps-3-4.md`, annotated per finding) led t
     - files that became executable;
     - changed git config.
   - It prints a summary when something is found, keeps the full report as `<session>-<start>-scan.log`, and never blocks.
+
+## 2026-10-01 · OMP repo code in lockdown (Tim's decision 1)
+
+- **Checked first:** can OMP switch off only repo-local extensions, hooks, tools and MCP servers? No.
+  - Its native loader reads the repo's `.omp/` and `~/.omp/agent` together, with no project-only setting.
+  - The only project switch is `mcp.enableProjectConfig`, for MCP.
+- **So, in lockdown only:**
+  - OMP runs with `--no-extensions` (this drops Tim's plugins in lockdown);
+  - a read-only overlay (`~/.omp/agentbox-lockdown.yml`, passed with `--config`) sets `mcp.enableProjectConfig: false`;
+  - every repo code location that exists at session start (`.omp/{extensions,hooks,tools}`, `.omp/mcp.json`, `.omp/.mcp.json`, `.claude/{extensions,hooks,tools}`, `.mcp.json`) is covered empty and read-only.
+- **The covers are needed:** `--no-extensions` does not stop a repo's custom tool.
+- **Test** (`test_review_1001.test_omp_repo_code_does_not_run_in_lockdown`): code planted in all of those places.
+  - With approvals off (the control), the OMP extension, OMP hook, Claude hook and OMP tool ran.
+  - In lockdown, none ran.
+- **Other presets:** unchanged.
+- **Note for Tim:** the covers alone might keep repo code out while leaving the plugins on. Not done; `--no-extensions` stays as decided.
+
+## 2026-10-01 · `no_proxy` in dev containers (Tim's decision 2)
+
+- **What:** the gate sets `no_proxy` (lower case; sockguard refuses case-variant duplicates) in every dev container to `localhost`, `127.0.0.1`, the session subnet, and the names and aliases of the dev containers already on the session network, plus the container's own. The session's infrastructure (agent, proxy, holder) is not listed. A value the compose file sets wins. No squid changes.
+- **Session notes:**
+  - if a service-to-service call still goes to the proxy, add the name to `no_proxy` in that service's compose `environment:`;
+  - some clients ignore `no_proxy` (busybox `wget`: use `-Y off`). Found in the itest: busybox `wget` went to the proxy with `web` in `no_proxy`, and reached `web` directly with `-Y off`.
+
+## 2026-10-01 · Session-built images (Tim's decision 3)
+
+- **What:**
+  - Builds carry `agentbox.project` and `agentbox.session`, stamped by the gate.
+  - `ab gc` removes a project's session-built images (`agentbox.role=dev`) older than `image_keep_days` (7), except the newest image carrying each tag. With podman a tag points at one image, so in practice old untagged rebuilds go and each tag's current image stays.
+  - The removal is never forced, so an image a container still uses stays.
+  - `ab kill` leaves images alone.
+
+## 2026-10-01 · Guard changes and false positives (Tim's decision 4)
+
+- **What:**
+  - Any edit to `.claude/` goes in its own commit prefixed `guard:`, with the reason, and is listed in the report.
+  - When the guard blocks a false positive, it is reported.
+  - The builder does not route around a block unless the blocked text is prose or test data, and says which.
+
+## 2026-10-01 · The gate checks field spellings and what podman stored (builder's finding)
+
+- **Found:** the step 5 review stopped before its findings. Item 7 of its brief (podman matches JSON field names case-insensitively) was cheap to check, so the builder checked it.
+  - A libpod create body with `"PortMappings"` instead of `"portmappings"` passed the gate and the dev sockguard. Podman created the container with `0.0.0.0:18081` published (create only, never started, in a test).
+  - `CAP_ADD` was caught by sockguard; ports were not.
+- **Fixed in the gate, two ways:**
+  - **Before forwarding:** it refuses a JSON object holding two keys that differ only in case. It renames every field it knows to its exact spelling, per body kind, before checking.
+  - **After every container or pod create:** it inspects what podman stored and removes the container or pod, then refuses, on any violation. It checks: published ports, privileged, added capabilities, devices, host/`ns:`/foreign `container:` namespaces, networks other than the session's, binds outside the grants, cgroup parent, restart policy, OOM score, dev labels. That closes this class of parsing differences, not just case.
+- **Tests:**
+  - `test_gate.SpellingAndVerification` (unit);
+  - `test_step5_gate.test_c_refusals`: four case-variant bodies through the real gate, all refused, nothing created.

@@ -215,6 +215,11 @@ def dev_notes(podman_live):
         "  - containers get the proxy variables, a 1 GB / 1024-process limit unless the compose file sets its "
         "own, and no restart policy; binds only inside the project's own directories; no privileged mode, "
         "added capabilities, devices or host namespaces;",
+        "  - `no_proxy` in each container covers localhost, the session subnet and the names of the containers "
+        "already running when it starts. If a service-to-service call by name still goes to the proxy (it "
+        "answers 403 or 503), add the name to `no_proxy` in that service's `environment:` in the compose "
+        "file, e.g. `no_proxy: localhost,127.0.0.1,web,db`. Some clients ignore `no_proxy` altogether (busybox "
+        "`wget`: use `wget -Y off`);",
         "  - builds run on this session's network through the proxy and never pull: pull `FROM` images first "
         "(`podman pull docker.io/library/python:3.12`); pulls only from docker.io, ghcr.io, lscr.io, quay.io;",
         "  - you can only see, exec into, stop or remove what you created in this session; everything is removed "
@@ -386,6 +391,10 @@ class Session:
             _no_commas(dst, "adapter mount")
             if not st.mount_root or not _inside(dst, st.mount_root) or dst == st.mount_root:
                 raise AgentboxError(f"adapter mount {dst} is not under the adapter's root {st.mount_root!r}")
+        for path in st.project_covers:
+            _no_commas(path, "project cover")
+            if not _inside(path, self.project.root) or path == self.project.root:
+                raise AgentboxError(f"adapter cover {path} is not inside the project")
         for provider, path in st.keys.items():
             keysmod.env_name(provider)
             _no_commas(os.path.realpath(path), "key file")
@@ -467,6 +476,11 @@ class Session:
             opts.append(f"--mount=type=bind,src={os.path.realpath(self.token_file)},dst={TOKEN_PATH},ro")
         opts += [mounts.Mount("tmpfs", d).podman_arg() for d in self.setup.tmpfs]
         opts += [mounts.Mount("tmpfs", d, ro=True).podman_arg() for d in self.setup.ro_empty_dirs]
+        for path in self.setup.project_covers:
+            if os.path.isdir(path) and not os.path.islink(path):
+                opts.append(mounts.Mount("tmpfs", path, ro=True).podman_arg())
+            else:
+                opts.append(mounts.Mount("mask", path).podman_arg(mask_file=self.mask_file))
         for src, dst, ro in self.setup.mounts:
             opts.append(f"--mount=type=bind,src={os.path.realpath(src)},dst={dst}" + (",ro" if ro else ""))
         for provider, path in sorted(self.setup.keys.items()):
@@ -773,7 +787,7 @@ class NetSession(Session):
         names go direct (they are on the same internal network), everything else through squid."""
         p = self.podman.run(["network", "inspect", self.int_net, "--format",
                              "{{range .Subnets}}{{.Subnet}} {{end}}"], check=False)
-        subnets = (p.stdout or "").split()
+        subnets = self.int_subnets = (p.stdout or "").split()
         env = egress.proxy_env(self.proxy_name)
         no_proxy = ",".join(["localhost", "127.0.0.1", "::1"] + subnets + [".dns.podman"])
         env["NO_PROXY"] = env["no_proxy"] = no_proxy
@@ -786,7 +800,7 @@ class NetSession(Session):
             "listen": self.gate_socket, "upstream": self.sockguard_dev_socket, "raw": service,
             "session": self.name, "network": self.int_net,
             "labels": labels_for(s, self.project.name, self.name, "dev"),
-            "proxy_env": proxy_env, "bind_roots": self.bind_roots,
+            "proxy_env": proxy_env, "bind_roots": self.bind_roots, "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
             "memory": 1 << 30, "pids": 1024, "build_memory": int(self.project.build_memory),
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
@@ -957,6 +971,39 @@ def sessions(settings, podman):
     return out
 
 
+def gc_images(settings, podman, now=None, warn=lambda m: None):
+    """Session-built images (labelled agentbox.role=dev, with their project and session) older than
+    image_keep_days are removed, except the newest image carrying each tag. Never forced: an image a
+    container still uses stays. ab kill leaves images alone (decision, 1 Oct)."""
+    now = time.time() if now is None else now
+    filters = []
+    for k, v in {**settings.labels, "agentbox.role": "dev"}.items():
+        filters += ["--filter", f"label={k}={v}"]
+    p = podman.run(["images", "--format", "json"] + filters, check=False)
+    try:
+        images = json.loads(p.stdout or "[]") or []
+    except ValueError:
+        return []
+    newest = {}
+    for img in images:
+        for tag in img.get("Names") or []:
+            if tag not in newest or img.get("Created", 0) > newest[tag].get("Created", 0):
+                newest[tag] = img
+    keep = {img["Id"] for img in newest.values()}
+    cutoff = now - float(settings.image_keep_days) * 86400
+    removed = []
+    for img in images:
+        labels = img.get("Labels") or {}
+        if img["Id"] in keep or img.get("Created", now) >= cutoff or not labels.get("agentbox.project"):
+            continue
+        r = podman.run(["rmi", img["Id"]], check=False)
+        if r.returncode == 0:
+            removed.append(f"image {img['Id'][:12]} ({labels.get('agentbox.project')})")
+        else:
+            warn(f"agentbox: kept image {img['Id'][:12]}: {(r.stderr or '').strip()[-120:]}")
+    return removed
+
+
 def gc(settings, podman, warn=lambda m: None):
     """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
     alone even if its metadata is missing or unreadable (ab kill removes it explicitly); an orphaned proxy
@@ -979,4 +1026,5 @@ def gc(settings, podman, warn=lambda m: None):
             sockguard.kill_service(pid)
             warn(f"agentbox: stopped an orphaned podman service of {s} (pid {pid})")
             removed.append(f"{s} (podman service)")
+    removed += gc_images(settings, podman, warn=warn)
     return removed

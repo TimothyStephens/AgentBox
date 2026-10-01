@@ -39,6 +39,7 @@ DEFAULTS = {
     "token_dir": "",       # empty: the config dir. Where the <agent>-oauth-token files live.
     "git_name": "",        # empty: taken from the host's global git config
     "git_email": "",
+    "image_keep_days": 7,  # ab gc removes session-built images older than this (the newest per tag stays)
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
     "omp_home": "~/.omp",  # the host's OMP install; only named pieces of it are mounted (adapters/omp.py)
 }

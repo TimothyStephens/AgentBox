@@ -5,6 +5,7 @@
   FAKE_PODMAN_PS        stdout for `ps --format {{.Names}}`
   FAKE_PODMAN_PSJSON    stdout for `ps --format json`
   FAKE_PODMAN_NETLS     stdout for `network ls`
+  FAKE_PODMAN_IMAGES    stdout for `images --format json`
   FAKE_PODMAN_FAIL      substring: any call whose argv contains it exits 1
   FAKE_PODMAN_RUN_OUT   stdout for `run`
   FAKE_PODMAN_LOGS      stdout for `logs` (default: squid's ready line)
@@ -27,6 +28,8 @@ if argv[:1] == ["ps"]:
         sys.stdout.write(os.environ.get("FAKE_PODMAN_PSJSON", "[]"))
     else:
         sys.stdout.write(os.environ.get("FAKE_PODMAN_PS", ""))
+elif argv[:1] == ["images"]:
+    sys.stdout.write(os.environ.get("FAKE_PODMAN_IMAGES", "[]"))
 elif argv[:2] == ["network", "ls"]:
     sys.stdout.write(os.environ.get("FAKE_PODMAN_NETLS", ""))
 elif argv[:2] == ["network", "inspect"]:

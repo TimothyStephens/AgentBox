@@ -374,6 +374,33 @@ class OmpSession(SettingsCase):
     def test_lockdown_asks(self):
         s = self.make(preset="lockdown")
         self.assertIn("--approval-mode=always-ask", s.agent_command())
+        self.assertIn("--no-extensions", s.agent_command())
+
+    def test_lockdown_covers_repo_code(self):
+        root = self.project("p1", preset="lockdown")
+        for rel in (".omp/tools/t.ts", ".claude/hooks/pre/h.ts", ".mcp.json"):
+            self.write(os.path.relpath(os.path.join(root, rel), self.tmp), "x")
+        s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
+                                 warn=lambda m: None)
+        s.prepare()
+        self.addCleanup(s.teardown)
+        s.start_infra()
+        argv = s.run_args(s.agent_command())
+        self.assertIn(f"--mount=type=tmpfs,dst={root}/.omp/tools,tmpfs-mode=0700,U=true,notmpcopyup,ro", argv)
+        self.assertIn(f"--mount=type=tmpfs,dst={root}/.claude/hooks,tmpfs-mode=0700,U=true,notmpcopyup,ro", argv)
+        self.assertIn(f"--mount=type=bind,src={s.mask_file},dst={root}/.mcp.json,ro", argv)
+        self.assertFalse([a for a in argv if f"{root}/.omp/extensions" in a], "only what exists is covered")
+        lines = [a for a in s.run_args(s.agent_command()) if "LOCKDOWN" in a or "agentbox-lockdown" in a]
+        self.assertTrue(lines)
+
+    def test_python_preset_leaves_repo_code_alone(self):
+        root = self.project("p1")
+        self.write(os.path.relpath(os.path.join(root, ".omp/tools/t.ts"), self.tmp), "x")
+        s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
+                                 warn=lambda m: None)
+        s.prepare()
+        self.addCleanup(s.teardown)
+        self.assertEqual(s.setup.project_covers, [])
 
     def test_agents_md_describes_the_session(self):
         s = self.make()

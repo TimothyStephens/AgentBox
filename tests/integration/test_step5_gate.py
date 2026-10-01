@@ -100,6 +100,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do curl -s --noproxy '*' -m 3 http://web:8080/ &&
 podman logs {COMPOSE}_web_1 >/dev/null 2>&1; echo LOGS_RC=$?
 podman exec {COMPOSE}_web_1 sh -c 'echo EXEC_OK; env | grep -c _proxy'; echo EXEC_RC=$?
 podman build --no-cache -t abt-{harness.RUN}-img -f Containerfile . 2>&1 | grep -E '^BUILD_' ; echo BUILD_RC=${{PIPESTATUS[0]}}
+podman exec {COMPOSE}_worker_1 sh -c 'echo "WORKER_NOPROXY=$no_proxy"; wget -q -T 5 -O- http://web:8080/ && echo WORKER_REACHED_WEB; wget -Y off -q -T 5 -O- http://web:8080/ && echo WORKER_DIRECT_OK'
 """
 
 
@@ -154,6 +155,14 @@ class Step5(unittest.TestCase):
         self.assertIn("BUILD_LAN_BLOCKED", out)
         self.assertIn("BUILD_DIRECT_BLOCKED", out)
         self.assertRegex(out, r"BUILD_PROXY=http://\S+-proxy:3128")
+        # decision 1 Oct: no_proxy holds the names already on the session network, so services reach each other
+        self.assertRegex(out, r"WORKER_NOPROXY=localhost,127\.0\.0\.1,10\.\S*\bweb\b")
+        self.assertNotRegex(out, r"WORKER_NOPROXY=.*(-proxy|-holder)", "only the dev stack's names")
+        # busybox wget ignores no_proxy (curl, Python and Go honour it); the direct path itself must work
+        self.assertIn("WORKER_DIRECT_OK", out)
+        labels = json.loads(harness.podman("image", "inspect", f"abt-{harness.RUN}-img").stdout)[0]["Labels"]
+        self.assertEqual((labels.get("agentbox.project"), labels.get("agentbox.session")), ("dv", sess.name),
+                         "session-built images carry their project and session")
         print("on the host:", json.dumps(seen, indent=1)[:3000])
         self.assertTrue(seen, "dev containers were running before teardown")
         for c in seen:
@@ -189,6 +198,13 @@ for c in $(echo $AB_SELF_NAMES); do
   echo "SELF_EXEC_$c $(try podman exec $c true)"
   echo "SELF_STOP_$c $(try podman stop -t 1 $c)"
 done
+for body in '"PortMappings": [{{"host_port": 18082, "container_port": 80}}]' '"PRIVILEGED": true' \
+            '"privileged": false, "Privileged": true' '"NetNS": {{"NsMode": "host"}}'; do
+  code=$(curl -s --unix-socket /run/agentbox/podman.sock -X POST -H 'Content-Type: application/json' -o /dev/null \
+    -w '%{{http_code}}' -d "{{\"image\": \"{img}\", \"name\": \"abt-{harness.RUN}-casep\", $body}}" \
+    http://d/v5.0.0/libpod/containers/create)
+  echo "CASE $code $body"
+done
 echo "RAWEXEC $(curl -s --unix-socket /run/agentbox/podman.sock -X POST -o /dev/null -w '%{{http_code}}' \
   http://d/v5.0.0/libpod/exec/0123456789abcdef/start -H 'Content-Type: application/json' -d '{{}}')"
 podman ps -a --format '{{{{.Names}}}}' | grep -v '^$' > /tmp/ps.txt; echo "PS $(tr '\\n' ' ' < /tmp/ps.txt)"
@@ -220,6 +236,13 @@ podman ps -a --format '{{{{.Names}}}}' | grep -v '^$' > /tmp/ps.txt; echo "PS $(
         for l in self_lines:
             self.assertNotRegex(l, r"^\S+ 0 ", f"allowed: {l}")
         self.assertIn("RAWEXEC 403", out)
+        # found 1 Oct: podman matches JSON field names case-insensitively ("PortMappings" published a port)
+        case_lines = [l for l in out.splitlines() if l.startswith("CASE ")]
+        self.assertEqual(len(case_lines), 4, case_lines)
+        for l in case_lines:
+            self.assertTrue(l.startswith("CASE 403 "), l)
+        self.assertEqual(harness.podman("ps", "-a", "-q", "--filter", f"name=abt-{harness.RUN}-casep").stdout.strip(),
+                         "", "nothing was created")
         ps = lines.get("PS", "PS")
         for name in (sess.proxy_name, sess.sockguard_dev_name, sess.holder_name, CANARY):
             self.assertNotIn(name, ps, "only the session's dev containers are listed")

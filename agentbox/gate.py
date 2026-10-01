@@ -73,6 +73,56 @@ class Deny(Exception):
     pass
 
 
+# Podman decodes JSON field names case-insensitively, so "PortMappings" sets portmappings. Before checking, the
+# gate renames every field it knows to its exact spelling (per body kind), and refuses objects with two keys
+# that differ only in case. Found 1 Oct: "PortMappings" got a published host port past the gate and sockguard.
+LIBPOD_FIELDS = ("portmappings", "publish_image_ports", "privileged", "cap_add", "devices", "device_cgroup_rule",
+                 "pidns", "ipcns", "utsns", "userns", "cgroupns", "cgroup_parent", "pod", "netns", "nsmode", "value",
+                 "Networks", "aliases", "cni_networks", "mounts", "type", "source", "destination", "labels",
+                 "restart_policy", "restart_tries", "systemd", "oom_score_adj", "resource_limits", "memory", "limit",
+                 "swap", "pids", "env", "name", "hostname", "no_infra", "image", "sysctl", "security_opt",
+                 "volumes", "image_volumes", "overlay_volumes", "infra_image", "share", "options")
+COMPAT_FIELDS = ("HostConfig", "PortBindings", "PublishAllPorts", "Privileged", "CapAdd", "Devices", "DeviceRequests",
+                 "DeviceCgroupRules", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode", "CgroupParent",
+                 "NetworkMode", "Binds", "Mounts", "Type", "Source", "Target", "RestartPolicy", "OomScoreAdj",
+                 "Memory", "MemorySwap", "PidsLimit", "Labels", "Env", "NetworkingConfig", "EndpointsConfig",
+                 "Aliases", "Hostname", "Image", "Sysctls", "SecurityOpt", "Volumes", "VolumesFrom", "ExposedPorts")
+VOLUME_FIELDS = ("Name", "Driver", "Options", "DriverOpts", "Labels", "Label")
+NETWORK_FIELDS = ("Name", "Internal", "Labels", "Driver", "Options", "name", "internal", "labels", "driver",
+                  "options", "network_interface", "subnets")
+CANON = {kind: {f.lower(): f for f in fields} for kind, fields in (
+    ("libpod", LIBPOD_FIELDS), ("compat", COMPAT_FIELDS), ("volume", VOLUME_FIELDS))}
+
+
+def strict_loads(body):
+    """JSON whose objects never hold two keys that differ only in case (podman would see just one of them)."""
+    def pairs(items):
+        seen = {}
+        for k, _ in items:
+            if k.lower() in seen:
+                raise Deny(f"ambiguous request: keys {seen[k.lower()]!r} and {k!r} differ only in case")
+            seen[k.lower()] = k
+        return dict(items)
+    try:
+        doc = json.loads(body or b"{}", object_pairs_hook=pairs)
+    except ValueError as e:
+        if isinstance(e.__context__, Deny):
+            raise e.__context__
+        raise Deny(f"the request body is not valid JSON ({e})")
+    if not isinstance(doc, dict):
+        raise Deny("the request body must be a JSON object")
+    return doc
+
+
+def canonical(obj, canon):
+    """Rename known field names to their exact spelling, at every level."""
+    if isinstance(obj, dict):
+        return {canon.get(k.lower(), k): canonical(v, canon) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [canonical(v, canon) for v in obj]
+    return obj
+
+
 class Gate:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -122,6 +172,102 @@ class Gate:
             return (doc.get("Config") or {}).get("Labels") or {}
         return doc.get("Labels") or doc.get("labels") or {}
 
+    def raw_request(self, method, path):
+        conn = UnixHTTP(self.cfg["raw"])
+        try:
+            conn.request(method, "/v5.0.0" + path)
+            resp = conn.getresponse()
+            resp.read()
+            return resp.status
+        finally:
+            conn.close()
+
+    def _inside_roots(self, src):
+        real = os.path.realpath(src)
+        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self.cfg["bind_roots"])
+
+    def container_violations(self, doc):
+        """What is wrong with a created container, judged by what podman stored (not by the request)."""
+        hc = doc.get("HostConfig") or {}
+        bad = []
+        if any(v for v in (hc.get("PortBindings") or {}).values()):
+            bad.append("published ports")
+        if hc.get("Privileged"):
+            bad.append("privileged")
+        if hc.get("CapAdd"):
+            bad.append(f"added capabilities {hc['CapAdd']}")
+        if hc.get("Devices"):
+            bad.append("devices")
+        labels = (doc.get("Config") or {}).get("Labels") or {}
+        if labels.get(DEV_OWNER) != self.session or labels.get("agentbox.role") != "dev":
+            bad.append("missing the dev labels")
+        pod_infra = None
+        if doc.get("Pod"):
+            pod = self.pod_doc(doc["Pod"])
+            plabels = (pod or {}).get("Labels") or {}
+            if not pod or plabels.get(DEV_OWNER) != self.session:
+                bad.append("in a pod that is not this session's")
+            pod_infra = (pod or {}).get("InfraContainerID") or None
+        for key in ("NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"):
+            mode = hc.get(key) or ""
+            if mode == "host" or mode.startswith("ns:") or mode.startswith("/proc"):
+                bad.append(f"{key} {mode}")
+            if mode.startswith("container:") and (not pod_infra or mode[len("container:"):] != pod_infra):
+                bad.append(f"{key} {mode}")
+        if not pod_infra:
+            nets = set(((doc.get("NetworkSettings") or {}).get("Networks") or {}).keys())
+            if nets != {self.network}:
+                bad.append(f"networks {sorted(nets)}")
+        for m in doc.get("Mounts") or []:
+            if m.get("Type") == "bind" and not self._inside_roots(m.get("Source", "")):
+                bad.append(f"bind {m.get('Source')}")
+        if self.cfg.get("cgroup_parent") and self.cfg["cgroup_parent"] not in (hc.get("CgroupParent") or ""):
+            bad.append(f"cgroup parent {hc.get('CgroupParent')}")
+        if (hc.get("RestartPolicy") or {}).get("Name") not in (None, "", "no"):
+            bad.append("a restart policy")
+        if hc.get("OomScoreAdj") != 1000:
+            bad.append(f"OOM score {hc.get('OomScoreAdj')}")
+        return bad
+
+    def pod_doc(self, ref):
+        status, doc = self.raw_json(f"/libpod/pods/{quote(ref, safe='')}/json")
+        return doc if status == 200 and isinstance(doc, dict) else None
+
+    def pod_violations(self, doc):
+        bad = []
+        if (doc.get("Labels") or {}).get(DEV_OWNER) != self.session:
+            bad.append("missing the dev labels")
+        infra = doc.get("InfraConfig") or {}
+        if any(v for v in (infra.get("PortBindings") or {}).values()):
+            bad.append("published ports")
+        if infra.get("HostNetwork"):
+            bad.append("host network")
+        if doc.get("InfraContainerID") and set(infra.get("Networks") or []) - {self.network}:
+            bad.append(f"networks {infra.get('Networks')}")
+        return bad
+
+    def verify_created(self, kind, raw):
+        """After a create: inspect what podman stored; on any violation remove it and refuse."""
+        try:
+            created_id = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode() or "{}").get("Id")
+        except (ValueError, IndexError, AttributeError):
+            created_id = None
+        if not created_id:
+            return                                   # the create failed; nothing exists to check
+        if kind == "pod_create":
+            doc = self.pod_doc(created_id)
+            bad = self.pod_violations(doc) if doc else ["cannot inspect the new pod"]
+            if bad:
+                self.raw_request("DELETE", f"/libpod/pods/{created_id}?force=true")
+        else:
+            status, doc = self.raw_json(f"/libpod/containers/{created_id}/json")
+            bad = self.container_violations(doc) if status == 200 and isinstance(doc, dict) \
+                else ["cannot inspect the new container"]
+            if bad:
+                self.raw_request("DELETE", f"/libpod/containers/{created_id}?force=true")
+        if bad:
+            raise Deny(f"created {kind.split('_')[0]} did not match the rules ({'; '.join(bad)}); removed it")
+
     def require_dev(self, kind, ref):
         labels = self.labels_of(kind, ref)
         if labels is None:
@@ -137,8 +283,32 @@ class Gate:
         out["agentbox.role"] = "dev"
         return out
 
-    def proxy_env(self, env, as_list):
-        add = self.cfg["proxy_env"]
+    def network_names(self):
+        """Names and network aliases of the containers already on the session network."""
+        flt = quote(json.dumps({"network": [self.network]}), safe="")
+        status, docs = self.raw_json(f"/libpod/containers/json?all=true&filters={flt}")
+        names = set()
+        for c in docs if status == 200 and isinstance(docs, list) else []:
+            labels = c.get("Labels") or {}
+            if labels.get(DEV_OWNER) != self.session or labels.get("agentbox.role") != "dev":
+                continue                         # only the dev stack's own names, not the session's infrastructure
+            names.update(n.lstrip("/") for n in c.get("Names") or [])
+            status2, doc = self.raw_json(f"/libpod/containers/{quote(c.get('Id', ''), safe='')}/json")
+            if status2 == 200 and isinstance(doc, dict):
+                net = ((doc.get("NetworkSettings") or {}).get("Networks") or {}).get(self.network) or {}
+                cid = (doc.get("Id") or "")[:12]
+                names.update(a for a in net.get("Aliases") or [] if a != cid)
+        return names
+
+    def no_proxy(self, own_names):
+        """localhost, 127.0.0.1, the session subnet, and the names and aliases of the containers on the session
+        network (plus this one's own), so service-to-service calls by name go direct (decision, 1 Oct)."""
+        names = sorted((self.network_names() | set(own_names)) - {""})
+        return ",".join(["localhost", "127.0.0.1"] + list(self.cfg.get("subnets", [])) + names)
+
+    def proxy_env(self, env, as_list, own_names=()):
+        add = dict(self.cfg["proxy_env"])
+        add["no_proxy"] = self.no_proxy(own_names)
         if as_list:
             have = {e.split("=", 1)[0] for e in env or []}
             return list(env or []) + [f"{k}={v}" for k, v in add.items() if k not in have]
@@ -206,7 +376,9 @@ class Gate:
         rl["pids"] = pids
         if not pids.get("limit"):
             pids["limit"] = self.cfg["pids"]
-        spec["env"] = self.proxy_env(spec.get("env"), as_list=False)
+        own = [spec.get("name", ""), spec.get("hostname", "")]
+        own += [a for net in (spec.get("Networks") or {}).values() for a in (net or {}).get("aliases") or []]
+        spec["env"] = self.proxy_env(spec.get("env"), as_list=False, own_names=own)
         return spec
 
     def rewrite_compat_container(self, spec):
@@ -243,7 +415,8 @@ class Gate:
             hc["PidsLimit"] = self.cfg["pids"]
         spec["HostConfig"] = hc
         spec["Labels"] = self.stamp(spec.get("Labels"))
-        spec["Env"] = self.proxy_env(spec.get("Env"), as_list=True)
+        own = [spec.get("Hostname", "")] + aliases
+        spec["Env"] = self.proxy_env(spec.get("Env"), as_list=True, own_names=own)
         return spec
 
     def pod_has_infra(self, ref):
@@ -380,12 +553,15 @@ class Gate:
         """Returns (target, body) to forward, or raises Deny. May record exec ids after forwarding."""
         path = unquote(urlsplit(target).path)
         if method == "POST":
-            for kind, fn in (("libpod_create", self.rewrite_libpod_container),
-                             ("compat_create", self.rewrite_compat_container),
-                             ("pod_create", self.rewrite_pod), ("net_create", self.rewrite_network),
-                             ("vol_create", self.rewrite_volume)):
+            for kind, fn, canon in (("libpod_create", self.rewrite_libpod_container, "libpod"),
+                                    ("compat_create", self.rewrite_compat_container, "compat"),
+                                    ("pod_create", self.rewrite_pod, "libpod"),
+                                    ("net_create", self.rewrite_network, None),
+                                    ("vol_create", self.rewrite_volume, "volume")):
                 if RE[kind].match(path):
-                    spec = json.loads(body or b"{}")
+                    spec = strict_loads(body)
+                    if canon:
+                        spec = canonical(spec, CANON[canon])
                     return target, json.dumps(fn(spec)).encode(), kind
             if RE["build"].match(path):
                 return self.rewrite_build(target), body, "build"
@@ -584,6 +760,22 @@ def make_handler(gate):
                 upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 upstream.settimeout(UPSTREAM_TIMEOUT)
                 upstream.connect(gate.cfg["upstream"])
+                if kind in ("libpod_create", "compat_create", "pod_create"):
+                    upstream.sendall(build_head(method, target, version, headers) + body)
+                    raw = b""
+                    while True:
+                        chunk = upstream.recv(65536)
+                        if not chunk:
+                            break
+                        raw += chunk
+                    if b"chunked" in raw.split(b"\r\n\r\n", 1)[0].lower():
+                        head, rest_body = raw.split(b"\r\n\r\n", 1)
+                        payload, _ = read_chunked(None, rest_body)
+                        raw = head + b"\r\n\r\n" + payload
+                        raw = re.sub(rb"(?i)transfer-encoding: chunked\r\n", b"Content-Length: %d\r\n" % len(payload), raw, 1)
+                    gate.verify_created(kind, raw)
+                    client.sendall(raw)
+                    return
                 if kind == "exec_create":
                     upstream.sendall(build_head(method, target, version, headers) + body)
                     raw = b""

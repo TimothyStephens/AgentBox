@@ -37,6 +37,12 @@ CODE_DIRS = ("agent/extensions", "agent/hooks", "agent/tools")
 CODE_FILES = ("agent/.mcp.json", "agent/mcp.json", "agent/settings.json")
 SECRET_HEADER = re.compile(r"auth|key|token|secret|cookie|session", re.I)
 LOCAL_PROVIDER = "llama-cpp"
+LOCKDOWN_OVERLAY = f"{C_OMP}/agentbox-lockdown.yml"
+# Code a repo can ship for OMP (or that OMP reads from Claude's layout). In lockdown each one that exists is
+# covered, empty and read-only: --no-extensions does not stop custom tools (itest, 1 Oct).
+REPO_CODE = (".omp/extensions", ".omp/hooks", ".omp/tools", ".omp/mcp.json", ".omp/.mcp.json",
+             ".claude/extensions", ".claude/hooks", ".claude/tools", ".mcp.json")
+LOCKDOWN_SETTINGS = "mcp:\n  enableProjectConfig: false\n"
 PATH = f"{C_OMP}/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
@@ -369,6 +375,15 @@ class OmpAdapter(Adapter):
         setup.mounts += [(src, dst, True) for src, dst in mounts]
         for rel in CODE_DIRS:
             setup.ro_empty_dirs.append(os.path.join(C_OMP, rel))
+        if sess.project.value("approvals") != "off":
+            overlay = os.path.join(run_dir, "omp-lockdown.yml")
+            fd = os.open(overlay, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(LOCKDOWN_SETTINGS)
+            setup.mounts.append((overlay, LOCKDOWN_OVERLAY, True))
+            root = sess.project.root
+            setup.project_covers += [os.path.join(root, rel) for rel in REPO_CODE
+                                     if os.path.lexists(os.path.join(root, rel))]
         empty = os.path.join(run_dir, "omp-empty")
         os.close(os.open(empty, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         user_dsts = {os.path.join(C_OMP, rel) for fn, rel in USER_FILES
@@ -416,6 +431,10 @@ ADAPTER = OmpAdapter(
     env={"NO_UPDATE_NOTIFIER": "1"},
     required_tools=["bash", "git", "omp", "bun", "python", "chromium", "podman", "podman-compose"],
     approvals_off_args=["--approval-mode=yolo"],
-    approvals_on_args=["--approval-mode=always-ask"],
+    # With approvals on (lockdown), code shipped in the repo (.omp/, .claude/: extensions, hooks, tools, MCP
+    # servers) must not run unasked. OMP cannot switch off only the repo's extensions (its native loader
+    # reads .omp/ and ~/.omp/agent together), so lockdown drops extension discovery (Tim's plugins too) and
+    # the overlay turns off project MCP config (decisions.md, 1 Oct).
+    approvals_on_args=["--approval-mode=always-ask", "--no-extensions", f"--config={LOCKDOWN_OVERLAY}"],
     proxy_url_env=["PUPPETEER_PROXY"],      # OMP passes only this to Chromium as --proxy-server
 )
