@@ -44,7 +44,8 @@ def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
-def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",), allowed_sockets=()):
+def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",), allowed_sockets=(),
+          mask_file=None):
     """Refuse any argv that weakens the fixed hardening. `argv` starts after `podman run`."""
     # Everything before the image is an option; the audit sees options as `--flag=value` only.
     opts = []
@@ -74,7 +75,7 @@ def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=
             if val != "none" and val not in networks:
                 raise AgentboxError(f"audit: network {val!r} is not a session network")
         if o.startswith("--mount="):
-            _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts, allowed_sockets)
+            _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts, allowed_sockets, mask_file)
         if o.startswith("--tmpfs="):
             dst, _, tmpfs_opts = o[len("--tmpfs="):].partition(":")
             if dst not in tmpfs_dirs:
@@ -84,7 +85,7 @@ def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=
     return True
 
 
-def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=()):
+def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=(), mask_file=None):
     fields = dict(f.split("=", 1) if "=" in f else (f, "") for f in spec.split(","))
     kind = fields.get("type")
     dst = fields.get("dst") or fields.get("destination") or fields.get("target") or ""
@@ -100,10 +101,11 @@ def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=()):
     if kind != "bind":
         raise AgentboxError(f"audit: mount type {kind!r} not allowed")
     src = fields.get("src") or fields.get("source") or ""
-    if src == "/dev/null":
+    if src == "/dev/null" or (mask_file and os.path.realpath(src) == os.path.realpath(mask_file)):
         if "ro" not in fields:
-            raise AgentboxError("audit: /dev/null masks must be read-only")
-        return
+            raise AgentboxError("audit: masks must be read-only")
+        if src == "/dev/null":
+            return
     real = os.path.realpath(src)
     if not any(_inside(real, a) for a in allowed):
         raise AgentboxError(f"audit: bind source {src} is outside the session's grants")

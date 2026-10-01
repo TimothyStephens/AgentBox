@@ -3,19 +3,21 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
 from . import keys as keysmod
-from . import sockguard
+from . import scan, sockguard
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
 
 TOKEN_PATH = "/run/agentbox/token"
 PROBE_PATH = "/run/agentbox/probe.sh"
+LIVE_SOCKET = "/run/agentbox/podman-live.sock"
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -96,20 +98,20 @@ def _bool(name, key, value):
 
 
 def podman_access(project, warn):
-    """The compose project the session may observe, or None. Tiers beyond observe need the host-side gate
-    (step 5): `exec` is refused until then, and `dev` gives only the live-stack observe access for now."""
+    """The compose project the session may observe, or None. (The dev tier is `dev_tier`.) The exec tier on
+    the live stack is refused: the gate scopes exec to the session's own dev containers only."""
     podman = project.value("podman") or {}
     tier, live = podman.get("tier", "none"), podman.get("live")
     if "exec" in (tier, live):
-        raise AgentboxError(f"project {project.name}: the exec tier needs the host-side gate (build step 5); "
-                            "use observe for now")
-    if tier == "dev":
-        warn("agentbox: the dev tier (own dev stack) arrives with the host-side gate (step 5); "
-             + ("this session gets observe access to the live stack only" if live == "observe"
-                else "this session gets no podman access"))
+        raise AgentboxError(f"project {project.name}: exec on the live stack is not built; use observe for the "
+                            "live stack, and the dev tier for a stack of the agent's own")
     if "observe" in (tier, live):
         return project.compose_project
     return None
+
+
+def dev_tier(project):
+    return (project.value("podman") or {}).get("tier") == "dev"
 
 
 def check_swap(name, swap):
@@ -203,7 +205,28 @@ def labels_for(settings, project, session, role):
     return out
 
 
-def sandbox_notes(project, egress, podman_live=None):
+def dev_notes(podman_live):
+    lines = [
+        "- **Podman (dev tier):** `/run/agentbox/podman.sock` (`CONTAINER_HOST`, `DOCKER_HOST`) runs your own dev "
+        "stack: `podman`, `podman build` and `podman-compose` work, with these rules, enforced outside the "
+        "sandbox:",
+        "  - every container joins this session's network (compose service names still resolve); publishing "
+        "ports on the host is refused (reach services by name, e.g. `curl --noproxy '*' http://web:8080`);",
+        "  - containers get the proxy variables, a 1 GB / 1024-process limit unless the compose file sets its "
+        "own, and no restart policy; binds only inside the project's own directories; no privileged mode, "
+        "added capabilities, devices or host namespaces;",
+        "  - builds run on this session's network through the proxy and never pull: pull `FROM` images first "
+        "(`podman pull docker.io/library/python:3.12`); pulls only from docker.io, ghcr.io, lscr.io, quay.io;",
+        "  - you can only see, exec into, stop or remove what you created in this session; everything is removed "
+        "when the session ends.",
+    ]
+    if podman_live:
+        lines.append(f"- The live stack (`{podman_live}`) is read-only on a second socket: "
+                     "`podman --url unix:///run/agentbox/podman-live.sock ps`.")
+    return lines
+
+
+def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
     logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
@@ -231,16 +254,20 @@ def sandbox_notes(project, egress, podman_live=None):
         lines.append(f"- Network: egress mode `{egress}`, through an HTTP proxy (`HTTPS_PROXY`), reaching "
                      f"{desc}. Private and LAN addresses are always refused. Tools that ignore the proxy "
                      "variables cannot connect at all.")
-    lines += [
-        (f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
+    if podman_dev:
+        lines += dev_notes(podman_live)
+    elif podman_live:
+        lines.append(f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
          f"it): read-only access to the containers of compose project `{podman_live}`, the project's live "
          f"stack: `podman ps`{', `podman logs`' if logs else ''}, and through the Docker API with "
          "`curl --unix-socket /run/agentbox/podman.sock http://d/containers/<name>/json` (inspect, "
          "environment redacted) and `.../containers/<name>/stats?stream=false`. `podman inspect`, `top`, "
          f"`stats` and pods are refused (they would expose the create command or other projects), and so is "
          f"everything else (exec, create, start, stop, remove, pull, build, {'' if logs else 'logs, '}"
-         "other projects' containers)."
-         if podman_live else "- No podman or docker socket is available in this session."),
+         "other projects' containers).")
+    else:
+        lines.append("- No podman or docker socket is available in this session.")
+    lines += [
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
     ]
@@ -261,6 +288,7 @@ class Session:
         self.env = {}
         self.setup = adapters.SessionSetup()
         self.podman_live = None          # compose project the agent may observe through sockguard
+        self.podman_dev = False          # the dev tier: a stack of the agent's own, through the gate
         self.started = time.time()       # reset when the session is reserved; names its kept logs
         self.egress = "none"
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
@@ -311,9 +339,15 @@ class Session:
             self.teardown()                  # nothing is running yet; remove the run dir it reserved
             raise
 
+    @property
+    def mask_file(self):
+        return os.path.join(self.settings.session_run_dir(self.name), "mask-empty") if self.name else None
+
     def _prepare_reserved(self, do_backup):
         p = self.project
         self._write_meta()
+        fd = os.open(self.mask_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+        os.close(fd)
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), secrets=p.value("secrets"),
                                 mask_skip=p.mask_skip, swap=p.swap)
@@ -329,10 +363,12 @@ class Session:
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
+        self.scan_state = scan.snapshot([p.root] + list(p.data_rw))
         self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
+        self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()
-        notes = sandbox_notes(p, self.egress, self.podman_live)
+        notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev)
         self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
@@ -424,7 +460,7 @@ class Session:
         opts += [f"--env={k}={v}" for k, v in env.items()]
         opts.append(f"--workdir={p.root}")
         opts += self.network_args()
-        opts += [m.podman_arg() for m in self.plan.mounts]
+        opts += [m.podman_arg(mask_file=self.mask_file) for m in self.plan.mounts]
         if a.state_mount:
             opts.append(f"--mount=type=bind,src={self.state_dir},dst={a.state_mount}")
         if self.token_file:
@@ -436,8 +472,8 @@ class Session:
         for provider, path in sorted(self.setup.keys.items()):
             opts.append(f"--mount=type=bind,src={os.path.realpath(path)},"
                         f"dst={keysmod.CONTAINER_DIR}/{provider},ro")
-        if self.podman_live:
-            opts.append(f"--mount=type=bind,src={self.sockguard_socket},dst={sockguard.AGENT_SOCKET}")
+        for src, dst in self.agent_sockets():
+            opts.append(f"--mount=type=bind,src={src},dst={dst}")
         extra_srcs = []
         for src, dst in extra_mounts:
             opts.append(f"--mount=type=bind,src={src},dst={dst},ro")
@@ -447,8 +483,23 @@ class Session:
                         allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"]
                         + ([self.setup.mount_root] if self.setup.mount_root else []),
                         networks=self.networks, tmpfs_dirs=("/tmp", HOME),
-                        allowed_sockets=[self.sockguard_socket] if self.podman_live else [])
+                        allowed_sockets=[src for src, _dst in self.agent_sockets()], mask_file=self.mask_file)
         return args + opts + [a.image, "-c", self.wrapper(), "agentbox"] + list(command)
+
+    def agent_sockets(self):
+        """[(host socket, container path)] the agent gets: the gate for the dev tier, sockguard for observe."""
+        out = []
+        if self.podman_dev:
+            out.append((self.gate_socket, sockguard.AGENT_SOCKET))
+            if self.podman_live:
+                out.append((self.sockguard_socket, LIVE_SOCKET))
+        elif self.podman_live:
+            out.append((self.sockguard_socket, sockguard.AGENT_SOCKET))
+        return out
+
+    @property
+    def gate_socket(self):
+        return os.path.join(self.settings.session_run_dir(self.name), "gate", "podman.sock")
 
     def wrapper(self):
         """Exports the token and provider keys from their read-only mounts just before exec; they are never
@@ -523,9 +574,33 @@ class Session:
         from .selftest import runner
         runner.network_none_cases(builder)
 
+    def end_of_session_scan(self):
+        """Once per session: report secrets in its commits and changed files that run later (scan.py)."""
+        state, self.scan_state = getattr(self, "scan_state", None), None
+        if state is None:
+            return
+        p = self.project
+        try:
+            summary, text = scan.report(state, [p.root] + list(p.data_rw))
+        except (OSError, subprocess.SubprocessError) as e:
+            self.warn(f"agentbox: end-of-session scan failed: {e}")
+            return
+        path = self.log_path("scan")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+        except FileExistsError:
+            pass
+        if summary:
+            self.warn("agentbox: end-of-session scan (review before you run or push anything):\n"
+                      + "\n".join(f"  - {line}" for line in summary) + f"\n  full report: {path}")
+
     def teardown(self):
         if not self.name:
             return
+        self.end_of_session_scan()
         teardown(self.settings, self.podman, self.name)
 
 
@@ -575,6 +650,8 @@ class NetSession(Session):
         args = ["network", "create", "--ipv6=false", "--opt", "isolate=strict"]
         if internal:
             args.append("--internal")
+            # the dev tier's sockguard only lets containers join networks its owner label marks as owned
+            args += ["--label", f"{sockguard.DEV_OWNER}={self.name}"]
         for k, v in labels_for(self.settings, self.project.name, self.name, "network").items():
             args += ["--label", f"{k}={v}"]
         return args + [name]
@@ -608,7 +685,7 @@ class NetSession(Session):
         pm.run(self.proxy_run_args(conf))
         self._wait_proxy()
         self.env.update(egress.proxy_env(self.proxy_name))
-        if self.podman_live:
+        if self.podman_live or self.podman_dev:
             self._start_podman_access()
         for var in self.adapter.proxy_url_env:
             self.env[var] = self.env["HTTPS_PROXY"]
@@ -621,17 +698,31 @@ class NetSession(Session):
     def sockguard_socket(self):
         return os.path.join(self.settings.session_run_dir(self.name), "sg", "sockguard.sock")
 
-    def sockguard_run_args(self, service_sock, conf_path):
+    @property
+    def sockguard_dev_name(self):
+        return f"{self.name}-sockguard-dev"
+
+    @property
+    def sockguard_dev_socket(self):
+        return os.path.join(self.settings.session_run_dir(self.name), "sgdev", "sockguard.sock")
+
+    @property
+    def holder_name(self):
+        return f"{self.name}-holder"
+
+    def sockguard_run_args(self, service_sock, conf_path, *, name=None, socket_path=None, role="sockguard"):
         s = self.settings
-        args = ["run", "-d", f"--name={self.sockguard_name}", f"--hostname={self.sockguard_name}"]
-        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "sockguard").items()]
+        name = name or self.sockguard_name
+        socket_path = socket_path or self.sockguard_socket
+        args = ["run", "-d", f"--name={name}", f"--hostname={name}"]
+        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, role).items()]
         args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
                  "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
                  f"--memory-swap={s.sockguard_memory}", "--pids-limit=128", f"--oom-score-adj={int(s.oom_score_adj)}"]
         if s.cgroup_parent:
             args.append(f"--cgroup-parent={s.cgroup_parent}")
         args += [f"--mount=type=bind,src={service_sock},dst={sockguard.UPSTREAM}",
-                 f"--mount=type=bind,src={os.path.dirname(self.sockguard_socket)},dst={os.path.dirname(sockguard.LISTEN)}",
+                 f"--mount=type=bind,src={os.path.dirname(socket_path)},dst={os.path.dirname(sockguard.LISTEN)}",
                  f"--mount=type=bind,src={conf_path},dst=/etc/sockguard/sockguard.yaml,ro",
                  s.sockguard_image, "serve", "-c", "/etc/sockguard/sockguard.yaml"]
         return args
@@ -639,28 +730,102 @@ class NetSession(Session):
     def sockguard_config(self):
         return sockguard.config(self.podman_live, logs=self.project.observe_logs)
 
-    def _start_podman_access(self):
+    @property
+    def bind_roots(self):
+        p = self.project
+        return [p.root] + list(p.data_rw) + list(p.data_ro)
+
+    def sockguard_dev_config(self):
+        return sockguard.dev_config(self.name, bind_roots=self.bind_roots)
+
+    def _start_sockguard(self, service, *, name, socket_path, text, role):
         s, run = self.settings, self.settings.session_run_dir(self.name)
-        service, self._service_proc = sockguard.start_service(
-            s.podman, s.service_dir(self.name), float(s.ready_timeout), slice_name=s.cgroup_parent,
-            unit=f"{self.name}-podman-{int(self.started)}")
-        os.makedirs(os.path.dirname(self.sockguard_socket), mode=0o700, exist_ok=True)
-        conf = os.path.join(run, "sockguard.yaml")
+        os.makedirs(os.path.dirname(socket_path), mode=0o700, exist_ok=True)
+        conf = os.path.join(run, f"{role}.yaml")
         fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write(self.sockguard_config())
-        self.podman.run(self.sockguard_run_args(service, conf))
+            f.write(text)
+        self.podman.run(self.sockguard_run_args(service, conf, name=name, socket_path=socket_path, role=role))
 
         def running():
-            st = self.podman.run(["inspect", "-f", "{{.State.Status}}", self.sockguard_name], check=False)
+            st = self.podman.run(["inspect", "-f", "{{.State.Status}}", name], check=False)
             return (st.stdout or "").strip() not in ("exited", "stopped", "dead")
         try:
-            sockguard.wait_socket(self.sockguard_socket, float(s.ready_timeout), "sockguard", alive=running)
+            sockguard.wait_socket(socket_path, float(s.ready_timeout), role, alive=running)
         except AgentboxError:
-            logs = self.podman.run(["logs", self.sockguard_name], check=False)
-            raise AgentboxError(f"sockguard did not start: {' '.join(((logs.stderr or '') + (logs.stdout or '')).strip().splitlines()[-3:])}")
+            logs = self.podman.run(["logs", name], check=False)
+            raise AgentboxError(f"{role} did not start: "
+                                f"{' '.join(((logs.stderr or '') + (logs.stdout or '')).strip().splitlines()[-3:])}")
+
+    def holder_run_args(self):
+        """A container that only sleeps on the session network: builds join its network namespace."""
+        s = self.settings
+        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}"]
+        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "holder").items()]
+        args += [f"--network={self.int_net}", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
+                 "--memory=32m", "--memory-swap=32m", "--pids-limit=16", f"--oom-score-adj={int(s.oom_score_adj)}"]
+        if s.cgroup_parent:
+            args.append(f"--cgroup-parent={s.cgroup_parent}")
+        return args + ["--entrypoint=/bin/sleep", s.squid_image, "infinity"]
+
+    def dev_proxy_env(self):
+        """Proxy variables for the agent and every dev container: the session's own subnet and podman's DNS
+        names go direct (they are on the same internal network), everything else through squid."""
+        p = self.podman.run(["network", "inspect", self.int_net, "--format",
+                             "{{range .Subnets}}{{.Subnet}} {{end}}"], check=False)
+        subnets = (p.stdout or "").split()
+        env = egress.proxy_env(self.proxy_name)
+        no_proxy = ",".join(["localhost", "127.0.0.1", "::1"] + subnets + [".dns.podman"])
+        env["NO_PROXY"] = env["no_proxy"] = no_proxy
+        return env
+
+    def gate_config(self, service, proxy_env):
+        s = self.settings
+        svc = s.service_dir(self.name)
+        return {
+            "listen": self.gate_socket, "upstream": self.sockguard_dev_socket, "raw": service,
+            "session": self.name, "network": self.int_net,
+            "labels": labels_for(s, self.project.name, self.name, "dev"),
+            "proxy_env": proxy_env, "bind_roots": self.bind_roots,
+            "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
+            "memory": 1 << 30, "pids": 1024, "build_memory": int(self.project.build_memory),
+            "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
+            "log": os.path.join(svc, "gate.log"),
+        }
+
+    def _start_podman_access(self):
+        s = self.settings
+        stamp = int(self.started)
+        service, self._service_proc = sockguard.start_service(
+            s.podman, s.service_dir(self.name), float(s.ready_timeout), slice_name=s.cgroup_parent,
+            unit=f"{self.name}-podman-{stamp}")
+        if self.podman_live:
+            self._start_sockguard(service, name=self.sockguard_name, socket_path=self.sockguard_socket,
+                                  text=self.sockguard_config(), role="sockguard")
+        if not self.podman_dev:
+            url = f"unix://{sockguard.AGENT_SOCKET}"
+            self.env.update({"CONTAINER_HOST": url, "DOCKER_HOST": url})
+            return
+        self._start_sockguard(service, name=self.sockguard_dev_name, socket_path=self.sockguard_dev_socket,
+                              text=self.sockguard_dev_config(), role="sockguard-dev")
+        self.podman.run(self.holder_run_args())
+        proxy_env = self.dev_proxy_env()
+        self.env.update(proxy_env)
+        # One spelling per variable for dev containers: sockguard refuses case-variant duplicate keys in a
+        # create body. Lower case is the one curl, wget, Python and Go all read.
+        container_proxy_env = {k: v for k, v in proxy_env.items() if k.islower()}
+        cfg = os.path.join(s.service_dir(self.name), "gate.json")
+        fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(self.gate_config(service, container_proxy_env), f, indent=2)
+        os.makedirs(os.path.dirname(self.gate_socket), mode=0o700, exist_ok=True)
+        self._gate_proc = sockguard.start_gate(cfg, s.service_dir(self.name), self.gate_socket,
+                                               float(s.ready_timeout), slice_name=s.cgroup_parent,
+                                               unit=f"{self.name}-gate-{stamp}")
         url = f"unix://{sockguard.AGENT_SOCKET}"
         self.env.update({"CONTAINER_HOST": url, "DOCKER_HOST": url})
+        if self.podman_live:
+            self.env["AB_PODMAN_LIVE"] = f"unix://{LIVE_SOCKET}"
 
     def _wait_proxy(self):
         deadline = time.time() + float(self.settings.ready_timeout)
@@ -687,7 +852,18 @@ class NetSession(Session):
             return
         # Keep the proxy's access log (destinations and verdicts only) and sockguard's audit log (API calls
         # and decisions) for review, then tear down.
-        for name, suffix in ((self.proxy_name, "proxy"), (self.sockguard_name, "sockguard")):
+        gate_log = os.path.join(self.settings.service_dir(self.name), "gate.log")
+        if os.path.isfile(gate_log):
+            try:
+                path = self.log_path("gate")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with open(gate_log, "rb") as src, os.fdopen(fd, "wb") as dst:
+                    dst.write(src.read())
+            except FileExistsError:
+                pass
+        for name, suffix in ((self.proxy_name, "proxy"), (self.sockguard_name, "sockguard"),
+                             (self.sockguard_dev_name, "sockguard-dev")):
             try:
                 logs = self.podman.run(["logs", name], check=False)
                 if logs.returncode == 0 and logs.stdout:
@@ -701,8 +877,9 @@ class NetSession(Session):
             except (AgentboxError, OSError) as e:
                 self.warn(f"agentbox: could not keep the {suffix} log: {e}")
         super().teardown()
-        if getattr(self, "_service_proc", None):
-            self._service_proc.poll()        # stop_service reaped it by PID; let the Popen object know
+        for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None)):
+            if proc:
+                proc.poll()                  # stop_service reaped it by PID; let the Popen object know
 
 
 def make_session(settings, agent, project, **kw):
@@ -716,6 +893,10 @@ def teardown(settings, podman, session):
     shutil.rmtree(settings.service_dir(session), ignore_errors=True)
     for c in podman.ids("container", sel):
         podman.run(["rm", "-f", "-t", "5", c], check=False)
+    for pod in podman.ids("pod", sel):
+        podman.run(["pod", "rm", "-f", pod], check=False)
+    for v in podman.ids("volume", sel):
+        podman.run(["volume", "rm", "-f", v], check=False)
     for n in podman.ids("network", sel):
         podman.run(["network", "rm", "-f", n], check=False)
     run_dir = settings.session_run_dir(session)

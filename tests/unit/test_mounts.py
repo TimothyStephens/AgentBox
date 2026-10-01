@@ -25,7 +25,7 @@ class MountPlanTest(TempCase):
         p = mounts.plan(root=self.root, mask_skip=["big"])
         m = self.by_dst(p)
         for masked in (".env.local", "app.pem", "tls/x.key", "deep/a/b/.env.production"):
-            self.assertEqual(m[masked].kind, "devnull", masked)
+            self.assertEqual(m[masked].kind, "mask", masked)
         for exempt in (".env.example", ".env.sample", ".env.template", ".env.dev", "sub/.env.dev", "keep.txt"):
             self.assertNotIn(exempt, m, exempt)
         for skipped in ("node_modules/pkg/.env", ".venv/.env", "big/data/.env", "link.pem"):
@@ -51,7 +51,7 @@ class MountPlanTest(TempCase):
     def test_custom_swap_masks_target_without_dev_file(self):
         self.write("proj/secrets.env", "X=1\n")
         m = self.by_dst(mounts.plan(root=self.root, swap={".env": ".env.dev", "secrets.env": "secrets.dev.env"}))
-        self.assertEqual(m["secrets.env"].kind, "devnull")
+        self.assertEqual(m["secrets.env"].kind, "mask")
 
     def test_with_secrets_exposes(self):
         m = self.by_dst(mounts.plan(root=self.root, secrets="exposed"))
@@ -106,6 +106,6 @@ class MountPlanTest(TempCase):
         self.assertIn(",notmpcopyup", mounts.Mount("tmpfs", "/a/secrets").podman_arg())
 
     def test_podman_arg(self):
-        self.assertEqual(mounts.Mount("devnull", "/a/.env").podman_arg(),
-                         "--mount=type=bind,src=/dev/null,dst=/a/.env,ro")
+        self.assertEqual(mounts.Mount("mask", "/a/.env").podman_arg(mask_file="/run/s/mask-empty"),
+                         "--mount=type=bind,src=/run/s/mask-empty,dst=/a/.env,ro")
         self.assertEqual(mounts.Mount("bind", "/a", "/a", ro=True).podman_arg(), "--mount=type=bind,src=/a,dst=/a,ro")

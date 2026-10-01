@@ -18,16 +18,20 @@ DEFAULT_SWAP = {".env": ".env.dev"}
 
 @dataclass(frozen=True)
 class Mount:
-    kind: str          # bind | devnull | tmpfs
+    kind: str          # bind | mask | tmpfs
     dst: str
     src: str = ""
     ro: bool = False
 
-    def podman_arg(self):
+    def podman_arg(self, mask_file=None):
         if self.kind == "bind":
             return f"--mount=type=bind,src={self.src},dst={self.dst}" + (",ro" if self.ro else "")
-        if self.kind == "devnull":
-            return f"--mount=type=bind,src=/dev/null,dst={self.dst},ro"
+        if self.kind == "mask":
+            # An empty regular file, read-only: it reads empty and cannot be written. Not /dev/null: a
+            # character device in the tree breaks a rootless `podman build` of that directory (found in step 5).
+            if not mask_file:
+                raise ValueError("a mask needs the session's empty mask file")
+            return f"--mount=type=bind,src={mask_file},dst={self.dst},ro"
         if self.kind == "tmpfs":
             return f"--mount=type=tmpfs,dst={self.dst},tmpfs-mode=0700,U=true,notmpcopyup" + (",ro" if self.ro else "")
         raise ValueError(self.kind)
@@ -83,7 +87,7 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None):
             if fn in handled or os.path.islink(full) or not os.path.isfile(full):
                 continue
             if _masked(fn, swap):
-                mounts.append(Mount("devnull", full))
+                mounts.append(Mount("mask", full))
     return mounts, create
 
 

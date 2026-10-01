@@ -56,6 +56,10 @@ class Podman:
             p = self.run(["ps", "-a", "--format", "{{.Names}}"] + filters, check=False)
         elif kind == "network":
             p = self.run(["network", "ls", "--format", "{{.Name}}"] + filters, check=False)
+        elif kind == "pod":
+            p = self.run(["pod", "ps", "--format", "{{.Name}}"] + filters, check=False)
+        elif kind == "volume":
+            p = self.run(["volume", "ls", "--format", "{{.Name}}"] + filters, check=False)
         else:
             raise ValueError(kind)
         return [x for x in (p.stdout or "").split() if x]

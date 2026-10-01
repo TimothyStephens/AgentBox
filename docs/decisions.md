@@ -293,3 +293,47 @@ The review (`docs/reviews/2026-10-01-steps-3-4.md`, annotated per finding) led t
   - It refuses to overwrite an `ab` or `agentbox` that is not ours; ApacheBench installs `ab`, and so would a hand-made wrapper.
   - It notes when another `ab` on PATH shadows its own, or is shadowed by it.
   - `README.md` has the setup steps.
+
+## 2026-10-01 · Step 5: the host-side gate and the dev tier, as built
+
+- **Layout.** Dev tier (`podman = {tier = "dev"}`; the `pods` preset):
+  - The agent's `/run/agentbox/podman.sock` is the **gate** (`agentbox/gate.py`, a Python process per session, run like the podman service in a scope under `agentbox.slice`, stopped at teardown, found by `ab gc` if orphaned).
+  - The gate forwards to a second, **dev sockguard** with owner isolation (`ownership.owner=<session>`, label `agentbox.dev-owner`). That sockguard forwards to the session's podman service.
+  - The gate reads labels from the podman service directly, for its own checks only.
+  - With `live = "observe"` too, the live stack's read-only sockguard is a second socket, `/run/agentbox/podman-live.sock` (`AB_PODMAN_LIVE`). That replaces the design's single socket: one sockguard cannot show the live stack and the dev stack at once (visibility labels are ANDed).
+- **The gate's rules** (unit tests in `tests/unit/test_gate.py`, real podman in `tests/integration/test_step5_gate.py`):
+  - **Creates** (libpod and Docker API):
+    - pinned to `<session>-int`, network aliases kept so compose service names resolve;
+    - refused: published ports, privileged, added capabilities and devices, host or container namespaces, binds outside the project's grants, a client cgroup parent;
+    - restart policy dropped, `systemd` mode off;
+    - labels stamped (`agentbox.dev-owner`, `agentbox.role=dev` and the session labels);
+    - cgroup parent `agentbox.slice`, 1 GiB and 1024 pids unless set, OOM score 1000;
+    - lower-case proxy variables added.
+  - **Pods:** a pod with an infra container is pinned the same way. One without (podman-compose's default) has no network of its own: its containers are pinned individually, and their membership of it is dropped, since it shares nothing.
+  - **Networks** are created internal and labelled. **Volumes** are labelled; driver options (bind-backed volumes) are refused.
+  - **Builds:**
+    - `RUN` steps join the holder container's network namespace. The holder's PID is checked against its own container ID in its cgroup path, read twice per build.
+    - The client's namespace options are dropped except `user`, and so are its security knobs: seccomp, AppArmor, isolation, id mappings and the rest.
+    - The build never pulls, is capped by `buildcap`, and gets the proxy as build args.
+  - **Pulls:** allowed only from docker.io, ghcr.io, lscr.io and quay.io; short names become docker.io names.
+  - **Named resources:** every request naming a container, pod, volume or network must name one with this session's dev labels. That keeps the agent's own container, the proxy, both sockguards, the holder, other projects' containers and the live stack out of reach.
+  - **Exec sessions:** they can be used only if the gate created them.
+- **Proxy variables.**
+  - The **agent** keeps both spellings of the proxy variables; **dev containers** get the lower-case ones only (sockguard refuses case-variant duplicate keys in a create body). curl, wget, Python and Go read lower case.
+  - `no_proxy` covers the session subnet and `.dns.podman`.
+  - **Known limit:** a client that applies the proxy to a bare service name (`http://web:8080`) asks squid, which cannot resolve it. The agent uses `curl --noproxy '*'`, as the session notes say. For services calling each other over HTTP by bare name, this is the step 5 review's call.
+- **Masks are now an empty read-only file, not `/dev/null`.** A character device in the project tree made a rootless `podman build` of that directory fail (`operation not permitted`; found by bisecting the build context). Every mask is now a read-only bind of one empty 0444 file in the session's run dir; the audit requires those mounts to be read-only.
+- **Dev sockguard config.**
+  - A profile has its own `request_body` policy and does not inherit the root's; found when every pull was refused. The policy now sits in the profile.
+  - Blind writes are acknowledged, because exec takes any command; the gate scopes exec to the session's dev containers.
+  - The rules were checked with an audit-mode discovery run of compose up and down, run, exec, logs and build.
+  - Not allowed: image deletion, archive, export, commit, checkpoint/restore, kube, secrets, prune.
+- **Teardown** removes the session's dev containers, pods, volumes and networks; dev data does not persist between sessions. Built images stay in the store (labelled with the session).
+- **End-of-session scan** (`agentbox/scan.py`):
+  - **At start:** HEAD, changed files, executables and git config of every repo in the writable grants.
+  - **At the end, it reports:**
+    - possible secrets in the lines the session's commits added. The pattern is the host pre-commit hook's own regex, read from the hook at run time, in the same `grep -E -i` engine, with its `scanner:allow` marker ignored. The scan carries no copy of the pattern: without a hook it says the secret scan was skipped. Matches are shown by their first 12 characters only.
+    - changed files that run later on the host;
+    - files that became executable;
+    - changed git config.
+  - It prints a summary when something is found, keeps the full report as `<session>-<start>-scan.log`, and never blocks.

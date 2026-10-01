@@ -100,7 +100,7 @@ def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, secret_
         b.add("write", [m], f"write to read-write data {d}", expect("ok"), after=lambda obs, m=m: _cleanup(m))
 
     for m in plan.mounts:
-        if m.kind == "devnull":
+        if m.kind == "mask":
             b.add("size", [m.dst], f"masked {os.path.relpath(m.dst, project.root)} reads empty", expect("0"))
         elif m.kind == "tmpfs":
             rel = os.path.relpath(m.dst, project.root)
@@ -158,55 +158,78 @@ def _status(obs):
     return obs.split(" ", 1)[0]
 
 
-def podman_cases(b, *, socket_path, compose_project, own, canary, logs=False):
+def podman_cases(b, *, socket_path, compose_project, own, canary, logs=False, absent_ok=True):
     """Tier observe: only the live stack's containers are visible, readable and nothing is writable.
     `own` are the live stack's container names (seen from the host); `canary` is a container the selftest
     created in another compose project, standing in for every other project on the host."""
     if not compose_project:
-        b.add("exists", [socket_path], "no podman socket in this session", expect("no"))
+        if absent_ok:
+            b.add("exists", [socket_path], "no podman socket in this session", expect("no"))
         return
     b.add("exists", [socket_path], "podman socket present (observe tier)", expect("yes"))
     want = ",".join(sorted(own))
     for path in ("/libpod/containers/json?all=true", "/containers/json?all=true"):
-        b.add("api", ["GET", path, "names"], f"list {path.split('?')[0]} shows only {compose_project}'s containers",
+        b.add("api", ["GET", path, "names", socket_path], f"list {path.split('?')[0]} shows only {compose_project}'s containers",
               lambda obs, w=want: ("PASS" if obs == f"200 {w}".rstrip() or (not w and obs in ("200", "200 "))
                                    else "FAIL", obs))
     denied = lambda obs: ("PASS" if _status(obs) == "403" else "FAIL", obs)
     hidden = lambda obs: ("PASS" if _status(obs) in ("403", "404") else "FAIL", obs)
     if canary:
-        b.add("api", ["GET", f"/libpod/containers/{canary}/json"], "inspect another project's container refused",
+        b.add("api", ["GET", f"/libpod/containers/{canary}/json", "-", socket_path], "inspect another project's container refused",
               hidden)
-        b.add("api", ["GET", f"/libpod/containers/{canary}/logs?stdout=true"],
+        b.add("api", ["GET", f"/libpod/containers/{canary}/logs?stdout=true", "-", socket_path],
               "logs of another project's container refused", hidden)
-        b.add("api", ["POST", f"/libpod/containers/{canary}/exec"], "exec on another project's container refused",
+        b.add("api", ["POST", f"/libpod/containers/{canary}/exec", "-", socket_path], "exec on another project's container refused",
               denied)
-        b.add("api", ["POST", f"/containers/{canary}/exec"],
+        b.add("api", ["POST", f"/containers/{canary}/exec", "-", socket_path],
               "exec on another project's container refused (Docker API)", denied)
-        b.add("api", ["POST", f"/libpod/containers/{canary}/stop"], "stop another project's container refused",
+        b.add("api", ["POST", f"/libpod/containers/{canary}/stop", "-", socket_path], "stop another project's container refused",
               denied)
-        b.add("api", ["DELETE", f"/libpod/containers/{canary}?force=true"],
+        b.add("api", ["DELETE", f"/libpod/containers/{canary}?force=true", "-", socket_path],
               "remove another project's container refused", denied)
-    b.add("api", ["POST", "/libpod/containers/create"], "create a container refused (observe tier)", denied)
-    b.add("api", ["POST", "/libpod/images/pull?reference=docker.io/library/alpine:3.20"], "image pull refused",
+    b.add("api", ["POST", "/libpod/containers/create", "-", socket_path], "create a container refused (observe tier)", denied)
+    b.add("api", ["POST", "/libpod/images/pull?reference=docker.io/library/alpine:3.20", "-", socket_path], "image pull refused",
           denied)
-    b.add("api", ["GET", "/libpod/pods/json"], "pod list refused (not label-scoped)", denied)
+    b.add("api", ["GET", "/libpod/pods/json", "-", socket_path], "pod list refused (not label-scoped)", denied)
     if own:
         mine = sorted(own)[0]
-        b.add("api", ["GET", f"/containers/{mine}/json", "env"],
+        b.add("api", ["GET", f"/containers/{mine}/json", "env", socket_path],
               f"inspect {mine} allowed (Docker API), environment redacted",
               lambda obs: ("PASS" if obs in ("200 empty", "200 none") else "FAIL", obs))
-        b.add("api", ["GET", f"/libpod/containers/{mine}/json"],
+        b.add("api", ["GET", f"/libpod/containers/{mine}/json", "-", socket_path],
               f"libpod inspect of {mine} refused (its create command holds -e values)", denied)
-        b.add("api", ["GET", f"/containers/{mine}/top?ps_args=eww"], f"top on {mine} refused", denied)
+        b.add("api", ["GET", f"/containers/{mine}/top?ps_args=eww", "-", socket_path], f"top on {mine} refused", denied)
         if logs:
-            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"],
+            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true", "-", socket_path],
                   f"logs of {mine} allowed (observe_logs on)",
                   lambda obs: ("PASS" if _status(obs) == "200" else "FAIL", obs))
         else:
-            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true"],
+            b.add("api", ["GET", f"/libpod/containers/{mine}/logs?stdout=true&stderr=true", "-", socket_path],
                   f"logs of {mine} refused (observe_logs off)", denied)
-        b.add("api", ["POST", f"/libpod/containers/{mine}/exec"], f"exec on {mine} refused (observe tier)", denied)
-        b.add("api", ["POST", f"/libpod/containers/{mine}/stop"], f"stop {mine} refused (observe tier)", denied)
+        b.add("api", ["POST", f"/libpod/containers/{mine}/exec", "-", socket_path], f"exec on {mine} refused (observe tier)", denied)
+        b.add("api", ["POST", f"/libpod/containers/{mine}/stop", "-", socket_path], f"stop {mine} refused (observe tier)", denied)
+
+
+def dev_cases(b, *, socket_path, canary, protected):
+    """Tier dev, through the gate: the agent's own stack only. `protected` are the session's own containers
+    the agent must not touch (its proxy, sockguard, holder); `canary` stands in for other projects."""
+    b.add("exists", [socket_path], "podman socket present (dev tier, through the gate)", expect("yes"))
+    denied = lambda obs: ("PASS" if _status(obs) == "403" else "FAIL", obs)
+    b.add("api", ["GET", "/libpod/containers/json?all=true", "names", socket_path],
+          "list shows only this session's dev containers (none yet)",
+          lambda obs: ("PASS" if obs.strip() in ("200", "200 ") else "FAIL", obs))
+    for mode, what in (("priv", "privileged"), ("port", "a published port"), ("bind", "a bind of /"),
+                       ("hostnet", "the host network")):
+        b.add("api", ["POST", "/libpod/containers/create", mode, socket_path],
+              f"create with {what} refused", denied)
+    b.add("api", ["POST", "/libpod/images/pull?reference=registry.example.com/x:1", "-", socket_path],
+          "pull from an unlisted registry refused", denied)
+    for name in ([canary] if canary else []) + list(protected):
+        for method, path, what in (("POST", f"/libpod/containers/{name}/exec", "exec on"),
+                                   ("POST", f"/libpod/containers/{name}/stop", "stop"),
+                                   ("DELETE", f"/libpod/containers/{name}?force=true", "remove"),
+                                   ("GET", f"/libpod/containers/{name}/json", "inspect")):
+            b.add("api", [method, path, "-", socket_path], f"{what} {name} refused", denied)
 
 
 def network_none_cases(b):

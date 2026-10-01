@@ -16,6 +16,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import time
 
 from .errors import AgentboxError
@@ -84,6 +85,79 @@ def config(compose_project, *, mode="enforce", rules=None, logs=False):
     return json.dumps(doc, indent=2) + "\n"
 
 
+DEV_OWNER = "agentbox.dev-owner"
+REGISTRIES = ["docker.io", "ghcr.io", "lscr.io", "quay.io"]
+
+
+def _surfaces(method, *paths):
+    """Each path on both API surfaces (Docker and libpod)."""
+    return _allow(method, *paths, *("/libpod" + p for p in paths))
+
+
+# The dev tier: the agent's own dev stack. Owner isolation stamps agentbox.dev-owner=<session> on everything
+# created and refuses other owners' resources; the gate in front additionally requires role=dev on every
+# named resource, so unlabelled containers (live stacks, the session's own proxy and sockguard) are out of
+# reach. Not allowed: image deletion, archive/export/commit, checkpoint/restore, kube, secrets, prune.
+DEV_RULES = (
+    _surfaces("GET", "/_ping", "/version", "/info", "/events", "/containers/json", "/containers/*/json",
+              "/containers/*/logs", "/containers/*/top", "/containers/*/stats", "/containers/*/changes",
+              "/exec/*/json", "/images/json", "/images/**/json", "/images/**/history", "/networks/json",
+              "/networks/*/json", "/volumes/json", "/volumes/*/json")
+    + _allow("GET", "/networks", "/networks/*", "/volumes", "/libpod/containers/*/exists",
+             "/libpod/containers/*/healthcheck", "/libpod/images/*/exists", "/libpod/networks/*/exists",
+             "/libpod/volumes/*/exists", "/libpod/pods/json", "/libpod/pods/*/json", "/libpod/pods/*/exists",
+             "/libpod/pods/*/top")
+    + _allow("HEAD", "/_ping", "/libpod/_ping")
+    + _surfaces("POST", "/containers/create", "/containers/*/start", "/containers/*/stop", "/containers/*/kill",
+                "/containers/*/restart", "/containers/*/wait", "/containers/*/attach", "/containers/*/resize",
+                "/containers/*/exec", "/exec/*/start", "/exec/*/resize", "/build", "/networks/create",
+                "/volumes/create")
+    + _allow("POST", "/images/create", "/libpod/images/pull", "/libpod/containers/*/init", "/libpod/exec/*/remove",
+             "/libpod/pods/create", "/libpod/pods/*/start", "/libpod/pods/*/stop", "/libpod/pods/*/kill",
+             "/libpod/pods/*/restart")
+    + _surfaces("DELETE", "/containers/*", "/networks/*", "/volumes/*")
+    + _allow("DELETE", "/libpod/pods/*")
+    + [{"match": {"method": "*", "path": "/**"}, "action": "deny",
+        "reason": "agentbox dev tier: not an operation on the session's own dev stack"}]
+)
+
+
+def dev_config(session, *, bind_roots, mode="enforce", rules=None):
+    """Sockguard for the dev tier, behind the gate. Listens on the same in-container path as observe."""
+    if mode not in ("enforce", "audit"):
+        raise AgentboxError(f"sockguard mode {mode!r}")
+    binds = sorted(bind_roots)
+    body_policy = {
+        "container_create": {"allowed_bind_mounts": binds},
+        "libpod_container_create": {"allowed_bind_mounts": binds},
+        "container_remove": {"allow_force": True, "allow_remove_volumes": True},
+        "exec": {"allow_root_user": True, "allow_privileged": False},
+        "image_pull": {"allowed_registries": REGISTRIES, "allow_official": True},
+        "build": {"allow_run_instructions": True, "allow_remote_context": False, "allow_host_network": False},
+    }
+    doc = {
+        "listen": {"socket": LISTEN, "socket_mode": "0600"},
+        "upstream": {"socket": UPSTREAM, "flavor": "podman", "request_timeout": "off"},
+        "log": {"level": "info", "format": "json", "access_log": True,
+                "audit": {"enabled": True, "format": "json", "output": "stdout"}},
+        # exec with any command: the gate only lets it reach the session's own dev containers
+        "insecure_allow_body_blind_writes": True,
+        "insecure_allow_read_exfiltration": True,
+        "ownership": {"owner": session, "label_key": DEV_OWNER, "allow_unowned_images": True},
+        # A profile has its own request-body policy (it does not inherit the root's), so it is set there.
+        "clients": {"default_profile": "session",
+                    "profiles": [{"name": "session", "mode": mode, "request_body": body_policy,
+                                  "rules": list(rules if rules is not None else DEV_RULES)}]},
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def dev_discovery_config(session, *, bind_roots):
+    """Deny-all in audit mode for the dev tier: tests only."""
+    return dev_config(session, bind_roots=bind_roots, mode="audit",
+                      rules=[{"match": {"method": "*", "path": "/**"}, "action": "deny", "reason": "discovery"}])
+
+
 def discovery_config(compose_project):
     """Deny-all in audit mode: every call is forwarded and logged as would_deny. Tests only."""
     return config(compose_project, mode="audit",
@@ -149,19 +223,25 @@ def _cmdline(pid):
 
 
 def services_under(run_root):
-    """{pid: session} for every running `podman system service` whose socket is in a session's service dir
-    under <run_root>/services/, whether or not that dir still exists."""
-    prefix = f"unix://{os.path.join(run_root, 'services')}/"
+    """{pid: session} for every running `podman system service` or gate whose files are in a session's service
+    dir under <run_root>/services/, whether or not that dir still exists."""
+    root = os.path.join(run_root, "services") + "/"
     out = {}
     for d in os.listdir("/proc"):
         if not d.isdigit():
             continue
         cmd = _cmdline(int(d))
-        if not cmd or "system" not in cmd or "service" not in cmd:
+        if not cmd:
             continue
-        for a in cmd:
-            if a.startswith(prefix) and a.endswith("/podman.sock"):
-                out[int(d)] = a[len(prefix):].split("/", 1)[0]
+        if "system" in cmd and "service" in cmd:
+            args = [a[len("unix://"):] for a in cmd if a.startswith("unix://") and a.endswith("/podman.sock")]
+        elif "agentbox.gate" in cmd:
+            args = [a for a in cmd if a.endswith("/gate.json")]
+        else:
+            continue
+        for a in args:
+            if a.startswith(root):
+                out[int(d)] = a[len(root):].split("/", 1)[0]
     return out
 
 
@@ -187,16 +267,39 @@ def kill_service(pid):
     return True
 
 
-def stop_service(service_dir):
-    """Stop the session's podman service, if its PID file names a live `podman system service` on this
-    service dir's socket (the PID may have been reused by something else)."""
-    run_dir = service_dir
+def _stop(service_dir, pidfile, marker):
     try:
-        with open(os.path.join(service_dir, "service.pid")) as f:
+        with open(os.path.join(service_dir, pidfile)) as f:
             pid = int(f.read().strip())
     except (OSError, ValueError):
         return False
     cmd = _cmdline(pid)
-    if not cmd or "system" not in cmd or "service" not in cmd or not any(run_dir in c for c in cmd):
-        return False
+    if not cmd or not all(m in cmd for m in marker) or not any(service_dir in c for c in cmd):
+        return False                                 # the PID was reused by something else
     return kill_service(pid)
+
+
+def stop_service(service_dir):
+    """Stop the session's gate and podman service, if their PID files name live processes of this service
+    dir (the PIDs may have been reused by something else)."""
+    gate = _stop(service_dir, "gate.pid", ("agentbox.gate",))
+    service = _stop(service_dir, "service.pid", ("system", "service"))
+    return gate or service
+
+
+def start_gate(cfg_path, service_dir, listen, timeout, *, slice_name="", unit=""):
+    """Start the gate (python3 -m agentbox.gate <cfg>) for one session, in the slice like the service."""
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    argv = [sys.executable, "-m", "agentbox.gate", cfg_path]
+    if slice_name:
+        argv = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={slice_name}", f"--unit={unit}",
+                "--"] + argv
+    env = dict(os.environ, PYTHONPATH=pkg_root)
+    log = open(os.path.join(service_dir, "gate.err"), "ab")
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
+                            start_new_session=True)
+    log.close()
+    with open(os.path.join(service_dir, "gate.pid"), "w") as f:
+        f.write(f"{proc.pid}\n")
+    wait_socket(listen, timeout, "agentbox gate", alive=lambda: proc.poll() is None)
+    return proc

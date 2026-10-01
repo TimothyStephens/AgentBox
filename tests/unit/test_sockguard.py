@@ -99,12 +99,20 @@ class Tiers(SettingsCase):
                                  warn=lambda m: None)
         with self.assertRaises(AgentboxError) as cm:
             s.prepare()
-        self.assertIn("step 5", str(cm.exception))
+        self.assertIn("exec on the live stack is not built", str(cm.exception))
 
-    def test_pods_preset_gets_observe_on_live_and_a_warning(self):
-        s, warnings = self.make(preset="pods")
+    def test_pods_preset_gets_the_dev_tier_and_observe_on_live(self):
+        s, _warnings = self.make(preset="pods")
         self.assertEqual(s.podman_live, "p1")
-        self.assertTrue(any("dev tier" in w for w in warnings))
+        self.assertTrue(s.podman_dev)
+        argv = s.run_args(["true"])
+        socks = [a for a in argv if "podman" in a and a.startswith("--mount")]
+        self.assertEqual(sorted(socks), sorted([
+            f"--mount=type=bind,src={s.gate_socket},dst=/run/agentbox/podman.sock",
+            f"--mount=type=bind,src={s.sockguard_socket},dst=/run/agentbox/podman-live.sock"]))
+        notes = session.sandbox_notes(s.project, s.egress, s.podman_live, s.podman_dev)
+        self.assertIn("dev tier", notes)
+        self.assertIn("podman-live.sock", notes)
 
     def test_lockdown_has_none(self):
         s, _w = self.make(preset="lockdown")
@@ -159,6 +167,13 @@ class OrphanedServices(SettingsCase):
         found = sockguard.services_under(self.settings.run_dir)
         self.assertEqual(found.get(p.pid), "abt-unit-claude-p1-1")
         self.assertEqual(sockguard.services_under(os.path.join(self.tmp, "other-run")), {})
+
+    def test_scan_finds_a_gate_too(self):
+        cfg = os.path.join(self.settings.run_dir, "services", "abt-unit-claude-p1-3", "gate.json")
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "-m", "agentbox.gate", cfg])
+        self.addCleanup(p.wait)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        self.assertEqual(sockguard.services_under(self.settings.run_dir).get(p.pid), "abt-unit-claude-p1-3")
 
     def test_gc_stops_an_orphan_with_no_run_dir(self):
         p = self.fake_service("abt-unit-claude-p1-7")

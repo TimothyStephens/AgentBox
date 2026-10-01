@@ -60,3 +60,23 @@ class HardeningTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaskFile(unittest.TestCase):
+    """Step 5: masks are read-only binds of one empty file (a /dev/null character device in the tree broke
+    rootless builds of the project directory). A writable mount of that file is refused."""
+
+    def argv(self, mount):
+        return ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1", mount, "img"]
+
+    def test_mask_must_be_read_only(self):
+        from agentbox import hardening
+        from agentbox.errors import AgentboxError
+        ok = self.argv("--mount=type=bind,src=/run/s/mask-empty,dst=/proj/.env,ro")
+        hardening.audit(ok, allowed_mount_srcs=["/run/s"], allowed_mount_dsts=["/proj"], networks=[],
+                        mask_file="/run/s/mask-empty")
+        bad = self.argv("--mount=type=bind,src=/run/s/mask-empty,dst=/proj/.env")
+        with self.assertRaises(AgentboxError):
+            hardening.audit(bad, allowed_mount_srcs=["/run/s"], allowed_mount_dsts=["/proj"], networks=[],
+                            mask_file="/run/s/mask-empty")

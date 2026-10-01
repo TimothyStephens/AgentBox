@@ -169,7 +169,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Validator: `realpath` every grant; refuse `/`, `$HOME`, its ancestors, `/etc`, `/var`, `/usr`, `/boot`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, podman storage.
 - A grant may not contain or overlap another registered project.
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
-- `.env` files are masked with `/dev/null` unless `--with-secrets` (see Project secrets for the full mask list).
+- `.env` files are masked (a read-only empty file bound over them) unless `--with-secrets` (see Project secrets for the full mask list).
 - `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory inside a read-write grant: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched.
 - Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
@@ -228,7 +228,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 **Project secrets**
 
-- Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get `/dev/null` bound over them, `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks.
+- Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get a read-only empty file bound over them (not `/dev/null`: a device node in the tree breaks rootless builds), `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks.
 - Masks are computed at session start: a secret file created during a session is not masked.
 - **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; `ab deploy` uses it on the host.
 - Other file names use a per-project mapping, e.g. `swap = { ".env" = ".env.dev", "secrets.env" = "secrets.dev.env" }`. A masked file with no mapped dev file stays empty.
@@ -256,7 +256,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. Until the gate exists (step 5), the observe tier mounts sockguard's socket directly at `/run/agentbox/podman.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |
@@ -623,8 +623,8 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [ ] Sockguard maturity: a small project at a security boundary. Pinned by digest to 2.2.1 (step 4); its release signature is not verified yet (no cosign on the host).
 - [x] Host-side gate: a thin rewrite layer in front of sockguard works for container creates (spike 1).
 - [x] Builds reach the project proxy and not the LAN by joining a holder container's network namespace (spike 1 v4).
-- [ ] Gate: pass the proxy to builds as build arguments, and check pip, npm and apt inside a build honour them.
-- [ ] Gate: on every build, confirm the holder PID still belongs to the session's running holder, and drop any namespace path the client sends (an agent could otherwise name a live stack's namespace).
+- [x] Gate: pass the proxy to builds as build arguments (step 5; a build's `RUN` sees `http_proxy`). pip, npm and apt inside a build are not yet checked one by one.
+- [x] Gate: on every build, the holder's PID is checked against its own container ID (cgroup path), twice, and every client namespace path except `user` is dropped (step 5; a forged `nsoptions` path is ignored in the itest).
 - [ ] Claude Code with a setup-token token works when its only route out is the squid proxy (replaces spike 4): `make claude-live`, run by Tim.
 - [x] DNS on the internal session network does not resolve public names (step 2; kept as a selftest case).
 - [ ] Model key gateway: deferred. LiteLLM forwarding works (spike 4); needed only if a remote model is billed by API key.
@@ -639,9 +639,9 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [ ] OMP with the real `~/.omp`, keys and local model: `make omp-live`, run by Tim.
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
-- [ ] Gate strips restart policies from agent-created containers, so dev stacks never come back on their own.
-- [ ] Gate: refuse joining pods or container namespaces the session does not own (found while testing the gate prototype).
-- [ ] End-of-session scan (built with step 5). Commits made in a session skip the host's pre-commit secret scanner (it is a global git hook, and the sandbox has no git config). When a session ends, `ab` runs the same scanner over the commits the session added and warns if it finds anything; that scan ignores the `scanner:allow` marker the host hook honours (an agent in a sandbox must not be able to exempt its own lines). The same report lists changed files that run later on the host: `Makefile`, `package.json` scripts and `pyproject.toml`/`setup.py`/`setup.cfg` build and script entries, `.pre-commit-config.yaml`, `.vscode/tasks.json`, `.envrc`, git config (any `config`/`config.worktree` in a git dir, though they are read-only in the session), and files that became executable.
+- [x] Gate strips restart policies from agent-created containers (step 5).
+- [x] Gate: joining another container's namespaces is refused, and a pod only if it is the session's own (step 5).
+- [x] End-of-session scan (step 5, `agentbox/scan.py`): secrets in the session's commits by the host hook's own regex (its `scanner:allow` marker ignored), plus changed files that run later on the host (`Makefile`, `package.json`, `pyproject.toml`/`setup.py`/`setup.cfg`, `.pre-commit-config.yaml`, `.vscode/tasks.json`, `.envrc`, git config) and files that became executable. It informs, never blocks.
 - [ ] Build memory cap: confirm with a build that allocates past a small per-build `memory` limit that the gate-set limit and the slice cap both hold (spike, 29 Sep: build steps land in `agentbox.slice/<child>` as intended; the cap itself was not load-tested, the host had 2 GB free).
 
 **Future options**
