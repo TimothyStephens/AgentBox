@@ -242,10 +242,20 @@ class A4Ownership(unittest.TestCase):
         self.assertTrue(g.container_violations(doc))
 
     def test_g8_build_tags_cannot_take_other_images(self):
+        import tempfile
+        from agentbox import builtrec
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        mine = "9" * 64
         g = Fake({"images/localhost/live-app:latest": {"Labels": {}},
-                  "images/localhost/mine:1": {"Labels": {"agentbox.project": "proj", "agentbox.role": "dev"}}})
+                  "images/localhost/labelled:1": {"Id": "8" * 64,
+                                                  "Labels": {"agentbox.project": "proj", "agentbox.role": "dev"}},
+                  "images/localhost/mine:1": {"Id": mine, "Labels": {}}})
+        g.cfg["built_record"] = builtrec.path_for(d, "proj")
+        builtrec.add(g.cfg["built_record"], mine, "abt-s-1")
         for t in ("localhost/agentbox-omp:latest", "agentbox-claude", "docker.io/library/busybox:1.36",
-                  "lscr.io/linuxserver/sonarr:latest", "localhost/live-app:latest", "live-app"):
+                  "lscr.io/linuxserver/sonarr:latest", "localhost/live-app:latest", "live-app",
+                  "localhost/labelled:1"):
             with self.subTest(t=t), self.assertRaises(gate.Deny):
                 g.rewrite_build(f"/v5/libpod/build?t={t}")
         g.rewrite_build("/v5/libpod/build?t=localhost/mine:1")      # this project's own image
@@ -466,34 +476,47 @@ class Images(unittest.TestCase):
     """Tim, 1 Oct (A4 low, image reads): the dev tier runs and builds only from public registry images, this
     session's own builds, or images the project lists in dev_images."""
 
+    MINE = "1" * 64
+    OLD = "2" * 64
+    FORGED = "3" * 64
+
     def gate(self, **cfg):
+        import tempfile
+        from agentbox import builtrec
+        rec = os.path.join(tempfile.mkdtemp(prefix="abt-unit-"), "built-images", "proj.json")
+        self.addCleanup(lambda: __import__("shutil").rmtree(os.path.dirname(os.path.dirname(rec))))
+        builtrec.add(rec, self.MINE, "abt-s-1")
+        builtrec.add(rec, self.OLD, "abt-s-0")          # an earlier session of this project
         g = Fake({"images/localhost/live-app:latest": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}},
                   "images/live-app": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}},
                   "images/localhost/other:1": {"RepoTags": ["localhost/other:1"],
                                                "Labels": {"agentbox.project": "other", "agentbox.role": "dev",
                                                           "agentbox.session": "abt-o-1"}},
-                  "images/localhost/mine:1": {"RepoTags": ["localhost/mine:1"],
-                                              "Labels": {"agentbox.project": "proj", "agentbox.role": "dev",
-                                                         "agentbox.session": "abt-s-1"}},
-                  "images/localhost/mine:old": {"RepoTags": ["localhost/mine:old"],
+                  "images/localhost/mine:1": {"Id": self.MINE, "RepoTags": ["localhost/mine:1"], "Labels": {}},
+                  "images/localhost/mine:old": {"Id": self.OLD, "RepoTags": ["localhost/mine:old"], "Labels": {}},
+                  # carries this project's labels but was built outside the gate (Tim, 2 Oct): refused
+                  "images/localhost/forged:1": {"Id": self.FORGED, "RepoTags": ["localhost/forged:1"],
                                                 "Labels": {"agentbox.project": "proj", "agentbox.role": "dev",
-                                                           "agentbox.session": "abt-s-0"}},
+                                                           "agentbox.session": "abt-s-1"}},
                   "images/abc123": {"RepoTags": [], "Labels": {}}})
-        g.cfg.update(cfg)
+        g.cfg.update(cfg, built_record=rec)
         return g
 
     def test_run(self):
         g = self.gate()
-        for ref in ("localhost/live-app:latest", "live-app", "localhost/other:1", "localhost/mine:old", "abc123"):
+        for ref in ("localhost/live-app:latest", "live-app", "localhost/other:1", "localhost/forged:1", "abc123"):
             with self.subTest(ref=ref), self.assertRaises(gate.Deny):
                 decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
-        for ref in ("docker.io/library/busybox:1.36", "localhost/mine:1"):
+        for ref in ("docker.io/library/busybox:1.36", "localhost/mine:1", "localhost/mine:old"):
             decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
+        with self.assertRaises(gate.Deny):      # a forged-label image's name cannot be taken by a build either
+            g.rewrite_build("/v5/libpod/build?t=localhost/forged:1")
+        g.rewrite_build("/v5/libpod/build?t=localhost/mine:old")
         with self.assertRaises(gate.Deny):
             decide(g, "POST", "/v5/libpod/containers/create",
                    {"image": "busybox", "image_volumes": [{"Source": "localhost/live-app:latest", "Destination": "/i"}]})
-        g = self.gate(images=["localhost/mine:*", "localhost/live-app:latest"])
-        for ref in ("localhost/mine:old", "live-app"):
+        g = self.gate(images=["localhost/forged:*", "localhost/live-app:latest"])
+        for ref in ("localhost/forged:1", "live-app"):
             decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
 
     def context(self, files):
@@ -526,6 +549,54 @@ class Images(unittest.TestCase):
         with self.assertRaises(gate.Deny):          # the dockerfile must be in the context
             g.check_build_images(self.context({"Containerfile": "FROM busybox\n"}),
                                  "/v5/libpod/build?dockerfile=%5B%22%2Fetc%2Fhostname%22%5D")
+
+
+class BuiltRecord(unittest.TestCase):
+    def test_record_add_remove_and_watcher(self):
+        import tempfile
+        from agentbox import builtrec
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        rec = builtrec.path_for(d, "proj")
+        builtrec.add(rec, "sha256:" + "a" * 64, "s1")
+        builtrec.add(rec, "b" * 64, "s2")
+        self.assertEqual(builtrec.ids(rec), {"a" * 64, "b" * 64})
+        builtrec.remove_everywhere(d, ["a" * 64])
+        self.assertEqual(builtrec.ids(rec), {"b" * 64})
+        ok = b'{"stream":"STEP 1/1\\n"}\n{"stream":"' + b"c" * 64 + b'\\n"}\n'
+        for raw, want in ((b"HTTP/1.1 200 OK\r\n\r\n" + ok, "c" * 64),
+                          (b"HTTP/1.1 200 OK\r\n\r\n" + ok + b'{"error":"boom"}\n', None),
+                          (b"HTTP/1.1 500 Internal\r\n\r\n" + ok, None)):
+            w = builtrec.BuildWatcher()
+            w.feed(raw)
+            self.assertEqual(w.close(), want, raw[-40:])
+
+    def test_gc_drops_removed_images_from_the_record(self):
+        import tempfile
+        from agentbox import builtrec, session
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        rec = builtrec.path_for(d, "proj")
+        old, new = "e" * 64, "f" * 64
+        builtrec.add(rec, old, "s1")
+        builtrec.add(rec, new, "s2")
+
+        class Settings:
+            labels = {"agentbox": "1"}
+            image_keep_days = 7
+            data_dir = d
+
+        class Podman:
+            def run(self, argv, check=False):
+                import subprocess
+                if argv[:1] == ["images"]:
+                    out = json.dumps([{"Id": old, "Created": 0, "Names": [], "Labels": {"agentbox.project": "proj"}},
+                                      {"Id": new, "Created": 9e9, "Names": ["localhost/x:1"],
+                                       "Labels": {"agentbox.project": "proj"}}])
+                    return subprocess.CompletedProcess(argv, 0, out, "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+        session.gc_images(Settings(), Podman(), now=1e10)
+        self.assertEqual(builtrec.ids(rec), {new})
 
 
 class Unsupported(unittest.TestCase):

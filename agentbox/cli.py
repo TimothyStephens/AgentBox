@@ -104,7 +104,7 @@ def cmd_project_show(s, a):
     if p.value("podman") and p.value("podman").get("tier", "none") != "none" or (p.value("podman") or {}).get("live"):
         print(f"  compose_project {p.compose_project}")
         print(f"  observe_logs   {'true' if p.observe_logs else 'false (default)'}")
-        print(f"  dev_images     {', '.join(p.dev_images) or 'none (public registries and the session builds only)'}")
+        print(f"  dev_images     {', '.join(p.dev_images) or 'none (public registries and this project builds only)'}")
     if p.history_secrets_accepted:
         print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
 
@@ -221,7 +221,7 @@ def parser():
     x.add_argument("--compose-project", help="the live stack's compose project name (default: the project name)")
     x.add_argument("--dev-image", action="append", default=[], metavar="PATTERN",
                    help="dev tier: also allow running or building from images matching this name pattern "
-                        "(e.g. localhost/myapp:*); by default only allowlisted registries and the session's own builds")
+                        "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's builds")
     x.add_argument("--observe-logs", action="store_true",
                    help="let the observe tier read the live stack's logs (off by default: logs can hold secrets, "
                         "and what the agent reads goes to its model provider)")

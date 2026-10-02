@@ -31,3 +31,34 @@ class ModelLine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EgressDiagnostics(unittest.TestCase):
+    """Tim, 2 Oct: no retries; a failed proxied check records the proxy's log lines for its host, the DNS
+    answer and the time taken, so the next occurrence of the flake can be diagnosed."""
+
+    def test_failed_proxied_check_is_diagnosed(self):
+        b = build(True)
+        ids = {c.label: c.id for c in b.cases}
+        pypi = ids["proxied CONNECT pypi.org:443 refused (locked)"]
+        ex = ids["proxied CONNECT example.com:443 refused (locked)"]
+        out = f"{pypi} 000 20013ms\n{ex} 403 4ms\n__done__ ok\n"
+        results = runner.score(b.cases, out)
+        by = {r.label: r for r in results}
+        self.assertEqual(by["proxied CONNECT pypi.org:443 refused (locked)"].detail, "000 after 20013ms")
+        self.assertEqual(by["proxied CONNECT example.com:443 refused (locked)"].verdict, "PASS")
+        log = "1759400000.123 20001 10.89.3.5 TCP_TUNNEL/000 0 CONNECT pypi.org:443 - HIER_NONE/- -\nother line\n"
+        found = runner.diagnose_proxied_failures(b.cases, results, log, resolve=lambda h: ["151.101.0.223"])
+        [(label, text)] = [(l, t) for l, t in found if "pypi.org" in l]
+        self.assertIn("TCP_TUNNEL/000", text)
+        self.assertIn("151.101.0.223", text)
+        self.assertIn("20013ms", text)
+        r = by["proxied CONNECT pypi.org:443 refused (locked)"]
+        self.assertIn("dns 151.101.0.223", r.detail)
+        self.assertIn("1 proxy log line(s) for pypi.org", r.detail)
+
+    def test_targets(self):
+        b = build(True)
+        targets = {runner.proxied_target(c) for c in b.cases} - {None}
+        self.assertTrue({"pypi.org", "example.com", "10.0.0.2", "::ffff:10.0.0.103", "2606:4700:4700::1111"} <= targets,
+                        targets)

@@ -65,7 +65,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
-from . import buildcap
+from . import buildcap, builtrec
 from .errors import AgentboxError
 
 V = r"(?:/v[0-9][0-9.]*)?"
@@ -957,13 +957,13 @@ class Gate:
 
     def check_image(self, ref, where):
         """An image the dev tier runs, mounts or builds from must be: named from an allowlisted public
-        registry, built in this session, or matched by the project's dev_images patterns. So a localhost/
-        image of another project or a live stack (its files, its ENV) is out of reach unless listed."""
+        registry, built through the gate for this project (in any session; by the gate's record, not labels),
+        or matched by the project's dev_images patterns. So a localhost/ image of another project or a live
+        stack (its files, its ENV) is out of reach unless listed."""
         doc = self.image_doc(ref)
         if doc is None:
             raise Deny(f"{where}: image {ref} is not present (pull it first; builds and creates never pull)")
-        labels = self.labels_in("images", doc)
-        if labels.get("agentbox.session") == self.session and labels.get("agentbox.role") == "dev":
+        if self.built_here(doc):
             return
         names = list(doc.get("RepoTags") or []) + list(doc.get("RepoDigests") or [])
         for n in names:
@@ -972,7 +972,7 @@ class Gate:
             if any(fnmatch.fnmatchcase(n, pat) for pat in self.cfg.get("images") or []):
                 return
         raise Deny(f"{where}: image {ref} ({', '.join(names) or 'untagged'}) is not allowed in the dev tier: "
-                   f"only images from {', '.join(self.cfg['registries'])}, this session's own builds, or names "
+                   f"only images from {', '.join(self.cfg['registries'])}, this project's own builds, or names "
                    "matching the project's dev_images (`ab project add --dev-image`)")
 
     def check_build_images(self, context_path, target):
@@ -1346,11 +1346,20 @@ class Gate:
         if name[len("localhost/"):].startswith("agentbox"):
             raise Deny(f"build tag {ref}: agentbox's own image names are reserved")
         doc = self.inspect("images", name)
-        if doc is not None:
-            labels = self.labels_in("images", doc)
-            if labels.get("agentbox.project") != self.labels.get("agentbox.project") \
-                    or labels.get("agentbox.role") != "dev":
-                raise Deny(f"build tag {ref}: an image outside this project's dev builds already has that name")
+        if doc is not None and not self.built_here(doc):
+            raise Deny(f"build tag {ref}: an image this project did not build through the gate already has that name")
+
+    def built_here(self, doc):
+        """The image is one the gate built for this project (its record, never labels: anyone can label)."""
+        rec = self.cfg.get("built_record")
+        image_id = (doc.get("Id") or "").split(":", 1)[-1]
+        return bool(rec and image_id and image_id in builtrec.ids(rec))
+
+    def record_build(self, image_id):
+        rec = self.cfg.get("built_record")
+        if rec and image_id and self.image_doc(image_id) is not None:
+            builtrec.add(rec, image_id, self.session)
+            self.log("built", "-", "build", f"recorded image {image_id[:12]} for this project")
 
     @staticmethod
     def check_build_secrets(value):
@@ -1826,12 +1835,14 @@ def pipe(a, b):
     t.join(timeout=10)
 
 
-def pipe_back(upstream, client):
+def pipe_back(upstream, client, watch=None):
     try:
         while True:
             data = upstream.recv(65536)
             if not data:
                 break
+            if watch is not None:
+                watch.feed(data)
             client.sendall(data)
     except OSError:
         pass
@@ -1912,7 +1923,9 @@ def make_handler(gate):
                         for block in iter(lambda: f.read(1 << 20), b""):
                             upstream.sendall(block)
                     upstream.settimeout(None)
-                    pipe_back(upstream, client)
+                    watch = builtrec.BuildWatcher()
+                    pipe_back(upstream, client, watch)
+                    gate.record_build(watch.close())
                     return
                 upstream.sendall(build_head(method, target, version, headers) + body)
                 if rest:

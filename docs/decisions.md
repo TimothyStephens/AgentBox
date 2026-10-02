@@ -465,3 +465,21 @@ Findings and responses are in `docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md`; th
 ## 2026-10-01 · The local model selftest line is SKIP when the model is off
 
 - `proxied local model ... allowed` is a SKIP, with the reason, when `10.0.0.2:8080` does not answer from the host. It is the same host-side check the direct cases already use. When the model answers, the line is a real check.
+
+## 2026-10-02 · A project's own builds are the gate's record, not labels (Tim)
+
+- **What:** the dev tier may run or build from an image that this project built through the gate in any session, not only the current one.
+  - **The record:** which images those are is the gate's record, `<data>/built-images/<project>.json`. Each image ID was taken from the last line of a build reply the gate forwarded itself (podman 5.7 ends a successful libpod build with the full image ID; checked 2 Oct). It is written under a lock.
+  - **Labels:** a label on an image does not count, here or for build tags. An image carrying this project's labels but built outside the gate is refused, for running, for building from it, and for taking its tag (`test_review_step5.Images`, `test_step5_fields.test_image_forged_label`).
+  - **gc:** `ab gc` drops an image ID from the record when it removes the image.
+- **Replaces:** "this session's own builds" (decided 1 Oct), and the label checks for build tags (A4-G8).
+
+## 2026-10-02 · Selftest egress failures are diagnosed, not retried (Tim)
+
+- The probe reports the time each proxied check took.
+- When a proxied check fails, its result gets three things:
+  - the proxy's access-log lines for that host, from the session's kept proxy log;
+  - the DNS answer for the host, resolved from the host;
+  - the time the DNS lookup and the check took.
+- The same goes to `<logs>/<session>-<start>-selftest-diag.log`.
+- There are no retries. This is for diagnosing the 1 Oct flake: three proxied CONNECTs unanswered in one step-4 selftest, which passed alone and in a full rerun.

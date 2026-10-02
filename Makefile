@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -25,6 +25,15 @@ claude-live:
 # pushes agentbox.slice past its cap and checks who is OOM-killed.
 itest-oom:
 	python3 -m tests.oom.itest_oom
+
+# Run by Tim, not by the builder: the throwaway trial (docs/trial.md). trial-snapshot just before the session
+# starts (live containers and the time); trial-check after it ends (live stacks unchanged, nothing else under
+# ~ changed, nothing of the session left, no grant volume over the trial root).
+trial-snapshot:
+	python3 -m tests.trial.check snapshot
+
+trial-check:
+	python3 -m tests.trial.check check
 
 # Run by Tim, not by the builder: OMP with the real ~/.omp, real keys (read in place) and the real models.
 # AB_LIVE_EGRESS=locked|packages|open (default packages); AB_LIVE_MODEL=<provider/model> picks the model.

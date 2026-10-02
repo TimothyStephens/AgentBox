@@ -110,7 +110,10 @@ CASES = [
          bad=lambda c: {"image": c.live_img}, good=lambda c: {"image": IMG},
          check=lambda d, c: d["ImageName"] == IMG,
          after="refused before forwarding (the image is chosen before podman stores anything)",
-         note="Tim, 1 Oct: public registry images, this session's builds, or the project's dev_images"),
+         note="Tim, 1-2 Oct: public registry images, this project's builds (the gate's record), or dev_images"),
+    Case("image_forged_label", "mounts", "custom", "image carrying this project's labels, built outside the gate",
+         custom=lambda t, c: t.forged_label_case(c), after="refused before forwarding (run and build)",
+         note="Tim, 2 Oct: the project's own builds are the gate's record of image IDs, never labels"),
     Case("image_build_from", "mounts", "custom", "build FROM / COPY --from / RUN --mount from= (a localhost/ image)",
          custom=lambda t, c: t.build_from_case(c), after="no object until the build ends",
          note="the context is spooled and its Containerfile read before forwarding"),
@@ -426,6 +429,13 @@ def setUpModule():
     SESS.start_infra()
     with open(os.path.join(s.service_dir(SESS.name), "gate.json")) as f:
         c.gate = gate.Gate(json.load(f))
+    # labelled exactly like this session's builds, but built on the host, outside the gate
+    c.forged_img = f"localhost/{P}-forged:latest"
+    labels = []
+    for k, v in c.gate.stamp({}).items():
+        labels += ["--label", f"{k}={v}"]
+    p = harness.podman("build", "-q", "-t", c.forged_img, *labels, os.path.join(c.tmp, "liveimg"), timeout=600)
+    assert p.returncode == 0, p.stderr
     c.gate.log_path = os.devnull
     print(f"\n[itest run {harness.RUN}: step 5 fields, session {SESS.name}]")
 
@@ -662,6 +672,16 @@ class Fields(unittest.TestCase):
         self.assert_refused(st, body, "a pod's sub-path bind")
         self.assertIn("only a grant root itself", body)
 
+    def forged_label_case(self, c):
+        st, body = api("POST", "/libpod/containers/create", {"image": c.forged_img, "name": f"{P}-forged",
+                                                               "command": ["true"]})
+        self.assert_refused(st, body, "run an image with forged labels")
+        self.assert_nothing_left(f"{P}-forged")
+        st, body = build({"t": f"{P}-onforged"}, {"Containerfile": f"FROM {c.forged_img}\n"})
+        self.assert_refused(st, body, "build from an image with forged labels")
+        st, body = build({"t": c.forged_img}, {"Containerfile": f"FROM {IMG}\n"})
+        self.assert_refused(st, body, "take a forged-label image's tag")
+
     def build_from_case(self, c):
         for cf in (f"FROM {c.live_img}\n", f"FROM {IMG}\nCOPY --from={c.live_img} /live.txt /x\n",
                    f"FROM {IMG}\nRUN --mount=type=bind,from={c.live_img},source=/live.txt,target=/l cat /l\n",
@@ -671,8 +691,11 @@ class Fields(unittest.TestCase):
         self.assertNotEqual(harness.podman("image", "exists", f"{P}-from").returncode, 0)
         st, body = build({"t": f"{P}-from"}, {"Containerfile": f"FROM {IMG}\nRUN echo own > /own.txt\n"})
         self.assertEqual(st, 200, build_lines(body)[-300:])
+        from agentbox import builtrec
+        own = harness.podman("image", "inspect", "--format", "{{.Id}}", f"localhost/{P}-from:latest").stdout.strip()
+        self.assertIn(own, builtrec.ids(CTX.gate.cfg["built_record"]), "the gate recorded the image it built")
         st, body = build({"t": f"{P}-from2"}, {"Containerfile": f"FROM localhost/{P}-from:latest\n"})
-        self.assertEqual(st, 200, "this session's own build can be the base of the next: "
+        self.assertEqual(st, 200, "this project's own build can be the base of the next: "
                          + build_lines(body)[-300:])
 
     def build_secret_case(self, c):

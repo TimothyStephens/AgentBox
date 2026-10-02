@@ -119,6 +119,7 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
                              before=lambda: config_check.append(podman_config_check(sess)))
     out = (proc.stdout or "")
     results = runner.score(b.cases, out)
+    _diagnose(sess, b.cases, results, warn)
     if proc.returncode != 0 and not out.strip():
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
     results += config_check + extra
@@ -127,6 +128,28 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     for r in results:
         r.detail = runner.scrub(r.detail, secrets)
     return results, runner.scrub(out, secrets)
+
+
+def _diagnose(sess, cases, results, warn):
+    """A failed proxied check gets the proxy's log lines for its host, the DNS answer and the time taken, in its
+    detail and in <logs>/<session>-<start>-selftest-diag.log (Tim, 2 Oct: diagnose the egress flake)."""
+    if not any(r.verdict == "FAIL" and runner.proxied_target(c) for c, r in zip(cases, results)):
+        return
+    try:
+        with open(sess.log_path("proxy"), errors="replace") as f:
+            proxy_log = f.read()
+    except OSError:
+        proxy_log = ""
+    found = runner.diagnose_proxied_failures(cases, results, proxy_log)
+    if found:
+        path = sess.log_path("selftest-diag")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as f:
+                f.write("\n\n".join(text for _l, text in found) + "\n")
+            (warn or (lambda m: None))(f"agentbox: proxied checks failed; diagnostics in {path}")
+        except OSError:
+            pass
 
 
 def podman_config_check(sess):

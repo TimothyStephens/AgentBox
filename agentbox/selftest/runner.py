@@ -348,15 +348,55 @@ def score(cases, output):
         if c.id not in obs:
             results.append(Result(c.label, "FAIL", "no answer from probe"))
             continue
-        verdict, detail = c.check(obs[c.id])
+        value, took = obs[c.id], ""
+        if c.op in ("get", "connect"):                  # "<status> <n>ms": the time is for diagnosis only
+            value, _, took = value.partition(" ")
+        verdict, detail = c.check(value)
         if c.after:
-            follow = c.after(obs[c.id])
+            follow = c.after(value)
             if follow and verdict == "PASS":
                 verdict, detail = follow
+        if took and verdict == "FAIL":
+            detail = f"{detail} after {took}"
         results.append(Result(c.label, verdict, detail))
     if not done:
         results.append(Result("probe finished", "FAIL", "probe output ended early"))
     return results
+
+
+def proxied_target(case):
+    """The host a proxied get/connect case asks for (None for other cases)."""
+    if case.op not in ("get", "connect") or not case.args:
+        return None
+    hostport = case.args[1] if case.op == "get" and len(case.args) > 1 else case.args[0]
+    host = hostport.rsplit(":", 1)[0] if hostport.count(":") == 1 or hostport.startswith("[") else hostport
+    return host.strip("[]")
+
+
+def diagnose_proxied_failures(cases, results, proxy_log_text, resolve=None):
+    """For each failed proxied case: the proxy's access-log lines for that host, the DNS answer (from the host)
+    and how long it took. No retries: this is for diagnosing the next occurrence (Tim, 2 Oct). Returns
+    [(label, text)] and adds a short form to each result's detail."""
+    import socket
+    import time
+    resolve = resolve or (lambda h: sorted({a[4][0] for a in socket.getaddrinfo(h, None)}))
+    out = []
+    for c, r in zip(cases, results):
+        host = proxied_target(c)
+        if not host or r.verdict != "FAIL":
+            continue
+        lines = [l for l in proxy_log_text.splitlines() if host in l][-5:]
+        t0 = time.monotonic()
+        try:
+            answer = ", ".join(resolve(host)) or "no addresses"
+        except OSError as e:
+            answer = f"error: {e}"
+        dns = f"{answer} in {int((time.monotonic() - t0) * 1000)}ms"
+        text = (f"{c.label}: {r.detail}\n  dns from the host: {dns}\n  proxy log lines for {host}:\n"
+                + ("\n".join(f"    {l}" for l in lines) if lines else "    (none: the request never reached squid's log)"))
+        out.append((c.label, text))
+        r.detail = f"{r.detail}; dns {dns}; {len(lines)} proxy log line(s) for {host}"
+    return out
 
 
 def scrub(text, secrets):

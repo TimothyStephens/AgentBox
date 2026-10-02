@@ -2,11 +2,11 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 1 Oct 2026
+**Updated:** 2 Oct 2026
 
 ## Current step
 
-**Stopped.** Tim's four follow-ups to the step 5 audit are in. Next: set up the throwaway trial project with Tim.
+**Stopped.** The trial is prepared (`docs/trial.md`, `make trial-snapshot`, `make trial-check`). Tim runs it.
 
 ## Done
 
@@ -26,22 +26,29 @@ The builder's running state, updated in every commit, so a crashed session loses
   - **Teardown:** anonymous volumes (`rm -v`), the build cgroup, the per-session TMPDIR (buildah cache).
   - **Lockdown:** the project's `.omp` is covered whole.
   - **Tests:** `test_step5_fields` (95 field cases through the real gate), plus unit tests for each finding; the leftovers check covers pods, volumes and images.
-
-- **Follow-ups (this commit):**
+- **Follow-ups** (`91f8e93`):
   - **Bind sources:** a grant root itself is bound as is. A container's sub-path bind becomes a `SubPath` of the gate's bind-backed volume over that root, which podman 5.7 resolves inside the volume. The evidence is in decisions.md: a symlink present at create, swapped in, or swapped in as an intermediate component never leads out; 0 escapes in 150 racing starts against 21 of 60 for a plain bind. Pods keep sub-paths refused.
-  - **Image allowlist:** the dev tier runs and builds only from allowlisted-registry images, this session's own builds, or the project's `dev_images` (`--dev-image`); the gate reads a build's Containerfile first.
+  - **Image allowlist:** the dev tier runs and builds only from allowlisted-registry images, its own builds, or the project's `dev_images` (`--dev-image`); the gate reads a build's Containerfile first.
   - **Selftest:** the local model line is SKIP with a reason when 10.0.0.2 does not answer from the host.
-  - **Tests:** `make test` 264 OK; `make itest` 152 OK (fully green, model line SKIP while 10.0.0.2 is off). The run before it had one transient failure (three proxied CONNECTs to public sites unanswered in one step-4 selftest); it passed alone and in the full rerun.
+- **Before the trial** (this commit):
+  - a project's own builds, from any session, are allowed by the gate's record of the image IDs it built, not by labels; `ab gc` keeps the record in step;
+  - failed proxied selftest checks carry diagnostics (proxy log lines, DNS answer, timings), with no retries;
+  - `docs/trial.md`, `make trial-snapshot` and `make trial-check`.
 
 ## Next
 
-1. **The real trial** on a throwaway project, with Tim.
+1. **The trial** (`docs/trial.md`), run by Tim.
 
 ## Open decisions (Tim)
 
 - **Lockdown OMP:** keep `--no-extensions` (your plugins off), or rely on the repo-code covers alone (plugins on)?
-- **Images from earlier sessions:** by default a project's image built in an earlier session is refused (your rule: this session's own builds). Widen it to the project's own earlier dev builds, or keep it and use `dev_images`?
+- **Preview:** `ab preview` is not built, so the trial's app can only be checked from the host (see trial.md, step d). Build it next if you want the browser view.
+
+## Watch items
+
+- **Selftest egress flake (1 Oct):** three proxied CONNECTs (api.anthropic.com, pypi.org, files.pythonhosted.org) went unanswered (`000`) in one step-4 selftest; it passed alone and in a full rerun. Next time, the failed lines carry the proxy's log lines, the DNS answer and timings, and `<logs>/<session>-*-selftest-diag.log` has the details.
 
 ## Waiting on Tim
 
-- **`make claude-live` and `make omp-live`:** both passed on 1 Oct before this commit; the gate and session changed again since.
+- **The trial** (`docs/trial.md`).
+- **`make claude-live` and `make omp-live`:** both passed on 2 Oct against `91f8e93`; the gate, session and selftest changed again in this commit.

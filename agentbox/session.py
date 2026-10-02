@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
 from . import keys as keysmod
-from . import buildcap, scan, sockguard
+from . import buildcap, builtrec, scan, sockguard
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -241,7 +241,7 @@ def dev_notes(podman_live):
         "  - named volumes must be ones you create in this session (a new name is created for you); bind mounts "
         "only inside the project, by absolute path;",
         "  - images: you can run and build from images on docker.io, ghcr.io, lscr.io and quay.io (pull them "
-        "first) and images you build in this session; other local images are refused unless the project lists "
+        "first) and images built through agentbox for this project; other local images are refused unless the project lists "
         "them;",
     ]
     if podman_live:
@@ -810,6 +810,7 @@ class NetSession(Session):
             "build_memory": int(self.project.build_memory),
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
             "images": list(self.project.dev_images), "spool": os.path.join(service_tmp(s, self.name), "gate"),
+            "built_record": builtrec.path_for(s.data_dir, self.project.name),
             "log": os.path.join(svc, "gate.log"),
         }
 
@@ -1073,6 +1074,7 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
         r = podman.run(["rmi", img["Id"]], check=False)
         if r.returncode == 0:
             removed.append(f"image {img['Id'][:12]} ({labels.get('agentbox.project')})")
+            builtrec.remove_everywhere(settings.data_dir, [img["Id"]])   # the gate's record of its builds
         else:
             warn(f"agentbox: kept image {img['Id'][:12]}: {(r.stderr or '').strip()[-120:]}")
     return removed

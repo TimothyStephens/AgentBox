@@ -83,8 +83,8 @@ while read -r id op a b c d; do
     ifaces)   r=$(ls /sys/class/net | tr '\n' ' ') ;;
     which)    r=$(command -v "$a" || echo missing) ;;
     dns)      if getent hosts "$a" >/dev/null 2>&1; then r=resolved; else r=failed; fi ;;
-    get)      r=$(proxy_req GET "$a" "$b") ;;
-    connect)  r=$(proxy_req CONNECT "$a" "$a") ;;
+    get)      t0=$(date +%s%N); r=$(proxy_req GET "$a" "$b"); r="$r $(( ($(date +%s%N) - t0) / 1000000 ))ms" ;;
+    connect)  t0=$(date +%s%N); r=$(proxy_req CONNECT "$a" "$a"); r="$r $(( ($(date +%s%N) - t0) / 1000000 ))ms" ;;
     direct)   r=$(direct "$a" "$b") ;;
     api)      r=$(timeout 40 node -e "$SOCKJS" "$a" "$b" "$c" "$d" 2>&1 | tail -1) ;;
     *)        r="unknown-op" ;;
