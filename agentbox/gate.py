@@ -153,6 +153,11 @@ class NotFound(Deny):
     status = 404
 
 
+class UpstreamError(Deny):
+    """podman failed to answer a lookup: answered 502, never taken as "no such object"."""
+    status = 502
+
+
 class LocalImage(Exception):
     """A pull of an image that is already present and allowed: answered by the gate, never forwarded."""
     def __init__(self, image_id):
@@ -248,8 +253,10 @@ COMPAT_NETWORK_KEYS = ("Name", "CheckDuplicate", "Driver", "Scope", "EnableIPv4"
 ANNOTATION_REFUSED = ("run.oci.", "io.kubernetes.", "io.containers.", "org.systemd.", "io.crun.", "module.wasm.",
                       "org.opencontainers.")
 ANNOTATION_DROPPED = "io.podman.annotations."
-# refused even when they come with an image (they change how crun or systemd run the container)
-ANNOTATION_HARD_REFUSED = ("run.oci.", "io.kubernetes.", "io.containers.", "org.systemd.", "io.crun.", "module.wasm.")
+# The only refused annotations an image may bring, compared by value (review of 785ee15, L3: named, not implied).
+# Everything else in ANNOTATION_REFUSED (run.oci., org.systemd., ...) changes how crun or systemd run the
+# container and stays refused even from an image.
+ANNOTATION_FROM_IMAGE = ("org.opencontainers.",)
 SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sysctl (1 Oct), so the gate does too
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
 ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
@@ -262,11 +269,22 @@ MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosui
 
 
 # Maps whose keys are data, not field names: podman keeps them case-sensitive (NO_PROXY and no_proxy are two
-# variables). Keys of every other object are field names, which podman matches case-insensitively.
-DATA_MAPS = {"env", "labels", "label", "annotations", "sysctl", "sysctls", "secret_env", "options", "driveropts",
-             "expose", "exposedports", "volumes", "tmpfs", "portbindings", "networks", "endpointsconfig",
-             "throttlereadbpsdevice", "throttlewritebpsdevice", "throttlereadiopsdevice",
-             "throttlewriteiopsdevice", "weightdevice", "unified", "buildargs", "storageopt", "config"}
+# variables). Keyed by body kind and by the map's exact path (lower-cased field names from the body's root), so
+# a field that happens to share a name elsewhere is still checked (review of 785ee15, M2). Only the map's own
+# keys are exempt; objects inside it are field names again.
+DATA_PATHS = {
+    "libpod": {("env",), ("labels",), ("annotations",), ("sysctl",), ("secret_env",), ("expose",), ("networks",),
+               ("resource_limits", "unified"), ("log_configuration", "options"), ("weightdevice",),
+               ("throttlereadbpsdevice",), ("throttlewritebpsdevice",), ("throttlereadiopsdevice",),
+               ("throttlewriteiopsdevice",), ("storage_opts",)},
+    "pod": {("labels",), ("sysctl",), ("networks",), ("throttlereadbpsdevice",)},
+    "compat": {("labels",), ("volumes",), ("exposedports",), ("hostconfig", "portbindings"),
+               ("hostconfig", "annotations"), ("hostconfig", "sysctls"), ("hostconfig", "tmpfs"),
+               ("hostconfig", "logconfig", "config"), ("hostconfig", "storageopt"),
+               ("networkingconfig", "endpointsconfig")},
+    "network": {("labels",), ("options",)},
+    "volume": {("label",), ("labels",), ("options",), ("driveropts",)},
+}
 
 
 class _Obj(dict):
@@ -274,9 +292,10 @@ class _Obj(dict):
     case_dups = ()
 
 
-def strict_loads(body):
+def strict_loads(body, kind=None):
     """JSON whose field names never differ only in case (podman would see just one of them). Keys of the
-    maps in DATA_MAPS are data and may (Tim, 2 Oct: NO_PROXY and no_proxy)."""
+    data maps in DATA_PATHS[kind] are data and may (Tim, 2 Oct: NO_PROXY and no_proxy)."""
+    data_paths = DATA_PATHS.get(kind, set())
     def pairs(items):
         seen, dups = {}, []
         for k, _ in items:
@@ -293,17 +312,18 @@ def strict_loads(body):
     if not isinstance(doc, dict):
         raise Deny("the request body must be a JSON object")
 
-    def walk(obj, data):
+    def walk(obj, path):
         if isinstance(obj, dict):
+            data = path in data_paths
             if obj.case_dups and not data:
                 a, b = obj.case_dups[0]
                 raise Deny(f"ambiguous request: keys {a!r} and {b!r} differ only in case")
             for k, v in obj.items():
-                walk(v, not data and k.lower() in DATA_MAPS)
+                walk(v, path + ("*",) if data else path + (k.lower(),))
         elif isinstance(obj, list):
             for v in obj:
-                walk(v, False)
-    walk(doc, False)
+                walk(v, path + ("[]",))
+    walk(doc, ())
     return doc
 
 
@@ -429,6 +449,9 @@ class Gate:
         """What podman stored for one object, or None."""
         q = quote(ref, safe="/:@") if kind == "images" else quote(ref, safe="")
         status, doc = self.raw_json(f"/libpod/{kind}/{q}/json")
+        if status >= 500:
+            # podman failed: not the same as "no such object" (review of 785ee15, L5)
+            raise UpstreamError(f"podman could not look up {kind[:-1]} {ref!r} (status {status})")
         if status != 200 or doc is None:
             return None
         if isinstance(doc, list):
@@ -461,7 +484,9 @@ class Gate:
         if doc is None:
             raise NotFound(f"no such {kind[:-1]}: {ref!r}")
         if not self.is_dev(self.labels_in(kind, doc)):
-            raise Deny(f"{kind[:-1]} {ref!r} is not part of this session's dev stack")
+            # the same answer as for a missing object: the status must not tell whether another project's or a
+            # live stack's object exists (review of 785ee15, L1)
+            raise NotFound(f"no such {kind[:-1]}: {ref!r}")
         oid = self.ident(kind, doc)
         with self.lock:
             ok = oid in self.verified
@@ -584,7 +609,7 @@ class Gate:
             out["org.systemd.property.TimeoutStopUSec"] = f"uint64 {cfg['StopTimeout'] * 1000000}"
         image = self.image_doc(doc.get("Image") or "") if doc.get("Image") else None
         for k, v in ((image or {}).get("Annotations") or {}).items():
-            if not k.startswith(ANNOTATION_HARD_REFUSED):
+            if k.startswith(ANNOTATION_FROM_IMAGE):
                 out.setdefault(k, v)
         return out
 
@@ -847,7 +872,7 @@ class Gate:
                 raise Deny(f"container {cid[:12]} has not passed the gate's post-create check")
             doc = self.inspect("containers", cid)
             if doc is None:
-                raise Deny(f"container {cid[:12]} not found")
+                raise NotFound(f"no such container: {cid[:12]!r}")
             bad = self.infra_violations(doc) if cid == infra else self.container_violations(doc)
             if bad:
                 raise Deny(f"container {cid[:12]} no longer matches the rules ({'; '.join(bad)})")
@@ -1071,7 +1096,7 @@ class Gate:
                         raise Deny(f"build dockerfile {name!r} is not a file in the build context")
                     text = tar.extractfile(m).read(1 << 20).decode("utf-8", errors="replace")
                     for _instr, ref in dockerfile_images(text, args):
-                        self.check_image(ref, f"build {_instr}")
+                        self.check_image(self.own_short_name(ref) or ref, f"build {_instr}")
         except tarfile.TarError as e:
             raise Deny(f"the build context is not a readable tar ({e})")
 
@@ -1165,6 +1190,9 @@ class Gate:
                                             for d in spec["dependencyContainers"]]
         if not spec.get("image"):
             raise Deny("a container needs an image (a host directory as root is refused)")
+        own = self.own_short_name(spec["image"])
+        if own:
+            spec["image"] = own                    # this project's own build, by its full name
         self.check_image(spec["image"], "create")
         if spec.get("cgroups_mode") not in (None, "", "enabled"):
             raise Deny(f"cgroups mode {spec['cgroups_mode']} is not allowed")
@@ -1441,17 +1469,41 @@ class Gate:
         if doc is not None and not self.built_here(doc):
             raise Deny(f"build tag {ref}: an image this project did not build through the gate already has that name")
 
+    def own_short_name(self, ref):
+        """`localhost/<ref>` when `ref` is a short name (no registry) and that image is in this project's build
+        record. podman-compose builds localhost/<project>_<service> and then runs the short name, which would
+        otherwise resolve to docker.io (trial 2, 2 Oct)."""
+        if not isinstance(ref, str) or not ref or ref.startswith("sha256:") or re.fullmatch(r"[0-9a-f]{12,64}", ref):
+            return None
+        first = ref.split("/", 1)[0]
+        if "/" in ref and ("." in first or ":" in first or first == "localhost"):
+            return None
+        cand = image_name(ref)
+        doc = self.image_doc(cand)
+        return cand if doc is not None and self.built_here(doc) else None
+
     def built_here(self, doc):
         """The image is one the gate built for this project (its record, never labels: anyone can label)."""
         rec = self.cfg.get("built_record")
         image_id = (doc.get("Id") or "").split(":", 1)[-1]
         return bool(rec and image_id and image_id in builtrec.ids(rec))
 
-    def record_build(self, image_id):
+    def record_build(self, image_id, since=0.0):
+        """Record the image a build ended with. Also required (a second check, review of 785ee15 H1): it
+        carries this session's label, as the gate stamped it, and was created after the build started."""
         rec = self.cfg.get("built_record")
-        if rec and image_id and self.image_doc(image_id) is not None:
-            builtrec.add(rec, image_id, self.session)
-            self.log("built", "-", "build", f"recorded image {image_id[:12]} for this project")
+        doc = self.image_doc(image_id) if rec and image_id else None
+        if doc is None:
+            return False
+        labels = self.labels_in("images", doc)
+        created = image_created(doc)
+        if labels.get("agentbox.session") != self.session or created is None or created < since - 5:
+            self.log("not-recorded", "-", "build", f"image {image_id[:12]} is not this build's "
+                     f"(session label {labels.get('agentbox.session')!r}, created {created})")
+            return False
+        builtrec.add(rec, image_id, self.session)
+        self.log("built", "-", "build", f"recorded image {image_id[:12]} for this project")
+        return True
 
     @staticmethod
     def check_build_secrets(value):
@@ -1533,13 +1585,21 @@ class Gate:
             if tag and tag[0] and ":" not in ref.rsplit("/", 1)[-1] and "@" not in ref:
                 ref = f"{ref}:{tag[0]}"
             q = [(k, v) for k, v in q if k.lower() != "tag"]
+        own = self.own_short_name(refs[0]) if "/libpod/" in path else None
+        if own:
+            raise LocalImage((self.image_doc(own).get("Id") or "").split(":", 1)[-1])
         registry = ref.split("/", 1)[0]
         if registry not in self.cfg["registries"]:
             # podman run/compose up pull with policy=missing before every create. An image that is already
             # present and that the dev tier may use (its own build, or listed) is answered here, never pulled.
+            # One answer whether the image is absent or present but not the dev tier's (review of 785ee15, L2).
             doc = self.image_doc(ref) if "/libpod/" in path else None
             if doc is not None:
-                self.check_image(ref, "pull")
+                try:
+                    self.check_image(ref, "pull")
+                except Deny:
+                    doc = None
+            if doc is not None:
                 raise LocalImage((doc.get("Id") or "").split(":", 1)[-1])
             raise Deny(f"pulls from {registry} are not allowed (allowed: {', '.join(self.cfg['registries'])})")
         q = [(k, v) for k, v in q if k.lower() != key.lower()] + [(key, ref)]
@@ -1561,16 +1621,17 @@ class Gate:
                                     ("compat_create", self.rewrite_compat_container, COMPAT_KEYS),
                                     ("pod_create", self.rewrite_pod, POD_KEYS)):
                 if RE[kind].match(path):
-                    spec = canonical(strict_loads(body), known, kind.split("_")[0])
+                    spec = canonical(strict_loads(body, {"libpod_create": "libpod", "compat_create": "compat",
+                                                         "pod_create": "pod"}[kind]), known, kind.split("_")[0])
                     return target, json.dumps(fn(spec)).encode(), kind
             if RE["net_create"].match(path):
                 q = parse_qsl(urlsplit(target).query)
                 if any(k.lower() == "ignoreifexists" and v.lower() in ("1", "true") for k, v in q):
                     raise Deny("ignoreIfExists is not allowed (an existing network would be reported as created)")
-                spec = self.rewrite_network(strict_loads(body), compat="/libpod/" not in path)
+                spec = self.rewrite_network(strict_loads(body, "network"), compat="/libpod/" not in path)
                 return target, json.dumps(spec).encode(), "net_create"
             if RE["vol_create"].match(path):
-                spec = self.rewrite_volume(strict_loads(body), compat="/libpod/" not in path)
+                spec = self.rewrite_volume(strict_loads(body, "volume"), compat="/libpod/" not in path)
                 return target, json.dumps(spec).encode(), "vol_create"
             if RE["build"].match(path):
                 return self.rewrite_build(target), body, "build"
@@ -1596,15 +1657,19 @@ class Gate:
                 m = RE[kind].match(path)
                 if m:
                     self.check_start(kind, m.group(1))
+                    if kind == "pod_start":          # to the podman service, by the checked ID (M1)
+                        target = by_id(target, "pods", self.require_dev("pods", m.group(1)))
                     return target, body, kind
         m = RESOURCE.match(path)
         if m and m.group(2) not in COLLECTION:
             kind, ref = m.group(1), m.group(2)
             if kind == "networks" and method == "GET" and ref == self.network:
                 return target, body, "pass"           # compose inspects the network it was told to use
-            self.require_dev(kind, ref)
+            oid = self.require_dev(kind, ref)
             if kind == "pods" and POD_RAW.match(path) and (method, POD_RAW.match(path).group(1) or "") in POD_RAW_OPS:
-                return target, body, "pod_raw"
+                # straight to the podman service: by the ID that was checked, never the client's name, which
+                # could name another pod by the time it arrives (review of 785ee15, M1)
+                return by_id(target, "pods", oid), body, "pod_raw"
         return target, body, "pass"
 
 
@@ -1927,9 +1992,9 @@ def recv_all(sock):
 
 
 def deny(client, msg, status=403):
-    cause = "no such object" if status == 404 else "agentbox-gate"
+    cause = {404: "no such object", 502: "podman error"}.get(status, "agentbox-gate")
     body = json.dumps({"cause": cause, "message": f"agentbox gate: {msg}", "response": status}).encode()
-    reason = "Not Found" if status == 404 else "Forbidden"
+    reason = {404: "Not Found", 502: "Bad Gateway"}.get(status, "Forbidden")
     client.sendall(f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nConnection: close\r\n".encode()
                    + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
 
@@ -1953,6 +2018,54 @@ def pipe(a, b):
     t.start()
     fwd(b, a)
     t.join(timeout=10)
+
+
+def pipe_build_reply(upstream, client, record):
+    """Pass a build reply on, holding back any bytes that may carry the final ID line until more output
+    follows (then it was not the final line) or the reply ends (then it is recorded first, and sent after)."""
+    watch, held = builtrec.BuildWatcher(), b""
+    try:
+        while True:
+            data = upstream.recv(65536)
+            if data:
+                watch.feed(data)
+                held += data
+            if not data or watch.done:
+                record(watch.close())
+                if held:
+                    client.sendall(held)
+                if not data:
+                    return
+                held = b""
+                pipe_back(upstream, client)
+                return
+            if watch.candidate is None:
+                client.sendall(held)
+                held = b""
+    except OSError:
+        pass
+
+
+def by_id(target, kind, oid):
+    """The request target with the object segment after /<kind>/ replaced by its checked ID."""
+    parts = urlsplit(target)
+    path = re.sub(rf"(/{kind}/)[^/]+", lambda m: m.group(1) + quote(oid, safe=""), parts.path, count=1)
+    return path + (f"?{parts.query}" if parts.query else "")
+
+
+def image_created(doc):
+    """An image's creation time as a Unix time, or None."""
+    from datetime import datetime
+    value = (doc or {}).get("Created")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value:
+        v = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+        try:
+            return datetime.fromisoformat(v).timestamp()
+        except ValueError:
+            return None
+    return None
 
 
 def pipe_back(upstream, client, watch=None):
@@ -2044,11 +2157,10 @@ def make_handler(gate):
                         for block in iter(lambda: f.read(1 << 20), b""):
                             upstream.sendall(block)
                     upstream.settimeout(None)
-                    # recorded as soon as the ID passes, before the client sees the end of the reply, so a build
+                    # only the ID the reply ends with is recorded, before the client sees that end, so a build
                     # started right after it already finds this one in the record
-                    watch = builtrec.BuildWatcher(on_id=gate.record_build)
-                    pipe_back(upstream, client, watch)
-                    gate.record_build(watch.close())
+                    started = time.time()
+                    pipe_build_reply(upstream, client, lambda image_id: gate.record_build(image_id, started))
                     return
                 upstream.sendall(build_head(method, target, version, headers) + body)
                 if rest:
@@ -2064,7 +2176,7 @@ def make_handler(gate):
                 except OSError:
                     pass
             except Deny as e:
-                gate.log("deny" if e.status == 403 else "notfound", method, path, str(e))
+                gate.log({403: "deny", 404: "notfound"}.get(e.status, "error"), method, path, str(e))
                 try:
                     deny(client, str(e), e.status)
                 except OSError:

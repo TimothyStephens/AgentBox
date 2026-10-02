@@ -299,7 +299,7 @@ Without the gate, a container created with no network, or a `podman build`, runs
 
 ### Preview and deploy
 
-- `ab preview <project> <service:port>` starts a launcher-run forwarder on `127.0.0.1` into the dev stack; you view it from your desktop with `ssh -L`.
+- `ab preview <session> <service>:<port>` starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab kill`, teardown, gc); `ab preview <session> --stop` removes it earlier (built 2 Oct).
 - `ab deploy <project> --lan 10.0.0.103:<port>` validates the compose file (binds inside the project, no privileged or host networking, ports only on the address named), checks the real .env has every variable name in .env.dev, shows the diff since the last deploy, asks for confirmation, then starts the live `<project>` stack through a sockguard deploy profile, never the raw socket.
 
 ### Workspace UI

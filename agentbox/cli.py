@@ -109,6 +109,27 @@ def cmd_project_show(s, a):
         print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
 
 
+def cmd_project_reset_state(s, a):
+    session.load_project(s, a.name)
+    alive = [n for n, info in session.sessions(s, Podman(s.podman)).items()
+             if info.get("alive") and (info.get("meta") or {}).get("project") == a.name]
+    if alive:
+        raise AgentboxError(f"a session of {a.name} is running ({', '.join(alive)}); end it first")
+    src = os.path.join(s.data_dir, a.name)
+    if not os.path.isdir(src) or not os.listdir(src):
+        print(f"{a.name} has no agent state")
+        return 0
+    if not a.yes:
+        answer = input(f"Reset the agent state of {a.name} (memory, settings, transcripts of every agent, in "
+                       f"{src})? It is moved to {s.backups_dir}/{a.name}/ first. [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("not reset")
+            return 1
+    moved = session.reset_state(s, a.name)
+    print(f"reset: the agent state of {a.name} is now in {moved[1]}; the next session starts empty")
+    return 0
+
+
 def cmd_project_ls(s, a):
     for name, q in sorted(registry.load(s.registry_path).items()):
         print(f"{name:<20} {q.get('preset', '?'):<10} {q.get('root', '?')}")
@@ -145,6 +166,22 @@ def cmd_ls(s, a):
         state = "running" if info["alive"] else "dead"
         print(f"{name:<40} {meta.get('project', '?'):<16} {state:<8} "
               f"{len(info['containers'])} containers, {len(info['networks'])} networks")
+
+
+def cmd_preview(s, a):
+    from . import preview
+    podman = Podman(s.podman)
+    if a.stop:
+        gone = preview.stop(s, podman, a.session)
+        print("removed: " + (" ".join(gone) if gone else "no previews"))
+        return 0
+    if not a.target:
+        raise AgentboxError("give <service>:<port> (or --stop)")
+    port, desk = preview.start(s, podman, a.session, a.target, a.port)
+    print(f"preview of {a.target} in {a.session}: http://127.0.0.1:{port}/ (on this host only)\n"
+          f"from your desktop: {desk}\n  then open http://127.0.0.1:{port}/\n"
+          "it ends with the session (or ab preview --stop)")
+    return 0
 
 
 def cmd_kill(s, a):
@@ -236,6 +273,11 @@ def parser():
     x.add_argument("name")
     x.set_defaults(fn=cmd_project_show)
     proj.add_parser("ls").set_defaults(fn=cmd_project_ls)
+    x = proj.add_parser("reset-state", help="wipe a project's agent state (memory, settings, transcripts); "
+                                            "asks first, keeps a copy in the backups dir")
+    x.add_argument("name")
+    x.add_argument("--yes", action="store_true", help="do not ask")
+    x.set_defaults(fn=cmd_project_reset_state)
     x = proj.add_parser("rm")
     x.add_argument("name")
     x.set_defaults(fn=cmd_project_rm)
@@ -251,6 +293,12 @@ def parser():
     x.set_defaults(fn=cmd_run)
 
     sub.add_parser("ls", help="list sessions").set_defaults(fn=cmd_ls)
+    x = sub.add_parser("preview", help="open a session's dev service on 127.0.0.1 (reach it with ssh -L)")
+    x.add_argument("session")
+    x.add_argument("target", nargs="?", help="<service>:<port>, e.g. web:8000")
+    x.add_argument("--port", type=int, help="host port on 127.0.0.1 (default: a free one)")
+    x.add_argument("--stop", action="store_true", help="remove the session's previews")
+    x.set_defaults(fn=cmd_preview)
     x = sub.add_parser("kill", help="tear down a session")
     x.add_argument("session")
     x.set_defaults(fn=cmd_kill)

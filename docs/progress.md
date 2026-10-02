@@ -2,11 +2,11 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 2 Oct 2026 (after the trial)
+**Updated:** 2 Oct 2026 (after trial 2)
 
 ## Current step
 
-**Stopped.** The trial's usability failures are fixed; a real podman-compose workflow now passes through the real gate (`test_step5_compose`). Tim reruns the trial.
+**Stopped.** Trial 2 passed (usability and trial-check). The review of `785ee15` and the trial 2 findings are done. Next: the first real project, `~/repos/Life_Updates/life-updates`, starting from its `wip/old-claude-session` branch.
 
 ## Done
 
@@ -35,7 +35,7 @@ The builder's running state, updated in every commit, so a crashed session loses
   - failed proxied selftest checks carry diagnostics (proxy log lines, DNS answer, timings), with no retries;
   - `docs/trial.md`, `make trial-snapshot` and `make trial-check`.
 
-- **After the trial** (this commit; `make test` 281 OK, `make itest` 155 OK). Security was clean; usability failed (the agent could not run an image it built).
+- **After the trial** (`785ee15`). Security was clean; usability failed (the agent could not run an image it built).
   - `test_step5_compose` runs a real compose workflow through the real gate, and it failed first. These fixes made it pass:
     - builds reach the proxy (by IP, plus the session's DNS);
     - pulls of the project's own present images are answered by the gate;
@@ -52,17 +52,31 @@ The builder's running state, updated in every commit, so a crashed session loses
     - cuts long lists per directory.
   - Found by the full itest: a race where a build's ID was recorded after the client saw the end of the reply (fixed: recorded as it passes), and kept proxy logs now carry squid's stderr.
 
+- **Review of 785ee15 and trial 2** (this commit). The review is answered in `docs/reviews/2026-10-02-785ee15.md`:
+  - **H1:** a build record entry could be forged by echoing an ID. Fixed: only the reply's final ID counts, before the client sees it, plus a label and creation-time check.
+  - **M1:** pods are forwarded by the checked ID.
+  - **M2:** the case-duplicate exemption is keyed by path.
+  - **L1-L5:** fixed or tested.
+  - **Trial 2:**
+    - short names of this project's builds resolve to them;
+    - the agent uses `<service>.dns.podman`, which podman's DNS answers and which goes direct;
+    - agent memory changes are diffed in the end-of-session scan;
+    - `ab project reset-state` (asks first, keeps a copy);
+    - lockdown sessions start from empty agent state;
+    - `ab preview` is built (127.0.0.1 only, one session service, removed with the session; `test_step6_preview`).
+
 ## Next
 
-1. **The trial again** (`docs/trial.md`), run by Tim: reset `~/repos/abt-trial` and give the agent the same task.
+1. **The first real project:** `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, set up with Tim.
 
 ## Open decisions (Tim)
 
 - **Lockdown OMP:** keep `--no-extensions` (your plugins off), or rely on the repo-code covers alone (plugins on)?
-- **Preview:** `ab preview` is not built, so the trial's app can only be checked from the host (see trial.md, step d). Build it next if you want the browser view.
 
 ## Watch items
 
+- **Egress flake, third test (2 Oct, last full run):** `test_step3_omp.test_chromium_follows_the_egress_mode`: with open egress, Chromium did not load example.com through squid. It failed once more alone, loaded the page in a manual rerun, then passed twice. Three tests hit it today (compose pypi 503, step 2 selftest 20 s timeouts, this one), always on squid's upstream side. The next step is to collect squid's cache.log (now kept) from a failing session and test the IPv6 suspect directly.
+- **Egress flake, with diagnostics (2 Oct, after trial 2):** in a full itest run, a step 2 selftest (packages) had `CONNECT api.anthropic.com:443` and a nip.io request get no answer within the probe's 20 s (`000 after 20011ms`). squid had logged both requests, so it accepted them and then did not answer in time. The host resolved api.anthropic.com to both IPv4 and IPv6 in 0 ms. That points at squid's upstream connect stalling (an IPv6 attempt is one suspect), not at the gate or DNS on the host. Failure details now carry the proxy's log lines themselves.
 - **Egress flake, again (2 Oct):** in one full itest run, squid answered `503 Service Unavailable` to a build's CONNECT to pypi.org (`test_step5_compose`). The same test passed alone four times, every time over IPv4 (`151.101.x.223`). The host resolves pypi.org to IPv6 first, and the session networks are IPv4-only, so one suspect is squid trying IPv6 only; unconfirmed. Kept proxy logs now include squid's stderr (cache.log), which says why an upstream connection failed, and the compose test prints the proxy's pypi/503 lines when it fails.
 - **Selftest egress flake (1 Oct):** three proxied CONNECTs (api.anthropic.com, pypi.org, files.pythonhosted.org) went unanswered (`000`) in one step-4 selftest; it passed alone and in a full rerun. Next time, the failed lines carry the proxy's log lines, the DNS answer and timings, and `<logs>/<session>-*-selftest-diag.log` has the details.
 

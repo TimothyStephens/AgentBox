@@ -224,12 +224,15 @@ def dev_cases(b, *, socket_path, canary, protected):
               f"create with {what} refused", denied)
     b.add("api", ["POST", "/libpod/images/pull?reference=registry.example.com/x:1", "-", socket_path],
           "pull from an unlisted registry refused", denied)
+    # Another project's container, or the session's own sidecars, are invisible to the dev tier: 404, the same
+    # answer as for a container that does not exist (review of 785ee15, L1).
+    hidden = lambda obs: ("PASS" if _status(obs) == "404" else "FAIL", obs)
     for name in ([canary] if canary else []) + list(protected):
         for method, path, what in (("POST", f"/libpod/containers/{name}/exec", "exec on"),
                                    ("POST", f"/libpod/containers/{name}/stop", "stop"),
                                    ("DELETE", f"/libpod/containers/{name}?force=true", "remove"),
                                    ("GET", f"/libpod/containers/{name}/json", "inspect")):
-            b.add("api", [method, path, "-", socket_path], f"{what} {name} refused", denied)
+            b.add("api", [method, path, "-", socket_path], f"{what} {name} refused (not visible)", hidden)
 
 
 def network_none_cases(b):
@@ -395,7 +398,8 @@ def diagnose_proxied_failures(cases, results, proxy_log_text, resolve=None):
         text = (f"{c.label}: {r.detail}\n  dns from the host: {dns}\n  proxy log lines for {host}:\n"
                 + ("\n".join(f"    {l}" for l in lines) if lines else "    (none: the request never reached squid's log)"))
         out.append((c.label, text))
-        r.detail = f"{r.detail}; dns {dns}; {len(lines)} proxy log line(s) for {host}"
+        shown = " | ".join(l.strip() for l in lines[-2:])
+        r.detail = f"{r.detail}; dns {dns}; proxy log for {host}: {shown or 'nothing (never reached squid)'}"
     return out
 
 

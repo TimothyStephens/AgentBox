@@ -511,3 +511,25 @@ The trial's agent could not run an image it built. The itests had passed with ha
 - **Found by the full itest runs after these fixes:**
   - **A race in the build record.** The gate wrote a build's image ID after the client had the whole reply, so a build started right away (the same tag again) could be refused. The ID is now recorded as soon as it passes through the gate, before the client sees the end of the reply.
   - **Kept proxy logs now include squid's stderr (cache.log)** when the proxy handled any request. It says why an upstream connection failed: one full run had squid answer 503 to a build's CONNECT to pypi.org. That is the egress watch item in progress.md.
+
+## 2026-10-02 · Review of 785ee15 and trial 2 (Tim)
+
+The review's responses are in `docs/reviews/2026-10-02-785ee15.md`.
+- **H1, the build record:** only the final ID of a build reply is recorded, before the client sees it, and only for an image this session labelled and created during the build.
+- **Pods:** pod operations go to the podman service by the checked ID.
+- **Case-duplicate exemption:** keyed by path.
+- **Status codes:** "not this session's" answers like "missing" (404).
+- **Audit trail:** the gate log is the only record for pod operations sent to the podman service; sockguard does not see them.
+
+From trial 2:
+- **Short image names:** podman-compose builds `localhost/<project>_<service>` and runs the short name. A short name whose `localhost/` image is in this project's build record now resolves to it: a pull is answered locally, a create is rewritten to the full name, and a build `FROM` it is checked as that image. Tested in `test_step5_compose` (no `image:` line).
+- **The agent's own HTTP calls:** they went to squid because its `no_proxy` lacks the service names, and requests ignores CIDR entries. podman's DNS answers `<service>.dns.podman` on the session network, and the agent's `NO_PROXY`/`no_proxy` already held `.dns.podman`. curl and Python's urllib reach `web.dns.podman` directly, and squid never sees it (`test_step5_compose`). The session notes now tell the agent to use `<service>.dns.podman`.
+- **Agent memory:** it persists per project across sessions, and stays.
+  - **Scan:** the end-of-session scan lists the memory, instruction and settings files of the agent state that changed, with a diff. Credential-like files are listed by name only; transcripts are not read. The start snapshot is taken after agentbox seeds the state, so its own notes are not a change.
+  - **Reset:** `ab project reset-state <project>` moves a project's agent state to `<backups>/<project>/agent-state-<stamp>`. It asks first (`--yes` skips the question) and refuses while a session runs.
+  - **Lockdown:** sessions use an empty per-session state (`<data>/ephemeral/<session>`), removed at teardown.
+- **`ab preview` is built.**
+  - **Forwarder:** `ab preview <session> <service>:<port> [--port N]` starts a forwarder container (busybox `nc -lk -e`) on the session's internal network. It publishes `127.0.0.1:N` only (a container on an internal network can publish on loopback; checked on this host), never 0.0.0.0 or a LAN address.
+  - **Target:** only a running dev container of that session can be previewed.
+  - **Removal:** the forwarder carries the session's labels, so the session's teardown, `ab kill` and gc remove it. `ab preview <session> --stop` removes it earlier.
+  - **From the desktop:** `ssh -N -L N:127.0.0.1:N <host>`. Tested in `test_step6_preview`.

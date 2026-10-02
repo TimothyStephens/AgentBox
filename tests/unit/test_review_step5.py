@@ -576,16 +576,54 @@ class BuiltRecord(unittest.TestCase):
             w.feed(raw)
             self.assertEqual(w.close(), want, raw[-40:])
 
-    def test_id_recorded_before_the_reply_ends(self):
-        """Found by the full itest (2 Oct): the record was written after the client had the whole reply, so a
-        build started right away could miss it."""
+    def test_only_the_id_the_reply_ends_with_counts(self):
+        """Review of 785ee15, H1: a RUN step can print any image's ID; only the last stream line counts."""
         from agentbox import builtrec
-        seen = []
-        w = builtrec.BuildWatcher(on_id=seen.append)
-        w.feed(b'HTTP/1.1 200 OK\r\n\r\n{"stream":"STEP 1/1\\n"}\n')
-        self.assertEqual(seen, [])
-        w.feed(b'{"stream":"' + b"d" * 64 + b'\\n"}\n')
-        self.assertEqual(seen, ["d" * 64], "recorded while the reply is still being passed on")
+        fake, real = "f" * 64, "e" * 64
+        head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+
+        def chunk(text):
+            return b"%x\r\n%s\r\n" % (len(text), text)
+        line = lambda t: chunk(b'{"stream":"' + t + b'\\n"}\n')
+        replies = {
+            "echoed ID, then the real one": (head + line(b"STEP 1/2") + line(fake.encode()) + line(b"STEP 2/2")
+                                             + line(real.encode()) + b"0\r\n\r\n", real),
+            "echoed ID, then an error": (head + line(fake.encode()) + chunk(b'{"error":"boom"}\n') + b"0\r\n\r\n",
+                                         None),
+            "echoed ID last, but status 500": (b"HTTP/1.1 500 x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                               + line(fake.encode()) + b"0\r\n\r\n", None),
+        }
+        for name, (raw, want) in replies.items():
+            pieces = [raw[i:i + 40] for i in range(0, len(raw), 40)]
+            up, client, recorded = FakeSock(pieces), FakeSock([]), []
+
+            def record(image_id, client=client, recorded=recorded):
+                recorded.append((image_id, client.sent))
+            gate.pipe_build_reply(up, client, record)
+            with self.subTest(name=name):
+                self.assertEqual([r[0] for r in recorded], [want])
+                self.assertEqual(client.sent, raw, "everything is passed on")
+                if want:
+                    self.assertNotIn(want.encode(), recorded[0][1], "recorded before the client sees the ID")
+
+    def test_record_requires_this_session_and_a_fresh_image(self):
+        import tempfile
+        import time as _time
+        from agentbox import builtrec
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        now = _time.time()
+        g = Fake({"images/" + "1" * 64: {"Id": "1" * 64, "Labels": {"agentbox.session": "abt-s-1"}, "Created": now},
+                  "images/" + "2" * 64: {"Id": "2" * 64, "Labels": {"agentbox.session": "abt-s-1"},
+                                         "Created": now - 3600},
+                  "images/" + "3" * 64: {"Id": "3" * 64, "Labels": {}, "Created": now}})
+        g.cfg["built_record"] = builtrec.path_for(d, "proj")
+        self.assertTrue(g.record_build("1" * 64, since=now - 1))
+        self.assertFalse(g.record_build("2" * 64, since=now - 1), "made before this build started")
+        self.assertFalse(g.record_build("3" * 64, since=now - 1), "not labelled by this session")
+        self.assertEqual(builtrec.ids(g.cfg["built_record"]), {"1" * 64})
+        self.assertEqual(gate.image_created({"Created": "2026-10-02T15:38:11.322027189Z"}),
+                         1790955491.322027)
 
     def test_gc_drops_removed_images_from_the_record(self):
         import tempfile
@@ -654,6 +692,75 @@ class TrialFindings(unittest.TestCase):
         with self.assertRaises(gate.Deny):          # field names still may not differ only in case
             decide(Fake(), "POST", "/v5/libpod/containers/create", {"image": "x", "Image": "y"})
 
+    def test_case_duplicate_field_names_inside_data_maps_still_refused(self):
+        """Review of 785ee15, M2: the exemption is the data map's own keys, at its exact path."""
+        for path, body in (
+                ("/v5/libpod/containers/create", {"image": "x", "Networks": {"n": {"aliases": [], "Aliases": []}}}),
+                ("/v5/libpod/containers/create", {"image": "x", "volumes": [{"Name": "a", "name": "b", "Dest": "/x"}]}),
+                ("/v5/libpod/containers/create", {"image": "x", "mounts": [{"options": {"a": 1, "A": 2}}]}),
+                ("/v5/containers/create", {"Image": "x", "HostConfig": {"PortBindings": {
+                    "80/tcp": [{"HostPort": "1", "hostport": "2"}]}}}),
+                ("/v5/networks/create", {"Name": "n", "IPAM": {"Config": [{"Subnet": "a", "subnet": "b"}]}}),
+                ("/v5/libpod/containers/create", {"image": "x", "healthconfig": {"options": {"a": 1, "A": 2}}})):
+            with self.subTest(body=body), self.assertRaises(gate.Deny):
+                decide(Fake(), "POST", path, body)
+        # the data maps themselves may
+        decide(Fake(), "POST", "/v5/libpod/containers/create",
+               {"image": "x", "labels": {"A": "1", "a": "2"}, "annotations": {"note": "1", "NOTE": "2"}})
+
+    def test_envmerge_edges(self):
+        """Review of 785ee15, L4."""
+        with self.assertRaises(gate.Deny):          # a moved value with a $ would be expanded
+            decide(Fake(), "POST", "/v5/libpod/containers/create", {"image": "x", "env": {"A": "1", "a": "$HOME"}})
+        _t, body, _k = decide(Fake(), "POST", "/v5/libpod/containers/create",
+                              {"image": "x", "env": {"Ab": "1", "aB": "2", "AB": "3"}, "envmerge": ["Z=9"]})
+        spec = json.loads(body)
+        self.assertEqual(sorted(spec["envmerge"]), ["AB=3", "Z=9", "aB=2"])
+        self.assertEqual([k for k in spec["env"] if k.lower() == "ab"], ["Ab"])
+
+    def test_lows_of_the_785ee15_review(self):
+        # L1: another project's (or the live stack's) container gets the same 404 as a missing one
+        g = Fake({"containers/live": container("live1", labels={"io.podman.compose.project": "shop"}),
+                  "containers/mine": container("m1")})
+        answers = []
+        for ref in ("live", "nothere"):
+            with self.assertRaises(gate.NotFound) as e:
+                decide(g, "POST", f"/v5/libpod/containers/{ref}/stop")
+            answers.append(str(e.exception).replace(ref, "X"))
+        self.assertEqual(answers[0], answers[1])
+        with self.assertRaises(gate.Deny) as e:       # the session's own, not yet checked: 403
+            decide(g, "POST", "/v5/libpod/containers/mine/stop")
+        self.assertEqual(e.exception.status, 403)
+        # L2: present-but-not-allowed and absent pulls get the same answer
+        g = Fake({"images/localhost/live-app:latest": {"Id": "b" * 64, "RepoTags": ["localhost/live-app:latest"]}})
+        msgs = []
+        for ref in ("localhost/live-app:latest", "localhost/nothere:1"):
+            with self.assertRaises(gate.Deny) as e:
+                decide(g, "POST", f"/v5/libpod/images/pull?reference={ref}&policy=missing")
+            msgs.append(str(e.exception))
+        self.assertEqual(msgs[0], msgs[1])
+        g = Fake({"images/localhost/listed:1": {"Id": "c" * 64, "RepoTags": ["localhost/listed:1"]}})
+        g.cfg["images"] = ["localhost/listed:*"]                   # the dev_images branch
+        with self.assertRaises(gate.LocalImage):
+            decide(g, "POST", "/v5/libpod/images/pull?reference=localhost/listed:1&policy=missing")
+        # L3: image annotations only org.opencontainers.*, by value; a removed image allows nothing
+        g = Fake({"images/img1": {"Id": "img1", "Annotations": {"org.opencontainers.image.version": "1.36"}}})
+        doc = container("c1", Image="img1")
+        doc["Config"]["Annotations"] = {"org.opencontainers.image.version": "9.99"}     # value differs
+        self.assertTrue(g.container_violations(doc))
+        doc = container("c1", Image="gone")
+        doc["Config"]["Annotations"] = {"org.opencontainers.image.version": "1.36"}
+        self.assertTrue(g.container_violations(doc))
+        doc = container("c1", Image="img1")
+        doc["Config"].update(StopSignal="SIGTERM", Annotations={"org.opencontainers.image.stopSignal": "2"})
+        self.assertTrue(g.container_violations(doc), "stopSignal must match the container's own config")
+        # L5: a podman 5xx is a 502, not "no such object"
+        g = Fake()
+        g.raw_json = lambda path: (500, None)
+        with self.assertRaises(gate.UpstreamError) as e:
+            decide(g, "POST", "/v5/libpod/containers/x/stop")
+        self.assertEqual(e.exception.status, 502)
+
     def test_depends_on_own_containers_only(self):
         g = Fake({"containers/db": container("db1")})
         with self.assertRaises(gate.Deny):          # not checked yet
@@ -691,10 +798,84 @@ class TrialFindings(unittest.TestCase):
                              ("GET", "/v5/libpod/pods/p/exists"), ("GET", "/v5/libpod/pods/p/json")):
             self.assertEqual(decide(g, method, path)[2], "pod_raw", path)
         self.assertEqual(decide(g, "POST", "/v5/libpod/pods/p/start")[2], "pod_start")
+        # review of 785ee15, M1: forwarded by the checked ID, never the client's name
+        for method, path, want in (("DELETE", "/v5/libpod/pods/p?force=true", "/v5/libpod/pods/pid?force=true"),
+                                   ("POST", "/v5/libpod/pods/p/stop?t=1", "/v5/libpod/pods/pid/stop?t=1"),
+                                   ("POST", "/v5/libpod/pods/p/kill", "/v5/libpod/pods/pid/kill"),
+                                   ("GET", "/v5/libpod/pods/p/top", "/v5/libpod/pods/pid/top"),
+                                   ("POST", "/v5/libpod/pods/p/start", "/v5/libpod/pods/pid/start")):
+            self.assertEqual(decide(g, method, path)[0], want, path)
         with self.assertRaises(gate.Deny):          # not the session's: never to the service
             decide(g, "DELETE", "/v5/libpod/pods/other")
         with self.assertRaises(gate.NotFound):
             decide(g, "DELETE", "/v5/libpod/pods/nothere")
+
+    def test_raw_socket_only_for_session_pod_operations(self):
+        """Review of 785ee15: nothing asserted which socket each request reaches."""
+        import socket as so
+        import tempfile
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        got = {}
+
+        def server(name):
+            path = os.path.join(d, name)
+            srv = so.socket(so.AF_UNIX)
+            srv.bind(path)
+            srv.listen(8)
+
+            def loop():
+                while True:
+                    try:
+                        c, _ = srv.accept()
+                    except OSError:
+                        return
+                    req = c.recv(65536).split(b"\r\n", 1)[0].decode()
+                    got.setdefault(name, []).append(req)
+                    c.sendall(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                    c.close()
+            threading.Thread(target=loop, daemon=True).start()
+            self.addCleanup(srv.close)
+            return path
+        pod = {"Id": "pid", "Labels": POD_DEV, "InfraContainerID": "", "Containers": []}
+        g = Fake({"pods/p": pod, "pods/pid": pod, "containers/web": container("c1")})
+        g.verified.update({"pid", "c1"})
+        g.cfg["raw"], g.cfg["upstream"] = server("raw"), server("upstream")
+        h = gate.make_handler(g)
+        for method, path in (("DELETE", "/v5/libpod/pods/p"), ("POST", "/v5/libpod/pods/p/stop"),
+                             ("POST", "/v5/libpod/pods/p/start"), ("POST", "/v5/libpod/containers/web/stop"),
+                             ("GET", "/v5/libpod/containers/json")):
+            a, b = so.socketpair()
+            a.sendall(f"{method} {path} HTTP/1.1\r\nHost: d\r\n\r\n".encode())
+            a.shutdown(so.SHUT_WR)
+            h(b, None, None)
+            a.close()
+        raw = " ".join(got.get("raw", []))
+        up = " ".join(got.get("upstream", []))
+        for p in ("DELETE /v5/libpod/pods/pid", "POST /v5/libpod/pods/pid/stop", "POST /v5/libpod/pods/pid/start"):
+            self.assertIn(p, raw)
+        for p in ("containers/web/stop", "containers/json"):
+            self.assertIn(p, up)
+            self.assertNotIn(p, raw)
+
+    def test_short_name_of_an_own_build(self):
+        """Trial 2: compose built localhost/abt-trial_web:latest, then ran "abt-trial_web:latest"."""
+        import tempfile
+        from agentbox import builtrec
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        g = Fake({"images/localhost/abt-trial_web:latest": {"Id": "a" * 64, "RepoTags": ["localhost/abt-trial_web:latest"]},
+                  "images/localhost/other_web:latest": {"Id": "b" * 64, "RepoTags": ["localhost/other_web:latest"]}})
+        g.cfg["built_record"] = builtrec.path_for(d, "proj")
+        builtrec.add(g.cfg["built_record"], "a" * 64, "abt-s-1")
+        with self.assertRaises(gate.LocalImage) as e:
+            decide(g, "POST", "/v5/libpod/images/pull?reference=abt-trial_web:latest&policy=missing")
+        self.assertEqual(e.exception.image_id, "a" * 64)
+        _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create", {"image": "abt-trial_web"})
+        self.assertEqual(json.loads(body)["image"], "localhost/abt-trial_web:latest")
+        # not in the record: a short name stays docker.io's
+        q = decide(g, "POST", "/v5/libpod/images/pull?reference=other_web&policy=missing")[0]
+        self.assertIn("docker.io%2Flibrary%2Fother_web", q)
 
     def test_missing_objects_are_404(self):
         with self.assertRaises(gate.NotFound):

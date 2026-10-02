@@ -74,11 +74,11 @@ def remove_everywhere(data_dir, image_ids):
 
 class BuildWatcher:
     """Reads a libpod build reply (raw HTTP, as it streams past) and remembers the image ID it ends with. A
-    successful build's last stream line is the full 64-hex ID (podman 5.7, checked 2 Oct); an error line, or
-    a status other than 200, clears it."""
+    successful build's last stream line is the full 64-hex ID (podman 5.7, checked 2 Oct); an error line, any
+    later stream line, or a status other than 200 clears it. Only the ID the reply *ends* with counts: a RUN
+    step can print any 64-hex string (review of 785ee15, H1)."""
 
-    def __init__(self, on_id=None):
-        self.on_id = on_id                # called with the ID as soon as it is seen, before it is passed on
+    def __init__(self):
         self.raw = b""                    # bytes not yet parsed as HTTP framing
         self.head = None                  # None until the response head is read
         self.chunked = False
@@ -158,5 +158,8 @@ class BuildWatcher:
         text = str(doc.get("stream") or "").strip()
         if text:
             self.image_id = text if ID.match(text) else None   # the ID is the last stream line
-            if self.image_id and self.ok and self.on_id:
-                self.on_id(self.image_id)
+
+    @property
+    def candidate(self):
+        """An ID that would be the build's if the reply ended now (pipe_back holds the bytes back meanwhile)."""
+        return self.image_id if self.ok else None

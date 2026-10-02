@@ -76,17 +76,17 @@ thing the trial can find.
 
 ## d) Open the app in your desktop browser
 
-`ab preview` does not exist yet. It is in the design ("Preview and deploy") but not built. The dev stack has
-no published ports and sits on the session's internal network, so nothing on the host or your desktop can
-reach it directly. For this trial, check the app from the host instead:
+While the session runs, open one of its dev services on this host's loopback, then tunnel it to your desktop:
 
 ```bash
-podman ps --filter label=agentbox.session=ab-claude-abt-trial-1 --filter label=agentbox.role=dev --format '{{.Names}}'
-podman exec <one of those names> wget -qO- http://localhost:<port>/
+ab preview ab-claude-abt-trial-1 web:8000        # <compose service or container name>:<port inside it>
+# prints the port, e.g. http://127.0.0.1:41234/, and the ssh line for your desktop:
+#   ssh -N -L 41234:127.0.0.1:41234 vmuser@ubuntu-dev     then open http://127.0.0.1:41234/
 ```
 
-Or ask the agent to curl its own service. If you want the browser view, `ab preview` is the next thing to
-build.
+The preview listens on 127.0.0.1 only (never 0.0.0.0 or the LAN), reaches only that one service of the
+session, and is removed when the session ends (or `ab preview ab-claude-abt-trial-1 --stop`). From inside the
+sandbox, the agent reaches its services as `<service>.dns.podman`.
 
 ## e) End the session and read the scan
 

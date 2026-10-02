@@ -300,3 +300,73 @@ def report(state, grants, regex=None, skip=None):
             summary.append(f"{g}: {len(changed_exec)} executable(s) changed: {', '.join(changed_exec[:5])}")
         lines += section + [""]
     return summary, "\n".join(lines)
+
+
+# ---- the project's agent state (memory, instructions, settings), kept across sessions (Tim, 2 Oct) ----------
+STATE_NAMES = {"CLAUDE.md", "AGENTS.md", "MEMORY.md", "settings.json", "settings.local.json", "config.yml",
+               "config.yaml", "models.yml", "agentbox-lockdown.yml"}
+STATE_SKIP_DIRS = {"shell-snapshots", "file-history", "sessions", "session-env", "logs", "backups", "plugins",
+                   "cache", "statsig", "todos", "debug", "ide"}
+CREDENTIAL_HINTS = ("credential", "token", "secret", "auth", "apikey", "api_key", ".key", ".pem", "oauth")
+STATE_TEXT_MAX = 64 << 10
+DIFF_LINES = 300
+
+
+def _state_watched(rel):
+    base = os.path.basename(rel)
+    return (base in STATE_NAMES or "/memory/" in "/" + rel or (base.startswith("settings") and base.endswith(".json"))
+            or (rel.startswith("agent/") and base.endswith((".md", ".yml", ".yaml"))))
+
+
+def _credential_like(rel):
+    return any(h in rel.lower() for h in CREDENTIAL_HINTS)
+
+
+def state_snapshot(state_dir):
+    """{rel: {"hash", "text"?}} for the agent state's memory, instruction and settings files. Credential-like
+    files are recorded by name and hash only; transcripts and caches are not looked at."""
+    out = {}
+    if not state_dir or not os.path.isdir(state_dir):
+        return out
+    for dirpath, dirnames, filenames in os.walk(state_dir, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in STATE_SKIP_DIRS and not os.path.islink(os.path.join(dirpath, d))]
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            rel = os.path.relpath(p, state_dir)
+            if not _state_watched(rel):
+                continue
+            try:
+                entry = {"hash": _hash_file(p)}
+                if not _credential_like(rel) and not os.path.islink(p) and os.path.getsize(p) <= STATE_TEXT_MAX:
+                    with open(p, "rb") as f:
+                        entry["text"] = f.read().decode("utf-8", errors="replace")
+            except OSError as e:
+                entry = {"hash": f"unreadable: {e.strerror}"}
+            out[rel] = entry
+    return out
+
+
+def state_report(before, state_dir):
+    """(summary lines, report lines): memory/instruction/settings files of the agent state that are new,
+    changed or removed since the start, with a unified diff of each (credential-like files: names only)."""
+    import difflib
+    now = state_snapshot(state_dir)
+    changed = sorted(r for r in set(before) | set(now) if (before.get(r) or {}).get("hash") != (now.get(r) or {}).get("hash"))
+    if not changed:
+        return [], []
+    lines = [f"## agent state in {state_dir} (kept for this project across sessions; `ab project reset-state` "
+             "wipes it)", "memory, instruction and settings files changed this session:"]
+    for r in changed:
+        old, new = before.get(r), now.get(r)
+        what = "new" if old is None else "removed" if new is None else "changed"
+        lines.append(f"  {r} ({what})")
+        if _credential_like(r):
+            continue
+        a = ((old or {}).get("text") or "").splitlines()
+        b = ((new or {}).get("text") or "").splitlines()
+        diff = list(difflib.unified_diff(a, b, f"a/{r}", f"b/{r}", lineterm="", n=2))
+        lines += [f"    {l}" for l in diff[:DIFF_LINES]]
+        if len(diff) > DIFF_LINES:
+            lines.append(f"    ... {len(diff) - DIFF_LINES} more diff lines")
+    names = ", ".join(changed[:6]) + (f" and {len(changed) - 6} more" if len(changed) > 6 else "")
+    return [f"agent memory/instructions/settings changed: {names} (diff in the full report)"], lines + [""]

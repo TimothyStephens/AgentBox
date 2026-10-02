@@ -29,7 +29,6 @@ WORKDIR /srv
     "compose.yml": f"""services:
   web:
     build: ./web
-    image: localhost/{COMPOSE}-web:latest
     command: ["python", "-m", "http.server", "8000", "--directory", "/app"]
     depends_on:
       - db
@@ -64,6 +63,10 @@ grep -x PIP_INSTALL_OK /tmp/build.out | head -1
 step UP podman-compose -p $c up -d
 for i in $(seq 1 30); do curl -s --noproxy '*' -m 3 http://web:8000/index.html | grep -q compose-web-ok && break; sleep 2; done
 echo "WEB_BY_NAME=$(curl -s --noproxy '*' -m 3 http://web:8000/index.html)"
+# trial 2: the agent's own HTTP clients, with the proxy variables as they are, reach services as <name>.dns.podman
+echo "DNS_PODMAN=$(getent hosts web.dns.podman | awk '{{print $1}}')"
+echo "CURL_DNS_PODMAN=$(curl -s -m 5 http://web.dns.podman:8000/index.html)"
+echo "PY_DNS_PODMAN=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://web.dns.podman:8000/index.html', timeout=5).read().decode().strip())" 2>&1 | tail -1)"
 step WEB_TO_DB podman exec ${{c}}_web_1 python -c "import urllib.request,sys; sys.exit(0 if b'db-ok' in urllib.request.urlopen('http://db:8080/', timeout=5).read() else 1)"
 podman exec ${{c}}_web_1 sh -c 'echo "ENV_UPPER=$NO_PROXY"; echo "ENV_LOWER=$no_proxy"'
 step DATA_WRITE podman exec ${{c}}_web_1 sh -c 'echo kept > /data/marker'
@@ -153,6 +156,14 @@ class ComposeWorkflow(unittest.TestCase):
         self.assertEqual(failed, [], "compose workflow steps that failed")
         self.assertIn("PIP_INSTALL_OK", out, "pip install in a build, through the proxy")
         self.assertIn("WEB_BY_NAME=compose-web-ok", out, "the built image runs, serving the ./app bind")
+        # trial 2: compose runs the short name of the image it built (localhost/<project>_web); no image: line
+        self.assertRegex(out, r"DNS_PODMAN=\d+\.\d+\.\d+\.\d+\n", "podman's DNS answers <name>.dns.podman")
+        self.assertIn("CURL_DNS_PODMAN=compose-web-ok", out, "curl reaches web.dns.podman directly")
+        self.assertIn("PY_DNS_PODMAN=compose-web-ok", out, "Python's urllib reaches web.dns.podman directly")
+        for fn in os.listdir(os.path.join(ENV.data, "logs")):
+            if fn.endswith("-proxy.log"):
+                self.assertNotIn("dns.podman", open(os.path.join(ENV.data, "logs", fn), errors="replace").read(),
+                                 "requests to <name>.dns.podman never reach the proxy")
         self.assertRegex(out, r"ENV_UPPER=db,web,localhost\n")
         self.assertRegex(out, r"ENV_LOWER=db,web,localhost\n")
         self.assertRegex(out, r"PS_AFTER=\s*\n", "compose down removed the containers")

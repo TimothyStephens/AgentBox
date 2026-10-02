@@ -45,7 +45,9 @@ req.setTimeout(30000, () => { console.log("timeout"); req.destroy(); });
 const img = "docker.io/library/busybox:1.36";
 const bodies = {priv: {image: img, privileged: true}, port: {image: img, portmappings: [{host_port: 18080, container_port: 80}]},
   bind: {image: img, mounts: [{type: "bind", source: "/", destination: "/h"}]}, hostnet: {image: img, netns: {nsmode: "host"}}};
-if (method !== "GET" && method !== "HEAD") req.write(JSON.stringify(bodies[mode] || {Cmd: ["true"], image: img}));
+// A body only where the API takes one: node sends a DELETE body without framing, which the gate refuses as a
+// pipelined request before it decides anything.
+if (method === "POST" || method === "PUT") req.write(JSON.stringify(bodies[mode] || {Cmd: ["true"], image: img}));
 req.end();'
 
 # direct HOST PORT -> connected | refused | unreachable | timeout | noresolve | error:<msg>

@@ -578,7 +578,8 @@ class Fields(unittest.TestCase):
                 "volume": g.volume_violations, "network": g.net_violations}[kind](doc)
 
     def assert_refused(self, st, body, what):
-        self.assertEqual(st, 403, f"{what}: {st} {body[:300]}")
+        # 403, or 404 for an object that is not this session's (review of 785ee15, L1: it must look missing)
+        self.assertIn(st, (403, 404), f"{what}: {st} {body[:300]}")
         self.assertIn("agentbox gate", body, f"{what}: refused by the gate itself")
 
     def assert_nothing_left(self, name):

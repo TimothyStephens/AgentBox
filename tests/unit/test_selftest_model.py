@@ -55,7 +55,7 @@ class EgressDiagnostics(unittest.TestCase):
         self.assertIn("20013ms", text)
         r = by["proxied CONNECT pypi.org:443 refused (locked)"]
         self.assertIn("dns 151.101.0.223", r.detail)
-        self.assertIn("1 proxy log line(s) for pypi.org", r.detail)
+        self.assertIn("proxy log for pypi.org: 1759400000.123 20001 10.89.3.5 TCP_TUNNEL/000", r.detail)
 
     def test_targets(self):
         b = build(True)

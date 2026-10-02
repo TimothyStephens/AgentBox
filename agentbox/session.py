@@ -35,6 +35,7 @@ class Project:
     history_secrets_accepted: list = field(default_factory=list)
     compose_project: str = ""      # the live stack's compose project (default: the project name)
     observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
+    preset: str = ""
     dev_images: list = field(default_factory=list)   # extra image name patterns the dev tier may run/build from
     compose_project_explicit: bool = False
 
@@ -79,6 +80,7 @@ def load_project(settings, name, *, with_secrets=False):
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
                    compose_project=check_compose_project(name, p.get("compose_project", name)),
                    observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)),
+                   preset=str(p.get("preset") or ""),
                    dev_images=check_dev_images(name, p.get("dev_images", [])),
                    compose_project_explicit="compose_project" in p)
 
@@ -224,7 +226,10 @@ def dev_notes(podman_live):
         "stack: `podman`, `podman build` and `podman-compose` work, with these rules, enforced outside the "
         "sandbox:",
         "  - every container joins this session's network (compose service names still resolve); publishing "
-        "ports on the host is refused (reach services by name, e.g. `curl --noproxy '*' http://web:8080`);",
+        "ports on the host is refused. From this sandbox, reach a service as `<service>.dns.podman` (e.g. "
+        "`http://web.dns.podman:8080`): that name goes direct with the proxy variables as they are, in curl, "
+        "Python (requests, urllib) and most tools. A bare name like `web` would go to the proxy, which refuses "
+        "it;",
         "  - containers get the proxy variables, a 1 GB / 1024-process limit unless the compose file sets its "
         "own, and no restart policy; binds only inside the project's own directories; no privileged mode, "
         "added capabilities, devices or host namespaces;",
@@ -336,6 +341,10 @@ class Session:
 
     @property
     def state_dir(self):
+        """The project's agent state (memory, settings, transcripts), kept across sessions. Lockdown sessions
+        start from empty state every time: theirs is per session and removed at teardown (Tim, 2 Oct)."""
+        if self.project.preset == "lockdown" and self.name:
+            return os.path.join(ephemeral_state(self.settings, self.name), self.adapter.name)
         return self.settings.state_dir(self.project.name, self.adapter.name)
 
     @property
@@ -387,7 +396,6 @@ class Session:
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
-        self._write_scan_state()
         self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
@@ -396,6 +404,7 @@ class Session:
         self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
+        self._write_scan_state()             # after the agent state is seeded: its changes are the session's
 
     def _check_setup(self):
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
@@ -449,7 +458,8 @@ class Session:
         p = self.project
         grants = [p.root] + list(p.data_rw)
         skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
-        doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip)}
+        doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
+               "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)}}
         path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -957,6 +967,10 @@ def _scan(settings, session, started, warn):
         return
     try:
         summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"))
+        st = doc.get("agent_state") or {}
+        if st.get("dir"):
+            s2, lines = scan.state_report(st.get("files") or {}, st["dir"])
+            summary, text = summary + s2, text + "\n" + "\n".join(lines)
     except Exception as e:           # the scan informs; it must never stop the teardown (review step 5C, H3)
         warn(f"agentbox: end-of-session scan failed: {e!r}")
         return
@@ -1008,6 +1022,7 @@ def teardown(settings, podman, session, warn=None):
                 pass
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
         _scan(settings, session, started, warn)
+        shutil.rmtree(ephemeral_state(settings, session), ignore_errors=True)   # a lockdown session's state
         run_dir = settings.session_run_dir(session)
         if os.path.isdir(run_dir):
             for fn in os.listdir(run_dir):
@@ -1016,6 +1031,24 @@ def teardown(settings, podman, session, warn=None):
                 except IsADirectoryError:
                     shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
             os.rmdir(run_dir)
+
+
+def ephemeral_state(settings, session):
+    """A lockdown session's agent state: empty at start, removed at teardown."""
+    return os.path.join(settings.data_dir, "ephemeral", session)
+
+
+def reset_state(settings, project, now=None):
+    """Move a project's agent state (every agent's) into the backups dir. Returns (moved from, moved to) or
+    None when there is none."""
+    src = os.path.join(settings.data_dir, project)
+    if not os.path.isdir(src) or not os.listdir(src):
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now or time.time()))
+    dst = os.path.join(settings.backups_dir, project, f"agent-state-{stamp}")
+    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
+    os.rename(src, dst)
+    return src, dst
 
 
 def service_tmp(settings, session):
