@@ -170,8 +170,8 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - A grant may not contain or overlap another registered project.
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
 - `.env` files are masked (a read-only empty file bound over them) unless `--with-secrets` (see Project secrets for the full mask list).
-- `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory inside a read-write grant: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched.
-- Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
+- `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory that exists inside a read-write grant when the session starts: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched. A repo the agent creates during a session has writable hooks and config: the end-of-session report names it (NEW GIT REPO) and never runs git in it; check its `.git/config` and hooks before you use git there.
+- Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
 - Read-write grants are rsynced to `~/.local/share/agentbox/backups/<project>/<timestamp>-<session>/` before the session starts, as `--link-dest` snapshots (unchanged files shared). `.git` is kept; `.venv`, `venv`, `node_modules`, `__pycache__`, build caches and the project's `mask_skip` folders are not. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory.
 
@@ -265,23 +265,28 @@ One host-side gate and one sockguard per session. The sandbox gets only the gate
 | exec | observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
-- Never granted: touching the live `<project>` stack beyond observe/exec, other projects' containers, volume deletion, privileged mode, host networking or namespaces, host port publishing.
+- Never granted: touching the live `<project>` stack beyond observe/exec (including deleting its volumes, or mounting any volume the session did not create), other projects' containers, privileged mode, host networking or namespaces, host port publishing. The dev tier may delete its own volumes.
 - Extra capabilities or devices a compose file needs (e.g. `NET_ADMIN`, `/dev/net/tun`) are opt-in per project.
-- Image pulls happen on the host, outside the proxy; sockguard's registry allowlist (`docker.io`, `ghcr.io`, `quay.io` by default) is the control there.
+- Image pulls happen on the host, outside the proxy; the gate's and sockguard's registry allowlist (`docker.io`, `ghcr.io`, `lscr.io`, `quay.io` by default) is the control there.
 - Memory, CPU and PID limits apply to every container the agent starts.
 
 ### Host-side gate
 
 Sockguard can refuse dangerous settings, but it cannot force a network, inspect port bindings, or scope exec against a client that drives the API directly (spike 2). A small gate in front of it rewrites and checks every request from the agent:
 
-- every container the agent creates goes onto `<project>_app`; any other network is rejected;
+- every container the agent creates goes onto the session network `<session>-int` (aliases kept); whatever network the client asks for is replaced, and host, `ns:`/path, `container:`, pasta and slirp4netns modes are refused. Pods with an infra container are refused (the dev sockguard cannot resolve pods, so no container could join one); podman-compose's pods have none, so membership is dropped and each container is pinned like any other. Docker-API container creates are refused too: sockguard refuses the cgroup parent that keeps them in the slice;
 - builds run on that network by joining a per-session holder container's network namespace: the gate sets the build's network entry in `nsoptions` to `/proc/<pid>/ns/net`, drops every other namespace entry except the client's `user` one, re-checks the holder's PID on every build (PIDs are reused), and passes the proxy in as build arguments;
 - any host port publishing is rejected;
-- image pulls (`images/pull`, and pulls a create triggers) are allowed only from listed registries: `docker.io`, `ghcr.io`, `lscr.io`, `quay.io`; builds never pull, so `FROM` images must already exist;
+- image pulls (`images/pull`; creates never pull, and an image volume must name an image already present) are allowed only from listed registries: `docker.io`, `ghcr.io`, `lscr.io`, `quay.io`; builds never pull, so `FROM` images must already exist;
 - every created container gets `--cgroup-parent=agentbox.slice` (a client-supplied cgroup parent is refused) and, unless the compose file sets its own, `--memory=1g --pids-limit=1024`, plus `--oom-score-adj=1000`;
 - builds run inside the podman service, not under `ab`, so the gate sets the build API's `cgroupparent` to a child of the slice, as a full cgroupfs path: `/user.slice/user-<uid>.slice/user@<uid>.service/agentbox.slice/<session>-build`. The service treats the value as a path, not a systemd unit: `agentbox.slice` alone fails (`Permission denied` on `/sys/fs/cgroup/agentbox.slice`); the slice's own path fails while the slice is active (cgroup v2 allows no processes in an inner node) and, while it is idle, is created by the runtime with no cap. A child path works while the slice is active, which it is whenever the session's holder runs, and the gate checks that before every build. The gate also sets the build's own `memory` limit from the project's `build_memory` (default `2g`, at most the slice's cap), refuses a client-supplied `cgroupparent`, and refuses the build if the slice is not active (only possible before any session exists);
-- exec is scoped: before creating an exec session the gate inspects the target container and requires the project's compose label or the session's owner label, and it only starts, resizes or removes exec sessions it created;
-- joining a pod, or another container's namespaces, is allowed only for pods and containers the session owns;
+- exec is scoped: before creating an exec session the gate requires the target container to carry `agentbox.dev-owner=<session>` and `agentbox.role=dev` and to have passed the gate's post-create check, and it only starts, resizes or removes exec sessions it created on such a container;
+- every create's top-level fields must be ones the gate knows; host paths in any field (binds outside the grants, symlinks out, relative sources, rootfs, overlay volumes, init path, conmon PID file, log path, health log directory, hosts file, runtime) and privilege (privileged, capabilities, devices, security options, host namespaces, sysctls outside `net.*`, runtime annotations, the service's environment, podman secrets, dependency containers, cgroups off, OOM killer off, unlimited memory or pids) are refused. Named volumes must be the session's own (a new name is created labelled first); `volumes_from` is refused;
+- after every create the gate inspects what podman stored and judges that; on a violation, or a reply it cannot read, it removes the object and refuses. Only objects that passed are recorded (by ID) as the session's, and every request naming a container, pod, volume or network needs both the record and the dev labels, so nothing can be used while its check runs;
+- start, restart and init re-check the container from what podman stored, re-resolving bind sources (podman resolves them at start, so a directory swapped for a symlink after create would otherwise be mounted), and after the start the gate reads `/proc/<pid>/mountinfo` and removes a container whose binds came from outside the grants;
+- build tags must be `localhost/` names, never `localhost/agentbox-*`, and never a name an image outside this project's dev builds already has; build query keys must be known (cache export, local outputs, added capabilities, volumes, remote contexts and extra contexts refused), and build secrets come only from the context. The session's podman service has its own `TMPDIR`, so `RUN --mount=type=cache` is never shared with the host's builds;
+- push, manifests, registry login, commit, export, archive, checkpoint/restore, update, mount, kube play/generate, image tag/untag/remove/load/import, network connect/disconnect, prune, secrets, quadlets, artifacts and system operations are refused by the gate itself, as well as by sockguard; the request path must be canonical, and pipelined requests are refused;
+- joining a pod is allowed only for pods the session owns; joining another container's namespaces is refused;
 - proxy variables are injected into every container, so app containers reach the internet only through the proxy.
 
 Without the gate, a container created with no network, or a `podman build`, runs on podman's default network with unfiltered access to your LAN.
@@ -396,7 +401,7 @@ A power loss or reboot ends every running session, but everything written to the
 | Direct `10.0.0.2:8080`, `10.0.0.103:8088`, `10.0.0.103:8003`, `example.com` | Unreachable |
 | Connect to the real podman socket path | Fail |
 | `podman run -v $HOME:/h`, `podman stop allowed other` | Denied |
-| Create a container with no network, or on another network | Lands on `<project>_app`, or denied |
+| Create a container with no network, or on another network | Lands on `<session>-int`, or denied |
 | Create a container with a published port | Denied |
 | Build with `RUN curl 10.0.0.103:8088` | Build step fails |
 | `podman logs`/`exec` on another project's container | Denied (checked against a canary container the selftest creates in a project of its own) |
@@ -592,7 +597,7 @@ ab deploy filelab --lan 10.0.0.103:8095
 ```
 
 - `ab deploy` validates the compose file, checks the real .env has every variable name in .env.dev, shows the diff since the last deploy, asks for confirmation, and starts the live `filelab` stack with a restart policy.
-- Uploads land in the live stack's own volume, which no agent session is ever granted.
+- Uploads land in the live stack's own volume, which no agent session is ever granted (the gate refuses any named volume the session did not create).
 - Add a login, or basic auth through caddy, before deploying: an unauthenticated upload page is open to every device on the LAN.
 
 **7. Later changes**
@@ -640,7 +645,7 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
 - [x] Gate strips restart policies from agent-created containers (step 5).
-- [x] Gate: joining another container's namespaces is refused, and a pod only if it is the session's own (step 5).
+- [x] Gate: joining another container's namespaces is refused, and a pod only if it is the session's own. Pods with an infra container are refused in the dev tier, because sockguard cannot resolve pods (step 5; real podman: `test_step5_fields.test_pod_infra`, `test_pod_member`, 1 Oct).
 - [x] End-of-session scan (step 5, `agentbox/scan.py`): secrets in the session's commits by the host hook's own regex (its `scanner:allow` marker ignored), plus changed files that run later on the host (`Makefile`, `package.json`, `pyproject.toml`/`setup.py`/`setup.cfg`, `.pre-commit-config.yaml`, `.vscode/tasks.json`, `.envrc`, git config) and files that became executable. It informs, never blocks.
 - [ ] Build memory cap: confirm with a build that allocates past a small per-build `memory` limit that the gate-set limit and the slice cap both hold (spike, 29 Sep: build steps land in `agentbox.slice/<child>` as intended; the cap itself was not load-tested, the host had 2 GB free).
 

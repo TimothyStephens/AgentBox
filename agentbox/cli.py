@@ -149,7 +149,7 @@ def cmd_kill(s, a):
     known = session.sessions(s, podman)
     if a.session not in known:
         raise AgentboxError(f"no session named {a.session}")
-    session.teardown(s, podman, a.session)
+    session.teardown(s, podman, a.session, warn=warn)
     print(f"killed {a.session}")
 
 

@@ -188,7 +188,7 @@ def wait_socket(path, timeout, what, alive=lambda: True):
     raise AgentboxError(f"{what} socket {path} not ready after {timeout}s")
 
 
-def start_service(podman_bin, service_dir, timeout, *, slice_name="", unit=""):
+def start_service(podman_bin, service_dir, timeout, *, slice_name="", unit="", tmpdir=None):
     """Start `podman system service` on <service_dir>/podman.sock. Returns (socket path, process); the PID is
     kept in <service_dir>/service.pid for teardown and gc. The service dir is <run>/services/<session>, outside
     the session's run dir, so no launcher mount rule can reach the raw socket (review 2026-10-01 #6).
@@ -205,7 +205,13 @@ def start_service(podman_bin, service_dir, timeout, *, slice_name="", unit=""):
     if slice_name:
         argv = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={slice_name}", f"--unit={unit}",
                 "--"] + argv
-    proc = subprocess.Popen(argv,
+    env = None
+    if tmpdir:
+        # buildah keeps RUN --mount=type=cache directories under TMPDIR: a per-session one means no cache is
+        # shared with the host's or another session's builds (review 2026-10-01 step 5, RUN mounts)
+        os.makedirs(tmpdir, mode=0o700, exist_ok=True)
+        env = dict(os.environ, TMPDIR=tmpdir)
+    proc = subprocess.Popen(argv, env=env,
                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     log.close()
     with open(os.path.join(d, "service.pid"), "w") as f:

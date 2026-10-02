@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
 from . import keys as keysmod
-from . import scan, sockguard
+from . import buildcap, scan, sockguard
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -222,8 +222,11 @@ def dev_notes(podman_live):
         "`wget`: use `wget -Y off`);",
         "  - builds run on this session's network through the proxy and never pull: pull `FROM` images first "
         "(`podman pull docker.io/library/python:3.12`); pulls only from docker.io, ghcr.io, lscr.io, quay.io;",
-        "  - you can only see, exec into, stop or remove what you created in this session; everything is removed "
-        "when the session ends.",
+        "  - you can only see, exec into, stop or remove what you created in this session; its containers, pods, "
+        "volumes (named and anonymous) and networks are removed when the session ends; images you build are kept "
+        "(tag them with plain local names; agentbox-* and names of images outside this project are refused);",
+        "  - named volumes must be ones you create in this session (a new name is created for you); bind mounts "
+        "only inside the project, by absolute path;",
     ]
     if podman_live:
         lines.append(f"- The live stack (`{podman_live}`) is read-only on a second socket: "
@@ -368,7 +371,7 @@ class Session:
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
-        self.scan_state = scan.snapshot([p.root] + list(p.data_rw))
+        self._write_scan_state()
         self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
@@ -422,10 +425,19 @@ class Session:
                     "should be observed anyway, set compose_project explicitly (`--compose-project`)")
 
     def log_path(self, kind):
-        """Where a sidecar's log is kept after the session. Session names are reused once a session ends, so
-        the start time is part of the name: two sessions never share a log file."""
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started))
-        return os.path.join(self.settings.data_dir, "logs", f"{self.name}-{stamp}-{kind}.log")
+        return log_path(self.settings, self.name, self.started, kind)
+
+    def _write_scan_state(self):
+        """The end-of-session scan's starting point, kept in the run dir so every teardown (the launcher's,
+        `ab kill`, `ab gc`) can report (review 2026-10-01 step 5C, M2)."""
+        p = self.project
+        grants = [p.root] + list(p.data_rw)
+        skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
+        doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip)}
+        path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f)
 
     def _write_meta(self):
         self.started = time.time()
@@ -588,34 +600,10 @@ class Session:
         from .selftest import runner
         runner.network_none_cases(builder)
 
-    def end_of_session_scan(self):
-        """Once per session: report secrets in its commits and changed files that run later (scan.py)."""
-        state, self.scan_state = getattr(self, "scan_state", None), None
-        if state is None:
-            return
-        p = self.project
-        try:
-            summary, text = scan.report(state, [p.root] + list(p.data_rw))
-        except (OSError, subprocess.SubprocessError) as e:
-            self.warn(f"agentbox: end-of-session scan failed: {e}")
-            return
-        path = self.log_path("scan")
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
-        except FileExistsError:
-            pass
-        if summary:
-            self.warn("agentbox: end-of-session scan (review before you run or push anything):\n"
-                      + "\n".join(f"  - {line}" for line in summary) + f"\n  full report: {path}")
-
     def teardown(self):
         if not self.name:
             return
-        self.end_of_session_scan()
-        teardown(self.settings, self.podman, self.name)
+        teardown(self.settings, self.podman, self.name, warn=self.warn)
 
 
 SQUID_READY = "Accepting HTTP Socket connections"
@@ -802,7 +790,8 @@ class NetSession(Session):
             "labels": labels_for(s, self.project.name, self.name, "dev"),
             "proxy_env": proxy_env, "bind_roots": self.bind_roots, "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
-            "memory": 1 << 30, "pids": 1024, "build_memory": int(self.project.build_memory),
+            "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,
+            "build_memory": int(self.project.build_memory),
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
             "log": os.path.join(svc, "gate.log"),
         }
@@ -812,7 +801,7 @@ class NetSession(Session):
         stamp = int(self.started)
         service, self._service_proc = sockguard.start_service(
             s.podman, s.service_dir(self.name), float(s.ready_timeout), slice_name=s.cgroup_parent,
-            unit=f"{self.name}-podman-{stamp}")
+            unit=f"{self.name}-podman-{stamp}", tmpdir=service_tmp(s, self.name))
         if self.podman_live:
             self._start_sockguard(service, name=self.sockguard_name, socket_path=self.sockguard_socket,
                                   text=self.sockguard_config(), role="sockguard")
@@ -864,32 +853,6 @@ class NetSession(Session):
     def teardown(self):
         if not self.name:
             return
-        # Keep the proxy's access log (destinations and verdicts only) and sockguard's audit log (API calls
-        # and decisions) for review, then tear down.
-        gate_log = os.path.join(self.settings.service_dir(self.name), "gate.log")
-        if os.path.isfile(gate_log):
-            try:
-                path = self.log_path("gate")
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                with open(gate_log, "rb") as src, os.fdopen(fd, "wb") as dst:
-                    dst.write(src.read())
-            except FileExistsError:
-                pass
-        for name, suffix in ((self.proxy_name, "proxy"), (self.sockguard_name, "sockguard"),
-                             (self.sockguard_dev_name, "sockguard-dev")):
-            try:
-                logs = self.podman.run(["logs", name], check=False)
-                if logs.returncode == 0 and logs.stdout:
-                    path = self.log_path(suffix)
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                    with os.fdopen(fd, "w") as f:
-                        f.write(logs.stdout)
-            except FileExistsError:
-                pass                 # a second teardown of the same session: its log is already kept
-            except (AgentboxError, OSError) as e:
-                self.warn(f"agentbox: could not keep the {suffix} log: {e}")
         super().teardown()
         for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None)):
             if proc:
@@ -900,28 +863,122 @@ def make_session(settings, agent, project, **kw):
     return NetSession(settings, agent, project, **kw)
 
 
-def teardown(settings, podman, session):
-    sel = {"agentbox.session": session, **settings.labels}
-    sockguard.stop_service(settings.service_dir(session))
+SCAN_STATE = "scan-state.json"
+SIDECAR_LOGS = (("proxy", "proxy"), ("sockguard", "sockguard"), ("sockguard-dev", "sockguard-dev"))
+
+
+def log_path(settings, session, started, kind):
+    """Where a sidecar's log is kept after the session. Session names are reused once a session ends, so
+    the start time is part of the name: two sessions never share a log file."""
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(started))
+    return os.path.join(settings.data_dir, "logs", f"{session}-{stamp}-{kind}.log")
+
+
+def _keep(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return False                 # a second teardown of the same session: its log is already kept
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return True
+
+
+def _keep_logs(settings, podman, session, started, warn):
+    """The gate's log (API calls and verdicts), the proxy's access log (destinations and verdicts only) and
+    sockguard's audit logs, kept for review."""
+    gate_log = os.path.join(settings.service_dir(session), "gate.log")
+    if os.path.isfile(gate_log):
+        with open(gate_log, "rb") as src:
+            _keep(log_path(settings, session, started, "gate"), src.read())
+    for suffix, kind in SIDECAR_LOGS:
+        try:
+            logs = podman.run(["logs", f"{session}-{suffix}"], check=False)
+            if logs.returncode == 0 and logs.stdout:
+                _keep(log_path(settings, session, started, kind), logs.stdout.encode())
+        except (AgentboxError, OSError) as e:
+            warn(f"agentbox: could not keep the {kind} log: {e}")
+
+
+def _scan(settings, session, started, warn):
+    """The end-of-session scan, from the state recorded at start (scan.py). Never raises."""
+    path = os.path.join(settings.session_run_dir(session), SCAN_STATE)
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        warn(f"agentbox: end-of-session scan skipped: its start state is unreadable ({e})")
+        return
+    try:
+        summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"))
+    except Exception as e:           # the scan informs; it must never stop the teardown (review step 5C, H3)
+        warn(f"agentbox: end-of-session scan failed: {e!r}")
+        return
+    out = log_path(settings, session, started, "scan")
+    _keep(out, text.encode())
+    if summary:
+        warn("agentbox: end-of-session scan (review before you run or push anything):\n"
+             + "\n".join(f"  - {line}" for line in summary) + f"\n  full report: {out}")
+
+
+def _session_started(settings, session):
+    try:
+        with open(os.path.join(settings.session_run_dir(session), "session.json")) as f:
+            return float(json.load(f).get("started") or time.time())
+    except (OSError, ValueError, TypeError, AttributeError):
+        return time.time()
+
+
+def teardown(settings, podman, session, warn=None):
+    """Remove everything of a session: the launcher's own teardown, `ab kill` and `ab gc` all come here, so
+    each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
+    created), the scan runs last, and no failure of either skips the removal."""
     import shutil
-    shutil.rmtree(settings.service_dir(session), ignore_errors=True)
-    for c in podman.ids("container", sel):
-        podman.run(["rm", "-f", "-t", "5", c], check=False)
-    for pod in podman.ids("pod", sel):
-        podman.run(["pod", "rm", "-f", pod], check=False)
-    for v in podman.ids("volume", sel):
-        podman.run(["volume", "rm", "-f", v], check=False)
-    for n in podman.ids("network", sel):
-        podman.run(["network", "rm", "-f", n], check=False)
-    run_dir = settings.session_run_dir(session)
-    if os.path.isdir(run_dir):
-        for fn in os.listdir(run_dir):
+    warn = warn or (lambda m: print(m, file=sys.stderr))
+    sel = {"agentbox.session": session, **settings.labels}
+    started = _session_started(settings, session)
+    try:
+        sockguard.stop_service(settings.service_dir(session))
+    finally:
+        try:
+            _keep_logs(settings, podman, session, started, warn)
+        except Exception as e:
+            warn(f"agentbox: could not keep the session's logs: {e!r}")
+        shutil.rmtree(settings.service_dir(session), ignore_errors=True)
+        for c in podman.ids("container", sel):
+            podman.run(["rm", "-f", "-v", "-t", "5", c], check=False)     # -v: its anonymous volumes too
+        for pod in podman.ids("pod", sel):
+            podman.run(["pod", "rm", "-f", pod], check=False)
+        for v in podman.ids("volume", sel):
+            podman.run(["volume", "rm", "-f", v], check=False)
+        for n in podman.ids("network", sel):
+            podman.run(["network", "rm", "-f", n], check=False)
+        if settings.cgroup_parent:
+            # the per-session build cgroup the gate names; empty once the builds are gone
+            build_cg = "/sys/fs/cgroup" + buildcap.slice_cgroup_path(settings.cgroup_parent) + f"/{session}-build"
             try:
-                os.unlink(os.path.join(run_dir, fn))
-            except IsADirectoryError:
-                import shutil
-                shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
-        os.rmdir(run_dir)
+                os.rmdir(build_cg)
+            except OSError:
+                pass
+        shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
+        _scan(settings, session, started, warn)
+        run_dir = settings.session_run_dir(session)
+        if os.path.isdir(run_dir):
+            for fn in os.listdir(run_dir):
+                try:
+                    os.unlink(os.path.join(run_dir, fn))
+                except IsADirectoryError:
+                    shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
+            os.rmdir(run_dir)
+
+
+def service_tmp(settings, session):
+    """The session's podman service's TMPDIR: buildah's RUN --mount=type=cache directories live under it, so a
+    session never shares a build cache with the host's or another session's builds."""
+    return os.path.join(settings.data_dir, "tmp", session)
 
 
 def _start_time(pid):
@@ -1004,6 +1061,13 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
     return removed
 
 
+def _young(settings, session, seconds=60):
+    try:
+        return time.time() - os.stat(settings.session_run_dir(session)).st_mtime < seconds
+    except OSError:
+        return False
+
+
 def gc(settings, podman, warn=lambda m: None):
     """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
     alone even if its metadata is missing or unreadable (ab kill removes it explicitly); an orphaned proxy
@@ -1016,8 +1080,10 @@ def gc(settings, podman, warn=lambda m: None):
             warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab kill {s}`)")
             kept.add(s)
             continue
+        if not info["alive"] and info["meta"] is None and _young(settings, s):
+            continue                     # being started right now: session.json is not written yet
         if not info["alive"]:
-            teardown(settings, podman, s)
+            teardown(settings, podman, s, warn=warn)
             removed.append(s)
     # A podman service whose session is dead, even if its run dir and containers are already gone.
     live = {s for s, info in sessions(settings, podman).items() if info["alive"]} | kept

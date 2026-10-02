@@ -38,10 +38,12 @@ CODE_FILES = ("agent/.mcp.json", "agent/mcp.json", "agent/settings.json")
 SECRET_HEADER = re.compile(r"auth|key|token|secret|cookie|session", re.I)
 LOCAL_PROVIDER = "llama-cpp"
 LOCKDOWN_OVERLAY = f"{C_OMP}/agentbox-lockdown.yml"
-# Code a repo can ship for OMP (or that OMP reads from Claude's layout). In lockdown each one that exists is
-# covered, empty and read-only: --no-extensions does not stop custom tools (itest, 1 Oct).
-REPO_CODE = (".omp/extensions", ".omp/hooks", ".omp/tools", ".omp/mcp.json", ".omp/.mcp.json",
-             ".claude/extensions", ".claude/hooks", ".claude/tools", ".mcp.json")
+# Code and config a repo can ship for OMP (or that OMP reads from Claude's layout). In lockdown each one that
+# exists is covered, empty and read-only: --no-extensions does not stop custom tools (itest, 1 Oct). The
+# project's .omp is covered whole rather than by a hand-picked list of its loaders (review step 5C, L1); Claude's
+# settings files are where its hooks are declared.
+REPO_CODE = (".omp", ".claude/extensions", ".claude/hooks", ".claude/tools", ".claude/settings.json",
+             ".claude/settings.local.json", ".mcp.json")
 LOCKDOWN_SETTINGS = "mcp:\n  enableProjectConfig: false\n"
 PATH = f"{C_OMP}/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 

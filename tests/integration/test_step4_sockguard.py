@@ -38,6 +38,13 @@ OBSERVE = ("podman --remote ps -a --format '{{.Names}}'; echo PS_RC=$?; "
            "curl -s --unix-socket /run/agentbox/podman.sock -o /dev/null -w 'STATS=%{http_code}\\n' "
            "'http://d/v5.0.0/containers/WEB/stats?stream=false'; "
            "podman --remote pod ps >/dev/null 2>&1; echo PODPS_RC=$?; "
+           # copying files out of (or into) the live stack: refused (review step 5B, G5)
+           "curl -s --unix-socket /run/agentbox/podman.sock -o /dev/null -w 'ARCHIVE_GET=%{http_code}\\n' "
+           "'http://d/v5.0.0/containers/WEB/archive?path=/etc/hostname'; "
+           "curl -s --unix-socket /run/agentbox/podman.sock -X PUT -o /dev/null -w 'ARCHIVE_PUT=%{http_code}\\n' "
+           "-H 'Content-Type: application/x-tar' --data-binary '' 'http://d/v5.0.0/containers/WEB/archive?path=/tmp'; "
+           "curl -s --unix-socket /run/agentbox/podman.sock -o /dev/null -w 'LIBPOD_INSPECT=%{http_code}\\n' "
+           "'http://d/v5.0.0/libpod/containers/WEB/json'; "
            "podman --remote version --format '{{.Server.Version}}'; echo VERSION_RC=$?")
 
 
@@ -150,6 +157,8 @@ class Step4(unittest.TestCase):
         listed = out.partition("PS_RC")[0].split()
         self.assertEqual(sorted(listed), names(LIVE), "only the live stack is listed")
         self.assertIn("INSPECT env=0", out, "Docker-API inspect works, with the environment redacted")
+        for probe in ("ARCHIVE_GET", "ARCHIVE_PUT", "LIBPOD_INSPECT"):
+            self.assertIn(f"{probe}=403", out, f"{probe}: refused under observe (review step 5B, G5)")
         denied = [l for l in sockguard_log(sess).splitlines() if '"decision":"deny"' in l]
         print("denied under enforce:", len(denied))
 

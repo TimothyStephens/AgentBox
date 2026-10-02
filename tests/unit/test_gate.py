@@ -14,13 +14,22 @@ CFG = {"subnets": ["10.89.3.0/24"], "session": "abt-s-1", "network": "abt-s-1-in
 
 
 class FakeGate(gate.Gate):
+    """Objects named in `labels` exist with those labels and count as having passed the post-create check."""
+
     def __init__(self, labels=None, infra=False):
-        super().__init__(dict(CFG))
+        super().__init__(dict(CFG, infra_pods=True, compat_creates=True))
         self._labels = labels or {}
         self._infra = infra
+        self.verified.update(ref for _kind, ref in self._labels)
 
-    def labels_of(self, kind, ref):
-        return self._labels.get((kind, ref))
+    def inspect(self, kind, ref):
+        labels = self._labels.get((kind, ref))
+        if labels is None:
+            return None
+        return {"Id": ref, "Name": ref, "Config": {"Labels": labels}, "Labels": labels}
+
+    def raw_request(self, method, path, body=None):
+        return 201
 
     def pod_has_infra(self, ref):
         return self._infra
@@ -112,7 +121,10 @@ class Containers(unittest.TestCase):
     def test_networks_and_volumes(self):
         self.assertTrue(FakeGate().rewrite_network({"name": "n"})["internal"])
         self.assertTrue(FakeGate().rewrite_network({"Name": "n"})["Internal"])
-        self.assertEqual(FakeGate().rewrite_volume({"Name": "v"})["Labels"][gate.DEV_OWNER], "abt-s-1")
+        # podman's libpod volume API reads "Label", the Docker API "Labels" (found 1 Oct: the old stamp under
+        # "Labels" was ignored by the libpod API)
+        self.assertEqual(FakeGate().rewrite_volume({"Name": "v"})["Label"][gate.DEV_OWNER], "abt-s-1")
+        self.assertEqual(FakeGate().rewrite_volume({"Name": "v"}, compat=True)["Labels"][gate.DEV_OWNER], "abt-s-1")
         for bad in ({"Name": "v", "Options": {"o": "bind", "device": "/"}}, {"Name": "v", "Driver": "nfs"},
                     {"Name": "v", "DriverOpts": {"device": "/"}}):
             with self.subTest(bad=bad), self.assertRaises(gate.Deny):
@@ -201,7 +213,8 @@ class Scoping(unittest.TestCase):
         g = FakeGate()
         with self.assertRaises(gate.Deny):
             self.decide(g, "POST", "/v5/libpod/exec/abc123/start")
-        g.exec_ids.add("abc123")
+        g.exec_ids["abc123"] = "web"
+        g.verified.add("web")
         self.decide(g, "POST", "/v5/libpod/exec/abc123/start")
 
     def test_short_names(self):
@@ -264,7 +277,8 @@ class SpellingAndVerification(unittest.TestCase):
     def good_doc(self):
         return {"Config": {"Labels": DEV}, "Mounts": [], "NetworkSettings": {"Networks": {"abt-s-1-int": {}}},
                 "HostConfig": {"PortBindings": {}, "CgroupParent": "/user.slice/x/agentbox.slice", "OomScoreAdj": 1000,
-                               "RestartPolicy": {"Name": "no"}, "NetworkMode": "bridge"}}
+                               "RestartPolicy": {"Name": "no"}, "NetworkMode": "bridge", "Memory": 1 << 30,
+                               "MemorySwap": 1 << 30, "PidsLimit": 1024}}
 
     def test_post_create_verification(self):
         g = FakeGate()

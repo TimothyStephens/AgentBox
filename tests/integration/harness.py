@@ -88,9 +88,23 @@ def podman(*args, timeout=120):
 
 
 def leftovers():
+    """Containers, pods, volumes and networks this run labelled (images: leftover_images)."""
     c = podman("ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}").stdout.split()
+    p = podman("pod", "ps", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
+    v = podman("volume", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
     n = podman("network", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
-    return c + n
+    return c + p + v + n
+
+
+def leftover_images():
+    """Images this run labelled, as 'repo:tag' (or the short ID when untagged)."""
+    out = podman("images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}", "--filter", f"label={LABEL}").stdout
+    return sorted(line.split()[0] if not line.startswith("<none>") else line.split()[-1]
+                  for line in out.splitlines() if line.strip())
+
+
+def all_volumes():
+    return set(podman("volume", "ls", "--format", "{{.Name}}").stdout.split())
 
 
 def wait_for(pred, timeout=90, step=0.5):
@@ -106,6 +120,10 @@ def wait_for(pred, timeout=90, step=0.5):
 def cleanup():
     for c in podman("ps", "-aq", "--filter", f"label={LABEL}").stdout.split():
         podman("rm", "-f", "-t", "2", c)
+    for p in podman("pod", "ps", "-q", "--filter", f"label={LABEL}").stdout.split():
+        podman("pod", "rm", "-f", p)
+    for v in podman("volume", "ls", "-q", "--filter", f"label={LABEL}").stdout.split():
+        podman("volume", "rm", "-f", v)
     for n in podman("network", "ls", "-q", "--filter", f"label={LABEL}").stdout.split():
         podman("network", "rm", "-f", n)
     shutil.rmtree(BASE, ignore_errors=True)

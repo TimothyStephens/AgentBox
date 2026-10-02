@@ -1,5 +1,6 @@
 """Findings of the 30 Sep review of steps 1-2 (docs/reviews/2026-09-30-steps-1-2.md), one test per finding."""
 import json
+import time
 import os
 import subprocess
 from unittest import mock
@@ -191,6 +192,10 @@ class OrphansAndSignals(SettingsCase):
                "Labels": {"agentbox.session": s.name, "agentbox.role": "proxy", "agentbox.project": "p1"}}]
         os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(ps)
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        # review step 5C, L7: a run dir without session.json under a minute old is a session being started
+        self.assertEqual(session.gc(self.settings, s.podman), [])
+        old = time.time() - 120
+        os.utime(self.settings.session_run_dir(s.name), (old, old))
         self.assertEqual(session.gc(self.settings, s.podman), [s.name])
 
     def test_sigterm_during_a_captured_run_tears_down(self):

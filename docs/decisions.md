@@ -328,7 +328,7 @@ The review (`docs/reviews/2026-10-01-steps-3-4.md`, annotated per finding) led t
   - Blind writes are acknowledged, because exec takes any command; the gate scopes exec to the session's dev containers.
   - The rules were checked with an audit-mode discovery run of compose up and down, run, exec, logs and build.
   - Not allowed: image deletion, archive, export, commit, checkpoint/restore, kube, secrets, prune.
-- **Teardown** removes the session's dev containers, pods, volumes and networks; dev data does not persist between sessions. Built images stay in the store (labelled with the session).
+- **Teardown** removes the session's dev containers, pods, volumes and networks, including anonymous volumes (`rm -v`, since 1 Oct; before that they survived, review step 5C M1); dev data does not persist between sessions. Built images stay in the store (labelled with the session).
 - **End-of-session scan** (`agentbox/scan.py`):
   - **At start:** HEAD, changed files, executables and git config of every repo in the writable grants.
   - **At the end, it reports:**
@@ -387,3 +387,44 @@ The review (`docs/reviews/2026-10-01-steps-3-4.md`, annotated per finding) led t
 - **Tests:**
   - `test_gate.SpellingAndVerification` (unit);
   - `test_step5_gate.test_c_refusals`: four case-variant bodies through the real gate, all refused, nothing created.
+
+## 2026-10-01 · Step 5 audit: A1, A4, B, C fixed; mounts and privilege by field table (builder)
+
+Findings and responses are in `docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md`; the field table is `docs/reviews/2026-10-01-step-5-coverage.md`. Deviations from the design as it stood:
+
+- **Create bodies are allowlisted.** Every top-level field of a libpod create, pod create, network create and volume create must be one the gate knows; an unknown field is refused. The field list came from capturing podman-remote's own requests: a local proxy answered every create with 500, so nothing was made. The capture found host-reaching fields the gate had passed through:
+  - `oci_runtime` (a host binary run as the runtime);
+  - `conmon_pid_file`, `log_configuration.path`, `healthLogDestination` (host files written);
+  - `init_path`, `base_hosts_file`, `rootfs`, `overlay_volumes` (host paths read or mounted);
+  - `env_host` (the podman service's whole environment: 76 variables on this host);
+  - `secrets`/`secret_env`, `dependencyContainers`, `volumes_from`;
+  - `volumes[].Options` with `volume-opt=` (creates a bind-backed volume implicitly);
+  - `seccomp_policy=image`, `cgroups_mode=disabled`, `resource_limits.unified`, and `run.oci.*` annotations (crun's `keep_original_groups`).
+  - All are refused now.
+  - The allowlist was checked against both podman clients in use: the host's and the one in the agent images (both 5.7.0). The image's client also sends `volatile` on every create, which the first itest run caught (compose up refused). It is allowed: it only skips storage syncing.
+- **The gate keeps its own record of checked objects** (`verified`). A container, pod, volume or network is usable only after its post-create check passed. This answers A4's timing question (see the A4 response).
+- **Start is checked too (found 1 Oct, A2 replacement):** podman resolves a bind source when the container *starts*. A project directory swapped for a symlink after create was mounted at start with the symlink's target, and no race was needed. Start, restart and init now re-check the container from what podman stored, re-resolving bind sources. After the start, the gate reads `/proc/<pid>/mountinfo` and removes a container whose binds came from outside the grants. **Residual (for Tim, below):** a swap timed between the gate's check and the runtime's mount is caught only after the fact.
+- **Limits:** explicit memory and pids limits must be positive and at most 4 GiB and 4096 per container (`memory_max`, `pids_max`). Swap is off for dev containers (swap = memory). A client OOM score other than 1000 is refused (it used to be overwritten).
+- **Not supported in the dev tier, refused by the gate with a reason.** Sockguard refuses each of these anyway, so nothing that worked before stops working:
+  - **Docker-API container creates:** sockguard refuses the forced `HostConfig.CgroupParent`, and without it the container would leave agentbox.slice. Compat creates never worked through the gate; nothing had exercised them end to end. podman and podman-compose use the libpod API.
+  - **Pods with an infra container:** sockguard's owner policy cannot resolve pods (pod inspect through it is 404), and it refuses any container that names one.
+  - **Sysctls:** sockguard refuses all of them.
+  - The gate's checks behind the first two stay, behind config flags `compat_creates` and `infra_pods` (both off), and are unit-tested.
+- **Network create:** no options at all. Sockguard refuses network options, so `isolate=strict` cannot be set on agent-made networks. They are internal, and nothing can attach to them: containers are pinned to the session network, and connect is refused.
+- **Volume labels:** podman's libpod volume API reads `Label`; the gate had been stamping `Labels`, which that API ignores. It now stamps the right key per API and checks the stored labels after create.
+- **Builds:**
+  - the query must use known keys;
+  - tags must be `localhost/` names, never `agentbox*`, and never a name an image outside this project's dev builds already has;
+  - secrets come only from the context.
+  - The session's podman service gets its own `TMPDIR` (`<data>/tmp/<session>`, removed at teardown). buildah keeps `RUN --mount=type=cache` there, so a session's cache is never shared with the host's builds; this was checked on this host.
+- **Paths and framing:** the gate's own deny list (push, commit, kube and the rest), canonical paths, no pipelined requests, and no ambiguous framing.
+- **End-of-session scan:**
+  - git runs only in repos whose metadata is unchanged since the start, hardened as described in the scan's docstring;
+  - changed files are found by content hash;
+  - commits are scanned on all refs;
+  - the scan and log keeping run in the module teardown, so `ab kill` and `ab gc` do both, and the scan can no longer stop a teardown.
+- **OMP lockdown** covers the project's `.omp` whole, plus Claude's settings files.
+- **For Tim (residual, high):** the start-time race. A session can swap a bind source between the gate's start check and the runtime's mount. The swapped mount is then detected from mountinfo and the container removed, but its process has already run. The options:
+  1. **Accept,** with detection and removal as now.
+  2. **Bind only the grant roots themselves.** No sub-path binds; the agent cannot replace a grant root. This breaks compose files that bind `./data`.
+  3. **Rewrite sub-path binds** into a gate-made volume over the grant root plus a `SubPath`. podman resolves the sub-path inside that root, so a symlink cannot leave it; this wants a check of podman's sub-path handling first.

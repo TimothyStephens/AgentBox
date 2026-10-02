@@ -12,10 +12,15 @@ live stack). Checked, in the OMP image (it has the podman client, the compose to
     and on a raw exec session the gate did not create;
   * builds join the session network: a RUN step cannot reach the LAN directly, and a client-supplied network
     namespace is ignored;
-  * selftest passes for both projects; everything the session made is gone afterwards.
+  * selftest passes for both projects;
+  * afterwards no container, pod, volume or network the sessions made is left (test_zz checks each kind by the
+    run's label, plus no new unlabelled volume), and no gate or podman service process. Images the sessions
+    built are kept on purpose (decision 3, 1 Oct: `ab gc` ages them out); test_zz checks they are only the
+    ones these tests built (or a session build a rebuild left untagged), and the module teardown removes them.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -35,8 +40,12 @@ RUN echo BUILD_PROXY=$http_proxy
 """
 
 
+VOLUMES_BEFORE = set()
+
+
 def setUpModule():
     global ENV
+    VOLUMES_BEFORE.update(harness.all_volumes())
     for img in (config.DEFAULTS["sockguard_image"], "localhost/agentbox-omp:latest", "docker.io/library/busybox:1.36"):
         if harness.podman("image", "exists", img).returncode != 0:
             raise unittest.SkipTest(f"{img} not present")
@@ -286,7 +295,11 @@ podman ps -a --format '{{{{.Names}}}}' | grep -v '^$' > /tmp/ps.txt; echo "PS $(
 
     def test_zz_no_leftovers(self):
         left = [x for x in harness.leftovers() if x != CANARY]
-        self.assertEqual(left, [])
+        self.assertEqual(left, [], "containers, pods, volumes and networks")
+        self.assertEqual(sorted(harness.all_volumes() - VOLUMES_BEFORE), [], "no unlabelled (anonymous) volume")
+        images = harness.leftover_images()
+        # the tests' own tags, or a session build a rebuild left untagged (labelled; ab gc ages it out)
+        self.assertTrue(all(i.startswith("localhost/abt-") or re.fullmatch(r"[0-9a-f]{12}", i) for i in images), images)
 
 
 if __name__ == "__main__":
