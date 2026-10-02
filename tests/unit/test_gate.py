@@ -21,14 +21,25 @@ class FakeGate(gate.Gate):
         self._labels = labels or {}
         self._infra = infra
         self.verified.update(ref for _kind, ref in self._labels)
+        self.volumes = {}
 
     def inspect(self, kind, ref):
+        if kind == "volumes" and ref in self.volumes:
+            return self.volumes[ref]
         labels = self._labels.get((kind, ref))
         if labels is None:
             return None
         return {"Id": ref, "Name": ref, "Config": {"Labels": labels}, "Labels": labels}
 
+    images = {}                      # ref -> image doc; any other ref is a public docker.io image
+
+    def image_doc(self, ref):
+        return self.images.get(ref, {"RepoTags": [f"docker.io/library/{ref}"], "Labels": {}})
+
     def raw_request(self, method, path, body=None):
+        if path.endswith("/volumes/create"):
+            self.volumes[body["Name"]] = {"Name": body["Name"], "Driver": body.get("Driver", "local"),
+                                          "Labels": body.get("Label") or {}, "Options": body.get("Options") or {}}
         return 201
 
     def pod_has_infra(self, ref):
@@ -66,7 +77,7 @@ class Containers(unittest.TestCase):
         self.assertEqual(spec["env"]["http_proxy"], "http://p:3128")
 
     def test_own_limits_kept(self):
-        spec = FakeGate().rewrite_libpod_container({"resource_limits": {"memory": {"limit": 5}, "pids": {"limit": 7}}})
+        spec = FakeGate().rewrite_libpod_container({"image": "x", "resource_limits": {"memory": {"limit": 5}, "pids": {"limit": 7}}})
         self.assertEqual((spec["resource_limits"]["memory"]["limit"], spec["resource_limits"]["pids"]["limit"]), (5, 7))
 
     def test_libpod_refusals(self):
@@ -77,10 +88,28 @@ class Containers(unittest.TestCase):
                     {"mounts": [{"type": "bind", "source": "/etc", "destination": "/e"}]},
                     {"mounts": [{"type": "bind", "source": "/proj/../etc", "destination": "/e"}]}):
             with self.subTest(bad=bad), self.assertRaises(gate.Deny):
-                FakeGate().rewrite_libpod_container(dict(bad))
+                FakeGate().rewrite_libpod_container(dict(bad, image="x"))
 
-    def test_binds_inside_the_project_allowed(self):
-        FakeGate().rewrite_libpod_container({"mounts": [{"type": "bind", "source": "/proj/data", "destination": "/d"}]})
+    def test_sub_path_binds_become_grant_volume_sub_paths(self):
+        """Tim, 1 Oct: a path below a grant root could be swapped for a symlink before start. A grant root is
+        bound as is; a sub-path becomes a SubPath of the gate's bind-backed volume over that root."""
+        spec = FakeGate().rewrite_libpod_container({"image": "x", "mounts": [{"type": "bind", "source": "/proj", "destination": "/d"}]})
+        self.assertEqual(spec["mounts"][0]["source"], "/proj")
+        g = FakeGate()
+        spec = g.rewrite_libpod_container({"image": "x", "mounts": [{"type": "bind", "source": "/proj/data/x", "destination": "/d",
+                                                       "options": ["ro", "rbind", "rshared"]}]})
+        self.assertEqual(spec["mounts"], [])
+        self.assertEqual(spec["volumes"], [{"Name": "abt-s-1-grant0", "Dest": "/d", "SubPath": "data/x",
+                                            "Options": ["ro"]}])
+        vol = g.volumes["abt-s-1-grant0"]
+        self.assertEqual(vol["Options"], {"type": "none", "o": "bind", "device": "/proj"})
+        self.assertEqual((vol["Labels"][gate.DEV_OWNER], vol["Labels"]["agentbox.role"]), ("abt-s-1", "grant"))
+        with self.assertRaises(gate.Deny):          # the agent cannot name the grant volume itself
+            g.decide("DELETE", "/v5/libpod/volumes/abt-s-1-grant0", [], b"")
+        with self.assertRaises(gate.Deny) as e:     # pods keep option 2
+            FakeGate().rewrite_pod({"name": "p", "no_infra": True,
+                                    "mounts": [{"type": "bind", "source": "/proj/data", "destination": "/d"}]})
+        self.assertIn("only a grant root itself", str(e.exception))
 
     def test_compat_create(self):
         spec = FakeGate().rewrite_compat_container({"Image": "x", "Env": ["http_proxy=mine"],
@@ -109,14 +138,14 @@ class Containers(unittest.TestCase):
 
     def test_container_in_a_pod(self):
         g = FakeGate(labels={("pods", "p"): DEV}, infra=False)
-        spec = g.rewrite_libpod_container({"pod": "p"})
+        spec = g.rewrite_libpod_container({"image": "x", "pod": "p"})
         self.assertNotIn("pod", spec, "membership of an infra-less pod is dropped")
         self.assertEqual(spec["Networks"], {"abt-s-1-int": {}})
         g = FakeGate(labels={("pods", "p"): DEV}, infra=True)
-        spec = g.rewrite_libpod_container({"pod": "p"})
+        spec = g.rewrite_libpod_container({"image": "x", "pod": "p"})
         self.assertEqual(spec["pod"], "p")
         with self.assertRaises(gate.Deny):
-            FakeGate(labels={("pods", "p"): {"agentbox.role": "dev"}}).rewrite_libpod_container({"pod": "p"})
+            FakeGate(labels={("pods", "p"): {"agentbox.role": "dev"}}).rewrite_libpod_container({"image": "x", "pod": "p"})
 
     def test_networks_and_volumes(self):
         self.assertTrue(FakeGate().rewrite_network({"name": "n"})["internal"])
@@ -230,7 +259,7 @@ if __name__ == "__main__":
 
 class NoProxy(unittest.TestCase):
     def test_names_on_the_network_and_own_aliases_go_direct(self):
-        spec = FakeGate().rewrite_libpod_container({"name": "proj_api_1",
+        spec = FakeGate().rewrite_libpod_container({"image": "x", "name": "proj_api_1",
                                                     "Networks": {"proj_default": {"aliases": ["api"]}}})
         parts = spec["env"]["no_proxy"].split(",")
         self.assertEqual(parts[:3], ["localhost", "127.0.0.1", "10.89.3.0/24"])
@@ -239,7 +268,7 @@ class NoProxy(unittest.TestCase):
         self.assertNotIn("NO_PROXY", spec["env"], "one spelling only (sockguard refuses case variants)")
 
     def test_the_compose_files_own_value_wins(self):
-        spec = FakeGate().rewrite_libpod_container({"env": {"no_proxy": "mine"}})
+        spec = FakeGate().rewrite_libpod_container({"image": "x", "env": {"no_proxy": "mine"}})
         self.assertEqual(spec["env"]["no_proxy"], "mine")
         spec = FakeGate().rewrite_compat_container({"Env": ["no_proxy=mine"], "HostConfig": {}})
         self.assertEqual([e for e in spec["Env"] if e.startswith("no_proxy=")], ["no_proxy=mine"])

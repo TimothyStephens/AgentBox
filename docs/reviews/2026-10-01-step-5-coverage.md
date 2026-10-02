@@ -10,14 +10,14 @@ The independent reviews A2 (mounts) and A3 (privilege and limits) did not finish
 - **Allowed value (where one exists):** the create works, podman stored that value, and the container starts and is removed through the gate.
 - **Gate-independent checks:** builds, RUN mounts and the start-time swap are checked by their outcome (no marker read, image IDs unchanged, cache location, container never ran).
 
-**Result.** 96 tests pass: 95 cases (27 with an allowed value, 69 with a post-create read-back) and a final teardown check. Run 1 Oct against podman 5.7.0 and sockguard 2.2.1. The run found and fixed:
+**Result.** 98 tests pass: 97 cases and a final teardown check. Run 1 Oct against podman 5.7.0 and sockguard 2.2.1. The run found and fixed:
 - **Image volumes after start:** podman reports an image volume as a bind from the container's own storage. The mount checks accept exactly that path.
 - **`MaskedPaths: []`** ("unmask everything") passed the gate because an empty list is falsy. Sockguard refused it. Fixed in the gate, with a unit test.
 - **Sockguard refusals:** it refuses the forced cgroup parent on Docker-API creates, it cannot resolve pods for a member container, and it refuses all sysctls and all network options. The gate now refuses each up front, with a reason (`docs/decisions.md`).
 - **The session's own squid proxy** has an anonymous volume, which teardown did not remove before `rm -v`.
 - **The full itest found one more field:** the agent images' podman client sends `volatile` on every create, so the allowlist refused compose's creates. Both clients' requests were then compared against the allowlist (`volatile` was the only gap), and it was added.
 
-Found while building it (unit-tested, and in the table): podman resolves a bind source when the container **starts**. A directory swapped for a symlink after create was mounted with the symlink's target. The gate now re-checks at start and reads mountinfo after it. The remaining race is a decision for Tim (`docs/decisions.md`).
+Found while building it: podman resolves a bind source when the container **starts**, so a directory swapped for a symlink after create was mounted with the symlink's target. Tim's decision (1 Oct): only a grant root is bound as is. A container's sub-path bind becomes a `SubPath` of the gate's bind-backed volume over that root, which podman resolves inside the volume (the evidence, including a 150-start race, is in `docs/decisions.md`). `test_bind_sub_path` swaps the sub-path for a symlink before start: podman refuses it, and the outside file never shows. Also added the same day: the dev-tier image allowlist (`test_image_run`, `test_image_build_from`).
 
 "Not in podman's inspect" means the post-create check cannot see that field, so the refusal before forwarding is the only control for it.
 
@@ -25,13 +25,15 @@ Found while building it (unit-tested, and in the table): podman resolves a bind 
 |---|---|---|---|---|---|
 | mounts | mounts[type=bind].source (outside the project) | yes (403) | yes | `test_step5_fields.Fields.test_bind_outside` | allowed value tested |
 | mounts | mounts[type=bind].source (a symlink in the project pointing out) | yes (403) | yes | `test_step5_fields.Fields.test_bind_symlink_out` |  |
-| mounts | a bind source swapped for a symlink after create | at start (403) | re-checked at start (Mounts[].Source re-resolved) | `test_step5_fields.Fields.test_bind_swapped_at_start` | found 1 Oct: podman resolves the source at start |
+| mounts | mounts[type=bind].source (a path inside the project, not a grant root) | rewritten (containers); yes, 403 (pods) | yes: a bind must be a grant root; a grant volume's device must be one; mountinfo after start | `test_step5_fields.Fields.test_bind_sub_path` | allowed value tested; rewritten: a sub-path becomes a SubPath of the gate's bind-backed volume over its grant root, resolved by podman inside the volume, so a symlink swapped in before start cannot lead out (Tim's option 3, 1 Oct). Pods: sub-paths refused |
 | mounts | mounts[type=bind].source (relative path) | yes (403) | yes | `test_step5_fields.Fields.test_bind_relative` |  |
 | mounts | volumes[].Name (a relative path) | yes (403) | yes | `test_step5_fields.Fields.test_volume_relative` |  |
 | mounts | volumes[].Name (a volume the session did not create) | yes (403) | yes | `test_step5_fields.Fields.test_volume_foreign` | allowed value tested; a new name is created by the gate, labelled, first |
 | mounts | volumes[].Options (volume driver options) | yes (403) | options are not stored on the container; the volume's own Driver/Options are (volume cases) | `test_step5_fields.Fields.test_volume_options` | allowed value tested |
 | mounts | mounts[type=volume] (a volume through mounts) | yes (403) | yes | `test_step5_fields.Fields.test_volume_mount_type` |  |
 | mounts | image_volumes[].Source | yes (403) | Mounts[].Type image allowed (any local image: reads are not scoped, see A4 lows) | `test_step5_fields.Fields.test_image_volume` | allowed value tested; only images already present: no pull past the registry allowlist |
+| mounts | image (another project's or a live stack's localhost/ image) | yes (403) | refused before forwarding (the image is chosen before podman stores anything) | `test_step5_fields.Fields.test_image_run` | allowed value tested; Tim, 1 Oct: public registry images, this session's builds, or the project's dev_images |
+| mounts | build FROM / COPY --from / RUN --mount from= (a localhost/ image) | n/a | no object until the build ends | `test_step5_fields.Fields.test_image_build_from` | the context is spooled and its Containerfile read before forwarding |
 | mounts | mounts[type=tmpfs].options | yes (403) | a tmpfs holds only the container's own memory; options are not stored | `test_step5_fields.Fields.test_tmpfs` | allowed value tested; no host reach; only listed mount options pass |
 | mounts | mounts[type=devpts] (other mount types) | yes (403) | yes | `test_step5_fields.Fields.test_devpts` |  |
 | mounts | overlay_volumes[].source | yes (403) | yes | `test_step5_fields.Fields.test_overlay` |  |

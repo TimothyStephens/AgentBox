@@ -267,9 +267,16 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
     b.add("ifaces", [], "only loopback and the session network", lambda obs: (
         "PASS" if "lo" in obs.split() and len(obs.split()) == 2 else "FAIL", obs))
 
+    # --- proxied: the local model (another machine, may be off) ----------------------------
+    model_live = live(mhost, mport)
+    if model_live:
+        b.add("get", [f"http://{mhost}:{mport}/v1/models", f"{mhost}:{mport}"],
+              f"proxied local model http://{mhost}:{mport}/v1/models allowed", allowed)
+    else:
+        b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [],
+                            f"proxied local model http://{mhost}:{mport}/v1/models allowed",
+                            lambda obs: ("SKIP", f"the model server {mhost}:{mport} is not answering from the host")))
     # --- proxied: refused in every mode --------------------------------------------------
-    b.add("get", [f"http://{mhost}:{mport}/v1/models", f"{mhost}:{mport}"],
-          f"proxied local model http://{mhost}:{mport}/v1/models allowed", allowed)
     b.add("get", [f"http://{mhost}:22/", f"{mhost}:22"], f"proxied {mhost}:22 refused", refused)
     for t in lan_targets:
         b.add("get", [f"http://{t}/", t], f"proxied LAN {t} refused", refused)
@@ -309,7 +316,7 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
     direct = [(mhost, mport)] + [tuple(t.rsplit(":", 1)) for t in lan_targets]
     live_count = 0
     for h, p in direct:
-        if live(h, p):
+        if (model_live if (h, p) == (mhost, mport) else live(h, p)):
             live_count += 1
             b.add("direct", [h, p], f"direct {h}:{p} unreachable", blocked_direct)
         else:

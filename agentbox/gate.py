@@ -15,8 +15,9 @@ counted) and then:
   * create (container, libpod or Docker API): every top-level field must be one the gate knows (an unknown
     field is refused). Pinned to the session network (aliases kept), no published ports, restart policy
     dropped, owner labels stamped, cgroup parent forced to the slice, memory/pids limits defaulted and
-    capped, swap off, OOM score 1000, proxy variables added, binds only inside the project's grants (by
-    real path, rewritten to it), named volumes only the session's own (a new name is created labelled
+    capped, swap off, OOM score 1000, proxy variables added, binds of a grant root itself (by real
+    path); a path below one becomes a SubPath of the gate's bind-backed volume over that root, which podman
+    resolves inside the volume (a symlink swapped in before start cannot lead out), named volumes only the session's own (a new name is created labelled
     first), no host paths through any other field (rootfs, overlay volumes, init path, conmon pid file,
     log path, health log directory, hosts file, runtime), no privilege (privileged, capabilities, devices,
     security options, host namespaces, sysctls outside net.*, OCI annotations, env from the service,
@@ -49,6 +50,7 @@ counted) and then:
 
 Everything else is forwarded to sockguard, whose rules and owner isolation apply on top.
 """
+import fnmatch
 import http.client
 import io
 import json
@@ -57,6 +59,8 @@ import re
 import socket
 import socketserver
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
@@ -111,6 +115,7 @@ DEV_OWNER = "agentbox.dev-owner"     # sockguard's ownership label key for the d
 UPSTREAM_TIMEOUT = 300               # builds and pulls can be slow on this host
 MAX_HEAD = 1 << 20
 MAX_BODY = 64 << 20
+MAX_BUILD_BODY = 8 << 30             # a build context, spooled to the session's TMPDIR to read its Containerfile
 
 # podman's build API: networkmode is buildah's NetworkConfigurationPolicy as a number
 NET_ENABLED = "2"
@@ -227,6 +232,8 @@ ANNOTATION_REFUSED = ("run.oci.", "io.kubernetes.", "io.containers.", "org.syste
 ANNOTATION_DROPPED = "io.podman.annotations."
 SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sysctl (1 Oct), so the gate does too
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
+ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
+VOLUME_OPTS = ("ro", "rw", "z", "Z", "U", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
 MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosuid|suid|nodev|dev|noexec|exec|"
                              r"r?bind|z|Z|U|idmap(=.*)?|nocopy|copy|notmpcopyup|tmpcopyup|size=\d+[kmgKMG]?|"
@@ -437,11 +444,20 @@ class Gate:
         self.log("remove-failed", "DELETE", path, f"{why}; last status {status}")
         return False
 
+    def _roots(self):
+        return [os.path.realpath(r) for r in self.cfg["bind_roots"]]
+
     def _inside_roots(self, src):
         if not isinstance(src, str) or not src.startswith("/"):
             return False
         real = os.path.realpath(src)
-        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self.cfg["bind_roots"])
+        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self._roots())
+
+    def _is_root(self, src):
+        """Only a grant root itself may be bind-mounted (Tim, 1 Oct): podman resolves a bind source again when
+        the container starts, and a path below a root is one the agent can swap for a symlink in between. A
+        grant root is a mount point in the agent's container, so the agent cannot replace it."""
+        return isinstance(src, str) and src.startswith("/") and os.path.realpath(src) in self._roots()
 
     # ---- post-create checks (what podman stored) ---------------------------------------------------
     def privilege_violations(self, doc, infra=False):
@@ -517,16 +533,60 @@ class Gate:
             if t == "bind" and self.own_storage(m, cid):
                 continue
             if t == "bind":
-                if not self._inside_roots(m.get("Source", "")):
-                    bad.append(f"bind {m.get('Source')}")
+                if not self._is_root(m.get("Source", "")):
+                    bad.append(f"bind {m.get('Source')} (only a grant root itself)")
             elif t == "volume":
                 name = m.get("Name") or ""
-                labels = self.labels_of("volumes", name) if name else None
-                if labels is None or not (self.is_dev(labels) or self.anonymous_volume(name, labels)):
+                vdoc = self.inspect("volumes", name) if name else None
+                labels = self.labels_in("volumes", vdoc) if vdoc else None
+                if labels is None or not (self.is_dev(labels) or self.anonymous_volume(name, labels)
+                                          or self.grant_volume_root(vdoc)):
                     bad.append(f"volume {name or m.get('Source')} is not this session's")
             elif t not in ("tmpfs", "image"):
                 bad.append(f"{t} mount")
         return bad
+
+    # ---- grant volumes: bind-backed volumes over the grant roots, for sub-path binds ----------------------
+    def grant_volume_root(self, doc):
+        """The grant root a gate-made grant volume covers, or None if `doc` is not exactly one."""
+        labels = self.labels_in("volumes", doc or {})
+        opts = (doc or {}).get("Options") or {}
+        if labels.get(DEV_OWNER) != self.session or labels.get("agentbox.role") != ROLE_GRANT:
+            return None
+        if (doc.get("Driver") or "local") != "local" or set(opts) != {"type", "o", "device"} \
+                or opts.get("type") != "none" or opts.get("o") != "bind":
+            return None
+        dev = os.path.realpath(opts.get("device") or "")
+        return dev if dev in self._roots() else None
+
+    def grant_volume(self, root):
+        """The session's grant volume for one grant root, created on the raw service on first use. Its role is
+        `grant`, so the agent can name it in no request; only the gate puts it into a create."""
+        name = f"{self.session}-grant{self._roots().index(root)}"
+        doc = self.inspect("volumes", name)
+        if doc is None:
+            labels = self.stamp({})
+            labels["agentbox.role"] = ROLE_GRANT
+            status = self.raw_request("POST", "/libpod/volumes/create", {
+                "Name": name, "Driver": "local", "Label": labels,
+                "Options": {"type": "none", "o": "bind", "device": root}})
+            if not (isinstance(status, int) and 200 <= status < 300):
+                raise Deny(f"could not create the grant volume for {root} (status {status})")
+            doc = self.inspect("volumes", name)
+        if self.grant_volume_root(doc) != root:
+            raise Deny(f"volume {name} exists but is not this session's grant volume for {root}")
+        return name
+
+    def grant_subpath(self, src):
+        """(grant volume, sub-path) for a bind source strictly below a grant root (by real path), else None."""
+        if not isinstance(src, str) or not src.startswith("/"):
+            return None
+        real = os.path.realpath(src)
+        inside = [r for r in self._roots() if real.startswith(r.rstrip("/") + "/")]
+        if not inside or self._is_root(real):
+            return None
+        root = max(inside, key=len)
+        return self.grant_volume(root), os.path.relpath(real, root)
 
     @staticmethod
     def anonymous_volume(name, labels):
@@ -744,30 +804,32 @@ class Gate:
         with open("/proc/self/mountinfo") as f:
             return f.read()
 
-    def allowed_fs(self):
-        """[(dev, fs path prefix)] for every grant root and every mount below one, as the host sees them."""
+    def allowed_fs(self, with_root=False):
+        """[(dev, path within that filesystem)] of every grant root, as the host sees them."""
         mounts = parse_mountinfo(self.host_mountinfo())
         out = []
-        for r in self.cfg["bind_roots"]:
-            real = os.path.realpath(r)
+        for real in self._roots():
             best = None
             for mp, dev, root in mounts:
                 if real == mp or real.startswith(mp.rstrip("/") + "/") or mp == "/":
                     if best is None or len(mp) >= len(best[0]):
                         best = (mp, dev, root)
-                if mp.startswith(real.rstrip("/") + "/"):
-                    out.append((dev, root))
             if best:
                 mp, dev, root = best
                 rel = real[len(mp):].lstrip("/") if mp != "/" else real.lstrip("/")
-                out.append((dev, os.path.join(root, rel) if rel else root))
+                loc = (dev, os.path.join(root, rel) if rel else root)
+                out.append(loc + (real,) if with_root else loc)
         return out
 
     def mount_violations(self, doc):
         pid = (doc.get("State") or {}).get("Pid")
         binds = [m for m in doc.get("Mounts") or [] if m.get("Type") == "bind"
                  and not self.own_storage(m, doc.get("Id") or "")]
-        if not pid or not binds:
+        grants = []
+        for m in doc.get("Mounts") or []:
+            if m.get("Type") == "volume" and (m.get("Name") or "").startswith(f"{self.session}-grant"):
+                grants.append((m, self.grant_volume_root(self.inspect("volumes", m["Name"]))))
+        if not pid or not (binds or grants):
             return []
         try:
             mounted = {mp: (dev, root) for mp, dev, root in parse_mountinfo(self.read_mountinfo(pid))}
@@ -781,9 +843,19 @@ class Gate:
                 bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
                 continue
             dev, root = got
-            if not any(dev == d and (root == p or root.startswith(p.rstrip("/") + "/")) for d, p in allowed):
+            if not any(dev == d and root == p for d, p in allowed):
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}; stored as {m.get('Type')} "
-                           f"{m.get('Source')}), not inside the project")
+                           f"{m.get('Source')}), not a grant root")
+        located = {r: (d, p) for d, p, r in self.allowed_fs(with_root=True)}
+        for m, groot in grants:
+            got = mounted.get(m.get("Destination"))
+            want = located.get(groot)
+            if got is None or want is None:
+                bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
+                continue
+            dev, root = got
+            if not (dev == want[0] and (root == want[1] or root.startswith(want[1].rstrip("/") + "/"))):
+                bad.append(f"{m.get('Destination')} is {root} (device {dev}), outside its grant root {groot}")
         return bad
 
     # ---- create rewrites --------------------------------------------------------------------------
@@ -833,14 +905,20 @@ class Gate:
         return out
 
     def check_bind(self, src):
-        """A bind source: absolute, and inside a grant by its real path. Returns the real path, which is what
-        gets forwarded (so the stored source has no symlinks in it)."""
+        """A bind source: absolute, and by its real path exactly a grant root (see _is_root). Returns the real
+        path, which is what gets forwarded."""
         if not isinstance(src, str) or not src.startswith("/"):
             raise Deny(f"bind mount source {src!r} must be an absolute path")
         real = os.path.realpath(src)
-        if not self._inside_roots(real):
-            raise Deny(f"bind mount {src} is outside the project's grants")
-        return real
+        if self._is_root(real):
+            return real
+        if self._inside_roots(real):
+            roots = ", ".join(self._roots())
+            raise Deny(f"bind mount {src}: only a grant root itself can be bind-mounted ({roots}), not a path "
+                       "inside one (podman resolves the path again at start, and it could be swapped for a symlink "
+                       "by then). Bind the root and use the sub-path inside the container, or use a named volume "
+                       "created in this session")
+        raise Deny(f"bind mount {src} is outside the project's grants")
 
     def check_binds(self, sources):
         for src in sources:
@@ -869,8 +947,65 @@ class Gate:
         self.require_dev("volumes", name)
 
     def check_image_volume(self, src):
-        if not isinstance(src, str) or not src or self.inspect("images", src) is None:
+        if not isinstance(src, str) or not src or self.image_doc(src) is None:
             raise Deny(f"image volume {src!r}: only images already present are allowed (no pulls)")
+        self.check_image(src, "image volume")
+
+    # ---- which images the dev tier may run or build from (Tim, 1 Oct) ------------------------------
+    def image_doc(self, ref):
+        return self.inspect("images", ref)
+
+    def check_image(self, ref, where):
+        """An image the dev tier runs, mounts or builds from must be: named from an allowlisted public
+        registry, built in this session, or matched by the project's dev_images patterns. So a localhost/
+        image of another project or a live stack (its files, its ENV) is out of reach unless listed."""
+        doc = self.image_doc(ref)
+        if doc is None:
+            raise Deny(f"{where}: image {ref} is not present (pull it first; builds and creates never pull)")
+        labels = self.labels_in("images", doc)
+        if labels.get("agentbox.session") == self.session and labels.get("agentbox.role") == "dev":
+            return
+        names = list(doc.get("RepoTags") or []) + list(doc.get("RepoDigests") or [])
+        for n in names:
+            if "/" in n and n.split("/", 1)[0] in self.cfg["registries"]:
+                return
+            if any(fnmatch.fnmatchcase(n, pat) for pat in self.cfg.get("images") or []):
+                return
+        raise Deny(f"{where}: image {ref} ({', '.join(names) or 'untagged'}) is not allowed in the dev tier: "
+                   f"only images from {', '.join(self.cfg['registries'])}, this session's own builds, or names "
+                   "matching the project's dev_images (`ab project add --dev-image`)")
+
+    def check_build_images(self, context_path, target):
+        """Every image the build's Containerfile(s) use (FROM, COPY --from, RUN --mount from=) must pass
+        check_image. The context is the spooled request body (a tar)."""
+        q = dict((k.lower(), v) for k, v in parse_qsl(urlsplit(target).query, keep_blank_values=True))
+        raw = q.get("dockerfile") or ""
+        try:
+            files = json.loads(raw) if raw.startswith("[") else ([raw] if raw else [])
+        except ValueError:
+            raise Deny("build dockerfile is not readable")
+        try:
+            args = json.loads(q.get("buildargs") or "{}")
+        except ValueError:
+            args = {}
+        try:
+            with tarfile.open(context_path, "r:*") as tar:
+                members = {m.name.lstrip("./") if m.name.startswith("./") else m.name: m for m in tar.getmembers()}
+                if not files:
+                    files = [n for n in ("Containerfile", "Dockerfile") if n in members][:1]
+                if not files:
+                    raise Deny("the build context has no Containerfile or Dockerfile")
+                for name in files:
+                    if not isinstance(name, str) or name.startswith("/") or ".." in name.split("/"):
+                        raise Deny(f"build dockerfile {name!r} must be inside the context")
+                    m = members.get(name[2:] if name.startswith("./") else name)
+                    if m is None or not m.isfile():
+                        raise Deny(f"build dockerfile {name!r} is not a file in the build context")
+                    text = tar.extractfile(m).read(1 << 20).decode("utf-8", errors="replace")
+                    for _instr, ref in dockerfile_images(text, args):
+                        self.check_image(ref, f"build {_instr}")
+        except tarfile.TarError as e:
+            raise Deny(f"the build context is not a readable tar ({e})")
 
     def check_annotations(self, ann, where):
         out = {}
@@ -912,15 +1047,6 @@ class Gate:
                 raise Deny(f"{what} {ns} {mode} is not allowed")
         self.check_sysctls(spec.get("sysctl"), what)
         self.check_hosts_file(spec.get("base_hosts_file"))
-        for m in spec.get("mounts") or []:
-            t = cget(m, "type")
-            if t == "bind":
-                cset(m, "source", self.check_bind(cget(m, "source")))
-                self.check_mount_options(cget(m, "options"), cget(m, "destination"))
-            elif t == "tmpfs":
-                self.check_mount_options(cget(m, "options"), cget(m, "destination"))
-            else:
-                raise Deny(f"{t!r} mounts are not allowed (bind and tmpfs only; named volumes go in volumes)")
         for v in spec.get("volumes") or []:
             opts = cget(v, "Options") or []
             self.check_mount_options(opts, cget(v, "Dest"))
@@ -928,6 +1054,29 @@ class Gate:
             if ".." in str(sub).split("/") or str(sub).startswith("/"):
                 raise Deny(f"volume subpath {sub!r} is not allowed")
             self.named_volume(cget(v, "Name"), "volume")
+        kept, grant_mounts = [], []
+        for m in spec.get("mounts") or []:
+            t = cget(m, "type")
+            if t == "bind":
+                self.check_mount_options(cget(m, "options"), cget(m, "destination"))
+                sub = self.grant_subpath(cget(m, "source")) if what == "container" else None
+                if sub:
+                    # A path below a grant root: mounted as the gate's bind-backed volume over that root with a
+                    # SubPath, which podman resolves inside the volume (openat2 in-root), so a symlink swapped in
+                    # before start cannot lead out (Tim's option 3, 1 Oct; evidence in docs/decisions.md).
+                    name, rel = sub
+                    grant_mounts.append({"Name": name, "Dest": cget(m, "destination"), "SubPath": rel,
+                                         "Options": [o for o in cget(m, "options") or [] if o in VOLUME_OPTS]})
+                    continue
+                cset(m, "source", self.check_bind(cget(m, "source")))
+            elif t == "tmpfs":
+                self.check_mount_options(cget(m, "options"), cget(m, "destination"))
+            else:
+                raise Deny(f"{t!r} mounts are not allowed (bind and tmpfs only; named volumes go in volumes)")
+            kept.append(m)
+        if grant_mounts:
+            spec["mounts"] = kept
+            spec["volumes"] = list(spec.get("volumes") or []) + grant_mounts
         for iv in spec.get("image_volumes") or []:
             self.check_image_volume(cget(iv, "Source"))
         rl = spec.get("resource_limits") or {}
@@ -942,6 +1091,9 @@ class Gate:
 
     def rewrite_libpod_container(self, spec):
         self.check_common_libpod(spec, LIBPOD_REFUSED, "container")
+        if not spec.get("image"):
+            raise Deny("a container needs an image (a host directory as root is refused)")
+        self.check_image(spec["image"], "create")
         if spec.get("cgroups_mode") not in (None, "", "enabled"):
             raise Deny(f"cgroups mode {spec['cgroups_mode']} is not allowed")
         if spec.get("seccomp_policy") not in (None, "", "default"):
@@ -1343,6 +1495,87 @@ class Gate:
         return target, body, "pass"
 
 
+def _subst(value, args):
+    """${VAR}, ${VAR:-default}, $VAR from build args; an unresolvable reference is refused."""
+    def one(m):
+        name = m.group(1) or m.group(3)
+        default = m.group(2)
+        if name in args and args[name] not in (None, ""):
+            return str(args[name])
+        if default is not None:
+            return default
+        raise Deny(f"build: cannot tell which image ${{{name}}} names (give it a default or a build arg)")
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)", one, value)
+
+
+def dockerfile_images(text, buildargs=None):
+    """[(instruction, image ref)] a Containerfile uses: FROM, COPY/ADD --from, RUN --mount=...,from=. Stage
+    names, stage numbers and `scratch` are not images. ARG defaults and build args are substituted."""
+    escape = "\\"
+    lines = text.splitlines()
+    for line in lines[:5]:
+        m = re.match(r"^#\s*escape\s*=\s*(\S)\s*$", line, re.I)
+        if m:
+            escape = m.group(1)
+    logical, cur, heredoc = [], "", None
+    for line in lines:
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        if not cur and line.lstrip().startswith("#"):
+            continue
+        if line.rstrip().endswith(escape):
+            cur += line.rstrip()[:-1] + " "
+            continue
+        cur += line
+        m = re.search(r"<<-?[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?", cur)
+        if m and cur.split(None, 1)[0].upper() in ("RUN", "COPY", "ADD"):
+            heredoc = m.group(1)
+        logical.append(cur.strip())
+        cur = ""
+    if cur.strip():
+        logical.append(cur.strip())
+    args = {k: v for k, v in (buildargs or {}).items()}
+    defaults, stages, out = {}, set(), []
+    for line in logical:
+        if not line:
+            continue
+        instr, _, rest = line.partition(" ")
+        instr = instr.upper()
+        env = dict(defaults, **args)
+        if instr == "ARG":
+            for tok in rest.split():
+                k, eq, v = tok.partition("=")
+                if eq and k not in defaults:
+                    defaults[k] = v.strip("\"'")
+        elif instr == "FROM":
+            toks = [t for t in rest.split() if not t.startswith("--")]
+            if not toks:
+                raise Deny("build: a FROM without an image")
+            ref = _subst(toks[0], env)
+            if ref.lower() != "scratch" and ref.lower() not in stages:
+                out.append(("FROM", ref))
+            if len(toks) >= 3 and toks[1].lower() == "as":
+                stages.add(toks[2].lower())
+        elif instr in ("COPY", "ADD", "RUN"):
+            for tok in rest.split():
+                if not tok.startswith("--"):
+                    break
+                if tok.lower().startswith("--from="):
+                    refs = [tok.split("=", 1)[1]]
+                elif tok.lower().startswith("--mount="):
+                    kv = dict(p.split("=", 1) for p in tok[len("--mount="):].split(",") if "=" in p)
+                    refs = [kv["from"]] if "from" in kv else []
+                else:
+                    refs = []
+                for ref in refs:
+                    ref = _subst(ref.strip("\"'"), env)
+                    if ref.lower() not in stages and not ref.isdigit() and ref.lower() != "scratch":
+                        out.append((instr, ref))
+    return out
+
+
 def created_name(kind, target, body):
     """The name a create asked for (to find the object if podman's reply cannot be read)."""
     if kind == "compat_create":
@@ -1500,35 +1733,42 @@ def read_chunked(sock, data):
             raise ValueError("request body too large")
 
 
-def stream_body(client, upstream, headers, rest):
-    """Forward a streamed (build) body exactly: Content-Length bytes, or chunks up to the last one and its
-    trailers. Bytes after the body (a pipelined request) are refused, and the body's end is then never sent,
-    so the build is not run."""
+def spool_body(client, headers, rest, out, limit=MAX_BUILD_BODY):
+    """Read a (build) body exactly into `out` (decoded: Content-Length bytes, or the chunks' payload up to the
+    last chunk and its trailers). Returns its size. Bytes after the body (a pipelined request) are refused."""
     def more():
-        chunk = client.recv(65536)
+        chunk = client.recv(1 << 20)
         if not chunk:
             raise ValueError("connection closed mid-body")
         return chunk
+    size = 0
+
+    def put(data):
+        nonlocal size
+        size += len(data)
+        if size > limit:
+            raise Deny("the build context is too large")
+        out.write(data)
     if "chunked" not in (hget(headers, "Transfer-Encoding") or "").lower():
         left = int(hget(headers, "Content-Length") or 0)
         if len(rest) > left:
             raise Deny("pipelined requests are not accepted (one request per connection)")
-        upstream.sendall(rest)
+        put(rest)
         left -= len(rest)
         while left > 0:
-            chunk = client.recv(min(65536, left))
+            chunk = client.recv(min(1 << 20, left))
             if not chunk:
                 raise ValueError("connection closed mid-body")
-            upstream.sendall(chunk)
+            put(chunk)
             left -= len(chunk)
-        return
+        return size
     buf = rest
     while True:
         while b"\r\n" not in buf:
             buf += more()
         line, after = buf.split(b"\r\n", 1)
-        size = int(line.split(b";")[0].strip(), 16)
-        if size == 0:
+        n = int(line.split(b";")[0].strip(), 16)
+        if n == 0:
             end = len(line) + 2
             while True:
                 while b"\r\n" not in buf[end:]:
@@ -1540,14 +1780,13 @@ def stream_body(client, upstream, headers, rest):
                     break
             if len(buf) > end:
                 raise Deny("pipelined requests are not accepted (one request per connection)")
-            upstream.sendall(buf)
-            return
-        need = len(line) + 2 + size + 2
+            return size
+        need = len(line) + 2 + n + 2
         while len(buf) < need:
             buf += more()
         if buf[need - 2:need] != b"\r\n":
             raise ValueError("malformed chunk")
-        upstream.sendall(buf[:need])
+        put(buf[len(line) + 2:need - 2])
         buf = buf[need:]
 
 
@@ -1659,8 +1898,19 @@ def make_handler(gate):
                     client.sendall(build_response(status, reason, hdrs, resp))
                     return
                 if is_build:
-                    upstream.sendall(build_head(method, target, version, headers))
-                    stream_body(client, upstream, headers, rest)
+                    # spooled whole (to the session's TMPDIR), so its Containerfile can be read, then forwarded
+                    spool_dir = gate.cfg.get("spool") or None
+                    if spool_dir:
+                        os.makedirs(spool_dir, mode=0o700, exist_ok=True)
+                    with tempfile.TemporaryFile(dir=spool_dir) as f:
+                        size = spool_body(client, headers, rest, f)
+                        f.flush()
+                        gate.check_build_images(f"/proc/self/fd/{f.fileno()}", target)
+                        headers = hset(hset(headers, "Transfer-Encoding", None), "Content-Length", str(size))
+                        upstream.sendall(build_head(method, target, version, headers))
+                        f.seek(0)
+                        for block in iter(lambda: f.read(1 << 20), b""):
+                            upstream.sendall(block)
                     upstream.settimeout(None)
                     pipe_back(upstream, client)
                     return

@@ -35,6 +35,7 @@ class Project:
     history_secrets_accepted: list = field(default_factory=list)
     compose_project: str = ""      # the live stack's compose project (default: the project name)
     observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
+    dev_images: list = field(default_factory=list)   # extra image name patterns the dev tier may run/build from
     compose_project_explicit: bool = False
 
     def value(self, key):
@@ -78,7 +79,19 @@ def load_project(settings, name, *, with_secrets=False):
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
                    compose_project=check_compose_project(name, p.get("compose_project", name)),
                    observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)),
+                   dev_images=check_dev_images(name, p.get("dev_images", [])),
                    compose_project_explicit="compose_project" in p)
+
+
+IMAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/:@*?-]*$")
+
+
+def check_dev_images(name, patterns):
+    """Image name patterns (fnmatch, full names such as localhost/myapp:*) the dev tier may also use."""
+    if not isinstance(patterns, list) or not all(isinstance(p, str) and IMAGE_PATTERN.match(p) for p in patterns):
+        raise AgentboxError(f"project {name}: dev_images must be a list of image name patterns "
+                            "(e.g. localhost/myapp:*)")
+    return list(patterns)
 
 
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -227,6 +240,9 @@ def dev_notes(podman_live):
         "(tag them with plain local names; agentbox-* and names of images outside this project are refused);",
         "  - named volumes must be ones you create in this session (a new name is created for you); bind mounts "
         "only inside the project, by absolute path;",
+        "  - images: you can run and build from images on docker.io, ghcr.io, lscr.io and quay.io (pull them "
+        "first) and images you build in this session; other local images are refused unless the project lists "
+        "them;",
     ]
     if podman_live:
         lines.append(f"- The live stack (`{podman_live}`) is read-only on a second socket: "
@@ -793,6 +809,7 @@ class NetSession(Session):
             "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,
             "build_memory": int(self.project.build_memory),
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
+            "images": list(self.project.dev_images), "spool": os.path.join(service_tmp(s, self.name), "gate"),
             "log": os.path.join(svc, "gate.log"),
         }
 

@@ -1,5 +1,6 @@
 """Step 5 audit (docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md): one test per gate finding, written to fail
 before the fix. Upstream lookups are faked."""
+import io
 import json
 import os
 import threading
@@ -33,10 +34,18 @@ class Fake(gate.Gate):
 
     def raw_request(self, method, path, body=None):
         (self.deleted if method == "DELETE" else self.created).append(path)
+        if path.endswith("/volumes/create") and body:
+            self.objects[f"volumes/{body['Name']}"] = {"Name": body["Name"], "Driver": body.get("Driver", "local"),
+                                                       "Labels": body.get("Label") or {},
+                                                       "Options": body.get("Options") or {}}
         return 200
 
     def holder_ns(self):
         return "/proc/4242/ns/net", 4242, "net:[1]"
+
+    def image_doc(self, ref):
+        doc = self.objects.get(f"images/{ref}")
+        return doc if doc is not None else {"RepoTags": [f"docker.io/library/{ref}"], "Labels": {}}
 
     def slice_state(self, name):
         return True, "active"
@@ -308,39 +317,77 @@ class Starts(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp)
 
-    def gate(self):
-        doc = container("c1", Mounts=[{"Type": "bind", "Source": os.path.join(self.proj, "data"),
-                                       "Destination": "/d"}], State={"Pid": 4242})
+    def gate(self, source=None):
+        doc = container("c1", Mounts=[{"Type": "bind", "Source": source or self.proj, "Destination": "/d"}],
+                        State={"Pid": 4242})
         g = Fake({"containers/web": doc, "containers/c1": doc})
         g.cfg["bind_roots"] = [self.proj]
         g.verified.add("c1")
         return g
 
-    def test_swapped_bind_source_refused_at_start(self):
-        g = self.gate()
-        decide(g, "POST", "/v5/libpod/containers/web/start")
-        os.rename(os.path.join(self.proj, "data"), os.path.join(self.proj, "data.real"))
-        os.symlink(os.path.join(self.tmp, "outside"), os.path.join(self.proj, "data"))
+    def test_sub_path_binds_rewritten_and_a_stored_one_refused_at_start(self):
+        """Tim's decision (1 Oct): a sub-path is never bound directly; it becomes a grant volume SubPath, which
+        podman resolves inside the volume. A sub-path bind found in what podman stored is refused at start."""
+        g = Fake()
+        g.cfg["bind_roots"] = [self.proj]
+        for src in (os.path.join(self.proj, "data"), os.path.join(self.proj, "data", "..", "data")):
+            _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create",
+                                  {"image": "x", "mounts": [{"type": "bind", "source": src, "destination": "/d"}]})
+            spec = json.loads(body)
+            self.assertEqual(spec["mounts"], [], src)
+            self.assertEqual([(v["Name"], v["SubPath"]) for v in spec["volumes"]], [("abt-s-1-grant0", "data")])
+        os.symlink(os.path.join(self.tmp, "outside"), os.path.join(self.proj, "out"))
+        with self.assertRaises(gate.Deny):                  # a symlink out is outside the grants
+            decide(g, "POST", "/v5/libpod/containers/create",
+                   {"image": "x", "mounts": [{"type": "bind", "source": os.path.join(self.proj, "out"),
+                                              "destination": "/d"}]})
+        g = self.gate(os.path.join(self.proj, "data"))     # stored somehow: still refused at start
         for path in ("/v5/libpod/containers/web/start", "/v5/containers/web/restart", "/v5/libpod/containers/web/init"):
             with self.subTest(path=path), self.assertRaises(gate.Deny):
                 decide(g, "POST", path)
+
+    def test_root_bind_works(self):
+        g = self.gate()
+        g.cfg["bind_roots"] = [self.proj]
+        _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create",
+                              {"image": "x", "mounts": [{"type": "bind", "source": self.proj, "destination": "/d"}]})
+        self.assertEqual(json.loads(body)["mounts"][0]["source"], self.proj)
+        decide(g, "POST", "/v5/libpod/containers/web/start")
+
+    def test_grant_volume_mount_checked_after_start(self):
+        g = self.gate()
+        g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
+                                               "Labels": {gate.DEV_OWNER: "abt-s-1", "agentbox.role": "grant"},
+                                               "Options": {"type": "none", "o": "bind", "device": self.proj}}
+        doc = g.objects["containers/c1"]
+        doc["Mounts"] = [{"Type": "volume", "Name": "abt-s-1-grant0", "Destination": "/d"}]
+        self.assertEqual(g.container_violations(doc), [], "the grant volume is the session's")
+        g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
+        rel = self.proj[len(self.tmp):]
+        g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel}/data /d ro - tmpfs tmpfs rw\n"
+        g.after_start(["c1"])
+        g.read_mountinfo = lambda pid: "1206 1 0:40 /outside /d ro - tmpfs tmpfs rw\n"
+        with self.assertRaises(gate.Deny):
+            g.after_start(["c1"])
+        g.objects["volumes/abt-s-1-grant0"]["Options"]["device"] = "/etc"   # not a grant root
+        self.assertTrue(g.container_violations(doc))
 
     def test_what_was_mounted_is_checked_after_start(self):
         g = self.gate()
         g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
         rel = self.proj[len(self.tmp):]
-        g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel}/data /d ro - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel} /d ro - tmpfs tmpfs rw\n"
         g.after_start(["c1"])
         self.assertIn("c1", g.verified)
-        g.read_mountinfo = lambda pid: "1206 1 0:40 /outside /d ro - tmpfs tmpfs rw\n"
-        with self.assertRaises(gate.Deny):
-            g.after_start(["c1"])
+        for line in ("1206 1 0:40 /outside /d ro - tmpfs tmpfs rw\n",       # swapped to outside
+                     f"1206 1 0:40 {rel}/data /d ro - tmpfs tmpfs rw\n",    # a sub-path, not the root
+                     f"1206 1 0:41 {rel} /d ro - ext4 x rw\n"):             # another filesystem
+            g.verified.add("c1")
+            g.read_mountinfo = lambda pid, line=line: line
+            with self.subTest(line=line), self.assertRaises(gate.Deny):
+                g.after_start(["c1"])
+            self.assertNotIn("c1", g.verified)
         self.assertTrue(any("c1" in d for d in g.deleted))
-        self.assertNotIn("c1", g.verified)
-        g.verified.add("c1")
-        g.read_mountinfo = lambda pid: "1206 1 0:41 " + rel + "/data /d ro - ext4 x rw\n"   # another filesystem
-        with self.assertRaises(gate.Deny):
-            g.after_start(["c1"])
 
     def test_pod_start_needs_every_member_checked(self):
         pod = {"Id": "pid", "Labels": POD_DEV, "InfraContainerID": "", "Containers": [{"Id": "c1"}, {"Id": "c2"}]}
@@ -365,22 +412,21 @@ class FakeSock:
 
 
 class Framing(unittest.TestCase):
-    def test_streamed_build_body_forwarded_exactly(self):
-        up = FakeSock([])
-        gate.stream_body(FakeSock([b"\r\nabc\r\n0\r\n\r\n"]), up, [("Transfer-Encoding", "chunked")], b"3")
-        self.assertEqual(up.sent, b"3\r\nabc\r\n0\r\n\r\n")
-        up = FakeSock([])
-        gate.stream_body(FakeSock([b"de"]), up, [("Content-Length", "5")], b"abc")
-        self.assertEqual(up.sent, b"abcde")
+    def test_build_body_spooled_exactly(self):
+        out = io.BytesIO()
+        n = gate.spool_body(FakeSock([b"\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"]), [("Transfer-Encoding", "chunked")], b"3", out)
+        self.assertEqual((n, out.getvalue()), (5, b"abcde"))
+        out = io.BytesIO()
+        gate.spool_body(FakeSock([b"de"]), [("Content-Length", "5")], b"abc", out)
+        self.assertEqual(out.getvalue(), b"abcde")
 
     def test_pipelined_bytes_after_a_build_body_refused(self):
         smuggled = b"POST /v5/libpod/containers/create HTTP/1.1\r\n\r\n"
-        up = FakeSock([])
         with self.assertRaises(gate.Deny):
-            gate.stream_body(FakeSock([]), up, [("Transfer-Encoding", "chunked")], b"3\r\nabc\r\n0\r\n\r\n" + smuggled)
-        self.assertNotIn(b"0\r\n\r\n", up.sent, "the body's end is never sent, so the build never runs")
+            gate.spool_body(FakeSock([]), [("Transfer-Encoding", "chunked")], b"3\r\nabc\r\n0\r\n\r\n" + smuggled,
+                            io.BytesIO())
         with self.assertRaises(gate.Deny):
-            gate.stream_body(FakeSock([]), FakeSock([]), [("Content-Length", "3")], b"abc" + smuggled)
+            gate.spool_body(FakeSock([]), [("Content-Length", "3")], b"abc" + smuggled, io.BytesIO())
 
     def test_pipelined_request_refused_by_the_handler(self):
         import socket as so
@@ -414,6 +460,72 @@ class BuildOptions(unittest.TestCase):
                 g.rewrite_build("/v5/libpod/build?t=x&" + q)
         g.rewrite_build("/v5/libpod/build?t=x&secrets=%5B%22id%3Ds%2Csrc%3Dpodman-build-secret-123%22%5D"
                         "&dockerfile=%5B%22Containerfile%22%5D&rm=1&layers=1&output=x&outputformat=oci")
+
+
+class Images(unittest.TestCase):
+    """Tim, 1 Oct (A4 low, image reads): the dev tier runs and builds only from public registry images, this
+    session's own builds, or images the project lists in dev_images."""
+
+    def gate(self, **cfg):
+        g = Fake({"images/localhost/live-app:latest": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}},
+                  "images/live-app": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}},
+                  "images/localhost/other:1": {"RepoTags": ["localhost/other:1"],
+                                               "Labels": {"agentbox.project": "other", "agentbox.role": "dev",
+                                                          "agentbox.session": "abt-o-1"}},
+                  "images/localhost/mine:1": {"RepoTags": ["localhost/mine:1"],
+                                              "Labels": {"agentbox.project": "proj", "agentbox.role": "dev",
+                                                         "agentbox.session": "abt-s-1"}},
+                  "images/localhost/mine:old": {"RepoTags": ["localhost/mine:old"],
+                                                "Labels": {"agentbox.project": "proj", "agentbox.role": "dev",
+                                                           "agentbox.session": "abt-s-0"}},
+                  "images/abc123": {"RepoTags": [], "Labels": {}}})
+        g.cfg.update(cfg)
+        return g
+
+    def test_run(self):
+        g = self.gate()
+        for ref in ("localhost/live-app:latest", "live-app", "localhost/other:1", "localhost/mine:old", "abc123"):
+            with self.subTest(ref=ref), self.assertRaises(gate.Deny):
+                decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
+        for ref in ("docker.io/library/busybox:1.36", "localhost/mine:1"):
+            decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/libpod/containers/create",
+                   {"image": "busybox", "image_volumes": [{"Source": "localhost/live-app:latest", "Destination": "/i"}]})
+        g = self.gate(images=["localhost/mine:*", "localhost/live-app:latest"])
+        for ref in ("localhost/mine:old", "live-app"):
+            decide(g, "POST", "/v5/libpod/containers/create", {"image": ref})
+
+    def context(self, files):
+        import tarfile
+        import tempfile
+        f = tempfile.NamedTemporaryFile(suffix=".tar")
+        with tarfile.open(fileobj=f, mode="w") as t:
+            for name, text in files.items():
+                data = text.encode()
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
+        f.flush()
+        self.addCleanup(f.close)
+        return f.name
+
+    def test_build(self):
+        g = self.gate()
+        q = "/v5/libpod/build?dockerfile=%5B%22Containerfile%22%5D"
+        for cf in ("FROM localhost/live-app:latest\n", "FROM docker.io/library/busybox:1.36\nCOPY --from=live-app /a /b\n",
+                   "FROM busybox\nRUN --mount=type=bind,from=localhost/other:1,target=/o true\n",
+                   "ARG BASE=localhost/live-app:latest\nFROM $BASE\n", "FROM $UNSET\n"):
+            with self.subTest(cf=cf), self.assertRaises(gate.Deny):
+                g.check_build_images(self.context({"Containerfile": cf}), q)
+        g.check_build_images(self.context({"Containerfile": (
+            "FROM docker.io/library/python:3.12 AS build\nRUN true\nFROM localhost/mine:1\n"
+            "COPY --from=build /a /b\nRUN <<EOF\nFROM localhost/live-app:latest\nEOF\n")}), q)
+        g.check_build_images(self.context({"Containerfile": "ARG BASE\nFROM $BASE\n"}),
+                             q + "&buildargs=%7B%22BASE%22%3A%22busybox%22%7D")
+        with self.assertRaises(gate.Deny):          # the dockerfile must be in the context
+            g.check_build_images(self.context({"Containerfile": "FROM busybox\n"}),
+                                 "/v5/libpod/build?dockerfile=%5B%22%2Fetc%2Fhostname%22%5D")
 
 
 class Unsupported(unittest.TestCase):

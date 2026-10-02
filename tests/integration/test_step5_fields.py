@@ -65,15 +65,21 @@ CASES = [
     # ---- mounts -------------------------------------------------------------------------------------
     Case("bind_outside", "mounts", "container", "mounts[type=bind].source (outside the project)",
          bad=lambda c: {"mounts": [{"type": "bind", "source": "/etc", "destination": "/h"}]},
-         good=lambda c: {"mounts": [{"type": "bind", "source": c.data, "destination": "/d"}]},
+         good=lambda c: {"mounts": [{"type": "bind", "source": c.root, "destination": "/d"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": "/etc", "Destination": "/h"}),
-         check=lambda d, c: any(m["Source"] == c.data for m in d["Mounts"])),
+         check=lambda d, c: any(m["Source"] == c.root for m in d["Mounts"])),
     Case("bind_symlink_out", "mounts", "container", "mounts[type=bind].source (a symlink in the project pointing out)",
          bad=lambda c: {"mounts": [{"type": "bind", "source": c.link_out, "destination": "/h"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": CTX.link_out, "Destination": "/h"})),
-    Case("bind_swapped_at_start", "mounts", "custom", "a bind source swapped for a symlink after create",
-         custom=lambda t, c: t.swap_case(c), after="re-checked at start (Mounts[].Source re-resolved)",
-         note="found 1 Oct: podman resolves the source at start"),
+    Case("bind_sub_path", "mounts", "container", "mounts[type=bind].source (a path inside the project, not a grant root)",
+         good=lambda c: {"mounts": [{"type": "bind", "source": c.root, "destination": "/d"}]},
+         stored=lambda d: mounts(d, {"Type": "bind", "Source": CTX.data, "Destination": "/d"}),
+         check=lambda d, c: any(m["Source"] == c.root for m in d["Mounts"]),
+         custom=lambda t, c: t.swap_case(c),
+         after="yes: a bind must be a grant root; a grant volume's device must be one; mountinfo after start",
+         note="rewritten: a sub-path becomes a SubPath of the gate's bind-backed volume over its grant root, "
+              "resolved by podman inside the volume, so a symlink swapped in before start cannot lead out "
+              "(Tim's option 3, 1 Oct). Pods: sub-paths refused"),
     Case("bind_relative", "mounts", "container", "mounts[type=bind].source (relative path)",
          bad=lambda c: {"mounts": [{"type": "bind", "source": "data", "destination": "/h"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": "data", "Destination": "/h"})),
@@ -100,6 +106,14 @@ CASES = [
          check=lambda d, c: any(m.get("Type") == "image" and m.get("Destination") == "/i" for m in d["Mounts"]),
          after="Mounts[].Type image allowed (any local image: reads are not scoped, see A4 lows)",
          note="only images already present: no pull past the registry allowlist"),
+    Case("image_run", "mounts", "container", "image (another project's or a live stack's localhost/ image)",
+         bad=lambda c: {"image": c.live_img}, good=lambda c: {"image": IMG},
+         check=lambda d, c: d["ImageName"] == IMG,
+         after="refused before forwarding (the image is chosen before podman stores anything)",
+         note="Tim, 1 Oct: public registry images, this session's builds, or the project's dev_images"),
+    Case("image_build_from", "mounts", "custom", "build FROM / COPY --from / RUN --mount from= (a localhost/ image)",
+         custom=lambda t, c: t.build_from_case(c), after="no object until the build ends",
+         note="the context is spooled and its Containerfile read before forwarding"),
     Case("tmpfs", "mounts", "container", "mounts[type=tmpfs].options",
          bad=lambda c: {"mounts": [{"type": "tmpfs", "destination": "/t", "options": ["context=x"]}]},
          good=lambda c: {"mounts": [{"type": "tmpfs", "destination": "/t", "options": ["size=16m"]}]},
@@ -384,6 +398,8 @@ def setUpModule():
         os.makedirs(d, exist_ok=True)
     with open(os.path.join(c.outside, "marker.txt"), "w") as f:
         f.write("OUTSIDE_MARKER\n")
+    with open(os.path.join(c.outside, "f"), "w") as f:          # what a sub-path that led out would show
+        f.write("OUTSIDE_MARKER\n")
     c.link_out = os.path.join(root, "link-out")
     os.symlink(c.outside, c.link_out)
     c.canary = f"{P}-canary"
@@ -392,6 +408,14 @@ def setUpModule():
                    "--label", "io.podman.compose.project=abt-other", c.canary_vol)
     harness.podman("create", "--name", c.canary, "--label", "agentbox-test=1", "--label", harness.LABEL,
                    "--network=none", IMG, "true")
+    c.live_img = f"localhost/{P}-liveimg:latest"         # stands in for a live stack's own build
+    ctx = os.path.join(c.tmp, "liveimg")
+    os.makedirs(ctx, exist_ok=True)
+    with open(os.path.join(ctx, "Containerfile"), "w") as f:
+        f.write(f"FROM {IMG}\nRUN echo live > /live.txt\n")
+    p = harness.podman("build", "-q", "-t", c.live_img, "--label", "agentbox-test=1", "--label", harness.LABEL,
+                       ctx, timeout=600)
+    assert p.returncode == 0, p.stderr
     c.volumes_before = harness.all_volumes()
     keys = ("AB_CONFIG_DIR", "AB_DATA_DIR", "AB_RUN_DIR")
     c.old_env = {k: os.environ.get(k) for k in keys}
@@ -553,7 +577,8 @@ class Fields(unittest.TestCase):
                          "no new volume left behind")
 
     def known_volumes(self):
-        return {f"{P}-refvol", f"{P}-newvol", f"{P}-rovol"} | {v for v in harness.all_volumes() if v.startswith(f"{P}-ok-")}
+        return {f"{P}-refvol", f"{P}-newvol", f"{P}-rovol"} | {v for v in harness.all_volumes()
+                                                                if v.startswith((f"{P}-ok-", f"{SESS.name}-grant"))}
 
     def run_case(self, case):
         if case.bad:
@@ -598,24 +623,57 @@ class Fields(unittest.TestCase):
 
     # ---- custom cases ------------------------------------------------------------------------------
     def swap_case(self, c):
-        name = f"{P}-swap"
+        """A sub-path bind is rewritten to a grant-volume SubPath and works; the same path swapped for a symlink
+        out before start never shows the outside file; a pod's sub-path bind is refused."""
         src = os.path.join(c.root, "swapdir")
         os.makedirs(src, exist_ok=True)
-        st, body = api("POST", "/libpod/containers/create", {"image": IMG, "name": name, "command": ["sleep", "60"],
-                                                               "mounts": [{"type": "bind", "source": src,
-                                                                           "destination": "/s"}]})
-        self.assertEqual(st, 201, body)
-        os.rename(src, src + ".real")
-        os.symlink(c.outside, src)
+        with open(os.path.join(src, "f"), "w") as f:
+            f.write("SUBPATH_INSIDE\n")
+        names = []
+        for n in ("ok", "swapped"):
+            name = f"{P}-sub-{n}"
+            names.append(name)
+            st, body = api("POST", "/libpod/containers/create", {
+                "image": IMG, "name": name, "command": ["sh", "-c", "cat /s/f; sleep 30"],
+                "mounts": [{"type": "bind", "source": src, "destination": "/s", "options": ["ro"]}]})
+            self.assertEqual(st, 201, body)
+            doc = inspect("container", name)
+            self.assertEqual([(m["Type"], m.get("Name")) for m in doc["Mounts"] if m["Destination"] == "/s"],
+                             [("volume", f"{SESS.name}-grant0")], "rewritten to the grant volume")
         try:
-            st, body = api("POST", f"/libpod/containers/{name}/start")
-            self.assert_refused(st, body, "start after the bind source became a symlink")
-            state = inspect("container", name)["State"]
-            self.assertFalse(state.get("Running"), "it never ran")
+            st, body = api("POST", f"/libpod/containers/{names[0]}/start")
+            self.assertIn(st, (204, 304), body)
+            self.assertTrue(harness.wait_for(lambda: "SUBPATH_INSIDE" in harness.podman("logs", names[0]).stdout,
+                                             timeout=30), "the sub-path is mounted")
+            os.rename(src, src + ".real")
+            os.symlink(c.outside, src)
+            st, body = api("POST", f"/libpod/containers/{names[1]}/start")
+            logs = harness.podman("logs", names[1]).stdout
+            self.assertNotIn("OUTSIDE_MARKER", logs, f"the swapped sub-path led out ({st} {body[:200]})")
+            print(f"\n  swapped sub-path at start: {st} {body[:160]}")
         finally:
-            os.unlink(src)
-            os.rename(src + ".real", src)
-            api("DELETE", f"/libpod/containers/{name}?force=true&t=0")
+            if os.path.islink(src):
+                os.unlink(src)
+                os.rename(src + ".real", src)
+            for name in names:
+                api("DELETE", f"/libpod/containers/{name}?force=true&t=0")
+        st, body = api("POST", "/libpod/pods/create", {"name": f"{P}-subpod", "no_infra": True,
+                                                         "mounts": [{"type": "bind", "source": src, "destination": "/s"}]})
+        self.assert_refused(st, body, "a pod's sub-path bind")
+        self.assertIn("only a grant root itself", body)
+
+    def build_from_case(self, c):
+        for cf in (f"FROM {c.live_img}\n", f"FROM {IMG}\nCOPY --from={c.live_img} /live.txt /x\n",
+                   f"FROM {IMG}\nRUN --mount=type=bind,from={c.live_img},source=/live.txt,target=/l cat /l\n",
+                   f"ARG BASE={c.live_img}\nFROM $BASE\n"):
+            st, body = build({"t": f"{P}-from"}, {"Containerfile": cf})
+            self.assert_refused(st, body, f"build {cf.strip()}")
+        self.assertNotEqual(harness.podman("image", "exists", f"{P}-from").returncode, 0)
+        st, body = build({"t": f"{P}-from"}, {"Containerfile": f"FROM {IMG}\nRUN echo own > /own.txt\n"})
+        self.assertEqual(st, 200, build_lines(body)[-300:])
+        st, body = build({"t": f"{P}-from2"}, {"Containerfile": f"FROM localhost/{P}-from:latest\n"})
+        self.assertEqual(st, 200, "this session's own build can be the base of the next: "
+                         + build_lines(body)[-300:])
 
     def build_secret_case(self, c):
         st, body = build({"t": f"{P}-secret", "secrets": json.dumps(["id=s,src=secret.txt"])},
@@ -715,10 +773,12 @@ def table():
             "|---|---|---|---|---|---|"]
     for c in CASES:
         before = "yes (403)" if c.bad else ("rewritten" if "rewritten" in c.note else "n/a")
+        if c.id == "bind_sub_path":
+            before = "rewritten (containers); yes, 403 (pods)"
         if c.kind == "compat":
             before = "yes (403: every Docker-API create is refused; the field's own check is unit-tested)"
         if c.kind == "custom" and not c.bad:
-            before = {"bind_swapped_at_start": "at start (403)", "run_mount_cache": "n/a (isolated TMPDIR)",
+            before = {"run_mount_cache": "n/a (isolated TMPDIR)",
                       "run_mount_bind_escape": "n/a (buildah refuses)", "build_tag": "yes (403)",
                       "pod_member": "yes (403 for pasta); pod membership dropped, network replaced"}.get(c.id, "n/a")
         if c.stored:

@@ -424,7 +424,44 @@ Findings and responses are in `docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md`; th
   - commits are scanned on all refs;
   - the scan and log keeping run in the module teardown, so `ab kill` and `ab gc` do both, and the scan can no longer stop a teardown.
 - **OMP lockdown** covers the project's `.omp` whole, plus Claude's settings files.
-- **For Tim (residual, high):** the start-time race. A session can swap a bind source between the gate's start check and the runtime's mount. The swapped mount is then detected from mountinfo and the container removed, but its process has already run. The options:
+- **For Tim (residual, high; decided later the same day, see "Bind sources" below):** the start-time race. A session can swap a bind source between the gate's start check and the runtime's mount. The swapped mount is then detected from mountinfo and the container removed, but its process has already run. The options:
   1. **Accept,** with detection and removal as now.
   2. **Bind only the grant roots themselves.** No sub-path binds; the agent cannot replace a grant root. This breaks compose files that bind `./data`.
   3. **Rewrite sub-path binds** into a gate-made volume over the grant root plus a `SubPath`. podman resolves the sub-path inside that root, so a symlink cannot leave it; this wants a check of podman's sub-path handling first.
+
+## 2026-10-01 · Bind sources: sub-paths through a grant volume (Tim: not option 1; option 3 if podman holds)
+
+- **Decision (Tim):** the start-time window is not acceptable. It could mount any host path (~/.ssh, the token file, live `.env` files) into a process the agent controls, and removing the container afterwards is too late. First option 2 (grant roots only), then option 3 only if podman stays inside the volume in every case.
+- **Option 2, done first:** only a grant root itself may be bind-mounted. A grant root is a mount point in the agent's container, so the agent cannot replace it.
+- **Option 3, evidence on this host** (podman 5.7.0, 1 Oct; throwaway `abt-` volume and containers under /tmp):
+  - **Setup:** a local volume with `type=none,o=bind,device=<root>`, mounted with `subpath=`. podman resolves the sub-path with `securejoin.OpenInRoot` (`openat2`, resolution confined to the volume).
+  - **Symlinks pointing out of the root,** relative (`../outside`) and absolute, present at create: refused (`no such file or directory`).
+  - **Sub-path a directory at create, swapped for a symlink out before start:** refused at start, for relative and absolute targets, and when the swapped part is an intermediate component (`mid/b` with `mid` swapped).
+  - **A symlink inside the root:** followed, and it stays inside.
+  - **Race:** 150 starts while a loop flipped the sub-path between a directory and a symlink out. 32 saw the inside file, 118 were refused, none saw the outside one.
+  - **Control:** the same race against a plain sub-path bind escaped in 21 of 60 starts.
+  - **Removing the volume:** removing the bind-backed volume, both while a container used it and after, left the root's files in place.
+  - **Through the real gate:** `test_step5_fields.test_bind_sub_path`. A sub-path bind works; the same path swapped for a symlink out before start is refused by podman (500, `securejoin.OpenInRoot ... no such file or directory`) and never shows the outside file.
+- **So option 3 is in:**
+  - A container's bind of a path below a grant root becomes a `SubPath` of the gate's own bind-backed volume over that root. That volume is named `<session>-grant<n>`, created on the raw service and labelled role `grant`, so the agent can name it in no request.
+  - Mount options carry over where a volume accepts them (`ro`, `z`, `U`, ...); propagation and `rbind` are dropped.
+  - A grant root itself is still a plain bind.
+  - After create, a bind must be a grant root, and a grant volume's device must be one. After start, mountinfo must show the root, or a path inside it for a grant volume.
+- **Pods and Docker-API creates keep option 2** (sub-paths refused): pods with an infra container and Docker-API creates are refused anyway, and infra-less pods' mounts are rare.
+
+## 2026-10-01 · Dev-tier image allowlist (Tim, A4 low)
+
+- **What:** the images the dev tier may use are restricted.
+  - **Run:** a container's `image` and `image_volumes`.
+  - **Build:** every image the Containerfile names (`FROM`, `COPY --from`, `RUN --mount=...,from=`).
+- **Allowed:** an image with a name from an allowlisted registry (docker.io, ghcr.io, lscr.io, quay.io), an image built in this session, or a name matching the project's `dev_images` patterns (`ab project add --dev-image 'localhost/myapp:*'`). Any other local image, such as another project's build or a live stack's own `localhost/` image, is refused.
+- **Builds:**
+  - **Spooling:** the gate spools the build context to the session's TMPDIR (8 GiB at most) and reads its Containerfile(s) before forwarding.
+  - **ARG substitution:** ARG defaults and build args are substituted. A reference the gate cannot resolve is refused.
+  - **Not images:** stage names, stage numbers and `scratch`.
+  - **Heredoc bodies** are skipped.
+- **Consequence:** an image this project built in an *earlier* session is not usable by default, because it is not "the session's own build". A compose service whose image already exists is refused until it is rebuilt or listed in `dev_images` (for example `localhost/<project>-*`). That is Tim's default as given; widening it to the project's own earlier builds is a one-line change if wanted.
+
+## 2026-10-01 · The local model selftest line is SKIP when the model is off
+
+- `proxied local model ... allowed` is a SKIP, with the reason, when `10.0.0.2:8080` does not answer from the host. It is the same host-side check the direct cases already use. When the model answers, the line is a real check.
