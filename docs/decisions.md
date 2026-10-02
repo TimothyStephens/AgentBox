@@ -483,3 +483,31 @@ Findings and responses are in `docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md`; th
   - the time the DNS lookup and the check took.
 - The same goes to `<logs>/<session>-<start>-selftest-diag.log`.
 - There are no retries. This is for diagnosing the 1 Oct flake: three proxied CONNECTs unanswered in one step-4 selftest, which passed alone and in a full rerun.
+
+## 2026-10-02 · What real podman-compose needed (the trial)
+
+The trial's agent could not run an image it built. The itests had passed with hand-built requests while real compose failed. `test_step5_compose` now runs a real compose workflow through the real gate, and these fixes made it pass:
+
+- **Builds reach the proxy.** A build's RUN steps run in the holder's network namespace with their own resolv.conf, where the proxy's container name does not resolve.
+  - The gate passes the proxy by its IP, as build args in both spellings (buildah gives these predefined args to RUN steps as environment).
+  - It sets the build's DNS server to podman's resolver on the session network's gateway.
+- **The project's own images can be run.** `podman run` and compose pull with `policy=missing` before every create. A pull of an image that is already present, and that the dev tier may use (in the gate's build record, or listed), is answered by the gate (`{"images": [id], "id": id}`) and never forwarded.
+- **Start no longer trips over podman's own annotations.** podman adds the stop signal and stop timeout as annotations: `org.opencontainers.image.stopSignal`, `org.systemd.property.KillSignal`, `org.systemd.property.TimeoutStopUSec`.
+  - The post-create and start checks accept exactly the values podman derives from the container's own config.
+  - They also accept the image's own annotations, compared by value.
+  - `run.oci.*`, `org.systemd.*` and the other runtime-changing prefixes stay refused, even from an image.
+- **`depends_on` (`--requires`)** is allowed when every named container is this session's and passed its check. The gate passes them by ID, and the post-create check requires the stored dependencies to be checked containers.
+  - **Note:** starting a container starts its dependencies without a separate gate start check. Those dependencies were checked at create, and their binds can only be grant roots or grant-volume sub-paths, which cannot be swapped out.
+- **`NO_PROXY` and `no_proxy`** are two variables. The case-duplicate check now applies to JSON field names only, not to keys of data maps (env, labels, annotations, ...).
+  - The dev sockguard still refuses an env object with two keys that differ only in case, so the gate moves the second spelling into `envmerge` (`KEY=VALUE`), which podman sets the same way.
+  - A value containing `$` would be expanded there, so that one case is refused with a message.
+- **A missing container, pod, volume or network is answered 404,** as podman would. Compose asks whether things exist before it creates them, and the gate's 403 broke that.
+- **Pods:** the dev sockguard's owner policy cannot resolve pods (compose's `pod rm` failed and `down` left the pod).
+  - For a pod that is this session's (labels and the verified record, checked first), the gate sends these operations to the podman service itself: inspect, exists, top, start (after its per-member checks), stop, kill, restart and remove.
+  - Teardown (what `ab kill` runs) removes a pod left behind.
+  - Both are tested in the compose itest.
+- **Images:** curl and python3-venv are added to agentbox-claude and agentbox-omp.
+- **Unchanged:** compose `down` still asks to delete the session network and is refused. `down` succeeds anyway.
+- **Found by the full itest runs after these fixes:**
+  - **A race in the build record.** The gate wrote a build's image ID after the client had the whole reply, so a build started right away (the same tag again) could be refused. The ID is now recorded as soon as it passes through the gate, before the client sees the end of the reply.
+  - **Kept proxy logs now include squid's stderr (cache.log)** when the proxy handled any request. It says why an upstream connection failed: one full run had squid answer 503 to a build's CONNECT to pypi.org. That is the egress watch item in progress.md.

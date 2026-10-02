@@ -30,6 +30,29 @@ class TrialCheck(TempCase):
         self.assertFalse([p for p in rel if p.startswith(("repos/abt-trial", ".local/share/agentbox"))], rel)
         self.assertNotIn("notes/a.txt", rel)
 
+    def test_changes_split_and_truncated(self):
+        home = check.HOME
+        changed = [f"{home}/.claude/projects/x.jsonl", f"{home}/.config/claude-container/c.json",
+                   "/srv/stackdata/config/db.sqlite", f"{home}/repos/someproj/notes.md"] + \
+                  [f"{home}/repos/other/f{i}" for i in range(9)]
+        fail, by_live, by_claude = check.split_changes(changed, ["/srv/stackdata/config"])
+        self.assertEqual(by_live, ["/srv/stackdata/config/db.sqlite"])
+        self.assertEqual(len(by_claude), 2)
+        self.assertEqual(len(fail), 10)
+        out = check.truncate(fail)
+        self.assertIn(f"... and 4 more under {home}/repos/other", out)
+        self.assertIn(f"{home}/repos/someproj/notes.md", out)
+
+    def test_only_live_compose_containers_and_old_launchers(self):
+        cs = [{"Id": "1", "Names": ["site_web"], "Labels": {"com.docker.compose.project": "site"}, "State": "running"},
+              {"Id": "2", "Names": ["ab-claude-x-1"], "Labels": {"agentbox.session": "s",
+                                                                "io.podman.compose.project": "x"}, "State": "running"},
+              {"Id": "3", "Names": ["old_one"], "Labels": {}, "Image": "localhost/claudecode:latest",
+               "State": "running"},
+              {"Id": "4", "Names": ["loose"], "Labels": {}, "Image": "docker.io/library/busybox:1.36", "State": "exited"}]
+        self.assertEqual([c["Id"] for c in cs if check.is_live(c)], ["1"])
+        self.assertEqual(check.old_launchers(cs), ["old_one (localhost/claudecode:latest)"])
+
     def test_live_stack_comparison(self):
         before = {"a": {"name": "media_web", "started": "t1", "restarts": 0},
                   "b": {"name": "deploy_app", "started": "t1", "restarts": 0}}

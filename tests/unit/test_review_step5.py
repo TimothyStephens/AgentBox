@@ -45,6 +45,11 @@ class Fake(gate.Gate):
 
     def image_doc(self, ref):
         doc = self.objects.get(f"images/{ref}")
+        first = ref.split("/", 1)[0]
+        if doc is None and first in self.cfg["registries"]:
+            return {"RepoTags": [ref], "Labels": {}}
+        if doc is None and "/" in ref and ("." in first or ":" in first or first == "localhost"):
+            return None                      # a registry-qualified name this fake store does not have
         return doc if doc is not None else {"RepoTags": [f"docker.io/library/{ref}"], "Labels": {}}
 
     def slice_state(self, name):
@@ -571,6 +576,17 @@ class BuiltRecord(unittest.TestCase):
             w.feed(raw)
             self.assertEqual(w.close(), want, raw[-40:])
 
+    def test_id_recorded_before_the_reply_ends(self):
+        """Found by the full itest (2 Oct): the record was written after the client had the whole reply, so a
+        build started right away could miss it."""
+        from agentbox import builtrec
+        seen = []
+        w = builtrec.BuildWatcher(on_id=seen.append)
+        w.feed(b'HTTP/1.1 200 OK\r\n\r\n{"stream":"STEP 1/1\\n"}\n')
+        self.assertEqual(seen, [])
+        w.feed(b'{"stream":"' + b"d" * 64 + b'\\n"}\n')
+        self.assertEqual(seen, ["d" * 64], "recorded while the reply is still being passed on")
+
     def test_gc_drops_removed_images_from_the_record(self):
         import tempfile
         from agentbox import builtrec, session
@@ -597,6 +613,101 @@ class BuiltRecord(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "", "")
         session.gc_images(Settings(), Podman(), now=1e10)
         self.assertEqual(builtrec.ids(rec), {new})
+
+
+class TrialFindings(unittest.TestCase):
+    """The trial (2 Oct): what real podman-compose needed."""
+
+    def test_stop_signal_annotations_from_podman_are_not_client_set(self):
+        self.assertEqual([gate.signal_number(v) for v in ("SIGTERM", "TERM", "15", 15, "SIGINT", "", None, "BOGUS")],
+                         [15, 15, 15, 15, 2, None, None, None])
+        g = Fake()
+        doc = container("c1")
+        doc["Config"].update(StopSignal="SIGTERM", StopTimeout=10, Annotations={
+            "io.container.manager": "libpod", "org.opencontainers.image.stopSignal": "15",
+            "org.systemd.property.KillSignal": "15", "org.systemd.property.TimeoutStopUSec": "uint64 10000000"})
+        self.assertEqual(g.container_violations(doc), [])
+        doc["Config"]["Annotations"]["org.systemd.property.KillSignal"] = "9"          # not what podman derives
+        self.assertTrue(g.container_violations(doc))
+        doc["Config"]["Annotations"]["org.systemd.property.KillSignal"] = "15"
+        doc["Config"]["Annotations"]["org.systemd.property.MemoryMax"] = "infinity"    # never from podman
+        self.assertTrue(g.container_violations(doc))
+
+    def test_image_annotations_compared_by_value(self):
+        g = Fake({"images/img1": {"Id": "img1", "Annotations": {"org.opencontainers.image.version": "1.36",
+                                                                 "run.oci.keep_original_groups": "1"}}})
+        doc = container("c1", Image="img1")
+        doc["Config"]["Annotations"] = {"org.opencontainers.image.version": "1.36"}
+        self.assertEqual(g.container_violations(doc), [])
+        doc["Config"]["Annotations"] = {"run.oci.keep_original_groups": "1"}   # refused even from the image
+        self.assertTrue(g.container_violations(doc))
+
+    def test_no_proxy_in_both_spellings_is_two_variables(self):
+        _t, body, _k = decide(Fake(), "POST", "/v5/libpod/containers/create",
+                              {"image": "x", "env": {"NO_PROXY": "db", "no_proxy": "db"}})
+        spec = json.loads(body)
+        merged = dict(spec.get("env") or {})
+        merged.update(e.split("=", 1) for e in spec.get("envmerge") or [])
+        self.assertEqual((merged.get("NO_PROXY"), merged.get("no_proxy")), ("db", "db"))
+        lowered = [k.lower() for k in spec["env"]]
+        self.assertEqual(len(lowered), len(set(lowered)), "one spelling per key in the env object (sockguard refuses two)")
+        with self.assertRaises(gate.Deny):          # field names still may not differ only in case
+            decide(Fake(), "POST", "/v5/libpod/containers/create", {"image": "x", "Image": "y"})
+
+    def test_depends_on_own_containers_only(self):
+        g = Fake({"containers/db": container("db1")})
+        with self.assertRaises(gate.Deny):          # not checked yet
+            decide(g, "POST", "/v5/libpod/containers/create", {"image": "x", "dependencyContainers": ["db"]})
+        g.verified.add("db1")
+        _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create", {"image": "x", "dependencyContainers": ["db"]})
+        self.assertEqual(json.loads(body)["dependencyContainers"], ["db1"])
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/libpod/containers/create", {"image": "x", "dependencyContainers": ["live_web"]})
+        doc = container("c1", Dependencies=["db1"])
+        self.assertEqual(g.container_violations(doc), [])
+        self.assertTrue(g.container_violations(container("c1", Dependencies=["other"])))
+
+    def test_pull_of_a_present_own_image_is_answered_locally(self):
+        g = Fake({"images/localhost/web:latest": {"Id": "a" * 64, "RepoTags": ["localhost/web:latest"]}})
+        with self.assertRaises(gate.Deny):          # present, but not this project's build
+            decide(g, "POST", "/v5/libpod/images/pull?reference=localhost/web:latest&policy=missing")
+        import tempfile
+        from agentbox import builtrec
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        g.cfg["built_record"] = builtrec.path_for(d, "proj")
+        builtrec.add(g.cfg["built_record"], "a" * 64, "abt-s-1")
+        with self.assertRaises(gate.LocalImage) as e:
+            decide(g, "POST", "/v5/libpod/images/pull?reference=localhost/web:latest&policy=missing")
+        self.assertEqual(e.exception.image_id, "a" * 64)
+        with self.assertRaises(gate.Deny):          # absent: never pulled from localhost
+            decide(g, "POST", "/v5/libpod/images/pull?reference=localhost/nothere:1&policy=missing")
+
+    def test_session_pod_operations_go_to_the_service(self):
+        pod = {"Id": "pid", "Labels": POD_DEV, "InfraContainerID": "", "Containers": []}
+        g = Fake({"pods/p": pod, "pods/pid": pod, "pods/other": {"Id": "oid", "Labels": {}}})
+        g.verified.add("pid")
+        for method, path in (("DELETE", "/v5/libpod/pods/p"), ("POST", "/v5/libpod/pods/p/stop"),
+                             ("GET", "/v5/libpod/pods/p/exists"), ("GET", "/v5/libpod/pods/p/json")):
+            self.assertEqual(decide(g, method, path)[2], "pod_raw", path)
+        self.assertEqual(decide(g, "POST", "/v5/libpod/pods/p/start")[2], "pod_start")
+        with self.assertRaises(gate.Deny):          # not the session's: never to the service
+            decide(g, "DELETE", "/v5/libpod/pods/other")
+        with self.assertRaises(gate.NotFound):
+            decide(g, "DELETE", "/v5/libpod/pods/nothere")
+
+    def test_missing_objects_are_404(self):
+        with self.assertRaises(gate.NotFound):
+            decide(Fake(), "GET", "/v5/libpod/containers/nothere/json")
+
+    def test_builds_use_the_proxy_ip_and_session_dns(self):
+        from urllib.parse import parse_qsl, urlsplit
+        g = Fake()
+        g.cfg["build_proxy_env"] = {"http_proxy": "http://10.89.3.2:3128", "HTTPS_PROXY": "http://10.89.3.2:3128"}
+        g.cfg["build_dns"] = ["10.89.3.1"]
+        q = dict(parse_qsl(urlsplit(g.rewrite_build("/v5/libpod/build?t=x&dnsservers=%5B%228.8.8.8%22%5D")).query))
+        self.assertEqual(json.loads(q["buildargs"])["http_proxy"], "http://10.89.3.2:3128")
+        self.assertEqual(json.loads(q["dnsservers"]), ["10.89.3.1"])
 
 
 class Unsupported(unittest.TestCase):

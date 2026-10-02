@@ -77,7 +77,8 @@ class BuildWatcher:
     successful build's last stream line is the full 64-hex ID (podman 5.7, checked 2 Oct); an error line, or
     a status other than 200, clears it."""
 
-    def __init__(self):
+    def __init__(self, on_id=None):
+        self.on_id = on_id                # called with the ID as soon as it is seen, before it is passed on
         self.raw = b""                    # bytes not yet parsed as HTTP framing
         self.head = None                  # None until the response head is read
         self.chunked = False
@@ -157,3 +158,5 @@ class BuildWatcher:
         text = str(doc.get("stream") or "").strip()
         if text:
             self.image_id = text if ID.match(text) else None   # the ID is the last stream line
+            if self.image_id and self.ok and self.on_id:
+                self.on_id(self.image_id)

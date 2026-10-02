@@ -11,6 +11,7 @@
 #     absolute /root/.omp/... paths; inside a session ~/.omp is under the host user's home.
 #   * python-is-python3, debugpy: the debugger probe needed both (design: OMP adapter).
 #   * chromium: OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is not mounted.
+#   * python3-venv and curl: the trial (2 Oct) found agents need a venv and an HTTP client in the session.
 #   * the compose tool (dev tier) and debugpy, from requirements.txt: every package and dependency pinned
 #     with hashes (pip --require-hashes);
 #   * podman-remote 5.7.0 (below), replacing Debian's 4.3 client on PATH.
@@ -18,7 +19,8 @@ ARG BASE=localhost/omp-env:latest
 FROM ${BASE}
 ARG AB_HOME=/home/vmuser
 
-RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium && apt-get clean
+RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium python3-venv curl \
+    && apt-get clean
 COPY requirements.txt /tmp/agentbox-requirements.txt
 RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/agentbox-requirements.txt
 # /root is about to become readable by the session user: refuse to build if it holds credentials.

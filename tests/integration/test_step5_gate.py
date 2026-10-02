@@ -163,7 +163,8 @@ class Step5(unittest.TestCase):
         self.assertIn("EXEC_OK", out)
         self.assertIn("BUILD_LAN_BLOCKED", out)
         self.assertIn("BUILD_DIRECT_BLOCKED", out)
-        self.assertRegex(out, r"BUILD_PROXY=http://\S+-proxy:3128")
+        # by the proxy's IP: a build's own resolv.conf cannot resolve the proxy's container name (trial, 2 Oct)
+        self.assertRegex(out, r"BUILD_PROXY=http://\d+\.\d+\.\d+\.\d+:3128\n")
         # decision 1 Oct: no_proxy holds the names already on the session network, so services reach each other
         self.assertRegex(out, r"WORKER_NOPROXY=localhost,127\.0\.0\.1,10\.\S*\bweb\b")
         self.assertNotRegex(out, r"WORKER_NOPROXY=.*(-proxy|-holder)", "only the dev stack's names")

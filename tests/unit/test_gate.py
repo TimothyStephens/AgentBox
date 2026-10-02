@@ -34,6 +34,9 @@ class FakeGate(gate.Gate):
     images = {}                      # ref -> image doc; any other ref is a public docker.io image
 
     def image_doc(self, ref):
+        first = ref.split("/", 1)[0]
+        if ref not in self.images and "/" in ref and ("." in first or ":" in first or first == "localhost"):
+            return None                      # a registry-qualified name the fake store does not have
         return self.images.get(ref, {"RepoTags": [f"docker.io/library/{ref}"], "Labels": {}})
 
     def raw_request(self, method, path, body=None):

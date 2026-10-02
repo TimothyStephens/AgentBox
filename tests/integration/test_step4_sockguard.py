@@ -245,13 +245,15 @@ class Step4(unittest.TestCase):
             proc.communicate()
 
     def test_g_client_versions_match_the_server(self):
-        """Both agent images carry podman-remote (first on PATH) of the server's major version, and the
-        compose tool at the host's version."""
+        """Both agent images carry podman-remote (first on PATH) of the server's major version, the compose
+        tool at the host's version, curl and a working python3 -m venv."""
         import re
         host = subprocess.run(["podman-compose", "--version"], capture_output=True, text=True).stdout
         host_compose = re.search(r"podman-compose version (\S+)", host).group(1)
         script = ("command -v podman; podman --remote version --format 'CLIENT={{.Client.Version}} "
-                  "SERVER={{.Server.Version}}'; podman-compose version 2>/dev/null | grep -i 'podman-compose version'")
+                  "SERVER={{.Server.Version}}'; podman-compose version 2>/dev/null | grep -i 'podman-compose version'; "
+                  # the trial (2 Oct): agents need an HTTP client and a venv
+                  "curl --version >/dev/null && echo CURL_OK; python3 -m venv /tmp/abvenv >/dev/null && echo VENV_OK")
         for agent in ("claude", "omp"):
             p, _sess = run_in_session("sgobs", script, agent=agent)
             print(f"\n{agent}: {p.stdout.strip()}\n{p.stderr[-300:]}")
@@ -260,6 +262,8 @@ class Step4(unittest.TestCase):
             self.assertTrue(m, f"{agent}: podman --remote version answered")
             self.assertEqual(m.group(1), m.group(2), f"{agent}: client major version differs from the server's")
             self.assertIn(f"podman-compose version {host_compose}", p.stdout, f"{agent}: compose tool version")
+            self.assertIn("CURL_OK", p.stdout, f"{agent}: curl")
+            self.assertIn("VENV_OK", p.stdout, f"{agent}: python3 -m venv")
 
     def test_h_live_stack_secrets_do_not_leak(self):
         """Review 2026-10-01 #1 and #4: the live stack's secrets (env_file and environment:) must not appear in

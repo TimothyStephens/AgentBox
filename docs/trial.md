@@ -26,6 +26,10 @@ containers (ID, start time, restart count) and the current time:
 cd ~/repos/agentbox && make trial-snapshot
 ```
 
+It records only containers of live compose projects, with their bind-mount sources. It also warns about any
+container running from `localhost/claudecode` or `localhost/omp-env` outside agentbox (the old launchers). Stop
+those first, or their writes show up in the check.
+
 The home scan in `trial-check` reports *every* file under `~` modified after this moment, outside the trial
 project and the excluded paths it prints. So avoid editing files under `~` while the trial runs, or note what
 you touched.
@@ -112,11 +116,14 @@ Then, from the agentbox repo:
 cd ~/repos/agentbox && make trial-check
 ```
 
-It prints one PASS or FAIL line per check, with the details under each FAIL:
+It refuses to run while a session of `abt-trial` is still running. Otherwise it prints one PASS or FAIL line
+per check, with the details under each FAIL (long lists are cut per directory):
 - the live stacks are unchanged (the same container IDs, start times and restart counts as at the
   snapshot);
 - nothing under `~` changed outside `~/repos/abt-trial` and the excluded paths (an mtime scan; no file
-  contents are read; the exclusions are listed);
+  contents are read; the exclusions are listed). Two groups are listed separately as INFO and do not fail the
+  check: changes under the live stacks' bind mounts ("written by live stacks, expected") and under `~/.claude`
+  and `~/.config/claude-container` ("host-side Claude configs, written outside the session");
 - no container, pod, volume, network, podman service or gate of `abt-trial` remains;
 - no gate-created volume over `~/repos/abt-trial` remains.
 

@@ -797,9 +797,30 @@ class NetSession(Session):
         env["NO_PROXY"] = env["no_proxy"] = no_proxy
         return env
 
+    def build_network(self):
+        """(proxy env by the proxy's IP, [DNS servers]) for builds: their RUN steps join the holder's network
+        namespace but get their own resolv.conf, where container names do not resolve (trial, 2 Oct). podman's
+        DNS for the session network answers on the network's gateway."""
+        p = self.podman.run(["inspect", self.proxy_name, "--format", "{{json .NetworkSettings.Networks}}"],
+                            check=False)
+        try:
+            ip = (json.loads(p.stdout or "{}").get(self.int_net) or {}).get("IPAddress") or ""
+        except ValueError:
+            ip = ""
+        g = self.podman.run(["network", "inspect", self.int_net, "--format", "{{range .Subnets}}{{.Gateway}} {{end}}"],
+                            check=False)
+        dns = (g.stdout or "").split()
+        if not ip:
+            return None, dns
+        url = f"http://{ip}:{egress.PROXY_PORT}"
+        no_proxy = ",".join(["localhost", "127.0.0.1"] + list(getattr(self, "int_subnets", [])))
+        return {"http_proxy": url, "https_proxy": url, "HTTP_PROXY": url, "HTTPS_PROXY": url,
+                "no_proxy": no_proxy, "NO_PROXY": no_proxy}, dns
+
     def gate_config(self, service, proxy_env):
         s = self.settings
         svc = s.service_dir(self.name)
+        build_env, build_dns = self.build_network()
         return {
             "listen": self.gate_socket, "upstream": self.sockguard_dev_socket, "raw": service,
             "session": self.name, "network": self.int_net,
@@ -811,6 +832,7 @@ class NetSession(Session):
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
             "images": list(self.project.dev_images), "spool": os.path.join(service_tmp(s, self.name), "gate"),
             "built_record": builtrec.path_for(s.data_dir, self.project.name),
+            "build_proxy_env": build_env, "build_dns": build_dns,
             "log": os.path.join(svc, "gate.log"),
         }
 
@@ -914,7 +936,10 @@ def _keep_logs(settings, podman, session, started, warn):
         try:
             logs = podman.run(["logs", f"{session}-{suffix}"], check=False)
             if logs.returncode == 0 and logs.stdout:
-                _keep(log_path(settings, session, started, kind), logs.stdout.encode())
+                # stdout is squid's access log and sockguard's audit; stderr is squid's cache.log, which says why
+                # an upstream connection failed (the egress flake, 2 Oct)
+                text = (logs.stdout or "") + (f"\n--- stderr ---\n{logs.stderr}" if logs.stderr else "")
+                _keep(log_path(settings, session, started, kind), text.encode())
         except (AgentboxError, OSError) as e:
             warn(f"agentbox: could not keep the {kind} log: {e}")
 

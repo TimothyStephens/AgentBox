@@ -84,6 +84,12 @@ RE = {
     "pod_start": re.compile(rf"^{V}/libpod/pods/([^/]+)/(start|restart)$"),
 }
 CREATES = ("libpod_create", "compat_create", "pod_create", "net_create", "vol_create")
+# Operations on a pod the session owns (labels and the verified record, checked first) that the gate sends to the
+# podman service itself: the dev sockguard's owner policy cannot resolve pods (trial, 2 Oct: compose's `pod rm`
+# failed and left the pod behind).
+POD_RAW = re.compile(rf"^{V}/libpod/pods/[^/]+(?:/(json|exists|top|start|stop|kill|restart))?$")
+POD_RAW_OPS = {("GET", "json"), ("GET", "exists"), ("GET", "top"), ("DELETE", ""), ("POST", "start"),
+               ("POST", "stop"), ("POST", "kill"), ("POST", "restart")}
 UPGRADE = re.compile(rf"^{V}{LIB}/(?:exec/[^/]+/start|containers/[^/]+/attach)$")
 TAIL = re.compile(rf"^{V}{LIB}(/.*)$")
 # Collection paths whose second segment is an action word, not a resource name.
@@ -139,7 +145,19 @@ SECRET_SRC = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class Deny(Exception):
-    pass
+    status = 403
+
+
+class NotFound(Deny):
+    """The named object does not exist: answered 404, as podman would (compose asks before it creates)."""
+    status = 404
+
+
+class LocalImage(Exception):
+    """A pull of an image that is already present and allowed: answered by the gate, never forwarded."""
+    def __init__(self, image_id):
+        super().__init__(image_id)
+        self.image_id = image_id
 
 
 # Podman decodes JSON field names case-insensitively, so "PortMappings" sets portmappings. Found 1 Oct:
@@ -179,7 +197,7 @@ LIBPOD_REFUSED = {
     "artifact_volumes": "artifact volumes", "volumes_from": "volumes from other containers",
     "oci_runtime": "a client-chosen OCI runtime", "conmon_pid_file": "a conmon PID file on the host",
     "init_path": "an init binary from the host", "env_host": "the podman service's environment",
-    "secrets": "podman secrets", "secret_env": "podman secrets", "dependencyContainers": "dependency containers",
+    "secrets": "podman secrets", "secret_env": "podman secrets",
     "storage_opts": "storage options"}
 POD_KEYS = (
     "name", "hostname", "exit_policy", "labels", "no_infra", "infra_name", "pod_create_command", "pidns", "ipcns",
@@ -230,6 +248,8 @@ COMPAT_NETWORK_KEYS = ("Name", "CheckDuplicate", "Driver", "Scope", "EnableIPv4"
 ANNOTATION_REFUSED = ("run.oci.", "io.kubernetes.", "io.containers.", "org.systemd.", "io.crun.", "module.wasm.",
                       "org.opencontainers.")
 ANNOTATION_DROPPED = "io.podman.annotations."
+# refused even when they come with an image (they change how crun or systemd run the container)
+ANNOTATION_HARD_REFUSED = ("run.oci.", "io.kubernetes.", "io.containers.", "org.systemd.", "io.crun.", "module.wasm.")
 SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sysctl (1 Oct), so the gate does too
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
 ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
@@ -241,23 +261,49 @@ MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosui
                              r"src-nofollow|dest-nofollow)$")
 
 
+# Maps whose keys are data, not field names: podman keeps them case-sensitive (NO_PROXY and no_proxy are two
+# variables). Keys of every other object are field names, which podman matches case-insensitively.
+DATA_MAPS = {"env", "labels", "label", "annotations", "sysctl", "sysctls", "secret_env", "options", "driveropts",
+             "expose", "exposedports", "volumes", "tmpfs", "portbindings", "networks", "endpointsconfig",
+             "throttlereadbpsdevice", "throttlewritebpsdevice", "throttlereadiopsdevice",
+             "throttlewriteiopsdevice", "weightdevice", "unified", "buildargs", "storageopt", "config"}
+
+
+class _Obj(dict):
+    """A JSON object as parsed, remembering keys that differ only in case."""
+    case_dups = ()
+
+
 def strict_loads(body):
-    """JSON whose objects never hold two keys that differ only in case (podman would see just one of them)."""
+    """JSON whose field names never differ only in case (podman would see just one of them). Keys of the
+    maps in DATA_MAPS are data and may (Tim, 2 Oct: NO_PROXY and no_proxy)."""
     def pairs(items):
-        seen = {}
+        seen, dups = {}, []
         for k, _ in items:
             if k.lower() in seen:
-                raise Deny(f"ambiguous request: keys {seen[k.lower()]!r} and {k!r} differ only in case")
+                dups.append((seen[k.lower()], k))
             seen[k.lower()] = k
-        return dict(items)
+        obj = _Obj(items)
+        obj.case_dups = dups
+        return obj
     try:
         doc = json.loads(body or b"{}", object_pairs_hook=pairs)
     except ValueError as e:
-        if isinstance(e.__context__, Deny):
-            raise e.__context__
         raise Deny(f"the request body is not valid JSON ({e})")
     if not isinstance(doc, dict):
         raise Deny("the request body must be a JSON object")
+
+    def walk(obj, data):
+        if isinstance(obj, dict):
+            if obj.case_dups and not data:
+                a, b = obj.case_dups[0]
+                raise Deny(f"ambiguous request: keys {a!r} and {b!r} differ only in case")
+            for k, v in obj.items():
+                walk(v, not data and k.lower() in DATA_MAPS)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v, False)
+    walk(doc, False)
     return doc
 
 
@@ -413,7 +459,7 @@ class Gate:
         Returns its ID (a volume's name)."""
         doc = self.inspect(kind, ref)
         if doc is None:
-            raise Deny(f"{kind[:-1]} {ref!r} not found")
+            raise NotFound(f"no such {kind[:-1]}: {ref!r}")
         if not self.is_dev(self.labels_in(kind, doc)):
             raise Deny(f"{kind[:-1]} {ref!r} is not part of this session's dev stack")
         oid = self.ident(kind, doc)
@@ -488,8 +534,9 @@ class Gate:
                 bad.append(f"sysctl {k}")
         annotations = dict((doc.get("Config") or {}).get("Annotations") or {})
         annotations.update(hc.get("Annotations") or {})
-        for k in annotations:
-            if k.startswith(ANNOTATION_REFUSED):
+        derived = self.derived_annotations(doc)
+        for k, v in annotations.items():
+            if k.startswith(ANNOTATION_REFUSED) and derived.get(k) != v:
                 bad.append(f"annotation {k}")
         runtime = doc.get("OCIRuntime") or ""
         if "/" in runtime:
@@ -513,12 +560,33 @@ class Gate:
             bad.append("health check restart action")
         if (doc.get("Config") or {}).get("Secrets"):
             bad.append("podman secrets")
-        if doc.get("Dependencies"):
-            bad.append("dependency containers")
+        for dep in doc.get("Dependencies") or []:
+            with self.lock:
+                ok = dep in self.verified
+            if not ok:
+                bad.append(f"dependency container {str(dep)[:12]} is not this session's")
         if hc.get("VolumesFrom"):
             bad.append("volumes from other containers")
         bad += self.mount_rule_violations(doc.get("Mounts") or [], cid)
         return bad
+
+    def derived_annotations(self, doc):
+        """Annotations podman itself puts on a container, which are not client-set (trial, 2 Oct): the stop
+        signal and stop timeout (from the image's STOPSIGNAL or the create), and the image's own annotations,
+        compared by value. Prefixes that change the runtime's behaviour stay refused even from an image."""
+        cfg = doc.get("Config") or {}
+        out = {}
+        sig = signal_number(cfg.get("StopSignal"))
+        if sig is not None:
+            out["org.opencontainers.image.stopSignal"] = str(sig)
+            out["org.systemd.property.KillSignal"] = str(sig)
+        if isinstance(cfg.get("StopTimeout"), int):
+            out["org.systemd.property.TimeoutStopUSec"] = f"uint64 {cfg['StopTimeout'] * 1000000}"
+        image = self.image_doc(doc.get("Image") or "") if doc.get("Image") else None
+        for k, v in ((image or {}).get("Annotations") or {}).items():
+            if not k.startswith(ANNOTATION_HARD_REFUSED):
+                out.setdefault(k, v)
+        return out
 
     @staticmethod
     def own_storage(m, cid):
@@ -1091,6 +1159,10 @@ class Gate:
 
     def rewrite_libpod_container(self, spec):
         self.check_common_libpod(spec, LIBPOD_REFUSED, "container")
+        if spec.get("dependencyContainers"):
+            # depends_on (podman-compose's --requires): only containers of this session, passed by ID
+            spec["dependencyContainers"] = [self.require_dev("containers", str(d))
+                                            for d in spec["dependencyContainers"]]
         if not spec.get("image"):
             raise Deny("a container needs an image (a host directory as root is refused)")
         self.check_image(spec["image"], "create")
@@ -1151,7 +1223,27 @@ class Gate:
         own = [spec.get("name", ""), spec.get("hostname", "")]
         own += [a for net in (spec.get("Networks") or {}).values() for a in cget(net, "aliases") or []]
         spec["env"] = self.proxy_env(spec.get("env"), as_list=False, own_names=own)
+        self.split_case_variants(spec)
         return spec
+
+    @staticmethod
+    def split_case_variants(spec):
+        """NO_PROXY and no_proxy are two variables, but the dev sockguard refuses a JSON object holding keys
+        that differ only in case. The second spelling goes in `envmerge` ("KEY=VALUE"), which podman sets the
+        same way (trial, 2 Oct). A value with a `$` would be expanded there, so that case is refused."""
+        env, seen, moved = dict(spec.get("env") or {}), {}, []
+        for k in list(env):
+            if k.lower() in seen:
+                v = str(env.pop(k))
+                if "$" in v:
+                    raise Deny(f"env {k} and {seen[k.lower()]} differ only in case and {k}'s value has a '$'; "
+                               "rename one")
+                moved.append(f"{k}={v}")
+            else:
+                seen[k.lower()] = k
+        if moved:
+            spec["env"] = env
+            spec["envmerge"] = list(spec.get("envmerge") or []) + moved
 
     def rewrite_compat_container(self, spec):
         hc = canonical(spec.get("HostConfig") or {}, HOSTCONFIG_KEYS, "HostConfig")
@@ -1407,7 +1499,9 @@ class Gate:
             args = json.loads(orig.get("buildargs") or "{}")
         except ValueError:
             args = {}
-        args.update(self.cfg["proxy_env"])
+        # By the proxy's IP, in both spellings: a build's RUN steps run in the holder's network namespace with
+        # their own resolv.conf, where the proxy's container name does not resolve (trial, 2 Oct).
+        args.update(self.cfg.get("build_proxy_env") or self.cfg["proxy_env"])
         try:
             labels = json.loads(orig.get("labels") or "{}")
         except ValueError:
@@ -1415,6 +1509,8 @@ class Gate:
         q += [("networkmode", NET_ENABLED), ("nsoptions", json.dumps(nsopts, separators=(",", ":"))),
               ("pull", "false"), ("pullpolicy", "never"), ("buildargs", json.dumps(args)),
               ("labels", json.dumps(self.stamp(labels)))]
+        if self.cfg.get("build_dns"):
+            q.append(("dnsservers", json.dumps(self.cfg["build_dns"])))   # podman's DNS on the session network
         # Re-check just before forwarding: the PID could have been reused between the two reads.
         ns_again, pid_again, ns_id_again = self.holder_ns()
         if (ns_again, pid_again, ns_id_again) != (ns_path, pid, ns_id):
@@ -1439,6 +1535,12 @@ class Gate:
             q = [(k, v) for k, v in q if k.lower() != "tag"]
         registry = ref.split("/", 1)[0]
         if registry not in self.cfg["registries"]:
+            # podman run/compose up pull with policy=missing before every create. An image that is already
+            # present and that the dev tier may use (its own build, or listed) is answered here, never pulled.
+            doc = self.image_doc(ref) if "/libpod/" in path else None
+            if doc is not None:
+                self.check_image(ref, "pull")
+                raise LocalImage((doc.get("Id") or "").split(":", 1)[-1])
             raise Deny(f"pulls from {registry} are not allowed (allowed: {', '.join(self.cfg['registries'])})")
         q = [(k, v) for k, v in q if k.lower() != key.lower()] + [(key, ref)]
         return parts.path + "?" + urlencode(q)
@@ -1501,6 +1603,8 @@ class Gate:
             if kind == "networks" and method == "GET" and ref == self.network:
                 return target, body, "pass"           # compose inspects the network it was told to use
             self.require_dev(kind, ref)
+            if kind == "pods" and POD_RAW.match(path) and (method, POD_RAW.match(path).group(1) or "") in POD_RAW_OPS:
+                return target, body, "pod_raw"
         return target, body, "pass"
 
 
@@ -1583,6 +1687,20 @@ def dockerfile_images(text, buildargs=None):
                     if ref.lower() not in stages and not ref.isdigit() and ref.lower() != "scratch":
                         out.append((instr, ref))
     return out
+
+
+def signal_number(value):
+    """SIGINT, INT, 2 -> 2; None when unknown."""
+    import signal as _signal
+    if value is None or value == "":
+        return None
+    v = str(value).strip().upper()
+    if v.isdigit():
+        return int(v)
+    try:
+        return int(_signal.Signals[v if v.startswith("SIG") else "SIG" + v])
+    except (KeyError, ValueError):
+        return None
 
 
 def created_name(kind, target, body):
@@ -1808,9 +1926,11 @@ def recv_all(sock):
         raw += chunk
 
 
-def deny(client, msg):
-    body = json.dumps({"cause": "agentbox-gate", "message": f"agentbox gate: {msg}", "response": 403}).encode()
-    client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n"
+def deny(client, msg, status=403):
+    cause = "no such object" if status == 404 else "agentbox-gate"
+    body = json.dumps({"cause": cause, "message": f"agentbox gate: {msg}", "response": status}).encode()
+    reason = "Not Found" if status == 404 else "Forbidden"
+    client.sendall(f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nConnection: close\r\n".encode()
                    + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
 
 
@@ -1886,7 +2006,8 @@ def make_handler(gate):
                 gate.log("allow", method, path, kind if kind not in ("pull", "build") else f"{kind} {target}")
                 upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 upstream.settimeout(UPSTREAM_TIMEOUT)
-                upstream.connect(gate.cfg["upstream"])
+                # pod_start and pod_raw: a pod the session owns, already checked; sockguard cannot resolve pods
+                upstream.connect(gate.cfg["raw"] if kind in ("pod_start", "pod_raw") else gate.cfg["upstream"])
                 if kind in CREATES:
                     upstream.sendall(build_head(method, target, version, headers) + body)
                     reply = gate.verify_created(kind, recv_all(upstream), created_name(kind, target, body))
@@ -1923,7 +2044,9 @@ def make_handler(gate):
                         for block in iter(lambda: f.read(1 << 20), b""):
                             upstream.sendall(block)
                     upstream.settimeout(None)
-                    watch = builtrec.BuildWatcher()
+                    # recorded as soon as the ID passes, before the client sees the end of the reply, so a build
+                    # started right after it already finds this one in the record
+                    watch = builtrec.BuildWatcher(on_id=gate.record_build)
                     pipe_back(upstream, client, watch)
                     gate.record_build(watch.close())
                     return
@@ -1932,10 +2055,18 @@ def make_handler(gate):
                     upstream.sendall(rest)            # an upgraded stream (exec start, attach) only
                 upstream.settimeout(None)
                 pipe(client, upstream)
-            except Deny as e:
-                gate.log("deny", method, path, str(e))
+            except LocalImage as e:
+                gate.log("allow", method, path, f"pull answered locally: {e.image_id[:12]} is present")
+                body = (json.dumps({"images": [e.image_id], "id": e.image_id}) + "\n").encode()
                 try:
-                    deny(client, str(e))
+                    client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                                   + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+                except OSError:
+                    pass
+            except Deny as e:
+                gate.log("deny" if e.status == 403 else "notfound", method, path, str(e))
+                try:
+                    deny(client, str(e), e.status)
                 except OSError:
                     pass
             except (AgentboxError, ValueError, OSError, http.client.HTTPException) as e:
