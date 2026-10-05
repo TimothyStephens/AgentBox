@@ -213,6 +213,14 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", secrets="masked", mask_s
             m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
             mounts += m
             files += c
+            for mm in m:
+                try:
+                    if mm.kind == "mask" and os.lstat(mm.dst).st_nlink > 1:
+                        # a cover hides a path, not an inode: another name for the same file stays readable
+                        notes.append(f"{mm.dst} is masked but has other hard links; the file is readable through "
+                                     "them. Remove the extra links (audit 5 Oct, L1)")
+                except OSError:
+                    pass
     # One mount per destination; later (more specific) entries win.
     by_dst = {}
     for m in mounts:

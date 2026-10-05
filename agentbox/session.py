@@ -272,7 +272,10 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
         "directory are temporary and vanish when the session ends.",
         "- `.git/hooks` and `.git/config` are read-only (so you cannot redirect `core.hooksPath`); commit as "
         "usual. These covers, and the masks below, are enforced for containers you start too: the gate refuses "
-        "a bind whose source reaches a masked or covered path (bind a subdirectory that does not).",
+        "a bind whose source reaches a masked or covered path (bind a subdirectory that does not). Directories "
+        "that contain a covered path cannot be renamed or moved (`Device or resource busy`), and moving a file "
+        "out of one fails with a cross-device error (`git mv` too; `mv` copies instead). Read-only data stays "
+        "read-only in your containers.",
         "- Secret files (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/`) are masked and read as empty. Where a "
         "directory has `.env.dev`, that file appears at `.env`: add dev variables there.",
     ]
@@ -510,6 +513,7 @@ class Session:
         opts.append(f"--workdir={p.root}")
         opts += self.network_args()
         opts += [m.podman_arg(mask_file=self.mask_file) for m in self.plan.mounts]
+        opts += self.pin_args()
         if a.state_mount:
             opts.append(f"--mount=type=bind,src={self.state_dir},dst={a.state_mount}")
         if self.token_file:
@@ -623,6 +627,10 @@ class Session:
         return self._guarded(body, agent_owns_ctrl_c=False)
 
     probe_mounts = ()
+
+    def pin_args(self):
+        """Mounts that pin covers in place; none without the dev tier (nothing can bind past a cover)."""
+        return []
 
     def add_network_cases(self, builder):
         from .selftest import runner
@@ -765,13 +773,56 @@ class NetSession(Session):
         p = self.project
         return [p.root] + list(p.data_rw) + list(p.data_ro)
 
+    def pin_args(self):
+        """Every directory between a grant root and a cover, bound onto itself in the agent's container, so it
+        is a mount point and cannot be renamed (EBUSY): renaming a cover's parent would otherwise move the real
+        covered file to a path the gate's covered list does not name (audit 5 Oct, H1). Read-only under a
+        read-only grant. A rename across one of these boundaries now fails with EXDEV (`git mv` between such
+        directories; `mv` falls back to copy and delete)."""
+        if not self.podman_dev:
+            return []
+        roots = [os.path.realpath(r) for r in self.bind_roots]
+        ro_roots = {os.path.realpath(r) for r in self.project.data_ro}
+        pins = {}
+        for c in self.covered_paths():
+            inside = [r for r in roots if c.startswith(r.rstrip("/") + "/")]
+            if not inside:
+                continue
+            root = max(inside, key=len)
+            d = os.path.dirname(c)
+            while d != root and d.startswith(root + "/"):
+                pins[d] = root in ro_roots
+                d = os.path.dirname(d)
+        return [f"--mount=type=bind,src={d},dst={d}" + (",ro" if ro else "")
+                for d, ro in sorted(pins.items(), key=lambda kv: kv[0].count("/"))]
+
+    def masked_paths(self):
+        """The covers that read as empty in the session (secret masks, mask dirs, the adapter's project
+        covers): a build context packed in the session carries them empty."""
+        out = {os.path.realpath(m.dst) for m in (self.plan.mounts if self.plan else []) if m.kind in ("mask", "tmpfs")}
+        out |= {os.path.realpath(p) for p in self.setup.project_covers}
+        return sorted(out)
+
+    def cover_ids(self):
+        """{covered path: [st_dev, st_ino]} at session start; the gate refuses binds if one changes (a cover
+        moved or was replaced)."""
+        out = {}
+        for c in self.covered_paths():
+            try:
+                st = os.lstat(c)
+            except OSError:
+                continue
+            out[c] = [st.st_dev, st.st_ino]
+        return out
+
     def covered_paths(self):
         """Host paths the agent's own container masks or covers read-only, as real paths (crit 5 Oct): secret
         masks and mask dirs, the dev-swap `.env` (the real file behind the swap), `.git/hooks`/`config`/
         `config.worktree`, compose-file covers and the adapter's project covers. The gate refuses a spawned
         container's bind that resolves onto, under, or over any of these, since those in-container mounts do
         not exist in a container the agent starts. A read-only bind whose destination is itself a grant (a
-        data_ro grant) is not a cover: the agent may read it."""
+        data_ro grant) is not a cover: the agent may read it, and the gate keeps it read-only in spawned
+        containers (`ro_roots`, audit 5 Oct H3)."""
         roots = {os.path.realpath(r) for r in self.bind_roots}
         covered = set()
         for m in (self.plan.mounts if self.plan else []):
@@ -859,6 +910,8 @@ class NetSession(Session):
             "session": self.name, "network": self.int_net,
             "labels": labels_for(s, self.project.name, self.name, "dev"),
             "proxy_env": proxy_env, "bind_roots": self.bind_roots, "covered": self.covered_paths(),
+            "covered_ids": self.cover_ids(), "ro_roots": [os.path.realpath(r) for r in self.project.data_ro],
+            "masked": self.masked_paths(),
             "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
             "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,

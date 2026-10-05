@@ -367,7 +367,62 @@ class Starts(unittest.TestCase):
         _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create",
                               {"image": "x", "mounts": [{"type": "bind", "source": self.proj, "destination": "/d"}]})
         self.assertEqual(json.loads(body)["mounts"][0]["source"], self.proj)
+        rel = self.proj[len(self.tmp):]
+        g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel} /d rw,nosuid - tmpfs tmpfs rw\n"
         decide(g, "POST", "/v5/libpod/containers/web/start")
+
+    def test_start_initialises_and_checks_before_the_entrypoint(self):
+        """Audit 5 Oct, H2: init first, read the mounts, only then start; fail closed."""
+        g = self.gate()
+        g.objects["containers/c1"]["State"] = {"Pid": 0, "Status": "created"}
+        calls = []
+        real_raw = g.raw_request
+
+        def raw(method, path, body=None):
+            calls.append((method, path))
+            if path.endswith("/init"):
+                g.objects["containers/c1"]["State"] = {"Pid": 4242, "Status": "initialized"}
+            return real_raw(method, path, body)
+        g.raw_request = raw
+        rel = self.proj[len(self.tmp):]
+        g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel} /d rw - tmpfs tmpfs rw\n"
+        decide(g, "POST", "/v5/libpod/containers/web/start")
+        self.assertIn(("POST", "/libpod/containers/c1/init"), calls, "initialised by the gate before start")
+        g.objects["containers/c1"]["State"] = {"Pid": 0, "Status": "created"}
+        g.read_mountinfo = lambda pid: (_ for _ in ()).throw(OSError("gone"))
+        g.verified.add("c1")
+        with self.assertRaises(gate.Deny):                 # unreadable mount table: refused, not skipped
+            decide(g, "POST", "/v5/libpod/containers/web/start")
+        self.assertTrue(any("c1" in d for d in g.deleted))
+
+    def test_restart_becomes_stop_init_check_start(self):
+        g = self.gate()
+        g.objects["containers/c1"]["State"] = {"Pid": 4242, "Status": "running"}
+        calls = []
+
+        def raw(method, path, body=None):
+            calls.append(path)
+            if path.endswith("/init"):
+                g.objects["containers/c1"]["State"] = {"Pid": 5151, "Status": "initialized"}
+            if "/stop" in path:
+                g.objects["containers/c1"]["State"] = {"Pid": 0, "Status": "exited"}
+            return 204
+        g.raw_request = raw
+        rel = self.proj[len(self.tmp):]
+        g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: f"1 1 0:40 {rel} /d rw - tmpfs tmpfs rw\n"
+        target = decide(g, "POST", "/v5/libpod/containers/web/restart?t=3")[0]
+        self.assertEqual(target, "/v5/libpod/containers/web/start?t=3")
+        self.assertEqual([c.split("?")[0].rsplit("/", 1)[-1] for c in calls], ["stop", "init"])
+
+    def test_mount_violations_strict(self):
+        g = self.gate()
+        doc = g.objects["containers/c1"]
+        doc["State"] = {"Pid": 0}
+        self.assertEqual(g.mount_violations(doc), [], "not strict: nothing to read")
+        self.assertTrue(g.mount_violations(doc, strict=True), "strict: no process is a violation")
 
     def test_grant_volume_mount_checked_after_start(self):
         g = self.gate()
@@ -706,6 +761,100 @@ class Covers(unittest.TestCase):
         self.assertEqual(g.mount_violations(doc), [])
         g.read_mountinfo = lambda pid: "1 1 0:40 /data /m ro - tmpfs tmpfs rw\n"   # swapped onto the cover
         self.assertTrue(g.mount_violations(doc))
+
+
+class CoversAudit(unittest.TestCase):
+    """Independent audit of the covers fix (docs/reviews/2026-10-05-covers.md)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="abt-unit-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.proj = os.path.join(self.tmp, "proj")
+        self.ro = os.path.join(self.tmp, "ro")
+        for d in ("proj/dev", "proj/app", "proj/secrets", "ro/sub"):
+            os.makedirs(os.path.join(self.tmp, d))
+        open(os.path.join(self.proj, "dev", ".env"), "w").close()
+        open(os.path.join(self.proj, "Containerfile"), "w").close()     # the context is on disk
+
+    def gate(self):
+        g = Fake()
+        g.cfg["bind_roots"] = [self.proj, self.ro]
+        g.cfg["ro_roots"] = [self.ro]
+        cov = [os.path.join(self.proj, "dev", ".env"), os.path.join(self.proj, "secrets")]
+        g.cfg["covered"] = cov
+        g.cfg["masked"] = cov
+        g.cfg["covered_ids"] = {c: [os.lstat(c).st_dev, os.lstat(c).st_ino] for c in cov}
+        return g
+
+    def bind(self, g, src):
+        return json.loads(decide(g, "POST", "/v5/libpod/containers/create",
+                                 {"image": "x", "mounts": [{"type": "bind", "source": src, "destination": "/m"}]})[1])
+
+    def test_h1_a_moved_cover_stops_all_binds(self):
+        g = self.gate()
+        self.bind(g, os.path.join(self.proj, "app"))                       # fine while the covers are in place
+        os.rename(os.path.join(self.proj, "dev"), os.path.join(self.proj, "dev2"))
+        os.symlink("app", os.path.join(self.proj, "dev"))                  # a link left at the old name
+        for src in (os.path.join(self.proj, "dev2"), os.path.join(self.proj, "app")):
+            with self.subTest(src=src), self.assertRaises(gate.Deny) as e:
+                self.bind(g, src)
+            self.assertIn("moved or replaced", str(e.exception))
+
+    def test_h3_read_only_grant_stays_read_only(self):
+        g = self.gate()
+        spec = self.bind(g, self.ro)
+        self.assertIn("ro", spec["mounts"][0]["options"])
+        spec = self.bind(g, os.path.join(self.ro, "sub"))
+        self.assertIn("ro", spec["volumes"][0]["Options"])
+        doc = container("c1", Mounts=[{"Type": "bind", "Source": self.ro, "Destination": "/m"}], State={"Pid": 7})
+        g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: "1 1 0:40 /ro /m rw,nosuid - tmpfs tmpfs rw\n"
+        self.assertTrue(any("read-write" in v for v in g.mount_violations(doc)))
+        g.read_mountinfo = lambda pid: "1 1 0:40 /ro /m ro,nosuid - tmpfs tmpfs rw\n"
+        self.assertEqual(g.mount_violations(doc), [])
+
+    def tar(self, files):
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            for name, text in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(text)
+                t.addfile(info, io.BytesIO(text))
+        path = os.path.join(self.tmp, "ctx.tar")
+        with open(path, "wb") as f:
+            f.write(buf.getvalue())
+        return path
+
+    def test_build_context_carrying_masked_content_refused(self):
+        g = self.gate()
+        q = "/v5/libpod/build?dockerfile=%5B%22Containerfile%22%5D"
+        cf = b"FROM busybox\nCOPY . /app\n"
+        # as packed in the session: the masks are empty -> allowed
+        g.check_build_images(self.tar({"Containerfile": cf, "dev/.env": b"", "app/x": b"1"}), q)
+        # content at a masked path: not packed through the masks -> refused (root context, and a sub context)
+        for files in ({"Containerfile": cf, "dev/.env": b"REAL=1\n", "app/x": b"1"},
+                      {"Containerfile": cf, "secrets/db": b"pw\n", "dev/.env": b""}):
+            with self.subTest(files=sorted(files)), self.assertRaises(gate.Deny):
+                g.check_build_images(self.tar(files), q)
+        open(os.path.join(self.proj, "dev", "Containerfile"), "w").close()
+        with self.assertRaises(gate.Deny):
+            g.check_build_images(self.tar({"Containerfile": cf, ".env": b"REAL=1\n"}), q)
+
+    def test_l2_grant_volume_cannot_be_named_directly(self):
+        g = self.gate()
+        g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
+            "Labels": {gate.DEV_OWNER: "abt-s-1", "agentbox.role": "grant"},
+            "Options": {"type": "none", "o": "bind", "device": self.proj}}
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/libpod/containers/create",
+                   {"image": "x", "volumes": [{"Name": "abt-s-1-grant0", "Dest": "/s", "SubPath": "secrets"}]})
+
+    def test_l3_image_save_and_export_refused_in_the_gate(self):
+        for path in ("/v5/libpod/images/x/get", "/v5/images/x/get", "/v5/images/get", "/v5/libpod/images/export"):
+            with self.subTest(path=path), self.assertRaises(gate.Deny):
+                decide(Fake(), "GET", path)
 
 
 class TrialFindings(unittest.TestCase):

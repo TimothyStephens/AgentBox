@@ -104,6 +104,7 @@ RESOURCE = re.compile(rf"^{V}{LIB}/(containers|pods|volumes|networks)/([^/]+)(?:
 # Matched on the path without its version and /libpod prefix.
 DENIED = [(m, re.compile(p), why) for m, p, why in (
     (None, r"^/images/.+/(push|tag|untag)$", "pushing or retagging images"),
+    (None, r"^/images/(.+/get|get|export)$", "saving or exporting images"),
     ("DELETE", r"^/images/.+$", "removing images"),
     (None, r"^/images/(load|import|remove|prune|scp(/.*)?)$", "loading, importing or removing images"),
     (None, r"^/manifests(/.*)?$", "manifest lists"),
@@ -534,7 +535,25 @@ class Gate:
         return isinstance(src, str) and src.startswith("/") and os.path.realpath(src) in self._roots()
 
     def _covered(self):
-        return [os.path.realpath(c) for c in self.cfg.get("covered", [])]
+        """The covered paths as recorded at session start. Never resolved again: a symlink left at a cover's old
+        name must not move the entry somewhere harmless (audit 5 Oct, H1)."""
+        return list(self.cfg.get("covered", []))
+
+    def covers_intact(self):
+        """Every cover still has the identity it had at session start (st_dev, st_ino; not following links).
+        A cover renamed away, replaced or deleted means the path-based check can no longer be trusted."""
+        for c, ident in (self.cfg.get("covered_ids") or {}).items():
+            try:
+                st = os.lstat(c)
+            except OSError:
+                return c
+            if [st.st_dev, st.st_ino] != list(ident):
+                return c
+        return None
+
+    def is_ro_root(self, real):
+        """`real` is a read-only grant, or inside one."""
+        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self.cfg.get("ro_roots") or [])
 
     def covers_overlap(self, real):
         """A covered path (a mask or a read-only cover in the agent's own container) that `real` overlaps: the
@@ -547,6 +566,10 @@ class Gate:
         return None
 
     def _refuse_if_covered(self, real, src):
+        moved = self.covers_intact()
+        if moved is not None:
+            raise Deny(f"bind mount {src}: the covered path {moved} was moved or replaced during the session, so "
+                       "no bind into the project is accepted any more (end the session and start a new one)")
         c = self.covers_overlap(real)
         if c is not None:
             raise Deny(f"bind mount {src} reaches {c}, which is masked or covered read-only in the session; a "
@@ -884,7 +907,7 @@ class Gate:
         pod = self.inspect("pods", pod_id) or {}
         return [c.get("Id") for c in pod.get("Containers") or [] if c.get("Id")]
 
-    def check_start(self, kind, ref):
+    def check_start(self, kind, ref, op="start"):
         ids = self.start_targets(kind, ref)
         infra = ""
         if kind == "pod_start":
@@ -900,6 +923,9 @@ class Gate:
             bad = self.infra_violations(doc) if cid == infra else self.container_violations(doc)
             if bad:
                 raise Deny(f"container {cid[:12]} no longer matches the rules ({'; '.join(bad)})")
+        seen = set()
+        for cid in ids:
+            self.prepare_start(cid, restart=(op == "restart"), seen=seen)
         return ids
 
     def after_start(self, ids):
@@ -938,7 +964,11 @@ class Gate:
                 out.append(loc + (real,) if with_root else loc)
         return out
 
-    def mount_violations(self, doc):
+    def mount_violations(self, doc, strict=False):
+        """What the runtime actually mounted, read from /proc/<pid>/mountinfo: a plain bind must be a grant root,
+        a grant volume must land inside its root, neither may reach a covered path, and both must be read-only
+        when the grant is. `strict` (before the entrypoint runs, after init): a missing PID or an unreadable
+        mount table is itself a violation (audit 5 Oct, H2)."""
         pid = (doc.get("State") or {}).get("Pid")
         binds = [m for m in doc.get("Mounts") or [] if m.get("Type") == "bind"
                  and not self.own_storage(m, doc.get("Id") or "")]
@@ -946,42 +976,87 @@ class Gate:
         for m in doc.get("Mounts") or []:
             if m.get("Type") == "volume" and (m.get("Name") or "").startswith(f"{self.session}-grant"):
                 grants.append((m, self.grant_volume_root(self.inspect("volumes", m["Name"]))))
-        if not pid or not (binds or grants):
+        if not (binds or grants):
             return []
+        if not pid:
+            return ["cannot read the container's mounts (no process)"] if strict else []
         try:
-            mounted = {mp: (dev, root) for mp, dev, root in parse_mountinfo(self.read_mountinfo(pid))}
+            mounted = parse_mountinfo_opts(self.read_mountinfo(pid))
         except OSError:
-            return []                                    # it has exited already; nothing left to read
-        allowed = self.allowed_fs()
+            return ["cannot read the container's mounts"] if strict else []
+        located = self.allowed_fs(with_root=True)
         bad = []
+
+        def check_host(dest, host, opts):
+            c = self.covers_overlap(os.path.normpath(host))
+            if c is not None:
+                bad.append(f"{dest} resolved onto {c}, which is masked or covered")
+            if self.is_ro_root(host) and "ro" not in opts:
+                bad.append(f"{dest} is a read-only grant mounted read-write")
+
         for m in binds:
             got = mounted.get(m.get("Destination"))
             if got is None:
                 bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
                 continue
-            dev, root = got
-            if not any(dev == d and root == p for d, p in allowed):
+            dev, root, opts = got
+            hosts = [h for d, p, h in located if dev == d and root == p]
+            if not hosts:
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}; stored as {m.get('Type')} "
                            f"{m.get('Source')}), not a grant root")
-        located = {r: (d, p) for d, p, r in self.allowed_fs(with_root=True)}
+                continue
+            check_host(m.get("Destination"), hosts[0], opts)
+        by_root = {h: (d, p) for d, p, h in located}
         for m, groot in grants:
             got = mounted.get(m.get("Destination"))
-            want = located.get(groot)
+            want = by_root.get(groot)
             if got is None or want is None:
                 bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
                 continue
-            dev, root = got
+            dev, root, opts = got
             if not (dev == want[0] and (root == want[1] or root.startswith(want[1].rstrip("/") + "/"))):
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}), outside its grant root {groot}")
                 continue
-            # map the mounted fs path back to a host path and refuse if a swap redirected the SubPath onto a
-            # cover (podman resolves a grant-volume SubPath in-root, so a symlink there stays in the root but
-            # could still land on a masked path like data/)
             host = groot if root == want[1] else os.path.join(groot, os.path.relpath(root, want[1]))
-            c = self.covers_overlap(os.path.normpath(host))
-            if c is not None:
-                bad.append(f"{m.get('Destination')} resolved onto {c}, which is masked or covered")
+            check_host(m.get("Destination"), host, opts)
         return bad
+
+    def prepare_start(self, cid, restart=False, seen=None):
+        """Before a container runs: stop it first if this is a restart, have podman set up its mounts without
+        running the entrypoint (init), and check what was mounted. Its dependencies (which podman would start
+        with it) get the same treatment first. On any violation the container is removed and the start
+        refused, so a sub-path swapped for a symlink between create and start never reaches a running process
+        (audit 5 Oct, H2)."""
+        seen = set() if seen is None else seen
+        if cid in seen:
+            return
+        seen.add(cid)
+        doc = self.inspect("containers", cid)
+        if doc is None:
+            raise NotFound(f"no such container: {cid[:12]!r}")
+        for dep in doc.get("Dependencies") or []:
+            with self.lock:
+                ok = dep in self.verified
+            if not ok:
+                raise Deny(f"dependency {str(dep)[:12]} has not passed the gate's post-create check")
+            self.prepare_start(dep, False, seen)
+        status = (doc.get("State") or {}).get("Status")
+        if status == "running" and not restart:
+            return                                       # its mounts were checked when it started
+        if status in ("running", "paused") and restart:
+            self.raw_request("POST", f"/libpod/containers/{quote(cid, safe='')}/stop?timeout=10")
+            doc = self.inspect("containers", cid) or {}
+            status = (doc.get("State") or {}).get("Status")
+        if status != "initialized":
+            st = self.raw_request("POST", f"/libpod/containers/{quote(cid, safe='')}/init")
+            if not (isinstance(st, int) and (200 <= st < 300 or st == 304)):
+                raise Deny(f"container {cid[:12]} could not be prepared for start (init: {st})")
+            doc = self.inspect("containers", cid) or {}
+        bad = self.mount_violations(doc, strict=True)
+        if bad:
+            self.remove("containers", cid, "; ".join(bad))
+            raise Deny(f"container {cid[:12]} mounted something it may not ({'; '.join(bad)}); removed it "
+                       "before it ran")
 
     # ---- create rewrites --------------------------------------------------------------------------
     def stamp(self, labels):
@@ -1130,8 +1205,37 @@ class Gate:
                     text = tar.extractfile(m).read(1 << 20).decode("utf-8", errors="replace")
                     for _instr, ref in dockerfile_images(text, args):
                         self.check_image(self.own_short_name(ref) or ref, f"build {_instr}")
+                self.check_context_masks(members)
         except tarfile.TarError as e:
             raise Deny(f"the build context is not a readable tar ({e})")
+
+    def check_context_masks(self, members):
+        """A build context is packed by the client in the agent's own mount namespace, where every mask reads
+        as empty, so a COPY of a masked file or directory can only ever carry nothing. If a context arrives
+        carrying content at a masked path, it was not packed through the masks: refuse it (Tim, 5 Oct). The
+        context's host directory is not sent, so it is inferred: a directory D for which a member sits at a
+        masked path and every top-level member exists on disk under D."""
+        masked = list(self.cfg.get("masked") or [])
+        if not masked:
+            return
+        tops = {n.split("/", 1)[0] for n in members if n and n not in (".", "./")}
+        valid = {}
+
+        def context_ok(d):
+            if d not in valid:
+                valid[d] = self._inside_roots(d) and all(os.path.lexists(os.path.join(d, t)) for t in tops)
+            return valid[d]
+        for name, m in members.items():
+            n = name.strip("/")
+            if not n or not m.isfile() or m.size == 0:
+                continue
+            parts = n.split("/")
+            for i in range(len(parts), 0, -1):
+                prefix = "/".join(parts[:i])
+                for c in masked:
+                    if c.endswith("/" + prefix) and context_ok(c[:-len(prefix) - 1]):
+                        raise Deny(f"the build context carries content at {n}, which is masked in the session "
+                                   f"({c}); a context packed in the session has it empty")
 
     def check_annotations(self, ann, where):
         out = {}
@@ -1191,10 +1295,16 @@ class Gate:
                     # SubPath, which podman resolves inside the volume (openat2 in-root), so a symlink swapped in
                     # before start cannot lead out (Tim's option 3, 1 Oct; evidence in docs/decisions.md).
                     name, rel = sub
+                    opts = [o for o in cget(m, "options") or [] if o in VOLUME_OPTS]
+                    if self.is_ro_root(os.path.realpath(cget(m, "source"))):
+                        opts = [o for o in opts if o != "rw"] + ["ro"]      # a read-only grant (audit H3)
                     grant_mounts.append({"Name": name, "Dest": cget(m, "destination"), "SubPath": rel,
-                                         "Options": [o for o in cget(m, "options") or [] if o in VOLUME_OPTS]})
+                                         "Options": opts})
                     continue
-                cset(m, "source", self.check_bind(cget(m, "source")))
+                real = self.check_bind(cget(m, "source"))
+                cset(m, "source", real)
+                if self.is_ro_root(real):
+                    cset(m, "options", [o for o in cget(m, "options") or [] if o != "rw"] + ["ro"])
             elif t == "tmpfs":
                 self.check_mount_options(cget(m, "options"), cget(m, "destination"))
             else:
@@ -1350,13 +1460,20 @@ class Gate:
                 self.named_volume(src, "bind")
             self.check_mount_options([o for o in rest.split(":", 1)[-1].split(",") if o] if ":" in rest else [],
                                      b)
+            if src.startswith("/") and self.is_ro_root(src):         # a read-only grant (audit H3)
+                dst, _, opts = rest.partition(":")
+                opts = ",".join([o for o in opts.split(",") if o and o != "rw"] + ["ro"])
+                rest = f"{dst}:{opts}"
             binds.append(f"{src}:{rest}" if rest else src)
         if hc.get("Binds"):
             hc["Binds"] = binds
         for m in hc.get("Mounts") or []:
             t = cget(m, "Type")
             if t == "bind":
-                cset(m, "Source", self.check_bind(cget(m, "Source")))
+                real = self.check_bind(cget(m, "Source"))
+                cset(m, "Source", real)
+                if self.is_ro_root(real):
+                    cset(m, "ReadOnly", True)
             elif t == "volume":
                 if cget(cget(m, "VolumeOptions") or {}, "DriverConfig"):
                     raise Deny("volume driver options are not allowed")
@@ -1689,7 +1806,11 @@ class Gate:
             for kind in ("start", "pod_start"):
                 m = RE[kind].match(path)
                 if m:
-                    self.check_start(kind, m.group(1))
+                    self.check_start(kind, m.group(1), m.group(2))
+                    if m.group(2) == "restart":
+                        # already stopped and re-initialised by the gate, with its mounts checked: start it
+                        parts = urlsplit(target)
+                        target = re.sub(r"/restart$", "/start", parts.path) + (f"?{parts.query}" if parts.query else "")
                     if kind == "pod_start":          # to the podman service, by the checked ID (M1)
                         target = by_id(target, "pods", self.require_dev("pods", m.group(1)))
                     return target, body, kind
@@ -1821,6 +1942,18 @@ def normalize_ref(ref):
     if "/" in ref and ("." in first or ":" in first or first == "localhost"):
         return ref
     return f"docker.io/{ref}" if "/" in ref else f"docker.io/library/{ref}"
+
+
+def parse_mountinfo_opts(text):
+    """{mount point: (major:minor, root within that filesystem, [per-mount options])}."""
+    def unescape(s):
+        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+    out = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 6:
+            out[unescape(f[4])] = (f[2], unescape(f[3]), f[5].split(","))
+    return out
 
 
 def parse_mountinfo(text):

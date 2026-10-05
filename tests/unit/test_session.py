@@ -260,3 +260,35 @@ class CoveredPaths(SessionTest):
         self.assertNotIn(os.path.realpath(data_ro), covered)   # a read-only grant is not a cover
         self.assertNotIn(os.path.realpath(root), covered)
         self.assertEqual(s.covered_paths(), sorted(covered), "a sorted plain list for the gate config")
+
+
+class CoverPins(SessionTest):
+    """Audit 5 Oct, H1: every directory between a grant root and a cover is a mount point in the agent's
+    container, so a cover's parent cannot be renamed away from the path the gate checks."""
+
+    def test_pins_and_swap(self):
+        import os
+        from agentbox import registry
+        self.write("projects/p1/dev/.env", "REAL=1\n")
+        self.write("projects/p1/tests/fx/a.pem", "x\n")
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["podman"] = {"tier": "dev"}
+        registry.save(self.settings.registry_path, reg)
+        s = self.make()
+        s.prepare()
+        covered = s.covered_paths()
+        root = self.root
+        self.assertIn(os.path.join(root, ".env"), covered, "the dev-swap .env (.env.dev exists) is covered")
+        args = " ".join(s.pin_args())
+        for d in ("dev", "tests", "tests/fx", ".git"):
+            self.assertIn(f"--mount=type=bind,src={root}/{d},dst={root}/{d}", args, d)
+        self.assertNotIn(f"src={root},dst={root},", args, "the grant root is already a mount")
+        argv = s.run_args(s.agent_command())
+        self.assertTrue(any(f"src={root}/dev,dst={root}/dev" in a for a in argv), "pins are in the agent's argv")
+        ids = s.cover_ids()
+        self.assertEqual(ids[os.path.join(root, "dev", ".env")][1], os.lstat(os.path.join(root, "dev", ".env")).st_ino)
+
+    def test_no_pins_without_the_dev_tier(self):
+        s = self.make()
+        s.prepare()
+        self.assertEqual(s.pin_args(), [])
