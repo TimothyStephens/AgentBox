@@ -17,7 +17,10 @@ counted) and then:
     dropped, owner labels stamped, cgroup parent forced to the slice, memory/pids limits defaulted and
     capped, swap off, OOM score 1000, proxy variables added, binds of a grant root itself (by real
     path); a path below one becomes a SubPath of the gate's bind-backed volume over that root, which podman
-    resolves inside the volume (a symlink swapped in before start cannot lead out), named volumes only the session's own (a new name is created labelled
+    resolves inside the volume (a symlink swapped in before start cannot lead out). A bind that reaches a
+    masked or covered path (a secret mask, .git/hooks, .git/config, a compose or lockdown cover) is refused:
+    those covers live in the agent's own mount namespace and are absent in a container it spawns (crit 5 Oct).
+    Named volumes only the session's own (a new name is created labelled
     first), no host paths through any other field (rootfs, overlay volumes, init path, conmon pid file,
     log path, health log directory, hosts file, runtime), no privilege (privileged, capabilities, devices,
     security options, host namespaces, sysctls outside net.*, OCI annotations, env from the service,
@@ -530,6 +533,26 @@ class Gate:
         grant root is a mount point in the agent's container, so the agent cannot replace it."""
         return isinstance(src, str) and src.startswith("/") and os.path.realpath(src) in self._roots()
 
+    def _covered(self):
+        return [os.path.realpath(c) for c in self.cfg.get("covered", [])]
+
+    def covers_overlap(self, real):
+        """A covered path (a mask or a read-only cover in the agent's own container) that `real` overlaps: the
+        same path, one under `real`, or `real` under it. The agent's in-container masks and read-only covers do
+        not exist in a container it spawns through the gate, so a bind that reaches a covered path would expose
+        or let it write the real data (crit 5 Oct). Returns the covered path, or None."""
+        for c in self._covered():
+            if real == c or real.startswith(c.rstrip("/") + "/") or c.startswith(real.rstrip("/") + "/"):
+                return c
+        return None
+
+    def _refuse_if_covered(self, real, src):
+        c = self.covers_overlap(real)
+        if c is not None:
+            raise Deny(f"bind mount {src} reaches {c}, which is masked or covered read-only in the session; a "
+                       "spawned container would see the real data. Bind a path that does not contain or sit "
+                       "under a masked or covered path")
+
     # ---- post-create checks (what podman stored) ---------------------------------------------------
     def privilege_violations(self, doc, infra=False):
         """Shared by containers and pod infra containers."""
@@ -678,6 +701,7 @@ class Gate:
         inside = [r for r in self._roots() if real.startswith(r.rstrip("/") + "/")]
         if not inside or self._is_root(real):
             return None
+        self._refuse_if_covered(real, src)           # the sub-path (via a grant-volume SubPath) must miss covers
         root = max(inside, key=len)
         return self.grant_volume(root), os.path.relpath(real, root)
 
@@ -949,6 +973,14 @@ class Gate:
             dev, root = got
             if not (dev == want[0] and (root == want[1] or root.startswith(want[1].rstrip("/") + "/"))):
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}), outside its grant root {groot}")
+                continue
+            # map the mounted fs path back to a host path and refuse if a swap redirected the SubPath onto a
+            # cover (podman resolves a grant-volume SubPath in-root, so a symlink there stays in the root but
+            # could still land on a masked path like data/)
+            host = groot if root == want[1] else os.path.join(groot, os.path.relpath(root, want[1]))
+            c = self.covers_overlap(os.path.normpath(host))
+            if c is not None:
+                bad.append(f"{m.get('Destination')} resolved onto {c}, which is masked or covered")
         return bad
 
     # ---- create rewrites --------------------------------------------------------------------------
@@ -1004,6 +1036,7 @@ class Gate:
             raise Deny(f"bind mount source {src!r} must be an absolute path")
         real = os.path.realpath(src)
         if self._is_root(real):
+            self._refuse_if_covered(real, src)       # the whole root contains the covers; refuse binding it
             return real
         if self._inside_roots(real):
             roots = ", ".join(self._roots())

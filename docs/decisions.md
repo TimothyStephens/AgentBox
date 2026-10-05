@@ -546,3 +546,49 @@ From trial 2:
   - **Not squid's resources:** memory and CPU were far from their limits, so nothing about squid's memory or the tests' parallelism needs changing.
   - **What the evidence shows:** the latency tail is the host's own network. The earlier failures (20 s probe timeouts, a pypi 503 during a build, Chromium) match rare, longer stalls of that kind. None was reproduced in 1,200 soak requests or in the full itest runs.
   - **No fix applied.** There was nothing in agentbox to fix. Next time the failing line will carry squid's log line with its upstream address, total and DNS time, plus its cache.log.
+
+## 2026-10-05 · Covers are enforced at the gate, not only in the agent's mount namespace (critical)
+
+Found by the first real-project session (spec: `docs/agentbox-masked-paths.md` in that repo, §6.2). The agent's
+read-only and empty covers — secret masks, `.git/hooks`, `.git/config`/`config.worktree`, compose-file covers,
+the OMP lockdown covers, and the `.env` dev-swap — live in the agent container's own mount namespace. A
+container the agent starts through the gate does not have them: a `-v` of the whole project root gave a
+writable bind with the covers absent, so a root container could read and write anything under the grant,
+including a live database and `.git/hooks`. The existing cover tests only checked from inside the agent's own
+container (the spec's §5.1), so they missed it.
+
+- **Fix (gate).** The session passes the gate a `covered` list: the real host path of every mask/cover in the
+  mount plan (mask and tmpfs covers; read-only binds inside a grant that are not a grant themselves; the
+  `.env` dev-swap, where the bind's destination differs from its source) plus the adapter's project covers.
+  For every bind the gate forwards — a grant-root bind, a sub-path (which becomes a grant-volume SubPath), and
+  the compat `Binds`/`Mounts` forms — it canonicalises the source and refuses if it resolves onto, under, or
+  over any covered path. So binding the whole project root is refused (it contains covers), binding `data/`,
+  `.git`, `.git/config` or `.env` is refused, and a sibling like `dev/data` is allowed. The after-start
+  mountinfo check maps a grant-volume's mounted path back to a host path and refuses it too, in case a symlink
+  swap redirected a SubPath onto a cover (the grant volume resolves SubPaths in-root, so a swap stays in the
+  root but could otherwise land on `data/`).
+- **A cover-free grant can still be bound whole.** Only grant roots that contain a cover are refused; a
+  read-write grant with nothing covered under it binds directly. The field test adds such a grant for its
+  allowed bind case.
+- **`.git/config` read-only.** It was already a read-only bind in the agent container (verified), so the agent
+  cannot set `core.hooksPath` to redirect away from the read-only `.git/hooks`. It is now also covered at the
+  gate, so a spawned container cannot write it either. The session notes said `.git/hooks` and `.git/config`
+  are read-only; they now also say this holds for containers the agent starts, and that `core.hooksPath`
+  cannot be redirected.
+- **masked_paths (the project repo's spec) is not implemented here.** The request was the gate-enforced cover
+  check; the covers that exist today (secret masks, git, compose, lockdown) are what the gate now enforces for
+  spawned containers. A general per-project `masked_paths` setting would add its paths to the same `covered`
+  list and needs no further gate work.
+- **Tests.** `tests/integration/test_step6_covers.py` is the spec's §5.2 bypass test, run from a gate-spawned
+  container (a must-pass): binding the root, `secrets/`, `.env`, `.git`, `.git/config`, `.git/hooks`, a
+  relative and a `..` spelling are all refused and never expose a seeded sentinel; a non-covered sub-directory
+  binds; the Docker-API `Binds` form is refused too; `.git/config` is read-only. Unit tests:
+  `test_review_step5.Covers` (overlap, compat, after-start swap) and `test_session.CoveredPaths`.
+- **Tests that only covered the agent container (so missed this):** the selftest filesystem checks run by the
+  probe inside the agent container — `test_step1_core.test_selftest_python_preset` / `test_selftest_lockdown`
+  (the `.git/hooks`, `masked`, `.env shows .env.dev` cases) and `test_agent_can_commit`; the OMP lockdown
+  cover tests `test_omp.test_lockdown_covers_repo_code` and `test_review_1001` (argv / in-container only); and
+  the unit mount tests `test_mounts` (plan only). They stay — the in-session check is still worth having — but
+  the gate test above is what guarantees the covers hold for spawned containers.
+
+**This reopens the mount parts of the step-5 review; that area is re-reviewed (`docs/reviews/2026-10-01-step-5-coverage.md`, 5 Oct note) before the first real project runs.**

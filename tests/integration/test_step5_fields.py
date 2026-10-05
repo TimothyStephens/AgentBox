@@ -65,16 +65,17 @@ CASES = [
     # ---- mounts -------------------------------------------------------------------------------------
     Case("bind_outside", "mounts", "container", "mounts[type=bind].source (outside the project)",
          bad=lambda c: {"mounts": [{"type": "bind", "source": "/etc", "destination": "/h"}]},
-         good=lambda c: {"mounts": [{"type": "bind", "source": c.root, "destination": "/d"}]},
+         good=lambda c: {"mounts": [{"type": "bind", "source": c.clean_root, "destination": "/d"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": "/etc", "Destination": "/h"}),
-         check=lambda d, c: any(m["Source"] == c.root for m in d["Mounts"])),
+         check=lambda d, c: any(m["Source"] == c.clean_root for m in d["Mounts"]),
+         note="a cover-free grant root binds directly; the project root (it has .git/.env/secrets) cannot"),
     Case("bind_symlink_out", "mounts", "container", "mounts[type=bind].source (a symlink in the project pointing out)",
          bad=lambda c: {"mounts": [{"type": "bind", "source": c.link_out, "destination": "/h"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": CTX.link_out, "Destination": "/h"})),
     Case("bind_sub_path", "mounts", "container", "mounts[type=bind].source (a path inside the project, not a grant root)",
-         good=lambda c: {"mounts": [{"type": "bind", "source": c.root, "destination": "/d"}]},
+         good=lambda c: {"mounts": [{"type": "bind", "source": os.path.join(c.clean_root, "sub"), "destination": "/d"}]},
          stored=lambda d: mounts(d, {"Type": "bind", "Source": CTX.data, "Destination": "/d"}),
-         check=lambda d, c: any(m["Source"] == c.root for m in d["Mounts"]),
+         check=lambda d, c: any(m.get("Type") == "volume" and m.get("Destination") == "/d" for m in d["Mounts"]),
          custom=lambda t, c: t.swap_case(c),
          after="yes: a bind must be a grant root; a grant volume's device must be one; mountinfo after start",
          note="rewritten: a sub-path becomes a SubPath of the gate's bind-backed volume over its grant root, "
@@ -390,9 +391,14 @@ def setUpModule():
     if harness.podman("image", "exists", IMG).returncode != 0:
         raise unittest.SkipTest(f"{IMG} not present")
     ENV = harness.Env()
-    root = ENV.make_project("fx", preset="python", extra=["--podman", "dev"])
+    # a cover-free read-write grant: the project root itself contains covers (.git, .env, secrets/) and so
+    # cannot be bound whole (crit 5 Oct); this grant can, and a sub-path of it becomes a grant-volume SubPath
+    clean = os.path.join(ENV.projects, "fxdata")
+    os.makedirs(os.path.join(clean, "sub"), exist_ok=True)
+    root = ENV.make_project("fx", preset="python", extra=["--podman", "dev", "--data-rw", clean])
     c = CTX = Ctx()
     c.root = root
+    c.clean_root = os.path.realpath(clean)
     c.data = os.path.join(root, "data")
     os.makedirs(c.data, exist_ok=True)
     c.tmp = os.path.join(harness.BASE, "fields-tmp")

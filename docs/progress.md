@@ -2,11 +2,13 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 2 Oct 2026 (after trial 2)
+**Updated:** 5 Oct 2026
 
 ## Current step
 
-**Stopped.** Trial 2 passed (usability and trial-check). The review of `785ee15` and the trial 2 findings are done. Next: the first real project, `~/repos/Life_Updates/life-updates`, starting from its `wip/old-claude-session` branch.
+**Stopped.** The first real-project session found a critical gate hole: the agent's masks and read-only covers did not reach containers it started through the gate, so a bind of the project root exposed the covered data. Fixed: the covers are now a gate-enforced bind check. The mount part of the step-5 review is reopened and re-reviewed in `docs/reviews/2026-10-01-step-5-coverage.md` (5 Oct). **Before the first real project runs again, that area wants an independent re-review (Tim).**
+
+Earlier this session: `make egress-soak` measured the egress flake (0 failures idle and under load; the tail is the host's uplink, not agentbox).
 
 ## Done
 
@@ -64,10 +66,12 @@ The builder's running state, updated in every commit, so a crashed session loses
     - `ab project reset-state` (asks first, keeps a copy);
     - lockdown sessions start from empty agent state;
     - `ab preview` is built (127.0.0.1 only, one session service, removed with the session; `test_step6_preview`).
+- **Egress soak** (`5d43feb`): `make egress-soak`; the flake is the host's uplink, not agentbox (decisions.md, 5 Oct).
+- **Covers enforced at the gate** (this commit): the critical real-project finding. A spawned container's bind that reaches a mask or read-only cover (secrets, `.git/hooks`, `.git/config`, compose/lockdown covers, the `.env` swap) is refused; `.git/config` cannot be written from a spawned container either. `test_step6_covers` (the spec's §5.2 bypass test). decisions.md / the coverage review, 5 Oct.
 
 ## Next
 
-1. **The first real project:** `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, set up with Tim.
+1. **Independent re-review of the mount area** (reopened 5 Oct), then the first real project: `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, with Tim.
 
 ## Open decisions (Tim)
 

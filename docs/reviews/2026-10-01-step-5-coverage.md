@@ -121,3 +121,21 @@ Found while building it: podman resolves a bind source when the container **star
 | privilege | network create options (isolate, mtu, ...) | yes (403) | yes (network inspect) | `test_step5_fields.Fields.test_network_options` | no options at all: the dev sockguard refuses them, so isolate=strict cannot be set either |
 | privilege | network create internal / ipv6_enabled | yes (403) | yes (network inspect) | `test_step5_fields.Fields.test_network_internal` |  |
 | privilege | network create (Docker API) Driver / IPAM | yes (403) | no | `test_step5_fields.Fields.test_compat_network` | allowed value tested |
+
+---
+
+## Reopened: covers were not enforced for spawned containers (5 Oct)
+
+The mount coverage above tested gate enforcement of bind *sources* (grant roots, sub-paths, symlink swaps) but
+assumed the agent's read-only/empty covers (secret masks, `.git/hooks`, `.git/config`, compose and lockdown
+covers, the `.env` dev-swap) protected those paths. They do not for a container the agent starts through the
+gate: those covers are in the agent's own mount namespace only. A `-v` of the whole project root bound it
+writable with no covers. See `docs/decisions.md` (5 Oct, "Covers are enforced at the gate").
+
+Closed by making the covers a gate bind check: the gate refuses any bind (grant-root, sub-path/grant-volume, or
+compat `Binds`/`Mounts`) whose canonical source resolves onto, under, or over a covered path, and the
+after-start mountinfo check refuses a grant-volume SubPath that a swap redirected onto a cover.
+
+Added to this area's tests: `tests/integration/test_step6_covers.py` (the spec's §5.2 bypass test, run from a
+gate-spawned container — a must-pass), `test_review_step5.Covers`, `test_session.CoveredPaths`. The field
+test's allowed bind case now uses a cover-free grant, because the project root contains covers and is refused.

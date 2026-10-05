@@ -233,3 +233,30 @@ class ScoreTest(SettingsCase):
 
     def test_scrub(self):
         self.assertEqual(runner.scrub("a TOK b", ["TOK"]), "a [REDACTED] b")
+
+
+class CoveredPaths(SessionTest):
+    """Critical (5 Oct): the gate needs the set of paths the agent container masks/covers, so it can refuse a
+    spawned container's bind that reaches them."""
+
+    def test_covered_paths_lists_masks_and_git_covers_not_grants(self):
+        import os
+        self.write("projects/p1/.env", "SECRET=1\n")
+        self.write("projects/p1/secrets/db.txt", "pw\n")
+        data_ro = self.mkdir("projects", "p1", "ro-grant")
+        reg_root = os.path.join(self.data, "..")
+        from agentbox import registry
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["data_ro"] = [data_ro]
+        registry.save(self.settings.registry_path, reg)
+        s = self.make()
+        s.prepare()
+        covered = set(s.covered_paths())
+        root = self.root
+        self.assertIn(os.path.realpath(os.path.join(root, ".env")), covered)
+        self.assertIn(os.path.realpath(os.path.join(root, "secrets")), covered)
+        self.assertIn(os.path.realpath(os.path.join(root, ".git", "hooks")), covered)
+        self.assertIn(os.path.realpath(os.path.join(root, ".git", "config")), covered)
+        self.assertNotIn(os.path.realpath(data_ro), covered)   # a read-only grant is not a cover
+        self.assertNotIn(os.path.realpath(root), covered)
+        self.assertEqual(s.covered_paths(), sorted(covered), "a sorted plain list for the gate config")

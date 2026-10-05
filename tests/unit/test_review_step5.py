@@ -653,6 +653,61 @@ class BuiltRecord(unittest.TestCase):
         self.assertEqual(builtrec.ids(rec), {new})
 
 
+class Covers(unittest.TestCase):
+    """Critical (5 Oct, life-updates spec 6.2): the agent's in-container masks and read-only covers do not
+    exist in a container it spawns through the gate, so the gate refuses a bind that reaches a covered path."""
+
+    def gate(self):
+        g = Fake()
+        g.cfg["bind_roots"] = ["/proj"]
+        g.cfg["covered"] = ["/proj/data", "/proj/.env", "/proj/.git/hooks", "/proj/.git/config"]
+        return g
+
+    def bind(self, g, src):
+        return decide(g, "POST", "/v5/libpod/containers/create",
+                      {"image": "x", "mounts": [{"type": "bind", "source": src, "destination": "/m"}]})
+
+    def test_binding_the_whole_root_is_refused(self):
+        with self.assertRaises(gate.Deny) as e:
+            self.bind(self.gate(), "/proj")
+        self.assertIn("masked or covered", str(e.exception))
+
+    def test_binding_onto_or_under_a_cover_is_refused(self):
+        g = self.gate()
+        for src in ("/proj/data", "/proj/data/app.db", "/proj/.git", "/proj/.git/config", "/proj/.env"):
+            with self.subTest(src=src), self.assertRaises(gate.Deny):
+                self.bind(g, src)
+
+    def test_a_sibling_subpath_is_allowed(self):
+        g = self.gate()
+        _t, body, _k = self.bind(g, "/proj/dev/data")   # not under or over any cover
+        spec = json.loads(body)
+        vols = spec.get("volumes") or []
+        self.assertEqual([(v["Name"], v["SubPath"]) for v in vols], [("abt-s-1-grant0", "dev/data")])
+        self.assertEqual(spec["mounts"], [])
+
+    def test_compat_binds_checked_too(self):
+        g = self.gate()
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/containers/create", {"Image": "x", "HostConfig": {"Binds": ["/proj/data:/m"]}})
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/containers/create",
+                   {"Image": "x", "HostConfig": {"Mounts": [{"Type": "bind", "Source": "/proj", "Target": "/m"}]}})
+
+    def test_after_start_rejects_a_swap_onto_a_cover(self):
+        g = self.gate()
+        g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
+            "Labels": {gate.DEV_OWNER: "abt-s-1", "agentbox.role": "grant"},
+            "Options": {"type": "none", "o": "bind", "device": "/proj"}}
+        doc = container("c1", Mounts=[{"Type": "volume", "Name": "abt-s-1-grant0", "Destination": "/m"}],
+                        State={"Pid": 4242})
+        g.host_mountinfo = lambda: "38 1 0:40 / /proj rw - tmpfs tmpfs rw\n"
+        g.read_mountinfo = lambda pid: "1 1 0:40 /app /m ro - tmpfs tmpfs rw\n"    # under the root, not a cover
+        self.assertEqual(g.mount_violations(doc), [])
+        g.read_mountinfo = lambda pid: "1 1 0:40 /data /m ro - tmpfs tmpfs rw\n"   # swapped onto the cover
+        self.assertTrue(g.mount_violations(doc))
+
+
 class TrialFindings(unittest.TestCase):
     """The trial (2 Oct): what real podman-compose needed."""
 

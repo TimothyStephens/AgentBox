@@ -270,7 +270,9 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
     lines += [
         "- Nothing else on the host is visible. The root filesystem is read-only; `/tmp` and your home "
         "directory are temporary and vanish when the session ends.",
-        "- `.git/hooks` and `.git/config` are read-only. Commit as usual.",
+        "- `.git/hooks` and `.git/config` are read-only (so you cannot redirect `core.hooksPath`); commit as "
+        "usual. These covers, and the masks below, are enforced for containers you start too: the gate refuses "
+        "a bind whose source reaches a masked or covered path (bind a subdirectory that does not).",
         "- Secret files (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/`) are masked and read as empty. Where a "
         "directory has `.env.dev`, that file appears at `.env`: add dev variables there.",
     ]
@@ -763,6 +765,27 @@ class NetSession(Session):
         p = self.project
         return [p.root] + list(p.data_rw) + list(p.data_ro)
 
+    def covered_paths(self):
+        """Host paths the agent's own container masks or covers read-only, as real paths (crit 5 Oct): secret
+        masks and mask dirs, the dev-swap `.env` (the real file behind the swap), `.git/hooks`/`config`/
+        `config.worktree`, compose-file covers and the adapter's project covers. The gate refuses a spawned
+        container's bind that resolves onto, under, or over any of these, since those in-container mounts do
+        not exist in a container the agent starts. A read-only bind whose destination is itself a grant (a
+        data_ro grant) is not a cover: the agent may read it."""
+        roots = {os.path.realpath(r) for r in self.bind_roots}
+        covered = set()
+        for m in (self.plan.mounts if self.plan else []):
+            dst = os.path.realpath(m.dst)
+            if m.kind in ("mask", "tmpfs"):
+                covered.add(dst)
+            elif m.kind == "bind" and dst not in roots and (m.ro or os.path.realpath(m.src) != dst):
+                # git hooks/config and compose covers (ro, dst==src); the .env dev-swap (dst != src): a spawned
+                # container binding the root would see the real file, not the empty/dev substitute
+                covered.add(dst)
+        for p in self.setup.project_covers:
+            covered.add(os.path.realpath(p))
+        return sorted(covered)
+
     def sockguard_dev_config(self):
         return sockguard.dev_config(self.name, bind_roots=self.bind_roots)
 
@@ -835,7 +858,8 @@ class NetSession(Session):
             "listen": self.gate_socket, "upstream": self.sockguard_dev_socket, "raw": service,
             "session": self.name, "network": self.int_net,
             "labels": labels_for(s, self.project.name, self.name, "dev"),
-            "proxy_env": proxy_env, "bind_roots": self.bind_roots, "subnets": self.int_subnets,
+            "proxy_env": proxy_env, "bind_roots": self.bind_roots, "covered": self.covered_paths(),
+            "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
             "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,
             "build_memory": int(self.project.build_memory),
