@@ -122,8 +122,11 @@ def squid_conf(mode, *, model_domains, model_host, model_port, extra_domains=(),
         "cache_mem 8 MB",
         # destinations only (host:port), never URL paths or queries, which can carry data
         "strip_query_terms on",
-        "logformat agentbox %ts.%03tu %>a %rm %>rd:%>rP %>Hs %<a %Ss/%Sh",
+        # ... then the upstream address squid used, its result, the total time and its DNS time, in ms (the
+        # egress soak and the selftest diagnostics read the last three, 3 Oct)
+        "logformat agentbox %ts.%03tu %>a %rm %>rd:%>rP %>Hs %<a %Ss/%Sh %tr %dt",
         "access_log stdio:/dev/stdout agentbox",
+        "buffered_logs off",                 # every line written at once: kept logs were missing requests (3 Oct)
         "cache_log stdio:/dev/stderr",
         "pid_filename none",
         "shutdown_lifetime 1 seconds",

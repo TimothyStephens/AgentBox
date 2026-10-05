@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check egress-soak
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -29,6 +29,11 @@ itest-oom:
 # Run by Tim, not by the builder: the throwaway trial (docs/trial.md). trial-snapshot just before the session
 # starts (live containers and the time); trial-check after it ends (live stacks unchanged, nothing else under
 # ~ changed, nothing of the session left, no grant volume over the trial root).
+# The egress flake (3 Oct): one packages-mode session, 300 sequential and 10x30 parallel requests through its
+# squid; failure rate and latency per host and upstream address family. SOAK_SEQ/SOAK_WORKERS/SOAK_EACH to change.
+egress-soak:
+	python3 -m tests.soak.egress_soak
+
 trial-snapshot:
 	python3 -m tests.trial.check snapshot
 

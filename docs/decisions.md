@@ -533,3 +533,16 @@ From trial 2:
   - **Target:** only a running dev container of that session can be previewed.
   - **Removal:** the forwarder carries the session's labels, so the session's teardown, `ab kill` and gc remove it. `ab preview <session> --stop` removes it earlier.
   - **From the desktop:** `ssh -N -L N:127.0.0.1:N <host>`. Tested in `test_step6_preview`.
+
+## 2026-10-05 · The egress flake, measured (Tim: top priority before the first real project)
+
+- **Tool:** `make egress-soak` (`tests/soak/egress_soak.py`). One packages-mode session (example.com as an extra domain); 300 sequential and 10 workers x 30 parallel requests through its squid to pypi.org, files.pythonhosted.org, registry.npmjs.org, github.com and example.com. It reports failures and p50/p95/max per host and phase (client side), and per host and upstream address family (squid side, from its access log), plus squid's cache.log errors and its cgroup memory and CPU.
+- **squid's access log** now also records its total time and DNS time per request (`%tr %dt`, appended, so the existing parsers are unchanged), and `buffered_logs off`.
+- **Idle (5 Oct):** 600 requests, 0 failures. Every upstream connection squid made was IPv4 (no IPv6 attempts). Sequential p95 about 250-300 ms; parallel p95 1.3-2.3 s, max 3.4 s.
+- **During `make itest` (5 Oct):** 600 requests, 0 failures, all IPv4. Parallel max 5.4 s. squid: memory about 118 of 256 MiB, CPU at most 4.7%, no memory events. That itest run passed in full.
+- **The same parallel requests straight from the host** (no agentbox, squid or podman): no errors, but the same tail, max 5.2 s, 89 of 300 over 900 ms, clustered near 1, 2, 4 and 5 s. That points to retransmitted connection attempts on this host's uplink.
+- **Conclusion:**
+  - **Not IPv6:** squid never used it.
+  - **Not squid's resources:** memory and CPU were far from their limits, so nothing about squid's memory or the tests' parallelism needs changing.
+  - **What the evidence shows:** the latency tail is the host's own network. The earlier failures (20 s probe timeouts, a pypi 503 during a build, Chromium) match rare, longer stalls of that kind. None was reproduced in 1,200 soak requests or in the full itest runs.
+  - **No fix applied.** There was nothing in agentbox to fix. Next time the failing line will carry squid's log line with its upstream address, total and DNS time, plus its cache.log.
