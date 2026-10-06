@@ -7,6 +7,7 @@ Every path can be moved with an environment variable so tests never touch the re
   AB_DATA_DIR     default ~/.local/share/agentbox   (per-project agent state, backups)
   AB_RUN_DIR      default $XDG_RUNTIME_DIR/agentbox (live session metadata, generated configs; tmpfs)
   AB_PODMAN       default podman
+  AB_REPOS_DIR    default ~/repos                   (where `ab init` scaffolds new projects)
 """
 import os
 import tomllib
@@ -42,6 +43,7 @@ DEFAULTS = {
     "git_email": "",
     "image_keep_days": 7,  # ab gc removes session-built images older than this (the newest per tag stays)
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
+    "repos_dir": "~/repos",  # where `ab init` scaffolds new projects (AB_REPOS_DIR overrides)
     "omp_home": "~/.omp",  # the host's OMP install; only named pieces of it are mounted (adapters/omp.py)
 }
 
@@ -106,6 +108,8 @@ def load():
             if k not in DEFAULTS:
                 raise ValueError(f"{path}: unknown setting {k!r}")
             values[k] = v
+    if os.environ.get("AB_REPOS_DIR"):
+        values["repos_dir"] = os.environ["AB_REPOS_DIR"]
     return Settings(config_dir=os.path.abspath(config_dir), data_dir=os.path.abspath(data_dir),
                     run_dir=os.path.abspath(run_dir),
                     podman=os.environ.get("AB_PODMAN") or "podman", values=values)

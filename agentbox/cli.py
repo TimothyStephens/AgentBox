@@ -15,6 +15,11 @@ def warn(msg):
     print(msg, file=sys.stderr)
 
 
+def cmd_init(s, a):
+    from . import initproj
+    return initproj.make(s, a.template, a.name, upstream=a.upstream, out=print, warn=warn)
+
+
 def cmd_project_add(s, a):
     registry.check_name(a.name)
     reg = registry.load(s.registry_path)
@@ -288,6 +293,15 @@ def cmd_keys_rotate(s, a):
 def parser():
     p = argparse.ArgumentParser(prog="ab", description="agentbox: coding agents in hardened podman sandboxes")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    from . import initproj
+    x = sub.add_parser("init", help="scaffold a new project with a grantcheck-clean layout (secrets masked, "
+                                    "live data in a named volume), then register it")
+    x.add_argument("template", choices=initproj.TEMPLATES)
+    x.add_argument("--name", required=True, help="project name; the repo is created at <repos_dir>/<name>")
+    x.add_argument("--upstream", help="git URL to add as origin and push to (an off-box CODE backup; "
+                                      "it does NOT back up .env or the data volume)")
+    x.set_defaults(fn=cmd_init)
 
     proj = sub.add_parser("project", help="manage registered projects").add_subparsers(dest="sub", required=True)
     x = proj.add_parser("add")

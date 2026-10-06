@@ -171,6 +171,10 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Data grants (`data_ro`, `data_rw`) sit beside the code grant, so inputs can be read-only while outputs are writable.
 - One compose project per session by default. Interconnected projects get an explicit project group, never ad hoc multi-project sessions.
 
+### Scaffolding new projects (`ab init`)
+
+`ab init <pod|python> --name <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {pods|python}` itself, so the project is registered and grant-checked the moment it exists; a freshly-init'd project starts a session with zero warnings and zero overrides. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
+
 ### Filesystem policy
 
 - **The grant holds code; secrets and live data live outside it.** This is the primary rule (added 6 Oct, after a session found it could reach a repo-local database from a container it started). The masks and the gate's cover checks below are defence in depth, not the main wall. Before a session starts, and at `ab project add`, each read-write grant is scanned (`agentbox/grantcheck.py`): an uncovered non-empty `.env`/`*.pem`/`*.key` or `secrets/` file, a `.git` with credentials in a remote URL, or live data (a `*.db`/`*.sqlite`/`*.duckdb` over 1 MB, or a path a compose file binds as a data volume) makes the session refuse to start, naming what was found. Move it out of the grant, or add a mask; to run regardless, `ab project add --i-understand-grant-exposure` or `ab project accept-grant-exposure <name>` records an acknowledgement, re-prompted when the finding changes.
@@ -494,6 +498,7 @@ Day to day you register a project once, then start sessions by agent and project
 
 | Command | What it does |
 | --- | --- |
+| `ab init <pod\|python> --name <n> [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it |
 | `ab project add <name> <root> --preset <p>` | Register a project with a preset (validated against overlap) |
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
 | `ab allow <name> --egress open` / `--cap NET_ADMIN` / `--device /dev/net/tun` | Per-project overrides |
