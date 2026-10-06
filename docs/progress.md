@@ -6,9 +6,11 @@ The builder's running state, updated in every commit, so a crashed session loses
 
 ## Current step
 
-**Stopped.** The first real-project session found a critical gate hole: the agent's masks and read-only covers did not reach containers it started through the gate, so a bind of the project root exposed the covered data. Fixed: the covers are now a gate-enforced bind check. The mount part of the step-5 review is reopened and re-reviewed in `docs/reviews/2026-10-01-step-5-coverage.md` (5 Oct). **Before the first real project runs again, that area wants an independent re-review (Tim).**
+**Stopped.** Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-covers2.md`, a fourth high, N1).
+- **Track 1 (primary wall):** the grant holds code; a grant with uncovered secrets or live data refuses to start (`agentbox/grantcheck.py`, `ab project accept-grant-exposure` / `--i-understand-grant-exposure`). Covers are defence in depth behind it. Documented in the design doc and the session notes.
+- **Track 2:** N1 (stop/start race: per-container lock + PID recheck), N2 (nothing mounted under a dir mask), N3 (`RUN --mount source=` checked by the gate), N4-N9 fixed. Builds confirmed: a COPY of a cover arrives empty, and a crafted context carrying masked content is refused.
 
-Earlier this session: `make egress-soak` measured the egress flake (0 failures idle and under load; the tail is the host's uplink, not agentbox).
+**Real projects stay off until this area is independently re-reviewed again (Tim).** The covers review of 5 Oct is still open from last round too.
 
 ## Done
 
@@ -67,12 +69,13 @@ Earlier this session: `make egress-soak` measured the egress flake (0 failures i
     - lockdown sessions start from empty agent state;
     - `ab preview` is built (127.0.0.1 only, one session service, removed with the session; `test_step6_preview`).
 - **Egress soak** (`5d43feb`): `make egress-soak`; the flake is the host's uplink, not agentbox (decisions.md, 5 Oct).
-- **Covers audit** (this commit; `docs/reviews/2026-10-05-covers.md`, answered in place, no rejections): H1 (cover parents pinned, cover identity checked), H2 (start = init, check mounts before the entrypoint, then start; fail closed), H3 (read-only grants stay read-only), builds (COPY of masks arrives empty; a context carrying masked content is refused), plus M1/L1-L4.
+- **Track 1 + covers audit 2** (this commit; `docs/reviews/2026-10-06-covers2.md`, no rejections): `grantcheck.py` refuses a grant holding uncovered secrets or live data (the primary wall); N1 (stop/start race: per-container lock + PID recheck), N2 (nothing under a dir mask), N3 (`RUN --mount source=`), N4-N9. Podman checks run: stop-after-init leaves `exited`; a duplicate tmpfs+bind destination is refused.
+- **Covers audit** (`5690d9f`; `docs/reviews/2026-10-05-covers.md`, no rejections): H1 (cover parents pinned, cover identity checked), H2 (start = init, check mounts before the entrypoint, then start; fail closed), H3 (read-only grants stay read-only), builds (COPY of masks arrives empty; a context carrying masked content is refused), plus M1/L1-L4.
 - **Covers enforced at the gate** (`76e5721`): the critical real-project finding. A spawned container's bind that reaches a mask or read-only cover (secrets, `.git/hooks`, `.git/config`, compose/lockdown covers, the `.env` swap) is refused; `.git/config` cannot be written from a spawned container either. `test_step6_covers` (the spec's §5.2 bypass test). decisions.md / the coverage review, 5 Oct.
 
 ## Next
 
-1. **Independent re-review of the mount area** (reopened 5 Oct), then the first real project: `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, with Tim.
+1. **Independent re-review of the mount/covers area** (reopened 5 and 6 Oct) and of Track 1, then the first real project: `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, with Tim.
 
 ## Open decisions (Tim)
 

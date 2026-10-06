@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from . import adapters, backup, cgroup, egress, hardening, mounts, paths, presets, registry, tokens
+from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, registry, tokens
 from . import keys as keysmod
 from . import buildcap, builtrec, scan, sockguard
 from .config import HOME
@@ -33,6 +33,7 @@ class Project:
     eff: dict                      # setting -> (value, source)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
+    grant_exposure_accepted: str = ""
     compose_project: str = ""      # the live stack's compose project (default: the project name)
     observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
     preset: str = ""
@@ -78,6 +79,7 @@ def load_project(settings, name, *, with_secrets=False):
                    swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
                    build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
+                   grant_exposure_accepted=str(p.get("grant_exposure_accepted") or ""),
                    compose_project=check_compose_project(name, p.get("compose_project", name)),
                    observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)),
                    preset=str(p.get("preset") or ""),
@@ -262,6 +264,9 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
         "",
         "You are running inside an agentbox sandbox (a hardened rootless podman container). Facts:",
         f"- Project `{project.name}` is mounted read-write at `{project.root}` (its real host path).",
+        "- The grant holds code. Secrets and live data are meant to live outside it; the session refuses to "
+        "start if the grant holds an uncovered secret or live database. Masks and the gate's cover checks are "
+        "a backstop, not the main wall: do not move secrets or production data into the grant.",
     ]
     for d in project.data_ro:
         lines.append(f"- Read-only data: `{d}`")
@@ -389,6 +394,11 @@ class Session:
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), secrets=p.value("secrets"),
                                 mask_skip=p.mask_skip, swap=p.swap)
+        covered = [m.dst for m in self.plan.mounts if m.kind in ("mask", "tmpfs")
+                   or (m.kind == "bind" and os.path.realpath(m.src) != m.dst)]
+        exposure = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip, covered=covered)
+        if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
+            raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")
         for n in self.plan.notes:
@@ -512,7 +522,9 @@ class Session:
         opts += [f"--env={k}={v}" for k, v in env.items()]
         opts.append(f"--workdir={p.root}")
         opts += self.network_args()
-        opts += [m.podman_arg(mask_file=self.mask_file) for m in self.plan.mounts]
+        under = self._dir_covers()
+        opts += [m.podman_arg(mask_file=self.mask_file) for m in self.plan.mounts
+                 if not any(m.dst.startswith(c.rstrip("/") + "/") for c in under)]     # N2: nothing inside a cover
         opts += self.pin_args()
         if a.state_mount:
             opts.append(f"--mount=type=bind,src={self.state_dir},dst={a.state_mount}")
@@ -631,6 +643,13 @@ class Session:
     def pin_args(self):
         """Mounts that pin covers in place; none without the dev tier (nothing can bind past a cover)."""
         return []
+
+    def _dir_covers(self):
+        """Directory covers (empty tmpfs): the plan's mask dirs and the adapter's project covers that are dirs.
+        Nothing is mounted, pinned or listed beneath one (audit 6 Oct, N2)."""
+        out = [m.dst for m in (self.plan.mounts if self.plan else []) if m.kind == "tmpfs"]
+        out += [p for p in self.setup.project_covers if os.path.isdir(p) and not os.path.islink(p)]
+        return [os.path.realpath(d) for d in out]
 
     def add_network_cases(self, builder):
         from .selftest import runner
@@ -784,14 +803,16 @@ class NetSession(Session):
         roots = [os.path.realpath(r) for r in self.bind_roots]
         ro_roots = {os.path.realpath(r) for r in self.project.data_ro}
         pins = {}
-        for c in self.covered_paths():
+        covered = self.covered_paths()
+        for c in covered:
             inside = [r for r in roots if c.startswith(r.rstrip("/") + "/")]
             if not inside:
                 continue
             root = max(inside, key=len)
             d = os.path.dirname(c)
             while d != root and d.startswith(root + "/"):
-                pins[d] = root in ro_roots
+                if not any(d == x or d.startswith(x.rstrip("/") + "/") for x in covered):   # N2
+                    pins[d] = root in ro_roots
                 d = os.path.dirname(d)
         return [f"--mount=type=bind,src={d},dst={d}" + (",ro" if ro else "")
                 for d, ro in sorted(pins.items(), key=lambda kv: kv[0].count("/"))]
@@ -835,7 +856,8 @@ class NetSession(Session):
                 covered.add(dst)
         for p in self.setup.project_covers:
             covered.add(os.path.realpath(p))
-        return sorted(covered)
+        under = self._dir_covers()
+        return sorted(c for c in covered if not any(c.startswith(d.rstrip("/") + "/") for d in under))
 
     def sockguard_dev_config(self):
         return sockguard.dev_config(self.name, bind_roots=self.bind_roots)

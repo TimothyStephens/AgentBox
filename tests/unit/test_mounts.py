@@ -109,3 +109,33 @@ class MountPlanTest(TempCase):
         self.assertEqual(mounts.Mount("mask", "/a/.env").podman_arg(mask_file="/run/s/mask-empty"),
                          "--mount=type=bind,src=/run/s/mask-empty,dst=/a/.env,ro")
         self.assertEqual(mounts.Mount("bind", "/a", "/a", ro=True).podman_arg(), "--mount=type=bind,src=/a,dst=/a,ro")
+
+
+class NothingInsideADirectoryMask(MountPlanTest):
+    """Audit 6 Oct, N2: a git dir or compose file under secrets/ must not get a real bind over the empty
+    cover (podman would mount it after the tmpfs and show the real file)."""
+
+    def test_no_mount_under_a_masked_dir(self):
+        vault = os.path.join(self.root, "secrets", "vault")
+        os.makedirs(vault)
+        subprocess.run(["git", "init", "-q", vault], check=True)
+        self.write("proj/secrets/compose.yaml", "services: {}\n")
+        plan = mounts.plan(root=self.root, compose="ro")
+        under = [d for d in self.by_dst(plan) if d.startswith("secrets/")]
+        self.assertEqual(under, [], "nothing is mounted inside the secrets/ mask")
+        self.assertEqual(self.by_dst(plan)["secrets"].kind, "tmpfs")
+        self.assertFalse([d for d in plan.create_dirs if "/secrets/" in d])
+
+
+class HardLinks(MountPlanTest):
+    """Audit 6 Oct, N4: another name of a covered file is masked too."""
+
+    def test_other_names_masked(self):
+        os.link(os.path.join(self.root, "secrets", "db.txt"), os.path.join(self.root, "keep-db.txt"))
+        os.link(os.path.join(self.root, ".env"), os.path.join(self.root, "sub", "copy-of-env"))
+        os.link(os.path.join(self.root, ".git", "config"), os.path.join(self.root, "gitcfg"))
+        plan = mounts.plan(root=self.root)
+        d = self.by_dst(plan)
+        for rel in ("keep-db.txt", "sub/copy-of-env", "gitcfg"):
+            self.assertEqual(d.get(rel).kind if d.get(rel) else None, "mask", rel)
+        self.assertNotIn("keep.txt", d)

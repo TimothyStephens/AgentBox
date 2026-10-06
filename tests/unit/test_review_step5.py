@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import unittest
+import unittest.mock
 
 from agentbox import gate
 from tests.unit.test_gate import CFG, DEV
@@ -842,6 +843,43 @@ class CoversAudit(unittest.TestCase):
         with self.assertRaises(gate.Deny):
             g.check_build_images(self.tar({"Containerfile": cf, ".env": b"REAL=1\n"}), q)
 
+    def test_n5_identity_checked_at_start(self):
+        g = self.gate()
+        doc = container("c1", State={"Pid": 0, "Status": "created"})
+        g.objects.update({"containers/web": doc, "containers/c1": doc})
+        g.verified.add("c1")
+        env = os.path.join(self.proj, "dev", ".env")
+        open(env + ".new", "w").close()
+        os.rename(env + ".new", env)                    # replaced by rename (new inode), as editors save
+        with self.assertRaises(gate.Deny) as e:
+            decide(g, "POST", "/v5/libpod/containers/web/start")
+        self.assertIn("moved or replaced", str(e.exception))
+
+    def test_n6_a_secret_named_file_that_appeared_later_blocks_the_bind(self):
+        g = self.gate()
+        self.bind(g, os.path.join(self.proj, "app"))
+        with open(os.path.join(self.proj, "app", "new.pem"), "w") as f:
+            f.write("written on the host after start\n")
+        with self.assertRaises(gate.Deny) as e:
+            self.bind(g, os.path.join(self.proj, "app"))
+        self.assertIn("new.pem", str(e.exception))
+        open(os.path.join(self.proj, "app", "new.pem"), "w").close()     # empty: nothing to protect
+        self.bind(g, os.path.join(self.proj, "app"))
+
+    def test_n7_sub_path_on_another_filesystem_refused(self):
+        g = self.gate()
+        real_stat = os.stat
+        app = os.path.join(self.proj, "app")
+
+        def fake_stat(path, *a, **k):
+            st = real_stat(path, *a, **k)
+            if path == app:
+                return os.stat_result((st.st_mode, st.st_ino, st.st_dev + 1) + tuple(st)[3:])
+            return st
+        with unittest.mock.patch("agentbox.gate.os.stat", side_effect=fake_stat), self.assertRaises(gate.Deny) as e:
+            self.bind(g, app)
+        self.assertIn("different filesystem", str(e.exception))
+
     def test_l2_grant_volume_cannot_be_named_directly(self):
         g = self.gate()
         g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
@@ -855,6 +893,80 @@ class CoversAudit(unittest.TestCase):
         for path in ("/v5/libpod/images/x/get", "/v5/images/x/get", "/v5/images/get", "/v5/libpod/images/export"):
             with self.subTest(path=path), self.assertRaises(gate.Deny):
                 decide(Fake(), "GET", path)
+
+
+class StartRace(unittest.TestCase):
+    """Audit 6 Oct, N1 (confirmed: podman 5.7 stops an initialized container, and the next start re-initialises
+    it): a stop between the gate's check and the forwarded start must not re-resolve the sub-paths."""
+
+    def gate(self):
+        doc = container("c1", State={"Pid": 4242, "Status": "initialized"})
+        return Fake({"containers/web": doc, "containers/c1": doc})
+
+    def test_a_stop_waits_for_a_start_in_progress(self):
+        g = self.gate()
+        g.verified.add("c1")
+        g.hold("c1")                                     # as check_start does, held until the start reply
+        done = threading.Event()
+
+        def stopper():
+            g.begin_request()
+            decide(g, "POST", "/v5/libpod/containers/web/stop")
+            g.release_held()
+            done.set()
+        t = threading.Thread(target=stopper)
+        t.start()
+        self.assertFalse(done.wait(0.5), "the stop must wait for the start to finish")
+        g.release_held()                                 # the start reply came back
+        self.assertTrue(done.wait(5), "and then goes through")
+        t.join(5)
+        for path, method in (("/v5/libpod/containers/web/kill", "POST"), ("/v5/libpod/containers/web", "DELETE"),
+                             ("/v5/libpod/containers/web/pause", "POST")):
+            g.begin_request()
+            decide(g, method, path)
+            self.assertEqual([c for c, _ in g._tls.held], ["c1"], path)
+            g.release_held()
+
+    def test_reinitialised_after_the_check_is_refused(self):
+        g = self.gate()
+        g.begin_request()
+        g._tls.checked = {"c1": 4242}
+        g.objects["containers/c1"]["State"] = {"Pid": 5555, "Status": "running"}     # a new process
+        with self.assertRaises(gate.Deny):
+            g.after_start_checked()
+        self.assertTrue(any("c1" in d for d in g.deleted))
+
+    def test_same_process_rechecked_strictly_and_exited_accepted(self):
+        g = self.gate()
+        g.begin_request()
+        g._tls.checked = {"c1": 4242}
+        doc = g.objects["containers/c1"]
+        doc["Mounts"] = [{"Type": "bind", "Source": "/proj", "Destination": "/d"}]
+        doc["State"] = {"Pid": 4242, "Status": "running"}
+        g.read_mountinfo = lambda pid: (_ for _ in ()).throw(OSError("gone"))
+        with self.assertRaises(gate.Deny):               # strict: unreadable while running
+            g.after_start_checked()
+        doc["State"] = {"Pid": 0, "Status": "exited"}
+        g.after_start_checked()                          # exited: the held lock ruled out a re-init
+
+
+class RunMounts(unittest.TestCase):
+    """Audit 6 Oct, N3."""
+
+    def test_source_checked_by_the_gate(self):
+        for line in ("RUN --mount=type=cache,target=/c,source=../../.. true",
+                     "RUN --mount=type=bind,source=/etc,target=/e true",
+                     "RUN --mount=type=bind,source=a/../../x,target=/e true",
+                     "RUN --mount=type=cache,target=/c,src=/home true",
+                     "RUN --mount=type=bind,source=x,target=/e,bind-propagation=rshared true",
+                     "RUN --mount=type=bind,source=x,target=/e,relabel=shared true"):
+            with self.subTest(line=line), self.assertRaises(gate.Deny):
+                gate.dockerfile_images(f"FROM busybox\n{line}\n", {})
+        for line in ("RUN --mount=type=cache,target=/c true", "RUN --mount=type=bind,source=src,target=/s true",
+                     "RUN --mount=type=bind,from=busybox,source=/bin/sh,target=/x true",
+                     "RUN --mount=type=secret,id=s true", "RUN --mount=type=tmpfs,target=/t true"):
+            with self.subTest(line=line):
+                gate.dockerfile_images(f"FROM busybox\n{line}\n", {})
 
 
 class TrialFindings(unittest.TestCase):

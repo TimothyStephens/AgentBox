@@ -288,7 +288,53 @@ class CoverPins(SessionTest):
         ids = s.cover_ids()
         self.assertEqual(ids[os.path.join(root, "dev", ".env")][1], os.lstat(os.path.join(root, "dev", ".env")).st_ino)
 
+    def test_nothing_pinned_or_bound_inside_a_directory_mask(self):
+        import os
+        import subprocess
+        from agentbox import registry
+        vault = os.path.join(self.root, "secrets", "vault")
+        os.makedirs(vault)
+        subprocess.run(["git", "init", "-q", vault], check=True)
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["podman"] = {"tier": "dev"}
+        registry.save(self.settings.registry_path, reg)
+        s = self.make()
+        s.prepare()
+        sec = os.path.join(self.root, "secrets")
+        self.assertFalse([c for c in s.covered_paths() if c.startswith(sec + "/")])
+        argv = " ".join(s.run_args(s.agent_command()))
+        self.assertNotIn(f"dst={sec}/", argv, "no mount or pin inside the secrets/ cover")
+        self.assertEqual(argv.count(f"dst={sec},") + argv.count(f"dst={sec} "), 1, "one mount on secrets/")
+
     def test_no_pins_without_the_dev_tier(self):
         s = self.make()
         s.prepare()
         self.assertEqual(s.pin_args(), [])
+
+
+class GrantExposure(SessionTest):
+    """Track 1 (6 Oct): a session refuses to start when the grant holds uncovered secrets or live data."""
+
+    def test_refuses_then_accepts(self):
+        import os
+        from agentbox import grantcheck, registry
+        self.write("projects/p1/data/app.db", "x" * (2 << 20))        # live data in the grant
+        with self.assertRaises(AgentboxError) as e:
+            self.make().prepare()
+        self.assertIn("data/app.db", str(e.exception))
+        self.assertIn("accept-grant-exposure", str(e.exception))
+        # record the ack and it starts
+        exposure = grantcheck.scan(self.root, [self.root], covered=[os.path.join(self.root, ".env"),
+                                                                    os.path.join(self.root, "sub")])
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+        registry.save(self.settings.registry_path, reg)
+        self.make().prepare()
+        # a new exposure invalidates the ack
+        self.write("projects/p1/other.sqlite", "y" * (2 << 20))
+        with self.assertRaises(AgentboxError):
+            self.make().prepare()
+
+    def test_a_masked_secret_does_not_trip_it(self):
+        # the fixture's .env/.env.dev and secrets/ are masked; no exposure, no ack needed
+        self.make().prepare()

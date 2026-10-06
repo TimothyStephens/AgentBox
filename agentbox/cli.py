@@ -48,6 +48,15 @@ def cmd_project_add(s, a):
     presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
     if "build_memory" in entry:
         session.check_build_memory(s, a.name, entry["build_memory"])
+    from . import grantcheck
+    exposure = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []), entry.get("mask_skip", []),
+                               covered=_mask_dsts(s, entry))
+    if exposure and not a.i_understand_grant_exposure:
+        raise AgentboxError(grantcheck.message(a.name, exposure))
+    if exposure:
+        entry["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+        warn(f"ab: accepted grant exposure for {a.name} ({len(exposure)} item(s)); move secrets/live data out "
+             "of the grant when you can")
     found = _history_secrets(entry)
     if found and not a.accept_history_secrets:
         raise AgentboxError(session.history_secrets_message(a.name, found))
@@ -60,11 +69,44 @@ def cmd_project_add(s, a):
     print(f"added project {a.name} ({entry['root']}, preset {a.preset})")
 
 
+def _mask_dsts(settings, entry):
+    """The paths agentbox will mask or swap for this project (so an already-covered secret is not flagged)."""
+    from . import mounts
+    plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []), data_rw=entry.get("data_rw", []),
+                       compose=presets.effective(entry.get("name", "?"), entry,
+                                                 presets.load_presets(settings.presets_dir))["compose"][0],
+                       mask_skip=entry.get("mask_skip", []), swap=entry.get("swap", __import__("agentbox.mounts",
+                       fromlist=["DEFAULT_SWAP"]).DEFAULT_SWAP))
+    import os as _os
+    return [m.dst for m in plan.mounts if m.kind in ("mask", "tmpfs")
+            or (m.kind == "bind" and _os.path.realpath(m.src) != m.dst)]
+
+
 def _history_secrets(entry):
     from .mounts import DEFAULT_SWAP
     grants = [entry["root"]] + entry.get("data_rw", []) + entry.get("data_ro", [])
     return session.history_secrets(entry["root"], grants, entry.get("swap", DEFAULT_SWAP),
                                    entry.get("mask_skip", []))
+
+
+def cmd_project_accept_grant_exposure(s, a):
+    from . import grantcheck
+    reg = registry.load(s.registry_path)
+    if a.name not in reg:
+        raise AgentboxError(f"no project named {a.name}")
+    e = reg[a.name]
+    exposure = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
+                               covered=_mask_dsts(s, dict(e, name=a.name)))
+    if not exposure:
+        reg[a.name].pop("grant_exposure_accepted", None)
+        registry.save(s.registry_path, reg)
+        print(f"project {a.name}: no secrets or live data in the grant; nothing to accept")
+        return 0
+    reg[a.name]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+    registry.save(s.registry_path, reg)
+    print(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0])
+    print(f"accepted for {a.name}. Move secrets and live data out of the grant when you can.")
+    return 0
 
 
 def cmd_project_accept_history_secrets(s, a):
@@ -264,11 +306,18 @@ def parser():
                         "and what the agent reads goes to its model provider)")
     x.add_argument("--accept-history-secrets", action="store_true",
                    help="register even though masked file names (.env, *.key, ...) are in git history")
+    x.add_argument("--i-understand-grant-exposure", action="store_true",
+                   help="register even though the grant holds secrets or live data (a grant is for code; "
+                        "move them outside it or add a mask)")
     x.set_defaults(fn=cmd_project_add)
     x = proj.add_parser("accept-history-secrets",
                         help="accept (after rotating them) the masked file names now in a project's git history")
     x.add_argument("name")
     x.set_defaults(fn=cmd_project_accept_history_secrets)
+    x = proj.add_parser("accept-grant-exposure",
+                        help="accept that this project's grant holds secrets or live data the agent can read")
+    x.add_argument("name")
+    x.set_defaults(fn=cmd_project_accept_grant_exposure)
     x = proj.add_parser("show")
     x.add_argument("name")
     x.set_defaults(fn=cmd_project_show)

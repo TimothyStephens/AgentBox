@@ -5,6 +5,7 @@ Masks are computed once, at session start.
 """
 import fnmatch
 import os
+import stat
 from dataclasses import dataclass
 
 MASK_FILES = (".env", ".env.*", "*.pem", "*.key")
@@ -213,19 +214,60 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", secrets="masked", mask_s
             m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
             mounts += m
             files += c
-            for mm in m:
-                try:
-                    if mm.kind == "mask" and os.lstat(mm.dst).st_nlink > 1:
-                        # a cover hides a path, not an inode: another name for the same file stays readable
-                        notes.append(f"{mm.dst} is masked but has other hard links; the file is readable through "
-                                     "them. Remove the extra links (audit 5 Oct, L1)")
-                except OSError:
-                    pass
+
+    mounts += hardlink_masks(mounts, rw_grants + list(data_ro), root, mask_skip, notes)
     # One mount per destination; later (more specific) entries win.
     by_dst = {}
     for m in mounts:
         by_dst[m.dst] = m
-    return Plan(list(by_dst.values()), dirs, files, notes)
+    # Nothing is mounted inside a directory mask (audit 6 Oct, N2): a git dir or compose file under
+    # secrets/ would otherwise get a real bind on top of the empty cover, showing the real file.
+    covers = [d for d, m in by_dst.items() if m.kind == "tmpfs"]
+    kept = [m for d, m in by_dst.items() if not any(_inside(d, c) and d != c for c in covers)]
+    dirs = [d for d in dirs if not any(_inside(d, c) and d != c for c in covers)]
+    files = [f for f in files if not any(_inside(f, c) for c in covers)]
+    return Plan(kept, dirs, files, notes)
+
+
+def hardlink_masks(mounts, grants, root, mask_skip, notes):
+    """A cover hides a path, not an inode (audit 6 Oct, N4; spec 4.4): every other name of a covered regular
+    file (a mask, a file under a mask dir, the real file behind the .env swap, a read-only cover such as
+    .git/config) is masked too."""
+    covered_files, cover_dirs = set(), []
+    for m in mounts:
+        if m.kind == "tmpfs":
+            cover_dirs.append(m.dst)
+        elif m.kind == "mask" or (m.kind == "bind" and (m.ro or m.src != m.dst) and m.dst not in grants):
+            covered_files.add(m.dst)
+    for d in cover_dirs:
+        for dirpath, _dirnames, filenames in os.walk(d, followlinks=False):
+            covered_files.update(os.path.join(dirpath, f) for f in filenames)
+    inodes = {}
+    for f in covered_files:
+        try:
+            st = os.lstat(f)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            inodes[(st.st_dev, st.st_ino)] = f
+    if not inodes:
+        return []
+    out = []
+    for g in grants:
+        for dirpath, _dirnames, filenames in _walk(g, _rel_skips(root, g, mask_skip)):
+            for fn in filenames:
+                p = os.path.join(dirpath, fn)
+                if p in covered_files or any(_inside(p, d) for d in cover_dirs):
+                    continue
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                key = (st.st_dev, st.st_ino)
+                if st.st_nlink > 1 and key in inodes:
+                    out.append(Mount("mask", p))
+                    notes.append(f"{p} is another hard link to the covered {inodes[key]}; masked too")
+    return out
 
 
 def _rel_skips(root, grant, mask_skip):

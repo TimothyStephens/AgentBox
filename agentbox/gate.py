@@ -68,7 +68,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
-from . import buildcap, builtrec
+from . import buildcap, builtrec, mounts
 from .errors import AgentboxError
 
 V = r"(?:/v[0-9][0-9.]*)?"
@@ -93,6 +93,8 @@ CREATES = ("libpod_create", "compat_create", "pod_create", "net_create", "vol_cr
 POD_RAW = re.compile(rf"^{V}/libpod/pods/[^/]+(?:/(json|exists|top|start|stop|kill|restart))?$")
 POD_RAW_OPS = {("GET", "json"), ("GET", "exists"), ("GET", "top"), ("DELETE", ""), ("POST", "start"),
                ("POST", "stop"), ("POST", "kill"), ("POST", "restart")}
+LIFECYCLE = re.compile(rf"^{V}{LIB}/containers/[^/]+/(stop|kill|pause|unpause|restart|init|start)$")
+POD_LIFECYCLE = re.compile(rf"^{V}/libpod/pods/[^/]+/(stop|kill|pause|unpause|restart|start)$")
 UPGRADE = re.compile(rf"^{V}{LIB}/(?:exec/[^/]+/start|containers/[^/]+/attach)$")
 TAIL = re.compile(rf"^{V}{LIB}(/.*)$")
 # Collection paths whose second segment is an action word, not a resource name.
@@ -125,7 +127,8 @@ DEV_OWNER = "agentbox.dev-owner"     # sockguard's ownership label key for the d
 UPSTREAM_TIMEOUT = 300               # builds and pulls can be slow on this host
 MAX_HEAD = 1 << 20
 MAX_BODY = 64 << 20
-MAX_BUILD_BODY = 8 << 30             # a build context, spooled to the session's TMPDIR to read its Containerfile
+MAX_BUILD_BODY = 8 << 30
+BIND_SCAN_LIMIT = 200000             # entries walked under a bind source looking for new secret files (N6)             # a build context, spooled to the session's TMPDIR to read its Containerfile
 
 # podman's build API: networkmode is buildah's NetworkConfigurationPolicy as a number
 NET_ENABLED = "2"
@@ -410,6 +413,12 @@ class Gate:
         self.verified = set()            # IDs (volume names) whose post-create check passed
         self.refused = set()             # IDs that failed it and could not be confirmed removed
         self.lock = threading.Lock()
+        # Per-container locks (audit 6 Oct, N1): a start holds its containers' locks from the gate's
+        # init-and-check until podman's start reply, and every request that can stop or re-initialise a
+        # container takes the same lock, so nothing can re-initialise it (and re-resolve its sub-paths)
+        # between the check and the start.
+        self.ctr_locks = {}
+        self._tls = threading.local()
         self.log_path = cfg.get("log")
 
     # ---- logging --------------------------------------------------------------------------------
@@ -568,13 +577,48 @@ class Gate:
     def _refuse_if_covered(self, real, src):
         moved = self.covers_intact()
         if moved is not None:
-            raise Deny(f"bind mount {src}: the covered path {moved} was moved or replaced during the session, so "
-                       "no bind into the project is accepted any more (end the session and start a new one)")
+            raise Deny(f"bind mount {src}: the covered path {moved} was moved or replaced during the session (by "
+                       "the agent, or on the host: `git config` or an editor that saves by renaming does this), so no "
+                       "bind into the project is accepted any more (end the session and start a new one)")
         c = self.covers_overlap(real)
         if c is not None:
             raise Deny(f"bind mount {src} reaches {c}, which is masked or covered read-only in the session; a "
                        "spawned container would see the real data. Bind a path that does not contain or sit "
                        "under a masked or covered path")
+        new = self.unmasked_secret_under(real)
+        if new is not None:
+            raise Deny(f"bind mount {src} contains {new}, a file named like a secret that the session does not "
+                       "mask (it appeared after the session started). Move it out of the project, or start a new "
+                       "session so it is masked")
+
+    def unmasked_secret_under(self, real):
+        """A non-empty file named like a secret (.env, .env.*, *.pem, *.key, or under a secrets/ dir), under
+        `real`, that is not covered: it appeared after the session's masks were made (audit 6 Oct, N6). Gives
+        up (refusing) past BIND_SCAN_LIMIT entries rather than allow an unchecked tree."""
+        import fnmatch
+        from . import mounts as _m
+        if not os.path.isdir(real):
+            return None
+        covered = self._covered()
+        n = 0
+        for dirpath, dirnames, filenames in os.walk(real, followlinks=False):
+            dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
+            n += len(dirnames) + len(filenames)
+            if n > BIND_SCAN_LIMIT:
+                return f"{real} (over {BIND_SCAN_LIMIT} entries; too large to check)"
+            in_secrets = any(p in _m.MASK_DIRS for p in os.path.relpath(dirpath, real).split(os.sep))
+            for fn in filenames:
+                p = os.path.join(dirpath, fn)
+                if not (in_secrets or (fn not in _m.MASK_EXEMPT
+                                       and any(fnmatch.fnmatchcase(fn, pat) for pat in _m.MASK_FILES))):
+                    continue
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                if st.st_size and not any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered):
+                    return p
+        return None
 
     # ---- post-create checks (what podman stored) ---------------------------------------------------
     def privilege_violations(self, doc, infra=False):
@@ -726,6 +770,13 @@ class Gate:
             return None
         self._refuse_if_covered(real, src)           # the sub-path (via a grant-volume SubPath) must miss covers
         root = max(inside, key=len)
+        try:
+            crosses = os.stat(real).st_dev != os.stat(root).st_dev
+        except OSError:
+            crosses = False
+        if crosses:                                  # N7: grant volumes are non-recursive binds
+            raise Deny(f"bind mount {src} is on a different filesystem from its grant root {root} (a mount inside "
+                       "the project); bind a path that does not cross a mount")
         return self.grant_volume(root), os.path.relpath(real, root)
 
     @staticmethod
@@ -1021,16 +1072,64 @@ class Gate:
             check_host(m.get("Destination"), host, opts)
         return bad
 
+    # ---- per-container locks (N1) ---------------------------------------------------------------------
+    def begin_request(self):
+        self._tls.held, self._tls.checked = [], {}
+
+    def hold(self, cid):
+        """Take container `cid`'s lock for the rest of this request (released by release_held)."""
+        held = getattr(self._tls, "held", None)
+        if held is None:
+            self.begin_request()
+            held = self._tls.held
+        if any(c == cid for c, _ in held):
+            return
+        with self.lock:
+            lock = self.ctr_locks.setdefault(cid, threading.Lock())
+        if not lock.acquire(timeout=UPSTREAM_TIMEOUT):
+            raise Deny(f"container {cid[:12]} is busy (a start is in progress); try again")
+        held.append((cid, lock))
+
+    def release_held(self):
+        for _cid, lock in reversed(getattr(self._tls, "held", None) or []):
+            lock.release()
+        self._tls.held, self._tls.checked = [], {}
+
+    def after_start_checked(self):
+        """After podman's start reply, with the locks still held: a container the gate initialised must still
+        be the process it checked. A different PID means it was re-initialised after the check: removed and
+        refused. Still running from the checked PID: its mounts are read again, strictly. Already exited: the
+        held lock means nothing re-initialised it in between, so the checked mounts were the ones it ran with."""
+        for cid, pid in (getattr(self._tls, "checked", None) or {}).items():
+            doc = self.inspect("containers", cid) or {}
+            state = doc.get("State") or {}
+            now = state.get("Pid") or 0
+            if now and now != pid:
+                self.remove("containers", cid, f"process {now} is not the checked {pid}")
+                raise Deny(f"container {cid[:12]} was re-initialised after the gate checked it; removed it")
+            if state.get("Status") == "running" and now == pid:
+                bad = self.mount_violations(doc, strict=True)
+                if bad:
+                    self.remove("containers", cid, "; ".join(bad))
+                    raise Deny(f"container {cid[:12]} mounted something it may not ({'; '.join(bad)}); removed it")
+
     def prepare_start(self, cid, restart=False, seen=None):
         """Before a container runs: stop it first if this is a restart, have podman set up its mounts without
         running the entrypoint (init), and check what was mounted. Its dependencies (which podman would start
         with it) get the same treatment first. On any violation the container is removed and the start
-        refused, so a sub-path swapped for a symlink between create and start never reaches a running process
-        (audit 5 Oct, H2)."""
+        refused. A concurrent stop would re-initialise the container and undo this check, so the handler holds
+        each container's lock from here through the start reply, and rechecks the PID afterwards (audit 6 Oct,
+        N1); that is what makes a swapped sub-path never reach a running process (audit 5 Oct, H2)."""
         seen = set() if seen is None else seen
         if cid in seen:
             return
         seen.add(cid)
+        self.hold(cid)
+        moved = self.covers_intact()                 # N5: at start too, not only at create
+        if moved is not None:
+            raise Deny(f"the covered path {moved} was moved or replaced during the session (by the agent, or on the "
+                       "host: `git config` or an editor that saves by renaming does this); no container starts with "
+                       "binds into the project any more. End the session and start a new one")
         doc = self.inspect("containers", cid)
         if doc is None:
             raise NotFound(f"no such container: {cid[:12]!r}")
@@ -1057,6 +1156,9 @@ class Gate:
             self.remove("containers", cid, "; ".join(bad))
             raise Deny(f"container {cid[:12]} mounted something it may not ({'; '.join(bad)}); removed it "
                        "before it ran")
+        if not hasattr(self._tls, "checked"):
+            self.begin_request()
+        self._tls.checked[cid] = (doc.get("State") or {}).get("Pid") or 0
 
     # ---- create rewrites --------------------------------------------------------------------------
     def stamp(self, labels):
@@ -1236,6 +1338,9 @@ class Gate:
                     if c.endswith("/" + prefix) and context_ok(c[:-len(prefix) - 1]):
                         raise Deny(f"the build context carries content at {n}, which is masked in the session "
                                    f"({c}); a context packed in the session has it empty")
+        # N8 (audit 6 Oct) is left as a heuristic, not a name-based backstop: a dev-swap `.env` is non-empty by
+        # design, so refusing every non-empty secret-named member would break ordinary `COPY . /app` builds.
+        # The agent cannot get a cover's real content into a context anyway (it reads empty in the session).
 
     def check_annotations(self, ann, where):
         out = {}
@@ -1820,6 +1925,12 @@ class Gate:
             if kind == "networks" and method == "GET" and ref == self.network:
                 return target, body, "pass"           # compose inspects the network it was told to use
             oid = self.require_dev(kind, ref)
+            if kind == "containers" and (method == "DELETE" or LIFECYCLE.match(path)):
+                self.hold(oid)                       # waits for a start in progress (N1)
+            if kind == "pods" and (method == "DELETE" or POD_LIFECYCLE.match(path)):
+                for c in (self.inspect("pods", oid) or {}).get("Containers") or []:
+                    if c.get("Id"):
+                        self.hold(c["Id"])
             if kind == "pods" and POD_RAW.match(path) and (method, POD_RAW.match(path).group(1) or "") in POD_RAW_OPS:
                 # straight to the podman service: by the ID that was checked, never the client's name, which
                 # could name another pod by the time it arrives (review of 785ee15, M1)
@@ -1897,7 +2008,9 @@ def dockerfile_images(text, buildargs=None):
                 if tok.lower().startswith("--from="):
                     refs = [tok.split("=", 1)[1]]
                 elif tok.lower().startswith("--mount="):
-                    kv = dict(p.split("=", 1) for p in tok[len("--mount="):].split(",") if "=" in p)
+                    kv = {k.lower(): v for k, v in (p.split("=", 1) for p in tok[len("--mount="):].split(",")
+                                                     if "=" in p)}
+                    check_run_mount(kv)
                     refs = [kv["from"]] if "from" in kv else []
                 else:
                     refs = []
@@ -1920,6 +2033,23 @@ def signal_number(value):
         return int(_signal.Signals[v if v.startswith("SIG") else "SIG" + v])
     except (KeyError, ValueError):
         return None
+
+
+def check_run_mount(kv):
+    """RUN --mount options the gate checks itself rather than leaving to buildah (audit 6 Oct, N3): a
+    `source=` that is absolute or climbs with `..`, for a bind from the context or for a cache, and
+    `bind-propagation=` / `relabel=` are refused. Builds run as the host user, so a buildah path bug there
+    would reach the whole home directory, not just the project."""
+    kind = (kv.get("type") or "bind").lower()
+    src = kv.get("source") or kv.get("src") or ""
+    if kind in ("bind", "cache") and src and not (kind == "bind" and kv.get("from")):
+        parts = src.replace("\\", "/").split("/")
+        if src.startswith("/") or ".." in parts:
+            raise Deny(f"build: RUN --mount type={kind} source={src} is not allowed (absolute or '..'); "
+                       "use a path inside the build context")
+    for k in ("bind-propagation", "relabel"):
+        if k in kv:
+            raise Deny(f"build: RUN --mount {k}= is not allowed")
 
 
 def created_name(kind, target, body):
@@ -2252,6 +2382,7 @@ def make_handler(gate):
         def handle(self):
             client, upstream = self.request, None
             method = path = "?"
+            gate.begin_request()
             try:
                 head, rest = read_head(client)
                 if head is None:
@@ -2305,7 +2436,7 @@ def make_handler(gate):
                                 with gate.lock:
                                     gate.exec_ids[exec_id] = cid
                         else:
-                            gate.after_start(gate.start_targets(kind, ref))
+                            gate.after_start_checked()
                     client.sendall(build_response(status, reason, hdrs, resp))
                     return
                 if is_build:
@@ -2354,6 +2485,7 @@ def make_handler(gate):
                 except OSError:
                     pass
             finally:
+                gate.release_held()                  # per-container locks of this request (N1)
                 for s in (upstream, client):
                     if s is not None:
                         try:
