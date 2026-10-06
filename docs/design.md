@@ -8,11 +8,25 @@ agentbox targets **mistake containment and cross-project isolation**: a careless
 
 **Non-goal (stated plainly): agentbox is not a defence against a deliberately malicious or prompt-injected agent that is actively trying to break out or exfiltrate.** On a shared kernel, as rootless `vmuser`, with the agent able to run its own containers and reach the network its project allows, a determined adversary has too many channels (the model API itself is one) for the launcher to close. The boundaries here raise the cost of an accident and of lateral movement between projects; they do not turn the box into a VM jail. A separate agent VM is the future option if that stronger model is ever needed.
 
-**The primary secret and data control is operational, not a scanner: keep secrets and irreplaceable data out of the grant.** `grantcheck` (below) enforces this at `ab project add` and before every session — it refuses to start when it finds secrets or live data in a read-write grant — but it is a safety net for the common shapes, not an exhaustive wall. A secret the agent can reach is only as safe as the model provider it may talk to. Put real secrets and production data outside every grant; what the agent is given to work on is code.
+**The primary secret and data control is operational, not a scanner: keep secrets and irreplaceable data out of the grant.** `grantcheck` (below) enforces this at `ab project add` and before every session — it refuses to start when it finds secrets or live data in a read-write grant — but it is a safety net for the common shapes, not an exhaustive wall, and the masks and the gate's cover checks are defence in depth behind it, not the main wall. A secret the agent can reach is only as safe as the model provider it may talk to. Put real secrets and production data outside every grant; what the agent is given to work on is code.
+
+## Known limitations
+
+These are accepted under the threat model above, not TODOs: closing them matters only against a deliberately malicious or injected agent, which is a non-goal. The operational rule (keep secrets and live data out of the grant) is the real control; `grantcheck` catches common shapes, not every one.
+
+- **Secret names (H2):** `grantcheck` keys on four mask patterns (`.env`, `.env.*`, `*.pem`, `*.key`) plus `secrets/` and `user:pass@` git URLs. A credential under another name — `config/prod.yaml`, `id_ed25519`, `terraform.tfstate`, `.npmrc`, `.git-credentials`, a kubeconfig, `http.extraheader`, a token-only git URL — is neither masked nor flagged. It does not read file contents.
+- **Data shapes (M1):** detection is by suffix/size (`*.db`/`*.sqlite`/`*.sqlite3`/`*.duckdb` over 1 MB) and by a compose bind holding such a file. A sub-1 MB sqlite, a `-wal`/`-journal`, a `.sql`/`.dump`/`.rdb`/`.aof`, or a Postgres/MySQL/Mongo/Redis data dir with no `.db` file gets past it.
+- **`data_ro` is not scanned (M2):** read-only data grants are the grant's declared purpose; `grantcheck.scan` is not run on them (history-secret scanning still is).
+- **Git-credential shapes (M3):** only `scheme://user:pass@host` in a remote URL is caught; a submodule's own `.git/config`, `http.extraheader` and credential-helper stores are not.
+- **Exempt and skipped names:** real values in `.env.dev`/`.env.example`, or a secret under `.venv`/`node_modules`/`.git`, are not flagged (the mask exempts or the walk skips them).
+- **Host-written files:** the scan and masks are fixed at session start; a host process writing a secret into a grant mid-session is not re-caught. The operational rule is that no live service writes into a grant.
+- **L-series (fail-closed or host-only):** `--with-secrets` can leave an ack unsatisfiable; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
+
+Fuller detail, with the review item numbers, is in `docs/decisions.md` (6 Oct).
 
 ## Summary
 
-One launcher, `agentbox` (`ab`), runs any coding agent (OMP, Claude Code, Pi, Codex) in a hardened rootless podman container on ubuntu-dev, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it.
+One launcher, `agentbox` (`ab`), runs a coding agent (Claude Code and OMP today; Pi and Codex planned) in a hardened rootless podman container on ubuntu-dev, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it. This document is the full design; several commands and tiers described below are not built yet — `docs/progress.md`'s Status table is the authoritative built / deferred / not-built list, and the "Planned / not built" section near the end collects what is still to come.
 
 **Goals**
 
@@ -26,6 +40,7 @@ One launcher, `agentbox` (`ab`), runs any coding agent (OMP, Claude Code, Pi, Co
 
 **Non-goals**
 
+- Containing a deliberately malicious or prompt-injected agent that is actively trying to break out or exfiltrate. This is the headline non-goal (see Threat model); the controls raise the cost of an accident and of lateral movement, they are not an adversary jail.
 - Stopping a deliberate kernel or runtime escape. A container on a shared kernel is not a VM boundary; a separate agent VM is a future option.
 - Stopping deferred execution entirely. Code the agent writes and you later run executes as you; the design narrows this, it cannot remove it.
 
@@ -55,11 +70,11 @@ The design targets one VM that is both the dev environment and a home server, wi
 | glances | `0.0.0.0:8003` | Host process; exposes the process list |
 | two python3 servers | `0.0.0.0:8004`, `:8006` | Host processes, not yet identified |
 
-## Threat model
+## Threats and controls
 
-The design defends against mistakes and misdirected agents, not a determined kernel exploit.
+The controls below are sized for the threat model at the top: mistakes and misdirected agents, not a determined kernel exploit or a deliberately malicious agent. The two injection/exfiltration rows are **best effort under the non-goal** — they raise the cost, they do not close the channel.
 
-| Threat | Example | Handled by |
+| Threat | Example | Control (best effort where noted) |
 | --- | --- | --- |
 | Accidental destruction | `rm -rf /*`, deleting a state directory | Only granted paths are mounted; read-write grants backed up first |
 | Agent self-repair | Killing processes, `mount`, renaming shared state, reverse-engineering its own code (all seen in the probes) | Zero capabilities, seccomp, `no-new-privileges`, per-session state |
@@ -67,8 +82,8 @@ The design defends against mistakes and misdirected agents, not a determined ker
 | Lateral network access | Hitting another project's ports, the media stack, the LAN | Internal session network; proxy refuses private and host addresses in every egress mode |
 | Agent-built images and containers | A Containerfile `RUN curl 10.0.0.103:8088`, a container on podman's default network | Host-side gate pins every container and build to the project network and proxy |
 | Over-broad pod access | `podman run -v ~:/h`, `rm -f` on a live pod | Gate + sockguard: own dev stack only, binds inside the project |
-| Exfiltration over open egress | An injected agent sending data out | No host secrets in the sandbox (only a dedicated, revocable model token); `packages` by default, `open` only when the project says so; `locked` for sensitive projects; image pulls allowlisted by registry |
-| Prompt injection | Web page or repo text telling the agent to escape | Same controls; injection gains nothing the agent could not already do |
+| Exfiltration over open egress (best effort, non-goal) | An injected agent sending data out | No host secrets in the sandbox (only a dedicated, revocable model token); `packages` by default, `open` only when the project says so; `locked` for sensitive projects; image pulls allowlisted by registry. A determined agent on `open` egress can still send out what the sandbox holds — this is not closed |
+| Prompt injection (best effort, non-goal) | Web page or repo text telling the agent to escape | Same controls; injection gains nothing beyond what the agent could already do, but it is not defended against as such |
 | Deferred execution | Git hooks, compose volume lines, downloaded code run later by you | Read-only hooks and config, `ab deploy` diff and policy check, lockfiles |
 
 **Residual risk.** A kernel or runtime escape lands as `vmuser`, which owns every project, every service and the keys on this VM. Moving agents to a dedicated user or a separate VM shrinks that; see Open items and future options.
@@ -140,7 +155,7 @@ Applied to every session; no adapter or profile can override it.
 The only per-agent code. An adapter declares, and the launcher validates:
 
 - image and launch command;
-- read-only config paths; the launcher rewrites the model config so cloud providers point at the key gateway with no keys;
+- read-only config paths; the launcher rewrites the model config so provider keys are exported from per-provider files at start (the key gateway is deferred — see Model key gateway);
 - read-write state, scoped per project, under `~/.local/share/agentbox/<project>/<agent>/`;
 - secrets as read-only single files, only where the harness cannot use the gateway;
 - paths that must be tmpfs (OMP's `run`);
@@ -177,7 +192,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 
 ### Filesystem policy
 
-- **The grant holds code; secrets and live data live outside it.** This is the primary rule (added 6 Oct, after a session found it could reach a repo-local database from a container it started). The masks and the gate's cover checks below are defence in depth, not the main wall. Before a session starts, and at `ab project add`, each read-write grant is scanned (`agentbox/grantcheck.py`): an uncovered non-empty `.env`/`*.pem`/`*.key` or `secrets/` file, a `.git` with credentials in a remote URL, or live data (a `*.db`/`*.sqlite`/`*.duckdb` over 1 MB, or a path a compose file binds as a data volume) makes the session refuse to start, naming what was found. Move it out of the grant, or add a mask; to run regardless, `ab project add --i-understand-grant-exposure` or `ab project accept-grant-exposure <name>` records an acknowledgement, re-prompted when the finding changes.
+- **The grant holds code; secrets and live data live outside it.** This is the primary rule (added 6 Oct, after a session found it could reach a repo-local database from a container it started). The masks and the gate's cover checks below are defence in depth, not the main wall. Before a session starts, and at `ab project add`, each read-write grant is scanned (`agentbox/grantcheck.py`): an uncovered non-empty `.env`/`*.pem`/`*.key` or `secrets/` file, a `.git` with credentials in a remote URL, or live data (a `*.db`/`*.sqlite`/`*.duckdb` over 1 MB, or a compose-bound path that holds a `*.db`-type file) makes the session refuse to start, naming what was found. Move it out of the grant, or add a mask; to run regardless, `ab project add --i-understand-grant-exposure` or `ab project accept-grant-exposure <name>` records an acknowledgement, re-prompted when the finding changes.
 - Projects mount at their real absolute path, so agent sessions and compose relative paths line up.
 - Validator: `realpath` every grant; refuse `/`, `$HOME`, its ancestors, `/etc`, `/var`, `/usr`, `/boot`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, podman storage.
 - A grant may not contain or overlap another registered project.
@@ -243,7 +258,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 - Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get a read-only empty file bound over them (not `/dev/null`: a device node in the tree breaks rootless builds), `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks. `mask_skip` is a speed knob for large trees, not a way to exempt a secret: `grantcheck` still scans those folders and refuses a session if a secret-named file is found there (it would be unmasked), so do not use `mask_skip` to get past the check.
 - Masks are computed at session start: a secret file created during a session is not masked.
-- **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; `ab deploy` uses it on the host.
+- **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; it is for the host only (and for `ab deploy` once that is built).
 - Other file names use a per-project mapping, e.g. `swap = { ".env" = ".env.dev", "secrets.env" = "secrets.dev.env" }`. A masked file with no mapped dev file stays empty.
 - The dev file is mounted read-write so the agent can add variables. `ab deploy` compares variable names (never values) between the dev and real files and refuses to deploy while the real file is missing any, listing them.
 - Commit a `.env.example` with names and dummy values; git-ignore both `.env` and `.env.dev`.
@@ -263,7 +278,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 | How a piece arrives | Edit on the host |
 | --- | --- |
 | Directory bind mount (install dirs, session history) | Visible immediately |
-| Single-file bind mount (`config.yml`, `settings.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. Use `ab reload <session>`. |
+| Single-file bind mount (`config.yml`, `settings.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. (`ab reload` is planned; today, restart the session.) |
 | Generated at session start (`models.yml`, `AGENTS.md`, squid rules) | Next session, or `ab reload <session>` |
 | Key files | Next session (they are read at start) |
 
@@ -275,11 +290,11 @@ One host-side gate and one sockguard per session. The sandbox gets only the gate
 | --- | --- | --- |
 | none (default) | Nothing | No socket mounted |
 | observe | container list, inspect through the Docker API (environment redacted), per-container stats, on the live compose project; logs only with the project's `observe_logs = true` (off by default: logs can hold secrets, and what the agent reads goes to its model provider). No libpod inspect (its create command holds `-e` values), no `top`, no pods (not label-scoped) | Visibility scoped by `io.podman.compose.project` label; everything else denied. With the project name as the default stack, the stack's containers must come from inside the project root |
-| exec | observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
+| exec | **Not built (planned).** The code refuses it (`session.py`: "exec on the live stack is not built"). Intended: observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
 - Never granted: touching the live `<project>` stack beyond observe/exec (including deleting its volumes, or mounting any volume the session did not create), other projects' containers, privileged mode, host networking or namespaces, host port publishing. The dev tier may delete its own volumes.
-- Extra capabilities or devices a compose file needs (e.g. `NET_ADMIN`, `/dev/net/tun`) are opt-in per project.
+- Extra capabilities or devices a compose file needs (e.g. `NET_ADMIN`, `/dev/net/tun`): **opt-in is not built.** The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert (nothing reads it).
 - Image pulls happen on the host, outside the proxy; the gate's and sockguard's registry allowlist (`docker.io`, `ghcr.io`, `lscr.io`, `quay.io` by default) is the control there.
 - Memory, CPU and PID limits apply to every container the agent starts.
 
@@ -309,16 +324,16 @@ Without the gate, a container created with no network, or a `podman build`, runs
 ### Session lifecycle
 
 - Sessions are named `<prefix><agent>-<project>-<n>` (prefix `ab-`; tests use `abt-<run>-`); everything the session creates carries the owner label `agentbox.owner=<project>/<session>`, plus `agentbox.session`, `agentbox.project`, `agentbox.role` and the configured extra labels (`agentbox=1`).
-- `ab kill` removes the container, its network, proxy, gateway, gate, sockguard instance and every labelled container.
+- `ab kill` removes the container, its network, proxy, gate, sockguard instance and every labelled container.
 
 ### Preview and deploy
 
-- `ab preview <session> <service>:<port>` starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab kill`, teardown, gc); `ab preview <session> --stop` removes it earlier (built 2 Oct).
-- `ab deploy <project> --lan 10.0.0.103:<port>` validates the compose file (binds inside the project, no privileged or host networking, ports only on the address named), checks the real .env has every variable name in .env.dev, shows the diff since the last deploy, asks for confirmation, then starts the live `<project>` stack through a sockguard deploy profile, never the raw socket.
+- `ab preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab kill`, teardown, gc); `ab preview <session> --stop` removes it earlier.
+- `ab deploy <project> --lan 10.0.0.103:<port>` (**planned, not built** — build step 6): it would validate the compose file (binds inside the project, no privileged or host networking, ports only on the address named), check the real .env has every variable name in .env.dev, show the diff since the last deploy, ask for confirmation, then start the live `<project>` stack through a sockguard deploy profile, never the raw socket.
 
-### Workspace UI
+### Workspace UI (planned, not built)
 
-- The tmux layout from `omp-workspace` (agent pane, two shells, btop, monitor) becomes `ab ws`, and every pane that enters the sandbox goes through the launcher.
+- Build step 7. The tmux layout from `omp-workspace` (agent pane, two shells, btop, monitor) would become `ab ws`, every pane entering the sandbox through the launcher. Until then, use `ab run`.
 
 ## Presets
 
@@ -328,12 +343,12 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 | --- | --- | --- | --- |
 | For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | Scripts and data processing |
 | Code | Read-write, backed up | Read-write, backed up | Read-write, backed up |
-| Compose files | Read-only, changes via outbox | Read-write; live stack changes only via `ab deploy` | Read-only, changes via outbox |
+| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-only (changes via outbox, planned) |
 | Data grants | Read-only only | None unless declared | As declared (`data_ro`, `data_rw`) |
 | `.env` files | Masked; `--with-secrets` refused | Masked unless `--with-secrets` | Masked unless `--with-secrets` |
 | Egress | `locked` | `packages` (`open` only if the project says so) | `packages` |
 | Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | none |
-| Extra capabilities, devices | Refused | Opt-in per project | Refused |
+| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused |
 | Agent approval prompts | On | Off (`--auto`) | Off (`--auto`) |
 
 **Overrides**
@@ -366,7 +381,7 @@ A power loss or reboot ends every running session, but everything written to the
 | Project `.venv` and other files inside the project | Kept |
 | Packages installed into the container itself | Lost; the container filesystem is discarded |
 | In-flight commands, the tmux workspace, `run` tmpfs, browser session | Lost |
-| Session proxy, gateway, gate, sockguard | Gone; restarted per session |
+| Session proxy, gate, sockguard | Gone; restarted per session |
 | Agent dev stacks (`<project>-dev`) | Stay stopped: the gate strips restart policies from agent-created containers |
 | Leftover session networks and stopped containers | Remain until cleaned up |
 | Live stacks (media, life-updates, `ab deploy`) | Restart only if configured to (below) |
@@ -374,13 +389,13 @@ A power loss or reboot ends every running session, but everything written to the
 **Bringing sessions back**
 
 - `ab gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot.
-- `ab resume <session>` recreates the session with the same project, preset and agent, and starts the agent with its continue flag.
+- `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab run`; the agent's saved history is kept per project.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
 **Bringing live stacks back**
 
 - Rootless containers do not restart on boot by themselves. They need a restart policy (`restart: unless-stopped`), podman's `podman-restart.service` enabled for your user, and lingering enabled so your user's services start without a login.
-- `ab deploy` sets the restart policy and checks the other two, warning if either is missing.
+- `ab deploy` (once built) will set the restart policy and check the other two, warning if either is missing; until then, set them by hand.
 - Check today: `loginctl show-user vmuser -p Linger` and `systemctl --user is-enabled podman-restart.service`.
 
 ## Selftest
@@ -456,7 +471,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Approval prompts | Follow the preset: `--dangerously-skip-permissions` and a pre-trusted folder when off; when on, no pre-trust and a read-only managed policy (`/etc/claude-code/managed-settings.json`: bypass mode disabled, only managed hooks and permission rules), so a repo's own settings cannot switch approvals off |
 | Internal sandbox | Off; the container is the boundary |
 
-**Pi, Codex** — same shape: image, command, read-only config, per-project state. A new adapter should be about 20 lines.
+**Pi, Codex** — **planned, not built** (build step 8). Claude Code and OMP are the adapters today (`adapters/claude.py`, `adapters/omp.py`). The shape is the same: image, command, read-only config, per-project state; a new adapter should be about 20 lines.
 
 ## Host migration
 
@@ -494,38 +509,51 @@ Build against a dummy compose project (two nginx containers) first; real stacks 
 
 ## Usage
 
-Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides. Command names are proposed and may change during the build.
+Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides.
+
+**Built today**
 
 | Command | What it does |
 | --- | --- |
 | `ab init <pod\|python> --name <n> [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it |
 | `ab project add <name> <root> --preset <p>` | Register a project with a preset (validated against overlap) |
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
-| `ab allow <name> --egress open` / `--cap NET_ADMIN` / `--device /dev/net/tun` | Per-project overrides |
-| `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor |
-| `ab run --agent <a> --project <name>` | Agent only, no workspace (also `ab run <a> <name>`; warns if a session for that project is already running) |
-| `ab attach <name>` | Return to a running session |
-| `ab preview <name> <service:port>` | View the dev stack from your desktop via `ssh -L` |
-| `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack |
-| `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
+| `ab project ls` | List registered projects |
+| `ab project rm <name>…` | Remove one or more projects from the registry (files, state and backups untouched) |
+| `ab project reset-state <name>` | Wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy |
+| `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
+| `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
+| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [--with-secrets] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
 | `ab ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
+| `ab preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
 | `ab kill <session>` | Tear down everything the session created |
+| `ab gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
 | `ab keys rotate claude` | Replace the Claude subscription token |
-| `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
+
+**Planned / not built** (see the Planned section and progress.md's Status table)
+
+| Command | What it would do |
+| --- | --- |
+| `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
+| `ab attach <name>` | Return to a running session |
+| `ab allow <name> --egress open` / `--cap …` / `--device …` | Per-project overrides from the CLI (today, edit the registry) |
+| `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
+| `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
-| `ab gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
+
+The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab attach`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
 
 ```bash
 ab project add helper ~/repos/helper --preset pods
-ab ws --agent claude --project helper
+ab ws --agent claude --project helper            # planned; today: ab run --agent claude --project helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
-ab preview helper web:8080        # then: ssh -L 18080:localhost:18080 ubuntu-dev
-ab deploy helper --lan 10.0.0.103:8090
+ab preview <session> web:8080     # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
+ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
 ```
 
 **A data-processing script (`python`)**
@@ -555,7 +583,7 @@ mkdir -p ~/repos/filelab && cd ~/repos/filelab && git init
 mkdir -p ~/data/filelab-samples          # a few test files
 ab project add filelab ~/repos/filelab --preset pods \
    --data-ro ~/data/filelab-samples
-ab project show filelab                  # confirm: pods, open egress, dev tier
+ab project show filelab                  # confirm: pods, packages egress, dev tier
 ab selftest --agent claude --project filelab
 ```
 
@@ -590,11 +618,11 @@ Detach with `Ctrl-b d` and return with `ab attach filelab`.
 **4. Preview from your desktop**
 
 ```bash
-ab preview filelab web:8000                   # on the server
-ssh -L 18080:localhost:18080 ubuntu-dev       # on your desktop
+ab preview <session> web:8000                 # on the server (a free port unless --port is given)
+ssh -N -L <port>:127.0.0.1:<port> ubuntu-dev  # on your desktop, with the port ab preview printed
 ```
 
-Open `http://localhost:18080`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab allow filelab ...`.
+Open `http://localhost:<port>`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab allow filelab ...`.
 
 **5. Close the dev session and review**
 
@@ -621,6 +649,19 @@ ab deploy filelab --lan 10.0.0.103:8095
 - `ab ws --agent claude --project filelab` starts a fresh `filelab-dev` stack.
 - The agent can read the live stack's logs (observe) to chase a reported bug, but builds fixes only in `filelab-dev`.
 - Ship each change with `ab deploy filelab --lan 10.0.0.103:8095`, reviewing the diff each time.
+
+## Planned / not built
+
+The design above is the full target. These parts are **not built yet**; `docs/progress.md`'s Status table is the authoritative list, and this section is the prose index into it. Nothing here should be read as a current guarantee.
+
+- **Commands:** `ab ws` (workspace UI, step 7), `ab attach`, `ab allow` (CLI overrides — today, edit the registry), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
+- **Podman exec tier:** refused in code (the `none`, `observe` and `dev` tiers are built; `exec` is not).
+- **Per-project caps/devices opt-in:** the gate refuses `cap_add`, `devices` and security options in every preset; the `caps` preset value is inert.
+- **Model key gateway:** deferred (see Model key gateway); provider keys enter as per-provider files exported at start.
+- **Adapters:** Claude Code and OMP are built; **Pi** and **Codex** are planned (step 8).
+- **`--data-bind`** and the **`dev/data`→`data` overlay:** deferred / not built (see `ab init` and decisions.md); the pod template's named-volume default and the python template's `DATA_DIR` config are what exist.
+- **`masked_paths`** (a per-project masked-directory setting, `docs/agentbox-masked-paths.md`): not implemented; the only masks are the secret-name masks and `secrets/` tmpfs.
+- **Host migration** of the real stacks: not started (gated on an independent re-review of the mount/covers area and Track 1).
 
 ## Spike results
 

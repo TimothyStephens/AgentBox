@@ -647,7 +647,7 @@ The threat model is now written at the top of `docs/design.md`: agentbox targets
   - **Exempt names and skipped dirs** (shapes 6–7): real values in `.env.dev`/`.env.example`, or a secret under `.venv`/`node_modules`.
   - **Files written into a grant during a session by a host process** (shape 21): the scan runs at start; the masks are fixed then. The operational rule is that no live service writes into a grant.
   - ~~**The expensive half of H1:** the gate does not refuse a bind of a foreign-owned dir at bind time.~~ **Done 6 Oct** (see the `ab init` / session-guard entry below): the gate now refuses a gate-spawned container's bind whose source is owned by another uid (`_refuse_if_foreign`), and `grantcheck` still warns at scan time. A missing source is left to podman to reject.
-- **L1–L6** from the review: `--with-secrets` can leave an ack unsatisfiable; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
+- **The L-series (lows) from the review:** `--with-secrets` can leave an ack unsatisfiable; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only. (Four items; earlier drafts miscounted this as "L1–L6".)
 
 ## 2026-10-06 · `ab init` scaffolds the safe layout; data in a named volume, `--data-bind` deferred (Tim)
 

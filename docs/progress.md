@@ -19,10 +19,14 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **M4 (ack shows findings, tracks content)** | **built** | Full findings printed; fingerprint over content, so a byte change re-prompts. |
 | **Egress (locked/packages/open, squid)** | **built** | Modes behave as designed; private-address refusal; an occasional upstream latency flake is the host's uplink, not agentbox (watch items below; `make egress-soak`). |
 | **Preview** (`ab preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
-| **Podman tiers** (none/observe/exec/dev) | **built** | Gate + sockguard scope to the session's own dev stack; builds via the holder-netns path. |
+| **Podman tiers** | **none/observe/dev built; exec NOT built** | `exec` is refused in code (`session.py`: "exec on the live stack is not built"). The built tiers scope to the session's own dev stack; builds via the holder-netns path. |
+| **Adapters** | **Claude + OMP built; Pi/Codex not built** | `adapters/claude.py`, `adapters/omp.py` exist; Pi/Codex are planned (step 8). |
+| **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
 | **Forgotten-session guards** | **built** | `ab ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
 | **Backups (per-session rsync)** | **built, scoped** | `--link-dest` snapshots of the grant (incl. untracked/gitignored). A within-session undo, **NOT a data backup** (same disk, only fresh as of session start) — never presented as one. |
-| **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`); the per-model API-key gateway is not built. |
+| **`ab ws` / `attach` / `allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab run` is the way to start a session today; edit the registry for overrides). `deploy` is step 6, `ws` step 7. |
+| **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) and per-provider key files; the per-model API-key gateway is not built. |
+| **`masked_paths`** (per-project masked dir) | **not built** | No such setting; only secret-name masks + `secrets/` tmpfs exist. `docs/agentbox-masked-paths.md` is a proposal, now marked as such. |
 | **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
