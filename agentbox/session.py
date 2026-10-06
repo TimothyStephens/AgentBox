@@ -1205,6 +1205,35 @@ def sessions(settings, podman):
     return out
 
 
+def _newest_mtime(path):
+    newest = None
+    try:
+        newest = os.stat(path).st_mtime
+    except OSError:
+        return None
+    for dirpath, dirnames, filenames in os.walk(path):
+        for n in dirnames + filenames:
+            try:
+                m = os.lstat(os.path.join(dirpath, n)).st_mtime
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+    return newest
+
+
+def idle_seconds(settings, meta, now=None):
+    """Seconds since the agent last wrote to its state (transcripts, memory, settings) — a cheap proxy for
+    how long a session has sat without the agent doing anything. None when it can't be told (no meta, or
+    the state dir is missing). A forgotten session shows up here and in `ab ls`."""
+    if not meta or not meta.get("project") or not meta.get("agent"):
+        return None
+    m = _newest_mtime(settings.state_dir(meta["project"], meta["agent"]))
+    if m is None:
+        return None
+    return max(0.0, (time.time() if now is None else now) - m)
+
+
 def gc_images(settings, podman, now=None, warn=lambda m: None):
     """Session-built images (labelled agentbox.role=dev, with their project and session) older than
     image_keep_days are removed, except the newest image carrying each tag. Never forced: an image a

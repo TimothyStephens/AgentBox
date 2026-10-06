@@ -189,16 +189,52 @@ def cmd_project_ls(s, a):
 
 def cmd_project_rm(s, a):
     reg = registry.load(s.registry_path)
-    if a.name not in reg:
-        raise AgentboxError(f"no project named {a.name}")
-    del reg[a.name]
+    missing = [n for n in a.name if n not in reg]
+    if missing:                                  # all-or-nothing: a typo in one name removes none
+        raise AgentboxError(f"no project named {', '.join(missing)}")
+    for n in a.name:
+        del reg[n]
     registry.save(s.registry_path, reg)
-    print(f"removed project {a.name} from the registry (files, state and backups are untouched)")
+    print(f"removed project {', '.join(a.name)} from the registry (files, state and backups are untouched)")
+
+
+def _dur(seconds):
+    if seconds is None:
+        return "?"
+    seconds = int(seconds)
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d{h}h"
+    if h:
+        return f"{h}h{m}m"
+    if m:
+        return f"{m}m"
+    return f"{seconds}s"
 
 
 def cmd_run(s, a):
-    project = session.load_project(s, a.project, with_secrets=a.with_secrets)
-    sess = session.make_session(s, a.agent, project, with_secrets=a.with_secrets, warn=warn)
+    # Positional shorthand `ab run <agent> <project> [-- extra...]`: the leading non-flag tokens of the
+    # REMAINDER are the agent and project when the flags were not given. Flags (--shell, extra agent args)
+    # still use the --agent/--project form, or come after `--`.
+    agent, project_name = a.agent, a.project
+    if not agent and a.args and not a.args[0].startswith("-"):
+        agent = a.args.pop(0)
+        if not project_name and a.args and not a.args[0].startswith("-"):
+            project_name = a.args.pop(0)
+        if a.args[:1] == ["--"]:
+            a.args = a.args[1:]
+    if not agent or not project_name:
+        raise AgentboxError("give an agent and a project: `ab run --agent <a> --project <p>` "
+                            "or `ab run <a> <p>`")
+    running = [n for n, info in session.sessions(s, Podman(s.podman)).items()
+               if info["alive"] and (info["meta"] or {}).get("project") == project_name]
+    for n in running:
+        warn(f"ab: a session for project {project_name} is already running ({n}); starting another means two "
+             f"at once. `ab ls` shows them; `ab kill {n}` ends that one (keeping its logs and scan).")
+    project = session.load_project(s, project_name, with_secrets=a.with_secrets)
+    sess = session.make_session(s, agent, project, with_secrets=a.with_secrets, warn=warn)
     sess.prepare()
     command = sess.agent_command(shell=a.shell, extra=a.args)
     if sys.stdin.isatty() and not a.no_tty:
@@ -211,13 +247,29 @@ def cmd_run(s, a):
 
 
 def cmd_ls(s, a):
+    import time
     podman = Podman(s.podman)
     rows = session.sessions(s, podman)
+    now = time.time()
+    idle_warn = float(s.session_idle_warn_hours) * 3600
+    flagged = []
     for name, info in sorted(rows.items()):
         meta = info["meta"] or {}
         state = "running" if info["alive"] else "dead"
-        print(f"{name:<40} {meta.get('project', '?'):<16} {state:<8} "
-              f"{len(info['containers'])} containers, {len(info['networks'])} networks")
+        started = meta.get("started")
+        start_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(started)) if started else "?"
+        age = _dur(now - started) if started else "?"
+        idle = session.idle_seconds(s, meta, now=now) if info["alive"] else None
+        mark = ""
+        if idle is not None and idle > idle_warn:
+            mark = "  <-- idle"
+            flagged.append((name, idle))
+        print(f"{name:<36} {meta.get('project', '?'):<14} {state:<7} "
+              f"start {start_str}  age {age:<6} idle {_dur(idle):<6} "
+              f"{len(info['containers'])}c/{len(info['networks'])}n{mark}")
+    for name, idle in flagged:
+        warn(f"ab: session {name} has been idle {_dur(idle)} — if it is forgotten, end it with "
+             f"`ab kill {name}` (its logs and end-of-session scan are kept).")
 
 
 def cmd_preview(s, a):
@@ -347,12 +399,12 @@ def parser():
     x.add_argument("--yes", action="store_true", help="do not ask")
     x.set_defaults(fn=cmd_project_reset_state)
     x = proj.add_parser("rm")
-    x.add_argument("name")
+    x.add_argument("name", nargs="+", help="one or more project names")
     x.set_defaults(fn=cmd_project_rm)
 
     x = sub.add_parser("run", help="start an agent session in the foreground")
-    x.add_argument("--agent", required=True)
-    x.add_argument("--project", required=True)
+    x.add_argument("--agent", help="agent name (or give it positionally: `ab run <agent> <project>`)")
+    x.add_argument("--project", help="project name (or give it positionally)")
     x.add_argument("--with-secrets", action="store_true")
     x.add_argument("--shell", action="store_true", help="a bash shell in the sandbox instead of the agent")
     x.add_argument("--no-tty", action="store_true")

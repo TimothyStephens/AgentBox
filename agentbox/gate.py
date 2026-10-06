@@ -577,7 +577,23 @@ class Gate:
                 return c
         return None
 
+    def _refuse_if_foreign(self, real, src):
+        """A bind source owned by another user is almost certainly a container's data directory: under keep-id
+        the agent's own files are owned by the user on the host, so a foreign uid means bytes a rootless
+        container wrote (a live stack's database, say). Binding it into a spawned container is a
+        mistake-model harm — refuse it (audit 6 Oct, H1, the half the gate must enforce; grantcheck also
+        warns about it at scan time). The grant root itself is always user-owned, so this only ever bites a
+        sub-path."""
+        try:
+            uid = os.lstat(real).st_uid
+        except OSError:
+            return          # a missing source is podman's to reject; the cover checks below still run
+        if uid != os.getuid():
+            raise Deny(f"bind mount {src}: owned by uid {uid}, not you — a container's data directory? agentbox "
+                       "binds only paths you own; move it out of the project")
+
     def _refuse_if_covered(self, real, src):
+        self._refuse_if_foreign(real, src)
         moved = self.covers_intact()
         if moved is not None:
             raise Deny(f"bind mount {src}: the covered path {moved} was moved or replaced during the session (by "

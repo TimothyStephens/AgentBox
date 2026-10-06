@@ -4,6 +4,29 @@ The builder's running state, updated in every commit, so a crashed session loses
 
 **Updated:** 6 Oct 2026
 
+## Status (single source of truth — what this tool does and does not do)
+
+Threat model: **mistake containment + cross-project isolation**, NOT a wall against a deliberately malicious or prompt-injected agent (design.md top). Read every line below against that.
+
+| Feature | State | Notes |
+| --- | --- | --- |
+| **`ab init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. |
+| **grantcheck (Track 1, primary wall)** | **built** | Refuses a session when a read-write grant holds an uncovered secret (`.env`/`*.pem`/`*.key`/`secrets/`), a git-credential URL, or live data (`*.db` etc. >1 MB, or a compose data bind). Ack via `accept-grant-exposure`, re-prompted on content change (M4). |
+| **grantcheck coverage** | **known limitation** | Catches common shapes only: secrets under other names, more DB shapes, `data_ro`, exempt names, host-written files all get past it (decisions.md H2/M1–M3). Operational rule (keep secrets/live data out of the grant) is the real control. |
+| **Covers / masks + gate enforcement** | **built** | Masks for secrets; `.git/hooks`/`.git/config`, compose/lockdown covers; enforced for gate-spawned containers (N1–N9, cover identity, parent pins, mountinfo). Reviewed 5–6 Oct (`docs/reviews/2026-10-0{5,6}-covers*.md`). |
+| **H1 (U/chown + foreign-uid binds)** | **built** | Gate refuses `U`/`chown` on grant binds/SubPaths and refuses a gate-spawned bind of a foreign-uid source; grantcheck warns on foreign-owned/unreadable entries. |
+| **H3 (mask_skip not an exemption)** | **built** | `mask_skip` is a speed knob; grantcheck still scans those folders; not offered as a remedy. |
+| **M4 (ack shows findings, tracks content)** | **built** | Full findings printed; fingerprint over content, so a byte change re-prompts. |
+| **Egress (locked/packages/open, squid)** | **built** | Modes behave as designed; private-address refusal; an occasional upstream latency flake is the host's uplink, not agentbox (watch items below; `make egress-soak`). |
+| **Preview** (`ab preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
+| **Podman tiers** (none/observe/exec/dev) | **built** | Gate + sockguard scope to the session's own dev stack; builds via the holder-netns path. |
+| **Forgotten-session guards** | **built** | `ab ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
+| **Backups (per-session rsync)** | **built, scoped** | `--link-dest` snapshots of the grant (incl. untracked/gitignored). A within-session undo, **NOT a data backup** (same disk, only fresh as of session start) — never presented as one. |
+| **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`); the per-model API-key gateway is not built. |
+| **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |
+| **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
+| **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
+
 ## Current step
 
 **Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO. `ab init` (pod/python) now scaffolds a grantcheck-clean project by construction (data in a named volume; `--data-bind` deferred).
@@ -16,7 +39,8 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Done
 
-- **`ab init` scaffolding** (this commit): `ab init <pod|python> --name <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.
+- **Fifth-review H-series confirmed + forgotten-session guards** (this commit): H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab ls` shows start/age/idle and flags long-idle running sessions; `ab run` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab run` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
+- **`ab init` scaffolding**: `ab init <pod|python> --name <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.
 - **Threat model + fifth review** (`docs/reviews/2026-10-06-final.md`): threat model at the top of the design doc. H3 (`mask_skip` is a speed knob, not an exemption — scanned, and a secret there is reported "unmasked"), M4 (the exposure ack shows the findings and fingerprints their content, so a changed file re-prompts), the cheap half of H1 (the gate refuses `U`/`chown` on grant binds and SubPaths; `grantcheck` warns on a foreign-owned or unreadable grant entry), and the backup proof (untracked and gitignored files are kept; `test_untracked_and_gitignored_files_are_backed_up`). The rest (H2 secret-name shapes, M1 data shapes, M2 `data_ro`, M3 git-credential shapes, L1-L6) are known limitations in decisions.md.
 
 - **Steps 1-5** (`e35feab`), the reviews of steps 1-2 and 3-4, and Tim's decisions 1-4 after step 5 (`bbd81b6`). Live checks on 1 Oct: `claude-live` and `omp-live` pass, and `make install` works.

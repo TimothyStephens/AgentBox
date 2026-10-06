@@ -826,6 +826,27 @@ class CoversAudit(unittest.TestCase):
             decide(g, "POST", "/v5/containers/create",
                    {"Image": "x", "HostConfig": {"Binds": [self.proj + "/app:/m:U"]}})
 
+    def test_a_bind_of_a_foreign_uid_dir_is_refused(self):
+        """Audit 6 Oct, H1 (the half the gate enforces): a gate-spawned container binding a sub-path owned by
+        another uid — a container's data directory under keep-id — is refused."""
+        import unittest.mock
+        g = self.gate()
+        foreign = os.path.join(self.proj, "app", "sub")
+        real_lstat = os.lstat
+
+        def fake(path, *a, **k):
+            st = real_lstat(path, *a, **k)
+            if str(path) == foreign:          # no realpath here: realpath() calls lstat and would recurse
+                return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, st.st_uid + 1)
+                                      + tuple(st)[5:])
+            return st
+        with unittest.mock.patch("agentbox.gate.os.lstat", side_effect=fake):
+            with self.assertRaises(gate.Deny) as e:
+                self.bind(g, foreign)
+        self.assertIn("not you", str(e.exception))
+        # a user-owned sibling still binds fine (the check only bites foreign ownership)
+        self.assertTrue(self.bind(g, os.path.join(self.proj, "app")).get("volumes"))
+
     def test_h3_read_only_grant_stays_read_only(self):
         g = self.gate()
         spec = self.bind(g, self.ro)

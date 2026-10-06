@@ -338,3 +338,40 @@ class GrantExposure(SessionTest):
     def test_a_masked_secret_does_not_trip_it(self):
         # the fixture's .env/.env.dev and secrets/ are masked; no exposure, no ack needed
         self.make().prepare()
+
+    def test_a_content_change_reprompts_not_just_a_path_change(self):
+        """M4 (6 Oct): the ack is over each finding's CONTENT. Accept a finding, rewrite the same file's
+        bytes, and the session refuses until it is re-acked — a path-only fingerprint would not catch this."""
+        from agentbox import grantcheck, registry
+        db = "projects/p1/data/app.db"
+        cov = [os.path.join(self.root, ".env"), os.path.join(self.root, "sub")]
+
+        def accept():
+            exposure, _ = grantcheck.scan(self.root, [self.root], covered=cov)
+            reg = registry.load(self.settings.registry_path)
+            reg["p1"]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+            registry.save(self.settings.registry_path, reg)
+
+        self.write(db, "x" * (2 << 20))
+        accept()
+        self.make().prepare()                                   # accepted: starts
+        self.write(db, "y" * (3 << 20))                         # SAME path, different content
+        with self.assertRaises(AgentboxError):
+            self.make().prepare()                               # content changed: re-prompt
+        accept()
+        self.make().prepare()                                   # re-acked: starts again
+
+    def test_accept_shows_the_full_findings_not_a_count(self):
+        """M4: `ab project accept-grant-exposure` prints every finding, not a tally."""
+        import io
+        from contextlib import redirect_stdout
+        from agentbox import cli
+        self.write("projects/p1/data/app.db", "x" * (2 << 20))
+        self.write("projects/p1/more/other.sqlite", "y" * (2 << 20))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(["project", "accept-grant-exposure", "p1"])
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("data/app.db", out)
+        self.assertIn("more/other.sqlite", out)                 # both listed, not "2 findings"

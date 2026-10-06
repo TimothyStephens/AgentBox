@@ -503,12 +503,12 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
 | `ab allow <name> --egress open` / `--cap NET_ADMIN` / `--device /dev/net/tun` | Per-project overrides |
 | `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor |
-| `ab run --agent <a> --project <name>` | Agent only, no workspace |
+| `ab run --agent <a> --project <name>` | Agent only, no workspace (also `ab run <a> <name>`; warns if a session for that project is already running) |
 | `ab attach <name>` | Return to a running session |
 | `ab preview <name> <service:port>` | View the dev stack from your desktop via `ssh -L` |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
-| `ab ls` | Running sessions, their project, preset and uptime |
+| `ab ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab kill <session>` | Tear down everything the session created |
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
