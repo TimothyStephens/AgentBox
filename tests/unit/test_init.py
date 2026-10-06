@@ -70,6 +70,28 @@ class FreshProjectTest(InitCase):
                         return {ln.split("=", 1)[0] for ln in f if "=" in ln and not ln.startswith("#")}
                 self.assertEqual(keys(".env"), keys(".env.dev"))
 
+    def test_python_data_path_comes_from_config(self):
+        """The python template takes its data path from .env/.env.dev (dev -> ./dev/data, prod -> a real
+        path), with no ./data in the repo tree and no overlay (Tim, 6 Oct)."""
+        self.init("python", "pydata")
+        root = os.path.join(self.repos, "pydata")
+        self.assertFalse(os.path.isdir(os.path.join(root, "data")), "no ./data in the repo tree")
+        self.assertTrue(os.path.isdir(os.path.join(root, "dev", "data")))
+
+        def val(fn, key):
+            with open(os.path.join(root, fn)) as f:
+                for ln in f:
+                    if ln.startswith(key + "="):
+                        return ln.split("=", 1)[1].strip()
+            return None
+        self.assertEqual(val(".env.dev", "DATA_DIR"), "./dev/data", "dev points at the repo's dev data")
+        self.assertNotIn(val(".env", "DATA_DIR"), ("./dev/data", None), "prod is a real path, not ./dev/data")
+        # The app reads the path from the environment; it does not hardcode it.
+        with open(os.path.join(root, "app", "main.py")) as f:
+            app = f.read()
+        self.assertIn("DATA_DIR", app)
+        self.assertIn("os.environ", app)
+
     def test_pod_data_is_a_named_volume_not_a_bind(self):
         self.init("pod", "voldemo")
         root = os.path.join(self.repos, "voldemo")

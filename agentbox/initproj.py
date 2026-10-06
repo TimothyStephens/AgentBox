@@ -62,7 +62,10 @@ _ENV_KEYS = {
     "pod": [("APP_SECRET_KEY", "change-me-to-a-real-secret", "dev-not-a-secret"),
             ("DATABASE_URL", "postgres://app:CHANGE_ME@db:5432/app", "postgres://app:devpass@db:5432/app")],
     "python": [("APP_SECRET_KEY", "change-me-to-a-real-secret", "dev-not-a-secret"),
-               ("API_TOKEN", "change-me", "dev-token")],
+               ("API_TOKEN", "change-me", "dev-token"),
+               # Data path comes from config, never hardcoded: dev points at ./dev/data (in the repo,
+               # fake data); the real path lives only in the masked .env and is used outside the sandbox.
+               ("DATA_DIR", "/var/lib/change-me/data", "./dev/data")],
 }
 
 _COMPOSE = """\
@@ -134,7 +137,18 @@ def test_fixtures_present():
 '''
 
 _APP_PY = '''\
-"""Minimal library/CLI skeleton. Replace with the real code."""
+"""Minimal library/CLI skeleton. Replace with the real code.
+
+The data path comes from the environment (DATA_DIR in .env/.env.dev), never hardcoded: in a session you
+see .env.dev (DATA_DIR=./dev/data, fake data in the repo); the real path lives only in the masked .env and
+is used outside the sandbox. There is no ./data in the repo tree.
+"""
+import os
+
+
+def data_dir() -> str:
+    """Where this app reads and writes its data. Set by DATA_DIR; falls back to the dev corpus."""
+    return os.environ.get("DATA_DIR", "./dev/data")
 
 
 def greet(name: str) -> str:
@@ -143,14 +157,25 @@ def greet(name: str) -> str:
 
 if __name__ == "__main__":
     print(greet("world"))
+    print(f"data dir: {data_dir()}")
 '''
 
 _TEST_PY = '''\
-from app.main import greet
+import os
+
+from app.main import data_dir, greet
 
 
 def test_greet():
     assert greet("world") == "hello, world"
+
+
+def test_data_dir_comes_from_env():
+    os.environ["DATA_DIR"] = "/tmp/example-data"
+    try:
+        assert data_dir() == "/tmp/example-data"
+    finally:
+        del os.environ["DATA_DIR"]
 '''
 
 _README = """\
@@ -223,11 +248,14 @@ def _files(template, name):
             "app/__init__.py": ("", None),
             "app/main.py": (_APP_PY, None),
             "tests/test_main.py": (_TEST_PY, None),
+            "dev/data/.gitkeep": ("", None),
             "README.md": (_README.format(
                 name=name, template=template, dev_stack="",
-                deploy="", data_doc="Live data (develop against `dev/fixtures/`).",
+                deploy="", data_doc="The real data directory (`DATA_DIR` in the masked `.env`); in a session "
+                                    "`DATA_DIR` is `./dev/data`.",
                 upstream_doc=" (and the upstream, if set)",
-                data_backup="No live-data volume in this template."), None),
+                data_backup="Live data lives at the real `DATA_DIR` (outside this repo); agentbox does not "
+                            "back it up."), None),
         })
     return files
 
