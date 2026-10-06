@@ -32,6 +32,24 @@ class BackupTest(TempCase):
         for gone in ("node_modules", ".venv", "big", "src/__pycache__"):
             self.assertFalse(os.path.exists(os.path.join(dst, gone)), gone)
 
+    def test_untracked_and_gitignored_files_are_backed_up(self):
+        """Restore is the mistake-model safety net (Tim, 6 Oct): the backup is a filesystem copy, not a git
+        export, so it keeps files git never would."""
+        import shutil
+        import subprocess
+        shutil.rmtree(os.path.join(self.src, ".git"))               # setUp left a fake .git; make a real one
+        subprocess.run(["git", "-C", self.src, "init", "-q"], check=True)
+        self.write("proj/.gitignore", "ignored.txt\nout/\n")
+        self.write("proj/tracked.py", "code\n")
+        self.write("proj/untracked.txt", "never added to git\n")
+        self.write("proj/ignored.txt", "gitignored but on disk\n")
+        self.write("proj/out/build.bin", "gitignored dir\n")
+        subprocess.run(["git", "-C", self.src, "add", "tracked.py"], check=True)
+        s = self.snap(datetime.datetime(2026, 9, 29, 12, 0, 0))
+        dst = os.path.join(s, self.src.lstrip("/"))
+        for rel in ("tracked.py", "untracked.txt", "ignored.txt", "out/build.bin"):
+            self.assertTrue(os.path.isfile(os.path.join(dst, rel)), f"{rel} must be backed up")
+
     def test_link_dest_shares_unchanged_files(self):
         s1 = self.snap(datetime.datetime(2026, 9, 29, 10, 0, 0))
         s2 = self.snap(datetime.datetime(2026, 9, 29, 11, 0, 0))

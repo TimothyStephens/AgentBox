@@ -2,17 +2,21 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 5 Oct 2026
+**Updated:** 6 Oct 2026
 
 ## Current step
 
-**Stopped.** Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-covers2.md`, a fourth high, N1).
+**Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO.
+
+Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-covers2.md`, a fourth high, N1).
 - **Track 1 (primary wall):** the grant holds code; a grant with uncovered secrets or live data refuses to start (`agentbox/grantcheck.py`, `ab project accept-grant-exposure` / `--i-understand-grant-exposure`). Covers are defence in depth behind it. Documented in the design doc and the session notes.
 - **Track 2:** N1 (stop/start race: per-container lock + PID recheck), N2 (nothing mounted under a dir mask), N3 (`RUN --mount source=` checked by the gate), N4-N9 fixed. Builds confirmed: a COPY of a cover arrives empty, and a crafted context carrying masked content is refused.
 
 **Real projects stay off until this area is independently re-reviewed again (Tim).** The covers review of 5 Oct is still open from last round too.
 
 ## Done
+
+- **Threat model + fifth review** (this commit; `docs/reviews/2026-10-06-final.md`): threat model at the top of the design doc. H3 (`mask_skip` is a speed knob, not an exemption — scanned, and a secret there is reported "unmasked"), M4 (the exposure ack shows the findings and fingerprints their content, so a changed file re-prompts), the cheap half of H1 (the gate refuses `U`/`chown` on grant binds and SubPaths; `grantcheck` warns on a foreign-owned or unreadable grant entry), and the backup proof (untracked and gitignored files are kept; `test_untracked_and_gitignored_files_are_backed_up`). The rest (H2 secret-name shapes, M1 data shapes, M2 `data_ro`, M3 git-credential shapes, L1-L6) are known limitations in decisions.md.
 
 - **Steps 1-5** (`e35feab`), the reviews of steps 1-2 and 3-4, and Tim's decisions 1-4 after step 5 (`bbd81b6`). Live checks on 1 Oct: `claude-live` and `omp-live` pass, and `make install` works.
 - **Step 5 audit** (`73fb267`). Each review file ends with a response table: fixed, rejected or deferred, and the test.

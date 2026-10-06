@@ -49,14 +49,16 @@ def cmd_project_add(s, a):
     if "build_memory" in entry:
         session.check_build_memory(s, a.name, entry["build_memory"])
     from . import grantcheck
-    exposure = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []), entry.get("mask_skip", []),
-                               covered=_mask_dsts(s, entry))
+    exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
+                                         entry.get("mask_skip", []), covered=_mask_dsts(s, entry))
+    for w in warnings:
+        warn(f"ab: grant warning: {w}")
     if exposure and not a.i_understand_grant_exposure:
         raise AgentboxError(grantcheck.message(a.name, exposure))
     if exposure:
         entry["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
-        warn(f"ab: accepted grant exposure for {a.name} ({len(exposure)} item(s)); move secrets/live data out "
-             "of the grant when you can")
+        warn(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0]
+             + f"\naccepted (--i-understand-grant-exposure); move secrets/live data out of the grant when you can.")
     found = _history_secrets(entry)
     if found and not a.accept_history_secrets:
         raise AgentboxError(session.history_secrets_message(a.name, found))
@@ -95,17 +97,20 @@ def cmd_project_accept_grant_exposure(s, a):
     if a.name not in reg:
         raise AgentboxError(f"no project named {a.name}")
     e = reg[a.name]
-    exposure = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
-                               covered=_mask_dsts(s, dict(e, name=a.name)))
+    exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
+                                         covered=_mask_dsts(s, dict(e, name=a.name)))
+    for w in warnings:
+        warn(f"ab: grant warning: {w}")
     if not exposure:
         reg[a.name].pop("grant_exposure_accepted", None)
         registry.save(s.registry_path, reg)
         print(f"project {a.name}: no secrets or live data in the grant; nothing to accept")
         return 0
+    # show the full findings before recording the ack, not a count afterwards (audit 6 Oct, M4)
+    print(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0])
     reg[a.name]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
     registry.save(s.registry_path, reg)
-    print(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0])
-    print(f"accepted for {a.name}. Move secrets and live data out of the grant when you can.")
+    print(f"\naccepted for {a.name}. Move secrets and live data out of the grant when you can.")
     return 0
 
 

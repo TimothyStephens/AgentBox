@@ -324,8 +324,8 @@ class GrantExposure(SessionTest):
         self.assertIn("data/app.db", str(e.exception))
         self.assertIn("accept-grant-exposure", str(e.exception))
         # record the ack and it starts
-        exposure = grantcheck.scan(self.root, [self.root], covered=[os.path.join(self.root, ".env"),
-                                                                    os.path.join(self.root, "sub")])
+        exposure, _ = grantcheck.scan(self.root, [self.root], covered=[os.path.join(self.root, ".env"),
+                                                                       os.path.join(self.root, "sub")])
         reg = registry.load(self.settings.registry_path)
         reg["p1"]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
         registry.save(self.settings.registry_path, reg)

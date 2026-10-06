@@ -773,7 +773,7 @@ class CoversAudit(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
         self.proj = os.path.join(self.tmp, "proj")
         self.ro = os.path.join(self.tmp, "ro")
-        for d in ("proj/dev", "proj/app", "proj/secrets", "ro/sub"):
+        for d in ("proj/dev", "proj/app/sub", "proj/secrets", "ro/sub"):
             os.makedirs(os.path.join(self.tmp, d))
         open(os.path.join(self.proj, "dev", ".env"), "w").close()
         open(os.path.join(self.proj, "Containerfile"), "w").close()     # the context is on disk
@@ -801,6 +801,30 @@ class CoversAudit(unittest.TestCase):
             with self.subTest(src=src), self.assertRaises(gate.Deny) as e:
                 self.bind(g, src)
             self.assertIn("moved or replaced", str(e.exception))
+
+    def test_u_and_chown_mount_options_refused_on_grant_binds(self):
+        """Audit 6 Oct, cheap half of H1: U/chown re-own the bound host files; refused on grant binds and
+        grant-volume SubPaths (an accidental re-own of the project is a mistake-model harm)."""
+        g = self.gate()
+        for opt in ("U", "chown"):
+            with self.subTest(opt=opt, kind="root"), self.assertRaises(gate.Deny):
+                decide(g, "POST", "/v5/libpod/containers/create",
+                       {"image": "x", "mounts": [{"type": "bind", "source": self.proj + "/app",
+                                                   "destination": "/m", "options": [opt]}]})
+        # a sub-path (grant-volume SubPath) with U is refused too
+        with self.subTest(kind="subpath"), self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/libpod/containers/create",
+                   {"image": "x", "mounts": [{"type": "bind", "source": self.proj + "/app/sub",
+                                              "destination": "/m", "options": ["ro", "U"]}]})
+        # a clean ro sub-path still works
+        _t, body, _k = decide(g, "POST", "/v5/libpod/containers/create",
+                              {"image": "x", "mounts": [{"type": "bind", "source": self.proj + "/app/sub",
+                                                         "destination": "/m", "options": ["ro"]}]})
+        self.assertTrue(json.loads(body).get("volumes"))
+        # compat Binds with U is refused too
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/containers/create",
+                   {"Image": "x", "HostConfig": {"Binds": [self.proj + "/app:/m:U"]}})
 
     def test_h3_read_only_grant_stays_read_only(self):
         g = self.gate()

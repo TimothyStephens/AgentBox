@@ -267,11 +267,14 @@ ANNOTATION_FROM_IMAGE = ("org.opencontainers.",)
 SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sysctl (1 Oct), so the gate does too
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
 ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
-VOLUME_OPTS = ("ro", "rw", "z", "Z", "U", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
+# No `U`/`chown` (audit 6 Oct, cheap half of H1): they recursively re-own the bound host files to the
+# container user, and an accidental re-own of a grant's files is a mistake-model harm. Binds the gate forwards
+# are always grant roots or grant-volume SubPaths, so dropping them here covers every grant bind.
+VOLUME_OPTS = ("ro", "rw", "z", "Z", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
 MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosuid|suid|nodev|dev|noexec|exec|"
-                             r"r?bind|z|Z|U|idmap(=.*)?|nocopy|copy|notmpcopyup|tmpcopyup|size=\d+[kmgKMG]?|"
-                             r"mode=[0-7]{3,4}|uid=\d+|gid=\d+|relatime|norelatime|noatime|strictatime|chown|"
+                             r"r?bind|z|Z|idmap(=.*)?|nocopy|copy|notmpcopyup|tmpcopyup|size=\d+[kmgKMG]?|"
+                             r"mode=[0-7]{3,4}|uid=\d+|gid=\d+|relatime|norelatime|noatime|strictatime|"
                              r"src-nofollow|dest-nofollow)$")
 
 

@@ -1,17 +1,22 @@
 """Track 1 (Tim, 6 Oct): the grant is for code; secrets and live data live outside it. This is the primary
 rule — the masks and the gate's cover checks are defence in depth behind it.
 
-Before a session starts, each grant root is scanned (skipping masked/excluded sub-dirs) for things that should
-not be in a grant the agent gets read-write:
+Before a session starts, each grant root is scanned for things that should not be in a grant the agent gets
+read-write:
   * a non-empty `.env` / `.env.*` / `*.pem` / `*.key`, or any file under a `secrets/` directory, that the masks
     do not cover (an un-masked secret the agent could read);
   * a `.git` whose remote URLs carry credentials (`https://user:pass@host`);
   * files that look like live data: `*.db` / `*.sqlite` / `*.sqlite3` / `*.duckdb` over LIVE_DATA_MB, and any
-    host path a compose file in the grant binds as a volume (a live data directory).
+    host path a compose file in the grant binds as a volume holding such data.
 
 If any are found, the session refuses to start and names them. `ab project add --i-understand-grant-exposure`,
 or `ab project accept-grant-exposure <name>`, records an acknowledgement per project (like history secrets);
-the ack is tied to what was found, so a new exposure re-prompts.
+the ack is over each finding's content, so a change to the file's content (not only its path) re-prompts.
+
+This is a safety net under the design's threat model (mistake containment, not a wall against a malicious
+agent); it catches the common shapes, not every one. Scanning covers what it can read: a directory owned by
+another user (a rootless container's data dir) can't be read and is reported as a warning, not descended into.
+Known limitations (secrets under other names, more data shapes) are in `docs/decisions.md`.
 """
 import fnmatch
 import hashlib
@@ -92,59 +97,104 @@ def _looks_like_data(path):
     return False
 
 
+def _sig(path, st):
+    """A content signature for a file finding: path plus size, mtime and inode, so the ack re-prompts when the
+    file's content changes, not only when its path does (audit 6 Oct, M4)."""
+    return f"{path}|{st.st_size}|{st.st_mtime_ns}|{st.st_ino}"
+
+
+def _under_mask_skip(root, path, mask_skip):
+    for s in mask_skip:
+        full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
+        if path == full or path.startswith(full.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def scan(root, grants, mask_skip=(), covered=()):
-    """Return a sorted list of findings: each 'kind: path (detail)'. `covered` are paths the masks already
-    hide (an empty cover makes a secret-named file safe)."""
+    """Return (findings, warnings). Each finding is {"text": <shown>, "sig": <for the fingerprint>}; a grant
+    with any finding refuses to start until acknowledged. Warnings are shown but do not block (audit 6 Oct,
+    the cheap half of H1: entries the scanner can't read or that another user owns). `mask_skip` is NOT
+    honoured here (H3): it is a speed knob for the mask walk, not an exemption; a secret under it is unmasked,
+    so it must still be reported. `covered` are paths the masks hide (an empty cover makes a secret safe)."""
     covered = {os.path.realpath(c) for c in covered}
+    uid = os.getuid()
     limit = LIVE_DATA_MB << 20
 
     def is_covered(p):
         return any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered)
 
-    found = set()
+    found, warn = {}, set()
+
+    def onerror(e):
+        warn.add(f"{getattr(e, 'filename', '?')}: unreadable ({getattr(e, 'strerror', e)}); a container's data "
+                 "dir? move it out of the grant")
+
     for grant in grants:
-        skip = _rel_skips(root, grant, mask_skip)
-        for dirpath, dirnames, filenames in os.walk(grant, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(grant, followlinks=False, onerror=onerror):
             rel = os.path.relpath(dirpath, grant)
-            # a covered (masked, empty) directory hides everything under it; don't descend into it
-            dirnames[:] = [d for d in dirnames if d not in WALK_SKIP and not os.path.islink(os.path.join(dirpath, d))
-                           and os.path.normpath(os.path.join(rel, d)) not in skip
-                           and not is_covered(os.path.realpath(os.path.join(dirpath, d)))]
+            kept = []
+            for d in dirnames:
+                full = os.path.join(dirpath, d)
+                if d in WALK_SKIP or os.path.islink(full) or is_covered(os.path.realpath(full)):
+                    continue
+                try:
+                    if os.lstat(full).st_uid != uid:
+                        warn.add(f"{full}: owned by uid {os.lstat(full).st_uid}, not you; a container's data "
+                                 "dir? move it out of the grant")
+                        continue                         # not descended: the scanner can't see inside it anyway
+                except OSError as e:
+                    onerror(e)
+                    continue
+                kept.append(d)
+            dirnames[:] = kept
             gd = os.path.join(dirpath, ".git")
             if os.path.isdir(gd):
                 for c in _git_credential_urls(gd):
-                    found.add(f"git credentials in a remote URL: {c}")
+                    found[f"git credentials in a remote URL: {c}"] = f"gitcred:{c}"
             in_secrets = any(part in mounts.MASK_DIRS for part in rel.split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
                 try:
                     st = os.lstat(p)
-                except OSError:
+                except OSError as e:
+                    onerror(e)
                     continue
                 if not stat.S_ISREG(st.st_mode):
                     continue
+                if st.st_uid != uid and not os.access(p, os.R_OK):
+                    warn.add(f"{p}: owned by uid {st.st_uid}, not you (unreadable); a container's data file?")
+                    continue
                 if _is_secret_name(fn, in_secrets) and st.st_size and not is_covered(p):
-                    found.add(f"unmasked secret file: {p}")
+                    tag = " (under mask_skip: unmasked)" if _under_mask_skip(root, p, mask_skip) else ""
+                    found[f"unmasked secret file{tag}: {p}"] = _sig(p, st)
                 if fn.lower().endswith(DATA_SUFFIXES) and st.st_size >= limit and not is_covered(p):
-                    found.add(f"live data ({st.st_size >> 20} MB): {p}")
+                    found[f"live data ({st.st_size >> 20} MB): {p}"] = _sig(p, st)
             for fn in filenames:
                 if fn in mounts.COMPOSE_FILES and not os.path.islink(os.path.join(dirpath, fn)):
-                    for b in _compose_data_binds(os.path.join(dirpath, fn), grant):
+                    cf = os.path.join(dirpath, fn)
+                    for b in _compose_data_binds(cf, grant):
                         if not is_covered(b):
-                            found.add(f"compose data bind: {b} (bound by {os.path.join(dirpath, fn)})")
-    return sorted(found)
+                            try:
+                                sig = _sig(b, os.lstat(b))
+                            except OSError:
+                                sig = f"compose:{b}"
+                            found[f"compose data bind: {b} (bound by {cf})"] = sig
+    return [{"text": t, "sig": g} for t, g in sorted(found.items())], sorted(warn)
 
 
 def fingerprint(findings):
-    """A stable id for a set of findings, so an ack covers exactly what was seen."""
-    return hashlib.sha256("\n".join(sorted(findings)).encode()).hexdigest()[:16]
+    """A stable id for a set of findings, over each finding's content signature, so the ack re-prompts when a
+    finding's content changes, not just its path (audit 6 Oct, M4). Accepts finding dicts or plain strings."""
+    sigs = [(f["sig"] if isinstance(f, dict) else f) for f in findings]
+    return hashlib.sha256("\n".join(sorted(sigs)).encode()).hexdigest()[:16]
 
 
 def message(name, findings):
     lines = [f"project {name}: the grant holds secrets or live data the agent would get read-write. A grant is "
-             "for code; move these outside it, or add a mask (mask_skip excludes a path; a secret under a "
-             "masked name is covered). Found:"]
-    lines += [f"  - {f}" for f in findings]
+             "for code; move these out of the grant (for a secret file, a masked name — .env, *.pem, *.key, or "
+             "a secrets/ directory — also covers it). Found:"]
+    lines += [f"  - {f['text'] if isinstance(f, dict) else f}" for f in findings]
     lines.append(f"To run anyway, recording that you accept this exposure: "
                  f"`ab project accept-grant-exposure {name}` (or `--i-understand-grant-exposure` at add time).")
     return "\n".join(lines)

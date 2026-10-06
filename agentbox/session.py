@@ -396,7 +396,9 @@ class Session:
                                 mask_skip=p.mask_skip, swap=p.swap)
         covered = [m.dst for m in self.plan.mounts if m.kind in ("mask", "tmpfs")
                    or (m.kind == "bind" and os.path.realpath(m.src) != m.dst)]
-        exposure = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip, covered=covered)
+        exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip, covered=covered)
+        for w in warnings:
+            self.warn(f"agentbox: grant warning: {w}")
         if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
             raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:

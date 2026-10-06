@@ -2,6 +2,14 @@
 
 Sep 29, 2026 · @Tim
 
+## Threat model
+
+agentbox targets **mistake containment and cross-project isolation**: a careless or over-eager agent, a stray `rm -rf`, a confused "fix", a command that reaches for the wrong directory, and keeping one project's files, secrets, caches and networks out of another project's sessions. Within that model the controls are meant to hold.
+
+**Non-goal (stated plainly): agentbox is not a defence against a deliberately malicious or prompt-injected agent that is actively trying to break out or exfiltrate.** On a shared kernel, as rootless `vmuser`, with the agent able to run its own containers and reach the network its project allows, a determined adversary has too many channels (the model API itself is one) for the launcher to close. The boundaries here raise the cost of an accident and of lateral movement between projects; they do not turn the box into a VM jail. A separate agent VM is the future option if that stronger model is ever needed.
+
+**The primary secret and data control is operational, not a scanner: keep secrets and irreplaceable data out of the grant.** `grantcheck` (below) enforces this at `ab project add` and before every session — it refuses to start when it finds secrets or live data in a read-write grant — but it is a safety net for the common shapes, not an exhaustive wall. A secret the agent can reach is only as safe as the model provider it may talk to. Put real secrets and production data outside every grant; what the agent is given to work on is code.
+
 ## Summary
 
 One launcher, `agentbox` (`ab`), runs any coding agent (OMP, Claude Code, Pi, Codex) in a hardened rootless podman container on ubuntu-dev, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it.
@@ -154,7 +162,7 @@ preset  = "python"
 data_ro = ["~/data/raw"]
 data_rw = ["~/data/processed"]
 egress  = "open"                  # override: this project may search the web
-mask_skip = ["data/cache"]        # folders the secret-mask walk skips (huge trees)
+mask_skip = ["data/cache"]        # folders the secret-mask walk skips for speed (huge trees); NOT an exemption
 build_memory = "4g"               # per-build memory limit in the dev tier (default 2g, at most the slice cap)
 extra_domains = ["huggingface.co"] # added to the egress allowlist
 ```
@@ -229,7 +237,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 **Project secrets**
 
-- Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get a read-only empty file bound over them (not `/dev/null`: a device node in the tree breaks rootless builds), `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks.
+- Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.pem`, `*.key` get a read-only empty file bound over them (not `/dev/null`: a device node in the tree breaks rootless builds), `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks. `mask_skip` is a speed knob for large trees, not a way to exempt a secret: `grantcheck` still scans those folders and refuses a session if a secret-named file is found there (it would be unmasked), so do not use `mask_skip` to get past the check.
 - Masks are computed at session start: a secret file created during a session is not masked.
 - **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; `ab deploy` uses it on the host.
 - Other file names use a per-project mapping, e.g. `swap = { ".env" = ".env.dev", "secrets.env" = "secrets.dev.env" }`. A masked file with no mapped dev file stays empty.
