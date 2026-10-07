@@ -377,19 +377,29 @@ class BackupExcludesCovers(SessionTest):
         self.write("projects/p1/.env.dev", "REAL=dev-fake\n")         # the fake twin, kept
         self.write("projects/p1/secrets/pw.txt", f"{canary}\n")       # covered by the secrets/ tmpfs
         self.write("projects/p1/app.py", "print('code')\n")          # code, kept
-        self.make().prepare()
+        sess = self.make()
+        sess.prepare()
 
         bdir = self.settings.backups_dir
-        hits = subprocess.run(["grep", "-rl", canary, bdir], capture_output=True, text=True).stdout.strip()
-        self.assertEqual(hits, "", f"a covered path was copied into the backups dir:\n{hits}")
-
         snaps = glob.glob(os.path.join(bdir, "p1", "*", self.root.lstrip("/")))
         self.assertTrue(snaps, "a snapshot was written")
         snap = snaps[0]
+
+        # Seed the assertion from the gate's own source, not a literal list: every path the gate covers,
+        # that lives inside this grant, must be absent from the backup. If the backup's exclude list ever
+        # stopped reading covered_paths() (a second copy), a cover would appear here and this fails.
+        covers = [c for c in sess.covered_paths() if c.startswith(self.root.rstrip("/") + "/")]
+        self.assertTrue(any(c.endswith("/.env") for c in covers) and any(c.endswith("/secrets") for c in covers),
+                        f"the fixture should produce .env and secrets/ covers; got {covers}")
+        for c in covers:
+            rel = os.path.relpath(c, self.root)
+            self.assertFalse(os.path.exists(os.path.join(snap, rel)),
+                             f"covered path {rel} must not be in the backup (gate covers it)")
+
         self.assertTrue(os.path.isfile(os.path.join(snap, "app.py")), "code is backed up")
         self.assertTrue(os.path.isfile(os.path.join(snap, ".env.dev")), "the fake .env.dev is backed up")
-        self.assertFalse(os.path.exists(os.path.join(snap, ".env")), "the real .env is excluded")
-        self.assertFalse(os.path.exists(os.path.join(snap, "secrets")), "secrets/ is excluded")
+        hits = subprocess.run(["grep", "-rl", canary, bdir], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(hits, "", f"a covered path was copied into the backups dir:\n{hits}")
 
 
 class GrantExposure(SessionTest):

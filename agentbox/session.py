@@ -392,9 +392,8 @@ class Session:
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), secrets=p.value("secrets"),
                                 mask_skip=p.mask_skip, swap=p.swap)
-        covered = [m.dst for m in self.plan.mounts if m.kind in ("mask", "tmpfs")
-                   or (m.kind == "bind" and os.path.realpath(m.src) != m.dst)]
-        exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip, covered=covered)
+        exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip,
+                                             covered=self._plan_covered())
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
@@ -403,26 +402,6 @@ class Session:
             _no_commas(m.dst, "mount")
         for n in self.plan.notes:
             self.warn(f"agentbox: {n}")
-        if do_backup:
-            grants = [p.root] + p.data_rw
-            skip = lambda g: mounts._rel_skips(p.root, g, p.mask_skip)
-
-            def covers_rel(g):
-                # Leave the masks and covers (.env, secrets/, .git/hooks, .git/config, compose/lockdown
-                # covers, the dev-swap target) out of the backup: the agent cannot damage the real files,
-                # so copying them would only make plaintext secret copies in the backups dir. Back up code.
-                gr = os.path.realpath(g)
-                out = []
-                for c in covered:
-                    cr = os.path.realpath(c)
-                    if cr != gr and cr.startswith(gr.rstrip("/") + "/"):
-                        out.append(os.path.relpath(cr, gr))
-                return out
-            backup.snapshot(self.settings.backups_dir, p.name, self.name, grants, skip_rel_for=skip,
-                            exclude_rel_for=covers_rel,
-                            warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
-            backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
-                          daily_days=int(self.settings.backup_daily_days))
         mounts.prepare(self.plan)
         self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
@@ -432,7 +411,28 @@ class Session:
         self.adapter.seed_state(self.settings, self.state_dir, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
+        if do_backup:
+            self._backup_grants()
         self._write_scan_state()             # after the agent state is seeded: its changes are the session's
+
+    def _backup_grants(self):
+        """Snapshot the read-write grants before the session runs, EXCLUDING every covered/masked path.
+        The excludes are exactly `covered_paths()` — the same list the gate enforces — so the backup holds
+        code, never a plaintext copy of a secret the agent cannot damage (it is masked), and the two can
+        never drift apart. Runs after the adapter setup so `covered_paths()` sees the adapter's covers too."""
+        p = self.project
+        covered = self.covered_paths()
+
+        def covers_rel(g):
+            gr = os.path.realpath(g)
+            return [os.path.relpath(c, gr) for c in covered
+                    if c != gr and c.startswith(gr.rstrip("/") + "/")]
+        backup.snapshot(self.settings.backups_dir, p.name, self.name, [p.root] + p.data_rw,
+                        skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
+                        exclude_rel_for=covers_rel,
+                        warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
+        backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
+                      daily_days=int(self.settings.backup_daily_days))
 
     def _check_setup(self):
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
@@ -858,6 +858,18 @@ class NetSession(Session):
         not exist in a container the agent starts. A read-only bind whose destination is itself a grant (a
         data_ro grant) is not a cover: the agent may read it, and the gate keeps it read-only in spawned
         containers (`ro_roots`, audit 5 Oct H3)."""
+        covered = self._plan_covered()
+        for p in self.setup.project_covers:
+            covered.add(os.path.realpath(p))
+        under = self._dir_covers()
+        return sorted(c for c in covered if not any(c.startswith(d.rstrip("/") + "/") for d in under))
+
+    def _plan_covered(self):
+        """The cover/mask paths the session PLAN creates, as real paths: secret masks and mask dirs, the
+        `.env` dev-swap target (the real file behind the swap), and the read-only git hooks/config and
+        compose covers. This is the single source both `covered_paths()` (what the gate enforces) and the
+        pre-session backup's exclude list are built from, so a cover added in one place cannot be missed by
+        the other. `covered_paths()` adds the adapter's project covers on top (known only after setup)."""
         roots = {os.path.realpath(r) for r in self.bind_roots}
         covered = set()
         for m in (self.plan.mounts if self.plan else []):
@@ -868,10 +880,7 @@ class NetSession(Session):
                 # git hooks/config and compose covers (ro, dst==src); the .env dev-swap (dst != src): a spawned
                 # container binding the root would see the real file, not the empty/dev substitute
                 covered.add(dst)
-        for p in self.setup.project_covers:
-            covered.add(os.path.realpath(p))
-        under = self._dir_covers()
-        return sorted(c for c in covered if not any(c.startswith(d.rstrip("/") + "/") for d in under))
+        return covered
 
     def sockguard_dev_config(self):
         return sockguard.dev_config(self.name, bind_roots=self.bind_roots)
