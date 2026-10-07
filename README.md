@@ -1,6 +1,6 @@
 # agentbox
 
-`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session. The spec is `docs/design.md`; decisions and deviations are in `docs/decisions.md`; the build's running state is in `docs/progress.md`.
+`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session. The spec is `docs/design.md`; decisions and deviations are in `docs/decisions.md`; the build's running state is in `docs/progress.md`. To give an agent your settings, plugins, commands or MCP servers — and to see which change affects one project vs all of them — read `docs/PERSONALIZATION.md`.
 
 ## Setup (ubuntu-dev)
 
@@ -24,7 +24,7 @@ Run these yourself; each touches your own config or `~/.local/bin`.
    - Pay-per-use providers: `ab keys set <provider>`, once per provider. Use dedicated, spend-capped keys.
    - Your local model server, if it needs a key: `ab keys set llama-cpp`.
 5. **OMP model list:** copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every `apiKey` line removed. Only providers with a key are offered in a session.
-6. **Optional:** create `~/.config/agentbox/omp/mcp.json` or `mags-codedev.yaml` yourself if OMP sessions should have them. They are mounted read-only as you wrote them.
+6. **Optional:** create `~/.config/agentbox/omp/mcp.json` or `mags-codedev.yaml` yourself if OMP sessions should have them. They are mounted read-only as you wrote them. See `docs/PERSONALIZATION.md` for the full map of what to edit to personalize Claude or OMP, and whether it affects one project or all.
 7. **Register a project and check it:**
    ```bash
    ab project add <name> <root> --preset python|pods|lockdown
