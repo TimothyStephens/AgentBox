@@ -244,7 +244,6 @@ class CoveredPaths(SessionTest):
         self.write("projects/p1/.env", "SECRET=1\n")
         self.write("projects/p1/secrets/db.txt", "pw\n")
         data_ro = self.mkdir("projects", "p1", "ro-grant")
-        reg_root = os.path.join(self.data, "..")
         from agentbox import registry
         reg = registry.load(self.settings.registry_path)
         reg["p1"]["data_ro"] = [data_ro]
@@ -310,6 +309,59 @@ class CoverPins(SessionTest):
         s = self.make()
         s.prepare()
         self.assertEqual(s.pin_args(), [])
+
+
+class CheckSetup(SessionTest):
+    """E13: _check_setup audits what an adapter asks the launcher to mount. None of its refusals had a test:
+    an adapter mount or tmpfs outside the adapter's own root, a cover outside the project, a bad env name,
+    and a comma/newline in a path."""
+
+    def setup(self, s, **kw):
+        from agentbox.adapters import SessionSetup
+        st = SessionSetup()
+        for k, v in kw.items():
+            setattr(st, k, v)
+        s.setup = st
+        return s
+
+    def make_prepared(self):
+        s = self.make()
+        s.setup = None
+        return s
+
+    def test_adapter_mount_outside_its_root_refused(self):
+        s = self.setup(self.make_prepared(), mount_root="/x", mounts=[("/host/src", "/elsewhere/dst", True)])
+        with self.assertRaises(AgentboxError) as e:
+            s._check_setup()
+        self.assertIn("not under the adapter's root", str(e.exception))
+
+    def test_adapter_tmpfs_outside_its_root_refused(self):
+        s = self.setup(self.make_prepared(), mount_root="/x", tmpfs=["/y/z"])
+        with self.assertRaises(AgentboxError):
+            s._check_setup()
+
+    def test_cover_outside_the_project_refused(self):
+        s = self.setup(self.make_prepared(), project_covers=["/etc/passwd"])
+        with self.assertRaises(AgentboxError) as e:
+            s._check_setup()
+        self.assertIn("not inside the project", str(e.exception))
+
+    def test_bad_env_name_refused(self):
+        s = self.setup(self.make_prepared(), env={"not a name": "v"})
+        with self.assertRaises(AgentboxError) as e:
+            s._check_setup()
+        self.assertIn("plain variable", str(e.exception))
+
+    def test_comma_in_a_mount_path_refused(self):
+        s = self.setup(self.make_prepared(), mount_root="/x", mounts=[("/host,src", "/x/dst", True)])
+        with self.assertRaises(AgentboxError) as e:
+            s._check_setup()
+        self.assertIn("commas or newlines", str(e.exception))
+
+    def test_clean_setup_passes(self):
+        s = self.setup(self.make_prepared(), mount_root="/x", mounts=[("/host/src", "/x/dst", True)],
+                       tmpfs=["/x/t"], project_covers=[os.path.join(self.root, "sub")], env={"OK_NAME": "v"})
+        s._check_setup()                                    # no raise
 
 
 class GrantExposure(SessionTest):

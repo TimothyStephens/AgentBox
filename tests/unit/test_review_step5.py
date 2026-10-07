@@ -425,39 +425,56 @@ class Starts(unittest.TestCase):
         self.assertEqual(g.mount_violations(doc), [], "not strict: nothing to read")
         self.assertTrue(g.mount_violations(doc, strict=True), "strict: no process is a violation")
 
-    def test_grant_volume_mount_checked_after_start(self):
+    def test_grant_volume_mount_checked_at_start(self):
+        """E3/T2: drive the LIVE start path (prepare_start → mount_violations, strict), not the dead
+        after_start. A grant volume must land inside its own root."""
         g = self.gate()
         g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
                                                "Labels": {gate.DEV_OWNER: "abt-s-1", "agentbox.role": "grant"},
                                                "Options": {"type": "none", "o": "bind", "device": self.proj}}
         doc = g.objects["containers/c1"]
         doc["Mounts"] = [{"Type": "volume", "Name": "abt-s-1-grant0", "Destination": "/d"}]
-        self.assertEqual(g.container_violations(doc), [], "the grant volume is the session's")
+        doc["State"] = {"Pid": 5151, "Status": "initialized"}
         g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
         rel = self.proj[len(self.tmp):]
         g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel}/data /d ro - tmpfs tmpfs rw\n"
-        g.after_start(["c1"])
+        g.prepare_start("c1")                                     # inside its root: fine
+        g.release_held()
         g.read_mountinfo = lambda pid: "1206 1 0:40 /outside /d ro - tmpfs tmpfs rw\n"
         with self.assertRaises(gate.Deny):
-            g.after_start(["c1"])
-        g.objects["volumes/abt-s-1-grant0"]["Options"]["device"] = "/etc"   # not a grant root
-        self.assertTrue(g.container_violations(doc))
+            g.prepare_start("c1")                                 # outside the grant root: refused at start
+        g.release_held()
+        self.assertTrue(any("c1" in d for d in g.deleted), "the container was removed")
 
-    def test_what_was_mounted_is_checked_after_start(self):
-        g = self.gate()
+    def test_what_was_mounted_is_checked_at_start(self):
+        """E3/T2: the swap-at-start check runs on the inited container before the entrypoint, via
+        prepare_start. (Was tested only against the dead after_start, and in integration.)"""
+        g = self.gate()                                           # bind source=self.proj (a grant root) at /d
+        g.objects["containers/c1"]["State"] = {"Pid": 4242, "Status": "initialized"}
         g.host_mountinfo = lambda: f"38 1 0:40 / {self.tmp} rw - tmpfs tmpfs rw\n"
         rel = self.proj[len(self.tmp):]
         g.read_mountinfo = lambda pid: f"1206 1 0:40 {rel} /d ro - tmpfs tmpfs rw\n"
-        g.after_start(["c1"])
-        self.assertIn("c1", g.verified)
+        g.prepare_start("c1")                                     # the grant root itself: fine
+        g.release_held()
         for line in ("1206 1 0:40 /outside /d ro - tmpfs tmpfs rw\n",       # swapped to outside
                      f"1206 1 0:40 {rel}/data /d ro - tmpfs tmpfs rw\n",    # a sub-path, not the root
                      f"1206 1 0:41 {rel} /d ro - ext4 x rw\n"):             # another filesystem
-            g.verified.add("c1")
             g.read_mountinfo = lambda pid, line=line: line
             with self.subTest(line=line), self.assertRaises(gate.Deny):
-                g.after_start(["c1"])
-            self.assertNotIn("c1", g.verified)
+                g.prepare_start("c1")
+            g.release_held()
+        self.assertTrue(any("c1" in d for d in g.deleted))
+
+    def test_after_start_checked_refuses_a_reinitialised_pid(self):
+        """E4/T2: the live PID recheck after the start reply. A container re-initialised to a different PID
+        between the gate's check and the start reply is removed and refused."""
+        g = self.gate()
+        g.begin_request()
+        g._tls.checked = {"c1": 4242}
+        g.objects["containers/c1"]["State"] = {"Pid": 9999, "Status": "running"}   # a different PID
+        with self.assertRaises(gate.Deny) as e:
+            g.after_start_checked()
+        self.assertIn("re-initialised", str(e.exception))
         self.assertTrue(any("c1" in d for d in g.deleted))
 
     def test_pod_start_needs_every_member_checked(self):
@@ -750,7 +767,8 @@ class Covers(unittest.TestCase):
             decide(g, "POST", "/v5/containers/create",
                    {"Image": "x", "HostConfig": {"Mounts": [{"Type": "bind", "Source": "/proj", "Target": "/m"}]}})
 
-    def test_after_start_rejects_a_swap_onto_a_cover(self):
+    def test_mount_violations_rejects_a_grant_volume_swapped_onto_a_cover(self):
+        # T3 (renamed from test_after_start_…): this exercises mount_violations directly, not after_start.
         g = self.gate()
         g.objects["volumes/abt-s-1-grant0"] = {"Name": "abt-s-1-grant0", "Driver": "local",
             "Labels": {gate.DEV_OWNER: "abt-s-1", "agentbox.role": "grant"},
@@ -846,6 +864,36 @@ class CoversAudit(unittest.TestCase):
         self.assertIn("not you", str(e.exception))
         # a user-owned sibling still binds fine (the check only bites foreign ownership)
         self.assertTrue(self.bind(g, os.path.join(self.proj, "app")).get("volumes"))
+
+    def test_covers_intact_detects_a_deleted_cover(self):
+        """E8: covers_intact caught a renamed/replaced cover; a deleted one was untested."""
+        g = self.gate()
+        cover = os.path.join(self.proj, "dev", ".env")
+        self.assertIsNone(g.covers_intact())
+        os.remove(cover)
+        self.assertEqual(g.covers_intact(), cover)
+
+    def test_unmasked_secret_under_finds_late_secrets(self):
+        """E7: a secret-named file that appeared after the masks were made (N6), a file under a secrets/ dir,
+        and the scan-limit cutoff — none were unit-tested."""
+        g = self.gate()
+        base = os.path.join(self.proj, "app")               # not covered
+        key = os.path.join(base, "late.key")
+        with open(key, "w") as f:
+            f.write("k")
+        self.assertEqual(g.unmasked_secret_under(base), key)
+        os.remove(key)
+        os.makedirs(os.path.join(base, "secrets"))
+        with open(os.path.join(base, "secrets", "pw"), "w") as f:
+            f.write("x")
+        self.assertTrue(g.unmasked_secret_under(base), "a file under a secrets/ dir counts")
+        # the scan-limit cutoff refuses rather than pass an unchecked tree
+        old = gate.BIND_SCAN_LIMIT
+        gate.BIND_SCAN_LIMIT = 0
+        try:
+            self.assertIn("too large", g.unmasked_secret_under(base))
+        finally:
+            gate.BIND_SCAN_LIMIT = old
 
     def test_h3_read_only_grant_stays_read_only(self):
         g = self.gate()
@@ -1314,6 +1362,27 @@ class CreateFields(unittest.TestCase):
         spec = json.loads(body)
         self.assertEqual(spec["resource_limits"]["memory"], {"limit": 512 << 20, "swap": 512 << 20})
         self.assertEqual(spec["annotations"], {"org.example.note": "x"})
+
+
+class ProductionConfig(unittest.TestCase):
+    """T4: both fakes set infra_pods and compat_creates True so the infra-pod and Docker-API code paths stay
+    exercised, but production leaves them off. These two refusals were covered by a single test; here they
+    are checked with production's own config."""
+
+    def gate(self):
+        g = Fake()
+        g.cfg["infra_pods"] = g.cfg["compat_creates"] = False     # production defaults
+        return g
+
+    def test_docker_api_container_create_refused(self):
+        with self.assertRaises(gate.Deny) as e:
+            decide(self.gate(), "POST", "/v5/containers/create", {"Image": "x"})
+        self.assertIn("Docker-API container creates are not supported", str(e.exception))
+
+    def test_pod_with_an_infra_container_refused(self):
+        with self.assertRaises(gate.Deny) as e:
+            self.gate().rewrite_pod({"name": "p"})                # no_infra not set -> an infra pod
+        self.assertIn("infra container", str(e.exception))
 
 
 if __name__ == "__main__":

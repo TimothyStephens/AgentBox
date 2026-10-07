@@ -66,7 +66,7 @@ def build_cases(sess, settings):
                             host_protected=host_protected, uid=os.getuid(),
                             required_tools=sess.adapter.required_tools)
     sess.add_network_cases(b)
-    dev = getattr(sess, "podman_dev", False)
+    dev = sess.podman_dev
     runner.podman_cases(b, socket_path=sessionmod.LIVE_SOCKET if dev else sockguard.AGENT_SOCKET,
                         compose_project=sess.podman_live, own=getattr(sess, "live_containers", []),
                         canary=getattr(sess, "canary", None), logs=sess.project.observe_logs, absent_ok=not dev)
@@ -106,7 +106,7 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     sess = sessionmod.make_session(settings, agent, project, podman=podman, warn=warn)
     sess.prepare()
     extra = []
-    if sess.podman_live or getattr(sess, "podman_dev", False):
+    if sess.podman_live or sess.podman_dev:
         sess.live_containers = live_containers(sess) if sess.podman_live else []
         sess.canary = make_canary(sess, settings)
         if not sess.canary:

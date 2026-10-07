@@ -284,7 +284,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in its private run dir (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in `<run>/services/<session>`, deliberately outside the session's own run dir so no mount rule can reach the raw socket (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |

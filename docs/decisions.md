@@ -674,3 +674,29 @@ The three fifth-review items that pivoted to the threat model / `ab init` before
 - **Auto-reaping was rejected**: tearing down a long-running session that is actually working would be destructive and surprising. The run-collision warning plus the `ab ls` flag mean a session cannot sit for a day unnoticed once you touch the tool again, without the launcher ever killing live work. `ab gc` still only reaps sessions whose launcher is gone (unchanged).
 
 **Minor CLI** (cosmetic): `ab project rm` takes several names (all-or-nothing: a bad name removes none); `ab run` accepts positional `ab run <agent> <project>` as well as the `--agent`/`--project` flags (the flag form keeps `--shell` and `-- <extra>` passthrough; in the positional shorthand, flags still go through the flag form or after `--`).
+
+## 2026-10-06 · Cleanup audit, safe-now pass: comments, real enforcement tests, support dead code (Tim)
+
+Acting on `docs/reviews/2026-10-06-cleanup.md`, safe-now items only; no enforcement behaviour changed, no enforcement code removed (that is deferred until the tests around it bite — see the report's follow-up).
+
+**Measured coverage** (`.venv`, `coverage run --branch`, unit tests; itest excluded): TOTAL 79%→80%; `hardening.py` 94→99%, `grantcheck.py` 84→88%, `gate.py` 79→80%, `session.py` 82%, `sockguard.py` 57% (the remainder is itest-only).
+
+**Comments/docstrings (Rank 2):** 13 wrong comments corrected to the audit's "correct statement" (no behaviour change).
+
+**Real enforcement tests (Rank 1/1b), each mutation-proven — guard disabled → test red → restored → green:**
+- E2 `gate.holder_ns` (both fakes override it): PID-reuse check (PID must be in the holder's own cgroup) — `test_gate.HolderNs.test_refuses_a_reused_pid_not_in_the_holders_cgroup`, disabling `cid not in cgroup` → red; plus the not-running and wrong-label branches.
+- E3/T2 swap-at-start on the LIVE path: the two tests that called the dead `after_start` now drive `prepare_start` — `test_review_step5.Starts.test_what_was_mounted_is_checked_at_start` / `test_grant_volume_mount_checked_at_start`; disabling `prepare_start`'s `mount_violations(strict=True)` → red (5 failures).
+- E4 `after_start_checked` PID recheck — `Starts.test_after_start_checked_refuses_a_reinitialised_pid`; disabling `if now and now != pid` → red.
+- E7 `gate.unmasked_secret_under` (new secret file, secrets/ dir file, scan-limit) — `CoversAudit.test_unmasked_secret_under_finds_late_secrets`; `return p`→`continue` → red.
+- E8 `covers_intact` deleted cover — `CoversAudit.test_covers_intact_detects_a_deleted_cover`; `except OSError: return c`→`continue` → red.
+- E1/T1 `hardening._audit_mount` bind-source/type/propagation with an allowed destination — `test_hardening.HardeningTest.test_mount_source_type_and_propagation_refused_with_an_allowed_destination`; disabling the source-outside check → red.
+- E13 `session._check_setup` (adapter mount/tmpfs outside root, cover outside project, bad env, comma) — `test_session.CheckSetup.*`; disabling the mount-root check → red.
+- E14 foreign/unreadable file warning, E15 uncovered secrets/ file, E16 `config.worktree` creds + compose long-form/`$VAR`/single-file/covered — `test_grantcheck.GrantScan.*`; each guard disabled → red.
+- E17 `sockguard.config` bad mode and unsafe project name — `test_sockguard.Config.test_config_refuses_a_bad_mode_or_unsafe_project_name`; disabling either guard → red.
+- T4 production config (both fakes force `infra_pods`/`compat_creates` on): `test_review_step5.ProductionConfig` refuses Docker-API creates and infra pods with production's own config; disabling `compat_creates` guard → red.
+- T3 the misnamed `test_after_start_rejects_a_swap_onto_a_cover` renamed to `test_mount_violations_rejects_a_grant_volume_swapped_onto_a_cover` (it calls `mount_violations`, not `after_start`).
+- T8 the mid-file `unittest.main()` in `test_gate.py` and `test_hardening.py` moved to the end, so the classes after them (`NoProxy`, `SpellingAndVerification`, `MaskFile`) run under direct execution too.
+
+**Support dead code removed (Rank 3, SUPPORT modules only):** duplicate imports and the always-`?` name in `cli._mask_dsts`; two function-level `import subprocess` in `session.py`; the unused `project_root` param of `Adapter.seed_state` (base + Claude + caller); `getattr(sess, "podman_dev", …)` → `sess.podman_dev`; unused `reg_root` in a test.
+
+**Deferred (recorded, not done):** all ENFORCEMENT dead code (D-E1..D-E11) and the duplicated enforcement logic (three secret-name checks, five "covered" computations, three `mask_skip` resolutions) — consolidate later, with tests. The `caps` preset key stays (documented inert; removing it breaks custom TOML). The "secrets.env created mid-session" drift is the accepted host-writes-during-session known limitation and was not expanded.

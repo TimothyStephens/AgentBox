@@ -1,7 +1,9 @@
 """The host-side gate: the only podman socket a dev-tier agent gets.
 
     agent --/run/agentbox/podman.sock--> gate --> sockguard (dev profile, owner isolation) --> podman service
-                                          \\--> podman service (the gate's own inspects only)
+                                          \\--> podman service (the gate's own raw requests: inspects, pod
+                                               start and pod operations, stop/init, grant and named-volume
+                                               creates, and removals)
 
 Run per session as `python3 -m agentbox.gate <config.json>` (started by the launcher in the session's slice
 scope). Standard library only. One request per connection; the request is read whole (builds: streamed and
@@ -38,10 +40,11 @@ counted) and then:
     or network must name one recorded here *and* labelled agentbox.dev-owner=<session>, agentbox.role=dev.
     So nothing can be started, exec'd or attached during the check, the agent's own container, the proxy,
     sockguard and the holder are out of reach, and a gate restart fails closed;
-  * start/restart/init (and pod start/restart): the container is checked again from what podman stored,
-    with bind sources re-resolved (a directory swapped for a symlink after create is refused); after the
-    start, what the runtime actually mounted is read from /proc/<pid>/mountinfo and a bind from outside
-    the grants gets the container removed;
+  * start/restart/init (and pod start/restart): the container is `init`ed first so podman sets up the
+    mounts without running the entrypoint, then what the runtime actually mounted is read from
+    /proc/<pid>/mountinfo and a bind from outside the grants (a directory swapped for a symlink after
+    create) is refused before the start is forwarded; a per-container lock is held from that check through
+    the start reply, and the PID is rechecked afterwards;
   * build: the query must use known keys only; RUN steps join the session holder's network namespace (the
     holder's PID re-checked every build), the client's namespace options dropped except `user`, never
     pulls, capped by buildcap, proxy passed as build args, labelled; tags only localhost/ names, never
@@ -128,7 +131,7 @@ UPSTREAM_TIMEOUT = 300               # builds and pulls can be slow on this host
 MAX_HEAD = 1 << 20
 MAX_BODY = 64 << 20
 MAX_BUILD_BODY = 8 << 30
-BIND_SCAN_LIMIT = 200000             # entries walked under a bind source looking for new secret files (N6)             # a build context, spooled to the session's TMPDIR to read its Containerfile
+BIND_SCAN_LIMIT = 200000             # entries walked under a bind source looking for new secret files (N6)
 
 # podman's build API: networkmode is buildah's NetworkConfigurationPolicy as a number
 NET_ENABLED = "2"
@@ -268,8 +271,9 @@ SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sys
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
 ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
 # No `U`/`chown` (audit 6 Oct, cheap half of H1): they recursively re-own the bound host files to the
-# container user, and an accidental re-own of a grant's files is a mistake-model harm. Binds the gate forwards
-# are always grant roots or grant-volume SubPaths, so dropping them here covers every grant bind.
+# container user, and an accidental re-own of a grant's files is a mistake-model harm. They are refused up
+# front by MOUNT_OPTION_OK in check_mount_options; this VOLUME_OPTS allowlist is a second layer that, by
+# then, never sees them.
 VOLUME_OPTS = ("ro", "rw", "z", "Z", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
 MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosuid|suid|nodev|dev|noexec|exec|"
@@ -414,7 +418,8 @@ class Gate:
         self.labels = dict(cfg["labels"])
         self.exec_ids = {}               # exec session id -> container id
         self.verified = set()            # IDs (volume names) whose post-create check passed
-        self.refused = set()             # IDs that failed it and could not be confirmed removed
+        self.refused = set()             # IDs added on every removal; never pruned and never read (the
+                                         # protection is absence from `verified`, not presence here)
         self.lock = threading.Lock()
         # Per-container locks (audit 6 Oct, N1): a start holds its containers' locks from the gate's
         # init-and-check until podman's start reply, and every request that can stop or re-initialise a
@@ -999,8 +1004,11 @@ class Gate:
         return ids
 
     def after_start(self, ids):
-        """Read what the runtime mounted; a bind from outside the grants (a path swapped between the check
-        and the mount) gets the container removed."""
+        """NOT CALLED IN PRODUCTION. `decide`/the handler use `prepare_start` (mountinfo before the
+        entrypoint) and `after_start_checked` (the PID recheck under the lock). Kept only because some unit
+        tests call it directly; see docs/reviews/2026-10-06-cleanup.md (D-E1). Read what the runtime
+        mounted; a bind from outside the grants (a path swapped between the check and the mount) gets the
+        container removed."""
         for cid in ids:
             doc = self.inspect("containers", cid)
             bad = self.mount_violations(doc) if doc else []

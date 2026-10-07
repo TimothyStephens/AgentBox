@@ -30,6 +30,15 @@ class Config(TempCase):
         self.assertEqual(doc["listen"]["socket_mode"], "0600")
         self.assertEqual(doc["upstream"]["flavor"], "podman")
 
+    def test_config_refuses_a_bad_mode_or_unsafe_project_name(self):
+        """E17: an invalid mode, or a compose project name that would break the visibility label (empty, or
+        containing '=' or ',')."""
+        with self.assertRaises(AgentboxError):
+            sockguard.config("shop", mode="yolo")
+        for bad in ("", "a=b", "a,b"):
+            with self.subTest(bad=bad), self.assertRaises(AgentboxError):
+                sockguard.config(bad)
+
     def test_logs_only_when_asked(self):
         paths = lambda doc: [r["match"]["path"] for r in json.loads(doc)["clients"]["profiles"][0]["rules"]
                              if r["action"] == "allow"]

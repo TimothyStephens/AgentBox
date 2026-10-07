@@ -1,5 +1,6 @@
 """Step 5: the gate's rewrites and refusals, without podman (upstream lookups are faked)."""
 import json
+import os
 import unittest
 from urllib.parse import parse_qsl, urlsplit
 
@@ -256,10 +257,6 @@ class Scoping(unittest.TestCase):
         self.assertEqual(gate.normalize_ref("localhost/x"), "localhost/x")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class NoProxy(unittest.TestCase):
     def test_names_on_the_network_and_own_aliases_go_direct(self):
         spec = FakeGate().rewrite_libpod_container({"image": "x", "name": "proj_api_1",
@@ -330,3 +327,45 @@ class SpellingAndVerification(unittest.TestCase):
         doc = self.good_doc()
         doc["Mounts"] = [{"Type": "bind", "Source": "/home/vmuser"}]
         self.assertTrue(g.container_violations(doc))
+
+
+class HolderNs(unittest.TestCase):
+    """E2: the REAL holder_ns (both fakes override it). Every build reaches it to pin the build to the
+    session holder's network namespace, and all four of its refusals were untested — most importantly the
+    PID-reuse check, where the PID podman reports must sit in the holder container's own cgroup."""
+
+    def gate(self, doc):
+        g = gate.Gate(dict(CFG))             # a real Gate: holder_ns is not overridden
+        g.raw_json = lambda path, _d=doc: ((200, _d) if _d is not None else (404, None))
+        return g
+
+    def holder(self, pid, cid):
+        return {"Id": cid, "Config": {"Labels": {"agentbox.session": "abt-s-1", "agentbox.role": "holder"}},
+                "State": {"Running": True, "Pid": pid}}
+
+    def test_refuses_when_the_holder_is_not_running(self):
+        with self.assertRaises(gate.Deny) as e:
+            self.gate(None).holder_ns()
+        self.assertIn("not running", str(e.exception))
+
+    def test_refuses_wrong_labels(self):
+        doc = self.holder(os.getpid(), "cid")
+        doc["Config"]["Labels"]["agentbox.role"] = "dev"      # not the holder
+        with self.assertRaises(gate.Deny) as e:
+            self.gate(doc).holder_ns()
+        self.assertIn("not running", str(e.exception))
+
+    def test_refuses_when_the_process_is_gone(self):
+        with self.assertRaises(gate.Deny) as e:
+            self.gate(self.holder(2 ** 31 - 1, "cid")).holder_ns()      # no such pid
+        self.assertIn("gone", str(e.exception))
+
+    def test_refuses_a_reused_pid_not_in_the_holders_cgroup(self):
+        # our own pid is alive and its /proc is readable, but its cgroup is not the fake holder's container
+        with self.assertRaises(gate.Deny) as e:
+            self.gate(self.holder(os.getpid(), "deadbeefcafe")).holder_ns()
+        self.assertIn("does not belong to its container", str(e.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

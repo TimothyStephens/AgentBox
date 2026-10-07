@@ -1,10 +1,14 @@
 """Podman access for a session: a private podman API service, and sockguard in front of it.
 
-    agent --(/run/agentbox/podman.sock)--> sockguard --> <run dir>/podman/podman.sock --> podman service
+This diagram is the OBSERVE tier (agent reaches sockguard directly). The DEV tier puts the gate in front:
+agent --> gate --> a dev sockguard (owner isolation) --> podman service.
+
+    [observe] agent --(/run/agentbox/podman.sock)--> sockguard --> <service dir>/podman.sock --> podman service
 
 The podman service is started per session by the launcher (no user unit is enabled on ubuntu-dev, and
-enabling one would be a systemd change), listens only in the session's 0700 run dir, and is stopped at
-teardown. Only the sockguard container mounts it. The agent gets sockguard's socket.
+enabling one would be a systemd change), listens on a socket in <run>/services/<session> — deliberately
+OUTSIDE the session's run dir, so no launcher mount rule can reach the raw socket (review #6) — and is
+stopped at teardown. Only the sockguard container mounts it. The agent gets sockguard's socket.
 
 Tier `observe` (step 4): list, inspect (Docker API) and per-container stats, only on containers of the
 project's live compose project (`io.podman.compose.project=<compose_project>`); environments are redacted.
@@ -72,7 +76,8 @@ def config(compose_project, *, mode="enforce", rules=None, logs=False):
         "upstream": {"socket": UPSTREAM, "flavor": "podman"},
         "log": {"level": "info", "format": "json", "access_log": True,
                 "audit": {"enabled": True, "format": "json", "output": "stdout"}},
-        # logs and top return process and log output; the visibility label limits them to the live stack
+        # observe no longer allows `top`, and allows `logs` only with the project's observe_logs; the
+        # visibility label limits what remains to the live stack
         "insecure_allow_read_exfiltration": True,
         "response": {"visible_resource_labels": [f"{COMPOSE_LABEL}={compose_project}"],
                      "redact_container_env": True, "redact_mount_paths": True,

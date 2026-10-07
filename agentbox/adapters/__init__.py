@@ -22,7 +22,7 @@ class Adapter:
     def agent_argv(self, approvals):
         return list(self.command) + list(self.approvals_off_args if approvals == "off" else self.approvals_on_args)
 
-    def seed_state(self, settings, state_dir, project_root, sandbox_notes):
+    def seed_state(self, settings, state_dir, sandbox_notes):
         """Prepare the per-project state dir at session start. Default: nothing."""
 
     def prepare_session(self, sess, sandbox_notes):

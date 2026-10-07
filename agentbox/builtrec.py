@@ -161,5 +161,5 @@ class BuildWatcher:
 
     @property
     def candidate(self):
-        """An ID that would be the build's if the reply ended now (pipe_back holds the bytes back meanwhile)."""
+        """An ID that would be the build's if the reply ended now (pipe_build_reply holds the bytes back meanwhile)."""
         return self.image_id if self.ok else None

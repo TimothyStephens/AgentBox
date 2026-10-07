@@ -143,7 +143,6 @@ def check_swap(name, swap):
 
 def _history_masked(git_dir, swap, timeout):
     """Paths in one repo's history (all refs) whose names the masks cover. Raises if git cannot tell."""
-    import subprocess
     try:
         p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", "-c", "core.fsmonitor=false", "log",
                             "--all", "--format=", "--name-only", "--diff-filter=AM", "--no-renames"],
@@ -198,7 +197,6 @@ def check_build_memory(settings, name, value):
 def git_identity(settings, agent):
     """Author and committer for commits made in the sandbox, as environment variables only; no git config
     file enters the sandbox. The committer is "<name> via agentbox-<agent>" so agent commits stand out."""
-    import subprocess
     out = {}
     for key, setting in (("NAME", "git_name"), ("EMAIL", "git_email")):
         val = getattr(settings, setting)
@@ -418,7 +416,7 @@ class Session:
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev)
-        self.adapter.seed_state(self.settings, self.state_dir, p.root, notes)
+        self.adapter.seed_state(self.settings, self.state_dir, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
         self._write_scan_state()             # after the agent state is seeded: its changes are the session's
@@ -601,7 +599,8 @@ class Session:
 
     # ---- lifecycle ----------------------------------------------------------------------
     def start_infra(self):
-        """Networks and sidecars (step 2). Nothing in step 1."""
+        """Overridden by NetSession to bring up networks and sidecars. Base Session is never instantiated
+        (make_session always returns a NetSession), so this base no-op is not reached in production."""
 
     def _guarded(self, body, *, agent_owns_ctrl_c):
         """Run body() and always tear down: on return, error, Ctrl-C, SIGTERM or SIGHUP (terminal closed).

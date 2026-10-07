@@ -23,7 +23,7 @@ MANAGED_APPROVALS_ON = {
 
 
 class ClaudeAdapter(Adapter):
-    def seed_state(self, settings, state_dir, project_root, sandbox_notes):
+    def seed_state(self, settings, state_dir, sandbox_notes):
         os.makedirs(state_dir, mode=0o700, exist_ok=True)
         seed = settings.seed_dir(self.name)
         for item in SEEDED:

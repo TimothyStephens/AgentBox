@@ -82,11 +82,9 @@ def _mask_dsts(settings, entry):
     plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []), data_rw=entry.get("data_rw", []),
                        compose=presets.effective(entry.get("name", "?"), entry,
                                                  presets.load_presets(settings.presets_dir))["compose"][0],
-                       mask_skip=entry.get("mask_skip", []), swap=entry.get("swap", __import__("agentbox.mounts",
-                       fromlist=["DEFAULT_SWAP"]).DEFAULT_SWAP))
-    import os as _os
+                       mask_skip=entry.get("mask_skip", []), swap=entry.get("swap", mounts.DEFAULT_SWAP))
     return [m.dst for m in plan.mounts if m.kind in ("mask", "tmpfs")
-            or (m.kind == "bind" and _os.path.realpath(m.src) != m.dst)]
+            or (m.kind == "bind" and os.path.realpath(m.src) != m.dst)]
 
 
 def _history_secrets(entry):
@@ -367,7 +365,8 @@ def parser():
     x.add_argument("--build-memory", help="memory limit for each build in the dev tier (default 2g)")
     x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
     x.add_argument("--podman", choices=presets.PODMAN_TIERS,
-                   help="podman tier (observe: read the live stack; exec and dev arrive with step 5)")
+                   help="podman tier (none/observe/dev are built; observe reads the live stack, dev runs the "
+                        "agent's own <project>-dev stack; exec is refused — not built)")
     x.add_argument("--compose-project", help="the live stack's compose project name (default: the project name)")
     x.add_argument("--dev-image", action="append", default=[], metavar="PATTERN",
                    help="dev tier: also allow running or building from images matching this name pattern "
