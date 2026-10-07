@@ -1,6 +1,6 @@
 # agentbox
 
-`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session. The spec is `docs/design.md`; decisions and deviations are in `docs/decisions.md`; the build's running state is in `docs/progress.md`. To give an agent your settings, plugins, commands or MCP servers — and to see which change affects one project vs all of them — read `docs/PERSONALIZATION.md`.
+`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session. The spec is `docs/design.md`; decisions and deviations are in `docs/decisions.md`; the build's running state is in `docs/progress.md`. To give an agent your settings, plugins, commands or MCP servers — and to see which change affects one project vs all of them — read `docs/PERSONALIZATION.md`; for where the session binaries (the agent CLI, podman client, compose tool) come from and how to upgrade them, `docs/RUNTIME.md`.
 
 ## Setup (ubuntu-dev)
 

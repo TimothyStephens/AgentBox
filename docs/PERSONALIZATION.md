@@ -1,7 +1,8 @@
 # Personalizing agentbox
 
 How to give an agent your settings, plugins, commands and MCP servers, and where each change takes effect
-— one project or all of them. Everything here is read from the code (`agentbox/adapters/claude.py`,
+— one project or all of them. (For the session **binaries** — the agent CLI, podman client, compose tool —
+and how to upgrade them, see `docs/RUNTIME.md`.) Everything here is read from the code (`agentbox/adapters/claude.py`,
 `agentbox/adapters/omp.py`, `agentbox/session.py`, `agentbox/initproj.py`, `agentbox/config.py`); the exact
 host and in-session paths are given so there is no guessing.
 
