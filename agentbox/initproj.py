@@ -26,6 +26,10 @@ from .errors import AgentboxError
 
 TEMPLATES = ("pod", "python")
 PRESET = {"pod": "pods", "python": "python"}
+# The ONLY scaffold files a user template dir may replace: documentation, never .env/.env.dev, the masks,
+# the compose/data-volume structure or anything else that keeps a fresh project grantcheck-clean. Any other
+# file in the template dir is ignored, so the safe layout always comes from the built-in constants.
+OVERRIDABLE = ("AGENTS.md", "README.md")
 
 _AGENTS = """\
 # {name}
@@ -37,6 +41,8 @@ This project runs in an agentbox sandbox. These are enforced outside your contro
 - You may build, run and test the dev stack (compose.dev.yaml) freely; it only affects this project.
 - Network egress is restricted to the project's allowlist.
 Workflow: develop against dev/fixtures/; the human captures real samples and verifies live on the host.
+agentbox injects your real egress mode, data layout and limits at the start of each session — read the
+"agentbox sandbox" section it adds for the authoritative, live description of this environment.
 """
 
 _AGENTS_DATA = {
@@ -282,6 +288,21 @@ def _git_identity(settings):
     return name, email
 
 
+def _template_overrides(settings, template, name):
+    """Doc files (only the OVERRIDABLE allowlist) a user may replace from
+    `<config_dir>/templates/<template>/`, `{name}`-substituted. Returns {rel: (content, mode)}. Only the
+    allowlisted filenames are ever read; a `.env`, `compose.yaml` or anything else in that dir is ignored, so
+    the project's structure always comes from the built-in constants (PERSONALIZATION.md §3)."""
+    out = {}
+    d = os.path.join(settings.config_dir, "templates", template)
+    for fn in OVERRIDABLE:
+        p = os.path.join(d, fn)
+        if os.path.isfile(p) and not os.path.islink(p):
+            with open(p) as f:
+                out[fn] = (f.read().replace("{name}", name), None)
+    return out
+
+
 def make(settings, template, name, *, upstream=None, out=print, warn=None):
     warn = warn or (lambda m: None)
     if template not in TEMPLATES:
@@ -296,9 +317,11 @@ def make(settings, template, name, *, upstream=None, out=print, warn=None):
     if os.path.exists(dest):
         raise AgentboxError(f"{dest} already exists; refusing to scaffold over it")
 
+    files = _files(template, name)
+    files.update(_template_overrides(settings, template, name))   # only OVERRIDABLE docs; structure stays built-in
     os.makedirs(dest, mode=0o700, exist_ok=True)
     try:
-        for rel, (content, mode) in _files(template, name).items():
+        for rel, (content, mode) in files.items():
             path = os.path.join(dest, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:

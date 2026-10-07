@@ -37,8 +37,8 @@ persists across sessions of that project. The host `~/.claude` is never used.
 
 - `settings.json`, `CLAUDE.md` and `commands/` are **copied from the global seed** `~/.config/agentbox/claude/`
   into the per-project config dir at every start (`seed_state`, `SEEDED`). A file the seed does not ship is
-  left as the project left it last session (it is not wiped). The sandbox description is appended to
-  `CLAUDE.md` each start (see §4).
+  left as the project left it last session (it is not wiped). The generated sandbox description is
+  **prepended** to `CLAUDE.md` each start, so the environment is the first thing the agent reads (see §4).
 - **Plugins / slash commands:** Claude has no plugin tree like OMP; its reusable pieces are slash commands in
   `commands/`. Put them in the seed (global) or in the project's `.claude/commands/`.
 - **MCP servers:** per-project via the committed repo `.mcp.json`, read by Claude from the project root. There
@@ -113,42 +113,45 @@ change, and a per-project OMP tweak lives in the repo.
 
 ### (c) Change the default `AGENTS.md` for **all future** projects
 
-Today this is **not** a config edit: the scaffolded `AGENTS.md` is a string constant (`_AGENTS`) in
-`agentbox/initproj.py`, so changing it for all future `ab init` projects means editing that source (layer A).
-Changing an existing project's `AGENTS.md` is just editing the committed file (layer D). See §3 for the
-proposed knob that would make the global change a single config edit.
+Create `~/.config/agentbox/templates/<template>/AGENTS.md` (and/or `README.md`); `ab init` uses it verbatim,
+`{name}`-substituted, for every future project of that template. Only those two doc filenames are read — see
+§3. Changing an existing project's `AGENTS.md` is just editing the committed file (layer D).
 
 ---
 
-## 3. Is there a global default-`AGENTS.md` template?
+## 3. The scaffold template and its override
 
-**No editable one.** The scaffolded `AGENTS.md`, `.gitignore`, `.env`/`.env.dev`, `README.md`, compose and
-skeleton are all Python string constants in `agentbox/initproj.py` (`_AGENTS`, `_GITIGNORE`, `_README`, …),
-filled with the project name and template. There is no file under `~/.config/agentbox` that `ab init` reads,
-so personalizing the scaffold today means editing code.
+The built-in scaffold (`AGENTS.md`, `.gitignore`, `.env`/`.env.dev`, `README.md`, compose, skeleton) is Python
+string constants in `agentbox/initproj.py` (`_AGENTS`, `_GITIGNORE`, `_README`, …), filled with the project
+name and template. The `.env`/mask/compose/data-volume **structure always comes from these constants** — it is
+what keeps a fresh project grantcheck-clean, so it is not user-overridable.
 
-**Proposed knob (not built):** have `ab init` read an override from the config dir before falling back to the
-built-in constant — the smallest version:
+**The doc override (`initproj._template_overrides`, `OVERRIDABLE`):** before writing a project, `ab init`
+reads `<config_dir>/templates/<template>/` and, for the **allowlisted doc filenames only**, uses the file
+there (verbatim, `{name}`-substituted) instead of the built-in:
 
-- look for `~/.config/agentbox/templates/<template>/AGENTS.md` (and optionally other scaffold files); if
-  present, use it verbatim (with `{name}` substitution) instead of `_AGENTS`; otherwise use the built-in.
-- one new config dir, no schema, no behavior change when the dir is absent. A user edits one file; `ab init`
-  stays grantcheck-clean because the override only replaces documentation files, never the `.env`/mask/compose
-  structure.
+```
+~/.config/agentbox/templates/pod/AGENTS.md
+~/.config/agentbox/templates/pod/README.md
+~/.config/agentbox/templates/python/AGENTS.md
+~/.config/agentbox/templates/python/README.md
+```
 
-This keeps the safe layout fixed in code and makes only the human-facing text user-overridable.
+`OVERRIDABLE = ("AGENTS.md", "README.md")`. Any other file in that dir — a `.env`, `compose.yaml`,
+`Containerfile`, anything — is **ignored**: the built-in wins, so a template dir can never weaken the safe
+layout or slip a secret into `.env`. When the dir is absent, `ab init` behaves exactly as before. Symlinks in
+the template dir are skipped. Tests: `test_init.TemplateOverrideTest` proves an `AGENTS.md`/`README.md`
+override is used and that a `.env`/`compose.yaml` override is ignored (the scaffold stays grantcheck-clean);
+the allowlist is mutation-checked.
 
 ---
 
-## 4. Design note — a generated preamble in `AGENTS.md` (assessment, not a build)
+## 4. The generated environment preamble
 
-**The request:** make the scaffolded `AGENTS.md` carry a generated preamble stating the project's actual
-egress mode, data layout and the agent's real do/can't-do boundaries, so the agent is *told* its environment
-instead of discovering it by hitting the gate.
-
-**What already exists.** `session.sandbox_notes()` generates exactly this preamble **per session** and injects
-it into what the agent reads: it is appended to `CLAUDE.md` for Claude (`seed_state`) and is the generated
-`~/.omp/agent/AGENTS.md` for OMP (`_omp_notes`). It already states, from the live project config:
+The agent is *told* its environment at session start — it does not learn the boundary by hitting a `403`.
+`session.sandbox_notes()` generates a preamble **per session** and injects it into what the agent reads:
+for Claude it is **prepended** to `CLAUDE.md` (so it leads), and for OMP it is the generated
+`~/.omp/agent/AGENTS.md` (`_omp_notes`). It states, from the live project config:
 
 - the project root and its read-only / read-write data grants;
 - that the grant holds code and the session refuses to start on an uncovered secret or live database;
@@ -158,21 +161,17 @@ it into what the agent reads: it is appended to `CLAUDE.md` for Claude (`seed_st
   and LAN addresses are always refused;
 - the exact podman access for the tier (none / observe / dev), or that there is none.
 
-So the agent *is* told its environment at session start; it does not have to learn the boundary by hitting a
-`403`. **This belongs in the per-session notes, not baked into the committed scaffold**, because the live
-facts (egress mode, data grants, podman tier) come from the project's registry entry and preset at session
-time, not from `ab init`. Writing them into the committed `AGENTS.md` at scaffold time would duplicate the
-session notes and go stale the moment a preset or `egress` override changes.
+These live facts stay **in the per-session notes, not baked into the committed scaffold**, because they come
+from the project's registry entry and preset at session time, not from `ab init`; writing them into the
+committed `AGENTS.md` would duplicate the notes and go stale the moment a preset or `egress` override changes.
+Two improvements from the original assessment are now in place, no change to the safe layout:
 
-**Two small, optional improvements worth considering (still no build here):**
+1. **The preamble leads for Claude** — `seed_state` prepends `sandbox_notes` ahead of the user's `CLAUDE.md`,
+   so the environment is the first thing the agent reads.
+2. **The scaffolded `AGENTS.md` points at it** — a one line in the `_AGENTS` template tells the agent that
+   agentbox injects the real egress mode, data layout and limits each session and to read the "agentbox
+   sandbox" section, keeping the committed file portable (it is also read outside agentbox) while making the
+   authoritative, live description the per-session one.
 
-1. **Lead with it for Claude.** The preamble is currently *appended* after the user's `CLAUDE.md`. Prepending
-   it (or a one-line pointer to it) would make the environment the first thing the agent reads.
-2. **Have the scaffolded `AGENTS.md` point at it** rather than restate boundaries generically: a single line
-   such as "agentbox injects your real egress mode, data layout and limits at session start — read the
-   sandbox section" keeps the committed file portable (it is also read outside agentbox) while making clear
-   the authoritative, live description arrives per session.
-
-Net: the capability the note asks for is already present and correct as a per-session generated preamble; the
-only gap is prominence and a pointer, not a missing feature. No change is proposed to bake live facts into the
-committed scaffold.
+Net: the live environment is a per-session generated preamble that now leads what the agent reads; the
+committed scaffold stays generic and points at it, and no live facts are baked into it.

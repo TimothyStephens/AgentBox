@@ -145,5 +145,47 @@ class RefusalTest(InitCase):
         self.assertFalse(os.path.exists(os.path.join(self.repos, "Bad Name")))
 
 
+class TemplateOverrideTest(InitCase):
+    """A user may replace only the doc files (AGENTS.md, README.md) from <config>/templates/<template>/;
+    the .env/compose/structure always comes from the built-in, so the scaffold stays grantcheck-clean."""
+
+    def tfile(self, template, fn, text):
+        d = os.path.join(self.settings.config_dir, "templates", template)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, fn), "w") as f:
+            f.write(text)
+
+    def test_agents_md_override_is_used(self):
+        self.tfile("python", "AGENTS.md", "Custom agents doc for {name}.\n")
+        self.tfile("python", "README.md", "# {name} readme\n")
+        self.init("python", "ov1")
+        root = os.path.join(self.repos, "ov1")
+        with open(os.path.join(root, "AGENTS.md")) as f:
+            self.assertEqual(f.read(), "Custom agents doc for ov1.\n", "override used, {name}-substituted")
+        with open(os.path.join(root, "README.md")) as f:
+            self.assertEqual(f.read(), "# ov1 readme\n")
+
+    def test_structure_overrides_are_ignored(self):
+        # a user tries to slip structure/secrets in through the template dir
+        for fn, body in ((".env", "LEAKED=realsecret\n"), (".env.dev", "X=1\n"),
+                         ("compose.yaml", "services:\n  evil: {}\n"), ("Containerfile", "FROM scratch\n")):
+            self.tfile("pod", fn, body)
+        rc, _ = self.init("pod", "ov2")
+        self.assertEqual(rc, 0)
+        root = os.path.join(self.repos, "ov2")
+        with open(os.path.join(root, ".env")) as f:
+            self.assertNotIn("LEAKED", f.read(), ".env is the built-in, not the template dir's")
+        with open(os.path.join(root, "compose.yaml")) as f:
+            self.assertNotIn("evil", f.read(), "compose structure is not overridable")
+        with open(os.path.join(root, "Containerfile")) as f:
+            self.assertNotIn("FROM scratch", f.read())
+        # still clean, zero overrides
+        e = self.entry("ov2")
+        self.assertEqual(set(e), {"root", "preset"})
+        covered = cli._mask_dsts(self.settings, e)
+        findings, warnings = grantcheck.scan(e["root"], [e["root"]], e.get("mask_skip", []), covered=covered)
+        self.assertEqual((findings, warnings), ([], []), "scaffold stays grantcheck-clean")
+
+
 if __name__ == "__main__":
     unittest.main()

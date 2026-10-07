@@ -38,14 +38,15 @@ class ClaudeAdapter(Adapter):
                 shutil.copytree(src, dst, symlinks=False)
             elif os.path.isfile(src):
                 shutil.copyfile(src, dst)
-        # The sandbox description goes after the user's own CLAUDE.md.
+        # The sandbox description leads, so the agent reads its environment before the user's own CLAUDE.md
+        # (PERSONALIZATION.md §4).
         md = os.path.join(state_dir, "CLAUDE.md")
         user_md = ""
         if os.path.isfile(md):
             with open(md) as f:
                 user_md = f.read()
         with open(md, "w") as f:
-            f.write(user_md.rstrip() + ("\n\n" if user_md.strip() else "") + sandbox_notes)
+            f.write(sandbox_notes.rstrip() + ("\n\n" + user_md.lstrip() if user_md.strip() else "\n"))
 
     def prepare_session(self, sess, sandbox_notes):
         approvals_off = sess.project.value("approvals") == "off"
