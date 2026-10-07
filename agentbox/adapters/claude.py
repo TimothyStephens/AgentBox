@@ -28,6 +28,8 @@ class ClaudeAdapter(Adapter):
         seed = settings.seed_dir(self.name)
         for item in SEEDED:
             src, dst = os.path.join(seed, item), os.path.join(state_dir, item)
+            if not os.path.lexists(src):
+                continue            # no seed for this item: keep the agent's persisted file, do not wipe it
             if os.path.isdir(dst) and not os.path.islink(dst):
                 shutil.rmtree(dst)
             elif os.path.lexists(dst):
@@ -48,6 +50,12 @@ class ClaudeAdapter(Adapter):
     def prepare_session(self, sess, sandbox_notes):
         approvals_off = sess.project.value("approvals") == "off"
         _mark_onboarded(os.path.join(sess.state_dir, ".claude.json"), sess.project.root, trusted=approvals_off)
+        if approvals_off:
+            # Running with --dangerously-skip-permissions makes Claude Code write
+            # skipDangerousModePermissionPrompt:true into settings.json on first start. Establish it now (before
+            # the end-of-session scan's baseline is taken) so that write is part of the template's initial
+            # settings, not reported as a change the user made on a fresh project (7 Oct).
+            _merge_settings(os.path.join(sess.state_dir, "settings.json"), {"skipDangerousModePermissionPrompt": True})
         setup = SessionSetup()
         if not approvals_off:
             path = os.path.join(sess.settings.session_run_dir(sess.name), "claude-managed-settings.json")
@@ -57,6 +65,29 @@ class ClaudeAdapter(Adapter):
             setup.mount_root = MANAGED_DIR
             setup.mounts.append((path, f"{MANAGED_DIR}/managed-settings.json", True))
         return setup
+
+
+def _merge_settings(path, defaults):
+    """Ensure settings.json has `defaults` (merged over whatever a user seed or a prior session left), written
+    the way Claude Code writes it (2-space JSON, no trailing newline), so Claude finds the keys already set and
+    does not rewrite the file during the session."""
+    doc = {}
+    if os.path.isfile(path):
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            doc = {}
+    if not isinstance(doc, dict):
+        return
+    if all(doc.get(k) == v for k, v in defaults.items()) and os.path.isfile(path):
+        return
+    doc.update(defaults)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, indent=2)
+    os.replace(tmp, path)
 
 
 def _mark_onboarded(path, project_root, trusted):

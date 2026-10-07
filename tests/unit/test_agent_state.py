@@ -65,6 +65,39 @@ class StateLifecycle(SettingsCase):
             self.assertIn("+- remembered", f.read())
         self.assertTrue(os.path.isfile(os.path.join(mem, "MEMORY.md")), "kept for the project")
 
+    def test_settings_json_the_agent_writes_at_startup_is_not_flagged(self):
+        """7 Oct: on a fresh project with approvals off, Claude Code writes settings.json
+        ({skipDangerousModePermissionPrompt: true}) on first start. The adapter establishes that in the scan
+        baseline, so the agent's own startup write is not reported as a change the user made."""
+        import json
+        s = self.make("p1")                              # python preset: approvals off
+        s.prepare()
+        settings = os.path.join(s.state_dir, "settings.json")
+        self.assertTrue(os.path.isfile(settings), "the approvals-off settings.json is established at start")
+        scan_state = os.path.join(self.settings.session_run_dir(s.name), "scan-state.json")
+        with open(scan_state) as f:
+            self.assertIn("settings.json", json.load(f)["agent_state"]["files"], "it is in the scan baseline")
+        # the agent's first-run write produces exactly this; simulate it, then a session that otherwise does
+        # not touch settings.json must produce no settings line.
+        with open(settings, "w") as f:
+            json.dump({"skipDangerousModePermissionPrompt": True}, f, indent=2)
+        self.warned.clear()
+        s.teardown()
+        self.assertFalse(any("settings" in w.lower() for w in self.warned),
+                         f"settings.json flagged though the agent only wrote its startup default: {self.warned}")
+
+    def test_a_real_settings_edit_is_still_flagged(self):
+        """The suppression is only the startup default: a genuine edit the agent makes is still reported."""
+        import json
+        s = self.make("p1")
+        s.prepare()
+        with open(os.path.join(s.state_dir, "settings.json"), "w") as f:
+            json.dump({"skipDangerousModePermissionPrompt": True, "env": {"EDITED_BY_AGENT": "1"}}, f, indent=2)
+        self.warned.clear()
+        s.teardown()
+        self.assertTrue(any("settings.json" in w for w in self.warned),
+                        f"a real settings.json edit should be flagged: {self.warned}")
+
     def test_lockdown_starts_empty_and_leaves_nothing(self):
         persistent = self.settings.state_dir("lk", "claude")
         os.makedirs(os.path.join(persistent, "projects", "-x", "memory"))

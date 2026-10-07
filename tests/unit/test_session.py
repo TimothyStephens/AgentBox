@@ -88,7 +88,12 @@ class SessionTest(SettingsCase):
         self.write(os.path.relpath(os.path.join(state, "settings.json"), self.tmp), '{"stale": true}')
         s.prepare()
         self.assertEqual(_read(os.path.join(state, "projects", "hist.jsonl")), "old history")
-        self.assertEqual(json.loads(_read(os.path.join(state, "settings.json"))), {"theme": "dark"})
+        settings = json.loads(_read(os.path.join(state, "settings.json")))
+        self.assertEqual(settings["theme"], "dark")                    # the seed overwrote the stale file
+        self.assertNotIn("stale", settings)
+        # approvals off (python preset): the adapter establishes Claude's startup flag so the scan baseline
+        # has it and the agent's own first-run write is not reported as a change (7 Oct)
+        self.assertIs(settings["skipDangerousModePermissionPrompt"], True)
         md = _read(os.path.join(state, "CLAUDE.md"))
         self.assertTrue(md.startswith("My rules."))
         self.assertIn("# agentbox sandbox", md)
