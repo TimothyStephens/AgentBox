@@ -419,6 +419,8 @@ def _omp_notes(doc):
     names = ", ".join(sorted(doc.get("providers", {}))) or "none"
     return ("\n## OMP in this sandbox\n\n"
             f"- Model providers configured for this session: {names}. Other providers have no key here.\n"
+            "- Provider keys go through `ab keys` (regenerated into a keyless models.yml that is never mounted). "
+            "config.yml and plugins are mounted read-only into every session — never put secrets there.\n"
             "- `~/.omp/agent/models.yml`, `config.yml` and this file are read-only and regenerated each session.\n"
             "- `~/.omp/plugins`, `repos`, `pylibs` and `versions` are read-only; install Python packages with "
             "`pip install --user` or into a project virtualenv instead.\n"
