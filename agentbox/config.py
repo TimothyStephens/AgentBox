@@ -23,7 +23,7 @@ DEFAULTS = {
     "agent_cpus": "3",
     "agent_pids": 4096,
     "oom_score_adj": 500,          # agent and proxy; containers the gate creates get 1000 (decisions.md: OOM order)
-    "preview_image": "docker.io/library/busybox:1.36",   # ab preview's forwarder (nc -lk -e)
+    "preview_image": "docker.io/library/busybox:1.36",   # ab session preview's forwarder (nc -lk -e)
     "squid_image": "docker.io/ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",  # 6.13
     "squid_memory": "256m",
     "sockguard_image": "docker.io/codeswhat/sockguard@sha256:3ae41b2fd646132de4fe212326d72fe3786ffd89f65e4500eff1124ac34587ef",  # 2.2.1
@@ -41,10 +41,10 @@ DEFAULTS = {
     "token_dir": "",       # empty: the config dir. Where the <agent>-oauth-token files live.
     "git_name": "",        # empty: taken from the host's global git config
     "git_email": "",
-    "image_keep_days": 7,  # ab gc removes session-built images older than this (the newest per tag stays)
+    "image_keep_days": 7,  # ab session gc removes session-built images older than this (the newest per tag stays)
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
     "repos_dir": "~/repos",  # where `ab init` scaffolds new projects (AB_REPOS_DIR overrides)
-    "session_idle_warn_hours": 6,  # ab ls flags, and warns about, a running session idle longer than this
+    "session_idle_warn_hours": 6,  # ab session ls flags, and warns about, a running session idle longer than this
     "omp_home": "~/.omp",  # the host's OMP install; only named pieces of it are mounted (adapters/omp.py)
 }
 

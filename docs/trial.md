@@ -4,7 +4,7 @@ A first real session on a project that does not matter: Claude Code with the pod
 on the project's live stack) and egress `packages`. You run every command yourself. The builder does not run
 the trial.
 
-The session will be called `ab-claude-abt-trial-1`, and the commands below use that name. If `ab ls` shows
+The session will be called `ab-claude-abt-trial-1`, and the commands below use that name. If `ab session ls` shows
 another number, use that one.
 
 ## a) Create and register the project
@@ -57,7 +57,7 @@ What the agent should find:
 ## c) Watch it from a second terminal
 
 ```bash
-ab ls                                                   # sessions, state, container and network counts
+ab session ls                                           # sessions, state, container and network counts
 
 # the proxy: every destination the session asked for, and squid's verdict
 podman logs -f ab-claude-abt-trial-1-proxy
@@ -79,13 +79,13 @@ thing the trial can find.
 While the session runs, open one of its dev services on this host's loopback, then tunnel it to your desktop:
 
 ```bash
-ab preview ab-claude-abt-trial-1 web:8000        # <compose service or container name>:<port inside it>
+ab session preview ab-claude-abt-trial-1 web:8000  # <compose service or container name>:<port inside it>
 # prints the port, e.g. http://127.0.0.1:41234/, and the ssh line for your desktop:
 #   ssh -N -L 41234:127.0.0.1:41234 vmuser@ubuntu-dev     then open http://127.0.0.1:41234/
 ```
 
 The preview listens on 127.0.0.1 only (never 0.0.0.0 or the LAN), reaches only that one service of the
-session, and is removed when the session ends (or `ab preview ab-claude-abt-trial-1 --stop`). From inside the
+session, and is removed when the session ends (or `ab session preview ab-claude-abt-trial-1 --stop`). From inside the
 sandbox, the agent reaches its services as `<service>.dns.podman`.
 
 ## e) End the session and read the scan
@@ -107,7 +107,7 @@ less ~/.local/share/agentbox/logs/ab-claude-abt-trial-1-*-gate.log   # every API
 less ~/.local/share/agentbox/logs/ab-claude-abt-trial-1-*-proxy.log  # every destination and verdict
 ```
 
-If the session was killed instead (`ab kill ab-claude-abt-trial-1`, or `ab gc` after a crash), the same
+If the session was killed instead (`ab session kill ab-claude-abt-trial-1`, or `ab session gc` after a crash), the same
 logs and scan are written.
 
 Then, from the agentbox repo:
@@ -130,7 +130,7 @@ per check, with the details under each FAIL (long lists are cut per directory):
 ## Afterwards
 
 Images the session built stay in podman's store (labelled, and in the gate's record for `abt-trial`).
-`ab gc` removes them after 7 days. To remove everything now:
+`ab session gc` removes them after 7 days. To remove everything now:
 
 ```bash
 ab project rm abt-trial

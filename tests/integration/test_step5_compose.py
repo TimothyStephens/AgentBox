@@ -83,7 +83,7 @@ echo "PODS_AFTER=$(podman pod ps --format '{{{{.Name}}}}' | tr '\\n' ' ')"
 step POD_CREATE podman pod create --infra=false --name ${{c}}-pod
 step POD_RM podman pod rm ${{c}}-pod
 step POD_LEFT podman pod create --infra=false --name ${{c}}-left
-# ${{c}}-left is left on purpose: the session's teardown (what ab kill runs) must remove it
+# ${{c}}-left is left on purpose: the session's teardown (what ab session kill runs) must remove it
 """
 
 STEPS = ("BUILD", "UP", "WEB_TO_DB", "DATA_WRITE", "HEALTH", "STOP", "START", "RECREATE", "DOWN", "UP2", "DATA_KEPT",
@@ -170,7 +170,7 @@ class ComposeWorkflow(unittest.TestCase):
         self.assertRegex(out, r"PODS_AFTER=\s*\n", "compose down removed its pod")
 
     def test_z_nothing_left(self):
-        """Including the pod left on purpose: teardown (what ab kill runs) removes session pods (trial, 2 Oct)."""
+        """Including the pod left on purpose: teardown (what ab session kill runs) removes session pods (trial, 2 Oct)."""
         self.assertEqual(harness.leftovers(), [])
 
 

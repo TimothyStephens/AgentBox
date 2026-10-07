@@ -106,7 +106,7 @@ class Step2(unittest.TestCase):
                              f"printf 'GET http://{targets[1][0]}:3128/ HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n' >&3; "
                              f"head -1 <&3", timeout=300)
             self.assertIn(" 403 ", q.stdout, q.stdout + q.stderr)
-            ENV.ab("kill", agent_b[0])
+            ENV.ab("session", "kill", agent_b[0])
         finally:
             if b.poll() is None:
                 b.kill()

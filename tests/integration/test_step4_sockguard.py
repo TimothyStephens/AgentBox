@@ -232,7 +232,7 @@ class Step4(unittest.TestCase):
             # and its service dir: only the /proc scan can find the service now
             shutil.rmtree(os.path.join(ENV.run_dir, "services", session_name), ignore_errors=True)
             self.assertTrue(os.path.exists(f"/proc/{pid}"), "the service outlived the launcher")
-            g = ENV.ab("gc")
+            g = ENV.ab("session", "gc")
             print(g.stdout, g.stderr)
             self.assertEqual(g.returncode, 0, g.stderr)
             self.assertIn(f"{session_name} (podman service)", g.stdout)

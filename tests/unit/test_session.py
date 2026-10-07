@@ -164,7 +164,7 @@ class SessionTest(SettingsCase):
         self.assertTrue(any(c[:2] == ["network", "ls"] for c in calls))
 
     def test_kill_keeps_logs_and_scans(self):
-        """Review step 5C, M2: `ab kill` (module teardown) keeps the gate log and writes the scan report."""
+        """Review step 5C, M2: `ab session kill` (module teardown) keeps the gate log and writes the scan report."""
         s = self.make()
         s.prepare()
         os.makedirs(self.settings.service_dir(s.name), exist_ok=True)

@@ -1,5 +1,5 @@
 """CLI ergonomics and the forgotten-session guards (Tim, 6 Oct):
-  - ab ls shows start time, age and idle time, and flags a long-idle running session;
+  - ab session ls shows start time, age and idle time, and flags a long-idle running session;
   - ab run warns when a session for that project is already running, and takes positional agent/project;
   - ab project rm takes several names."""
 import io
@@ -48,7 +48,7 @@ class LsTest(SettingsCase):
     def run_ls(self):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            cli.main(["ls"])
+            cli.main(["session", "ls"])
         return out.getvalue(), err.getvalue()
 
     def test_ls_shows_age_and_idle_and_flags_long_idle(self):
@@ -57,7 +57,7 @@ class LsTest(SettingsCase):
         self.assertIn("age 1d6h", out)                 # 30h since start
         self.assertIn("idle", out)
         self.assertIn("<-- idle", out, "a 20h-idle session is flagged in the listing")
-        self.assertIn("ab kill abt-s-1", err, "and warned about, with how to end it")
+        self.assertIn("ab session kill abt-s-1", err, "and warned about, with how to end it")
 
     def test_ls_does_not_flag_a_busy_session(self):
         with unittest.mock.patch("agentbox.session.sessions", return_value=self.rows(idle_hours=0)):

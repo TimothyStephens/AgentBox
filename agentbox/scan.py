@@ -1,6 +1,6 @@
 """The end-of-session scan: what a session left behind that you will run, or that should not be there.
 
-At session start `snapshot` records (as JSON, kept in the session's run dir so `ab kill` and `ab gc` can report
+At session start `snapshot` records (as JSON, kept in the session's run dir so `ab session kill` and `ab session gc` can report
 too):
   * for every git repo in the writable grants: its git metadata (the .git file, commondir, config and
     config.worktree, by hash) and every ref;

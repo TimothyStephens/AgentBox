@@ -1,11 +1,11 @@
-"""ab preview against real podman (Tim, 2 Oct): a dev service of a running session, opened on 127.0.0.1 only.
+"""ab session preview against real podman (Tim, 2 Oct): a dev service of a running session, opened on 127.0.0.1 only.
 
 One dev-tier session (gate, sockguard, podman service; no agent needed) with a busybox web server created
 through the gate. Checked:
   * `preview.start` serves it on 127.0.0.1:<port>, also to several connections at once;
   * the port listens on 127.0.0.1 only: not 0.0.0.0, not [::], not any LAN address of this host;
   * only the session's own dev containers can be previewed (not its proxy, not a missing one);
-  * the session's teardown (what `ab kill` runs) removes the forwarder and closes the port;
+  * the session's teardown (what `ab session kill` runs) removes the forwarder and closes the port;
   * a session that has ended cannot get a preview.
 """
 import json
@@ -146,7 +146,7 @@ class Preview(unittest.TestCase):
         port = Preview.port
         name = f"{SESS.name}-preview-{port}"
         self.assertEqual(harness.podman("container", "exists", name).returncode, 0)
-        session.teardown(SETTINGS, SESS.podman, SESS.name, warn=lambda m: None)       # what ab kill runs
+        session.teardown(SETTINGS, SESS.podman, SESS.name, warn=lambda m: None)       # what ab session kill runs
         self.assertNotEqual(harness.podman("container", "exists", name).returncode, 0, "forwarder removed")
         self.assertTrue(harness.wait_for(lambda: not connects("127.0.0.1", port), timeout=20), "port closed")
         with self.assertRaises(AgentboxError):                                         # the session is gone

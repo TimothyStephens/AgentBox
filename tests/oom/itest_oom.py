@@ -186,7 +186,7 @@ def scenario(env, n, agent_gb, dev_gb, judged):
         result(None, f"{tag} {who} was killed (expected: the agent, ~2.9 GB ahead is past the 2.2 GB margin)")
     podman("rm", "-f", "-t", "2", dev)
     if agent_alive:
-        env.ab("kill", agent)
+        env.ab("session", "kill", agent)
     try:
         proc.wait(timeout=60)
     except subprocess.TimeoutExpired:

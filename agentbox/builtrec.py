@@ -2,7 +2,7 @@
 
 The dev tier may run or build from an image this project built through the gate in any session. Which images
 those are is decided by this record, never by labels: anyone can put agentbox's labels on an image built
-elsewhere. The gate adds an image ID when a build it forwarded ends with that ID; `ab gc` removes an ID when it
+elsewhere. The gate adds an image ID when a build it forwarded ends with that ID; `ab session gc` removes an ID when it
 removes the image.
 
 <data>/built-images/<project>.json: {"images": {"<64-hex id>": {"session": ..., "built": <unix time>}}}
@@ -61,7 +61,7 @@ def remove(path, image_ids):
 
 
 def remove_everywhere(data_dir, image_ids):
-    """Drop image IDs from every project's record (ab gc, after it removed the images)."""
+    """Drop image IDs from every project's record (ab session gc, after it removed the images)."""
     d = os.path.join(data_dir, "built-images")
     if not os.path.isdir(d):
         return

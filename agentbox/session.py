@@ -482,7 +482,7 @@ class Session:
 
     def _write_scan_state(self):
         """The end-of-session scan's starting point, kept in the run dir so every teardown (the launcher's,
-        `ab kill`, `ab gc`) can report (review 2026-10-01 step 5C, M2)."""
+        `ab session kill`, `ab session gc`) can report (review 2026-10-01 step 5C, M2)."""
         p = self.project
         grants = [p.root] + list(p.data_rw)
         skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
@@ -1122,7 +1122,7 @@ def _session_started(settings, session):
 
 
 def teardown(settings, podman, session, warn=None):
-    """Remove everything of a session: the launcher's own teardown, `ab kill` and `ab gc` all come here, so
+    """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all come here, so
     each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
     created), the scan runs last, and no failure of either skips the removal."""
     import shutil
@@ -1256,7 +1256,7 @@ def _newest_mtime(path):
 def idle_seconds(settings, meta, now=None):
     """Seconds since the agent last wrote to its state (transcripts, memory, settings) — a cheap proxy for
     how long a session has sat without the agent doing anything. None when it can't be told (no meta, or
-    the state dir is missing). A forgotten session shows up here and in `ab ls`."""
+    the state dir is missing). A forgotten session shows up here and in `ab session ls`."""
     if not meta or not meta.get("project") or not meta.get("agent"):
         return None
     m = _newest_mtime(settings.state_dir(meta["project"], meta["agent"]))
@@ -1268,7 +1268,7 @@ def idle_seconds(settings, meta, now=None):
 def gc_images(settings, podman, now=None, warn=lambda m: None):
     """Session-built images (labelled agentbox.role=dev, with their project and session) older than
     image_keep_days are removed, except the newest image carrying each tag. Never forced: an image a
-    container still uses stays. ab kill leaves images alone (decision, 1 Oct)."""
+    container still uses stays. ab session kill leaves images alone (decision, 1 Oct)."""
     now = time.time() if now is None else now
     filters = []
     for k, v in {**settings.labels, "agentbox.role": "dev"}.items():
@@ -1308,14 +1308,14 @@ def _young(settings, session, seconds=60):
 
 def gc(settings, podman, warn=lambda m: None):
     """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
-    alone even if its metadata is missing or unreadable (ab kill removes it explicitly); an orphaned proxy
+    alone even if its metadata is missing or unreadable (ab session kill removes it explicitly); an orphaned proxy
     or network with no running agent is removed."""
     removed, kept = [], set()
     for s, info in sessions(settings, podman).items():
         agent_running = [c["name"] for c in info["containers"]
                          if c.get("state") == "running" and c.get("role") == "agent"]
         if not info["alive"] and agent_running:
-            warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab kill {s}`)")
+            warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab session kill {s}`)")
             kept.add(s)
             continue
         if not info["alive"] and info["meta"] is None and _young(settings, s):

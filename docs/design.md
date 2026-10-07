@@ -284,7 +284,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in `<run>/services/<session>`, deliberately outside the session's own run dir so no mount rule can reach the raw socket (no user-wide podman socket is enabled on ubuntu-dev); `ab gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in `<run>/services/<session>`, deliberately outside the session's own run dir so no mount rule can reach the raw socket (no user-wide podman socket is enabled on ubuntu-dev); `ab session gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |
@@ -324,11 +324,11 @@ Without the gate, a container created with no network, or a `podman build`, runs
 ### Session lifecycle
 
 - Sessions are named `<prefix><agent>-<project>-<n>` (prefix `ab-`; tests use `abt-<run>-`); everything the session creates carries the owner label `agentbox.owner=<project>/<session>`, plus `agentbox.session`, `agentbox.project`, `agentbox.role` and the configured extra labels (`agentbox=1`).
-- `ab kill` removes the container, its network, proxy, gate, sockguard instance and every labelled container.
+- `ab session kill` removes the container, its network, proxy, gate, sockguard instance and every labelled container.
 
 ### Preview and deploy
 
-- `ab preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab kill`, teardown, gc); `ab preview <session> --stop` removes it earlier.
+- `ab session preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab session kill`, teardown, gc); `ab session preview <session> --stop` removes it earlier.
 - `ab deploy <project> --lan 10.0.0.103:<port>` (**planned, not built** — build step 6): it would validate the compose file (binds inside the project, no privileged or host networking, ports only on the address named), check the real .env has every variable name in .env.dev, show the diff since the last deploy, ask for confirmation, then start the live `<project>` stack through a sockguard deploy profile, never the raw socket.
 
 ### Workspace UI (planned, not built)
@@ -388,7 +388,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 **Bringing sessions back**
 
-- `ab gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot.
+- `ab session gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab session kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot.
 - `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab run`; the agent's saved history is kept per project.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
@@ -503,14 +503,14 @@ Build against a dummy compose project (two nginx containers) first; real stacks 
 3. **OMP adapter:** rebuilt image, `~/.omp` split, `run` tmpfs, generated `AGENTS.md`. Gate: OMP boots, debugger and shared browser work through the proxy.
 4. **Sockguard, observe tier:** audit mode first, then enforce. Gate: label scoping verified, including exec on another project's container.
 5. **Host-side gate and dev tier:** network pinning, build network, port rejection, proxy injection. Gate: the gate and build cases pass on a dummy two-container compose project.
-6. **`ab preview` and `ab deploy`.**
+6. **`ab session preview` and `ab deploy`.**
 7. **Workspace UI:** tmux layout on top of the launcher.
 8. **Pi adapter:** proves swapping harnesses works.
 9. **Host migration**, one stack per snapshot.
 
 ## Usage
 
-Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides.
+Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides. Two noun namespaces hold the management commands: **`ab project`** for the durable registry entries (the configuration), and **`ab session`** for the running instances (list, kill, gc, preview). `ab run` and `ab init` are the top-level verbs that create them. (A *project* is a persistent registry entry — a root grant, preset and grants; a *session* is one live, sandboxed run of an agent against a project, and a project can have many sessions over time.)
 
 **Built today**
 
@@ -525,10 +525,10 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
 | `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
 | `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [--with-secrets] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
-| `ab ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
-| `ab preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
-| `ab kill <session>` | Tear down everything the session created |
-| `ab gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
+| `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
+| `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
+| `ab session kill <session>` | Tear down everything the session created |
+| `ab session gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
 | `ab keys rotate claude` | Replace the Claude subscription token |
@@ -545,7 +545,7 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
 
-The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab attach`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab preview` takes a **session** name, not a project.
+The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab attach`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab session preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
 
@@ -553,7 +553,7 @@ The examples below and the worked example that follows show the **full intended 
 ab project add helper ~/repos/helper --preset pods
 ab ws --agent claude --project helper            # planned; today: ab run --agent claude --project helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
-ab preview <session> web:8080     # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
+ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
 ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
 ```
 
@@ -619,8 +619,8 @@ Detach with `Ctrl-b d` and return with `ab attach filelab`.
 **4. Preview from your desktop**
 
 ```bash
-ab preview <session> web:8000                 # on the server (a free port unless --port is given)
-ssh -N -L <port>:127.0.0.1:<port> ubuntu-dev  # on your desktop, with the port ab preview printed
+ab session preview <session> web:8000         # on the server (a free port unless --port is given)
+ssh -N -L <port>:127.0.0.1:<port> ubuntu-dev  # on your desktop, with the port ab session preview printed
 ```
 
 Open `http://localhost:<port>`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab allow filelab ...`.
@@ -629,7 +629,7 @@ Open `http://localhost:<port>`, try it, and type feedback into the agent pane. R
 
 ```bash
 cd ~/repos/filelab && git log --oneline && git diff <first-commit>..HEAD
-ab kill <session>
+ab session kill <session>
 ```
 
 - Read closely: `compose.yml` (volumes, ports, capabilities), the `Containerfile` (what it downloads), and new dependencies.

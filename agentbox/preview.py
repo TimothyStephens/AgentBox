@@ -1,13 +1,13 @@
-"""ab preview: open one dev-tier service of a running session from your desktop browser (design: "Preview and
+"""ab session preview: open one dev-tier service of a running session from your desktop browser (design: "Preview and
 deploy"; built 2 Oct after trial 2).
 
-    ab preview <session> <service>:<port> [--port N]    -> http://127.0.0.1:N/ on this host
-    ab preview <session> --stop                         -> remove the session's previews
+    ab session preview <session> <service>:<port> [--port N]    -> http://127.0.0.1:N/ on this host
+    ab session preview <session> --stop                         -> remove the session's previews
 
 A forwarder container joins the session's internal network and publishes one port on 127.0.0.1 only; it
 relays each connection to <service>:<port> (busybox `nc -lk -e`). From the desktop: `ssh -N -L N:127.0.0.1:N
 <this host>`. It is never bound to 0.0.0.0 or a LAN address. It carries the session's labels, so the session's
-teardown (and `ab kill`, `ab gc`) removes it; a preview exists only while its session does. The service must
+teardown (and `ab session kill`, `ab session gc`) removes it; a preview exists only while its session does. The service must
 be one of that session's own dev containers.
 """
 import getpass

@@ -98,10 +98,10 @@ class Step1(unittest.TestCase):
             self.assertEqual(doc["HostConfig"]["Memory"], 4 * 1024 ** 3)
             if ENV.slice:
                 self.assertIn("agentbox.slice", doc["HostConfig"].get("CgroupParent", ""))
-            ls = ENV.ab("ls").stdout
+            ls = ENV.ab("session", "ls").stdout
             self.assertIn(name, ls)
             self.assertIn("running", ls)
-            k = ENV.ab("kill", name)
+            k = ENV.ab("session", "kill", name)
             self.assertEqual(k.returncode, 0, k.stderr)
             proc.wait(timeout=120)
             self.assertFalse(harness.wait_for(lambda: name not in " ".join(harness.leftovers()) or None,
@@ -165,7 +165,7 @@ class Step1(unittest.TestCase):
                 self.assertEqual(int(f.read()), 4400 * 1024 * 1024)
             with open(f"/sys/fs/cgroup{slice_dir}/memory.swap.max") as f:
                 self.assertEqual(f.read().strip(), "0")
-            ENV.ab("kill", name[0])
+            ENV.ab("session", "kill", name[0])
         finally:
             if proc.poll() is None:
                 proc.kill()

@@ -161,7 +161,7 @@ class ServiceStop(TempCase):
 
 
 class OrphanedServices(SettingsCase):
-    """Decision 30 Sep: ab gc finds and stops podman services left by a crashed session, even when the
+    """Decision 30 Sep: ab session gc finds and stops podman services left by a crashed session, even when the
     session's run dir and containers are gone; it leaves a live session's service alone."""
 
     def fake_service(self, session_name):
@@ -270,7 +270,7 @@ class GcOncePerBoot(SettingsCase):
 
 
 class ImageGc(SettingsCase):
-    """Decision 1 Oct: ab gc removes a project's session-built images older than 7 days, keeping the newest
+    """Decision 1 Oct: ab session gc removes a project's session-built images older than 7 days, keeping the newest
     image of each tag."""
 
     def test_old_untagged_go_newest_per_tag_stays(self):

@@ -26,7 +26,7 @@ import time
 from .errors import AgentboxError
 
 # Popen handles for the service/gate we started in THIS process, keyed by (real service dir, kind). They are
-# killed by PID (so `ab gc` can stop a crashed session's leftovers with no handle), but when we do hold the
+# killed by PID (so `ab session gc` can stop a crashed session's leftovers with no handle), but when we do hold the
 # handle, stop_service reaps it too — otherwise the Popen object is GC'd at exit with returncode unset and
 # CPython warns "subprocess <pid> is still running" even though it is long dead (found 7 Oct, itest leak).
 _PROCS = {}

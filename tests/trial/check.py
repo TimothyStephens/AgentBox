@@ -221,7 +221,7 @@ def check(settings):
     running = running_sessions(settings)
     if running:
         print(f"REFUSED: session(s) of {PROJECT} still running: {', '.join(running)}. End them first "
-              "(exit the agent, or ab kill), then rerun make trial-check")
+              "(exit the agent, or ab session kill), then rerun make trial-check")
         return 2
     fails = 0
 

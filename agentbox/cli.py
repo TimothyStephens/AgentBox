@@ -230,7 +230,7 @@ def cmd_run(s, a):
                if info["alive"] and (info["meta"] or {}).get("project") == project_name]
     for n in running:
         warn(f"ab: a session for project {project_name} is already running ({n}); starting another means two "
-             f"at once. `ab ls` shows them; `ab kill {n}` ends that one (keeping its logs and scan).")
+             f"at once. `ab session ls` shows them; `ab session kill {n}` ends that one (keeping its logs and scan).")
     project = session.load_project(s, project_name, with_secrets=a.with_secrets)
     sess = session.make_session(s, agent, project, with_secrets=a.with_secrets, warn=warn)
     sess.prepare()
@@ -267,7 +267,7 @@ def cmd_ls(s, a):
               f"{len(info['containers'])}c/{len(info['networks'])}n{mark}")
     for name, idle in flagged:
         warn(f"ab: session {name} has been idle {_dur(idle)} — if it is forgotten, end it with "
-             f"`ab kill {name}` (its logs and end-of-session scan are kept).")
+             f"`ab session kill {name}` (its logs and end-of-session scan are kept).")
 
 
 def cmd_preview(s, a):
@@ -282,7 +282,7 @@ def cmd_preview(s, a):
     port, desk = preview.start(s, podman, a.session, a.target, a.port)
     print(f"preview of {a.target} in {a.session}: http://127.0.0.1:{port}/ (on this host only)\n"
           f"from your desktop: {desk}\n  then open http://127.0.0.1:{port}/\n"
-          "it ends with the session (or ab preview --stop)")
+          "it ends with the session (or ab session preview --stop)")
     return 0
 
 
@@ -411,17 +411,20 @@ def parser():
     x.add_argument("args", nargs=argparse.REMAINDER, help="after --: extra arguments for the agent or shell")
     x.set_defaults(fn=cmd_run)
 
-    sub.add_parser("ls", help="list sessions").set_defaults(fn=cmd_ls)
-    x = sub.add_parser("preview", help="open a session's dev service on 127.0.0.1 (reach it with ssh -L)")
+    # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
+    # verb that starts one.
+    sess = sub.add_parser("session", help="manage running sessions").add_subparsers(dest="sub", required=True)
+    sess.add_parser("ls", help="list sessions").set_defaults(fn=cmd_ls)
+    x = sess.add_parser("preview", help="open a session's dev service on 127.0.0.1 (reach it with ssh -L)")
     x.add_argument("session")
     x.add_argument("target", nargs="?", help="<service>:<port>, e.g. web:8000")
     x.add_argument("--port", type=int, help="host port on 127.0.0.1 (default: a free one)")
     x.add_argument("--stop", action="store_true", help="remove the session's previews")
     x.set_defaults(fn=cmd_preview)
-    x = sub.add_parser("kill", help="tear down a session")
+    x = sess.add_parser("kill", help="tear down a session")
     x.add_argument("session")
     x.set_defaults(fn=cmd_kill)
-    sub.add_parser("gc", help="remove what dead sessions left behind").set_defaults(fn=cmd_gc)
+    sess.add_parser("gc", help="remove what dead sessions left behind").set_defaults(fn=cmd_gc)
 
     x = sub.add_parser("selftest", help="prove the sandbox boundaries hold")
     x.add_argument("--agent", required=True)

@@ -72,7 +72,7 @@ make omp-image
 ```
 
 `make …-image` retags `:latest` to the new build; `ab run` picks it up on the next session. Session images
-agentbox built earlier are removed by `ab gc` after `image_keep_days` (config), keeping the newest per tag.
+agentbox built earlier are removed by `ab session gc` after `image_keep_days` (config), keeping the newest per tag.
 
 ### The podman client (shared by both images)
 

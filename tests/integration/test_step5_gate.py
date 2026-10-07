@@ -15,7 +15,7 @@ live stack). Checked, in the OMP image (it has the podman client, the compose to
   * selftest passes for both projects;
   * afterwards no container, pod, volume or network the sessions made is left (test_zz checks each kind by the
     run's label, plus no new unlabelled volume), and no gate or podman service process. Images the sessions
-    built are kept on purpose (decision 3, 1 Oct: `ab gc` ages them out); test_zz checks they are only the
+    built are kept on purpose (decision 3, 1 Oct: `ab session gc` ages them out); test_zz checks they are only the
     ones these tests built (or a session build a rebuild left untagged), and the module teardown removes them.
 """
 import json
@@ -307,7 +307,7 @@ podman ps -a --format '{{{{.Names}}}}' | grep -v '^$' > /tmp/ps.txt; echo "PS $(
         self.assertEqual(left, [], "containers, pods, volumes and networks")
         self.assertEqual(sorted(harness.all_volumes() - VOLUMES_BEFORE), [], "no unlabelled (anonymous) volume")
         images = harness.leftover_images()
-        # the tests' own tags, or a session build a rebuild left untagged (labelled; ab gc ages it out)
+        # the tests' own tags, or a session build a rebuild left untagged (labelled; ab session gc ages it out)
         self.assertTrue(all(i.startswith("localhost/abt-") or re.fullmatch(r"[0-9a-f]{12}", i) for i in images), images)
 
 

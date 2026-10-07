@@ -1,4 +1,4 @@
-"""ab preview (built 2 Oct after trial 2): 127.0.0.1 only, one session service, removed with the session."""
+"""ab session preview (built 2 Oct after trial 2): 127.0.0.1 only, one session service, removed with the session."""
 import subprocess
 import unittest
 

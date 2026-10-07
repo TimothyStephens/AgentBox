@@ -93,7 +93,7 @@ volumes:
 
 _COMPOSE_DEV = """\
 # Dev stack: build and run this freely inside an agentbox session. Its own project name
-# ({name}-dev), no published ports (reach it with `ab preview`), dev data and dev config.
+# ({name}-dev), no published ports (reach it with `ab session preview`), dev data and dev config.
 # From a session: podman-compose -p {name}-dev -f compose.dev.yaml up -d --build
 name: {name}-dev
 services:

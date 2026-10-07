@@ -18,11 +18,11 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **H3 (mask_skip not an exemption)** | **built** | `mask_skip` is a speed knob; grantcheck still scans those folders; not offered as a remedy. |
 | **M4 (ack shows findings, tracks content)** | **built** | Full findings printed; fingerprint over content, so a byte change re-prompts. |
 | **Egress (locked/packages/open, squid)** | **built** | Modes behave as designed; private-address refusal; an occasional upstream latency flake is the host's uplink, not agentbox (watch items below; `make egress-soak`). |
-| **Preview** (`ab preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
+| **Preview** (`ab session preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
 | **Podman tiers** | **none/observe/dev built; exec NOT built** | `exec` is refused in code (`session.py`: "exec on the live stack is not built"). The built tiers scope to the session's own dev stack; builds via the holder-netns path. |
 | **Adapters** | **Claude + OMP built; Pi/Codex not built** | `adapters/claude.py`, `adapters/omp.py` exist; Pi/Codex are planned (step 8). |
 | **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
-| **Forgotten-session guards** | **built** | `ab ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
+| **Forgotten-session guards** | **built** | `ab session ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
 | **Backups (per-session rsync)** | **built, scoped** | `--link-dest` snapshots of the grant (incl. untracked/gitignored). A within-session undo, **NOT a data backup** (same disk, only fresh as of session start) — never presented as one. |
 | **`ab ws` / `attach` / `allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab run` is the way to start a session today; edit the registry for overrides). `deploy` is step 6, `ws` step 7. |
 | **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) and per-provider key files; the per-model API-key gateway is not built. |
@@ -45,7 +45,8 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Done
 
-- **Fifth-review H-series confirmed + forgotten-session guards** (this commit): H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab ls` shows start/age/idle and flags long-idle running sessions; `ab run` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab run` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
+- **CLI: session commands grouped under `ab session`** (this commit): the session-management verbs moved from top level to `ab session ls` / `kill` / `gc` / `preview`, mirroring `ab project`; `ab run`, `ab init`, `ab selftest` stay top-level. Clean cutover, no aliases (pre-release). Two noun namespaces now: `ab project` (durable config) and `ab session` (running instances). Docs, help text, warnings and tests updated; `make test` 494 OK.
+- **Fifth-review H-series confirmed + forgotten-session guards**: H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab session ls` shows start/age/idle and flags long-idle running sessions; `ab run` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab run` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
 - **`ab init` scaffolding**: `ab init <pod|python> --name <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.
 - **Threat model + fifth review** (`docs/reviews/2026-10-06-final.md`): threat model at the top of the design doc. H3 (`mask_skip` is a speed knob, not an exemption — scanned, and a secret there is reported "unmasked"), M4 (the exposure ack shows the findings and fingerprints their content, so a changed file re-prompts), the cheap half of H1 (the gate refuses `U`/`chown` on grant binds and SubPaths; `grantcheck` warns on a foreign-owned or unreadable grant entry), and the backup proof (untracked and gitignored files are kept; `test_untracked_and_gitignored_files_are_backed_up`). The rest (H2 secret-name shapes, M1 data shapes, M2 `data_ro`, M3 git-credential shapes, L1-L6) are known limitations in decisions.md.
 
@@ -61,7 +62,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
     - build tags, options and secrets are restricted;
     - its own deny list, canonical paths, no pipelining.
     - Docker-API creates, infra pods and sysctls are refused, because sockguard refuses them anyway.
-  - **Scan:** git never runs in a repo whose config the agent changed or created (H2 was confirmed: the old scan ran the agent's command on the host); file hashes instead of `git status`; all refs; it cannot stop a teardown; `ab kill` and gc scan and keep logs.
+  - **Scan:** git never runs in a repo whose config the agent changed or created (H2 was confirmed: the old scan ran the agent's command on the host); file hashes instead of `git status`; all refs; it cannot stop a teardown; `ab session kill` and gc scan and keep logs.
   - **Teardown:** anonymous volumes (`rm -v`), the build cgroup, the per-session TMPDIR (buildah cache).
   - **Lockdown:** the project's `.omp` is covered whole.
   - **Tests:** `test_step5_fields` (95 field cases through the real gate), plus unit tests for each finding; the leftovers check covers pods, volumes and images.
@@ -70,7 +71,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   - **Image allowlist:** the dev tier runs and builds only from allowlisted-registry images, its own builds, or the project's `dev_images` (`--dev-image`); the gate reads a build's Containerfile first.
   - **Selftest:** the local model line is SKIP with a reason when 10.0.0.2 does not answer from the host.
 - **Before the trial** (`a16a74e`):
-  - a project's own builds, from any session, are allowed by the gate's record of the image IDs it built, not by labels; `ab gc` keeps the record in step;
+  - a project's own builds, from any session, are allowed by the gate's record of the image IDs it built, not by labels; `ab session gc` keeps the record in step;
   - failed proxied selftest checks carry diagnostics (proxy log lines, DNS answer, timings), with no retries;
   - `docs/trial.md`, `make trial-snapshot` and `make trial-check`.
 
@@ -102,7 +103,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
     - agent memory changes are diffed in the end-of-session scan;
     - `ab project reset-state` (asks first, keeps a copy);
     - lockdown sessions start from empty agent state;
-    - `ab preview` is built (127.0.0.1 only, one session service, removed with the session; `test_step6_preview`).
+    - `ab session preview` is built (127.0.0.1 only, one session service, removed with the session; `test_step6_preview`).
 - **Egress soak** (`5d43feb`): `make egress-soak`; the flake is the host's uplink, not agentbox (decisions.md, 5 Oct).
 - **Track 1 + covers audit 2** (this commit; `docs/reviews/2026-10-06-covers2.md`, no rejections): `grantcheck.py` refuses a grant holding uncovered secrets or live data (the primary wall); N1 (stop/start race: per-container lock + PID recheck), N2 (nothing under a dir mask), N3 (`RUN --mount source=`), N4-N9. Podman checks run: stop-after-init leaves `exited`; a duplicate tmpfs+bind destination is refused.
 - **Covers audit** (`5690d9f`; `docs/reviews/2026-10-05-covers.md`, no rejections): H1 (cover parents pinned, cover identity checked), H2 (start = init, check mounts before the entrypoint, then start; fail closed), H3 (read-only grants stay read-only), builds (COPY of masks arrives empty; a context carrying masked content is refused), plus M1/L1-L4.
