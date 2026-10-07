@@ -31,6 +31,8 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
 
+Deferred maintainability work (none of it blocks use) lives in `docs/TECH-DEBT.md`.
+
 ## Current step
 
 **Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO. `ab init` (pod/python) now scaffolds a grantcheck-clean project by construction (data in a named volume; `--data-bind` deferred).
