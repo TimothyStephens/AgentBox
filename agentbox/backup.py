@@ -13,12 +13,14 @@ EXCLUDE_NAMES = (".venv", "venv", "node_modules", "__pycache__", ".cache", ".pyt
 SNAP = re.compile(r"^(\d{8})-(\d{6})-(.+)$")
 
 
-def rsync_argv(src, dst, *, link_dest=None, skip_rel=()):
+def rsync_argv(src, dst, *, link_dest=None, skip_rel=(), exclude_rel=()):
     argv = ["rsync", "-a", "--delete", "--numeric-ids", "--stats"]
     for n in EXCLUDE_NAMES:
         argv.append(f"--exclude={n}/")
     for s in skip_rel:
-        argv.append(f"--exclude=/{s.strip('/')}/")
+        argv.append(f"--exclude=/{s.strip('/')}/")                 # a folder (mask_skip), anchored at the root
+    for s in exclude_rel:
+        argv.append(f"--exclude=/{s.strip('/')}")                  # a covered file or dir, anchored at the root
     if link_dest:
         argv.append(f"--link-dest={link_dest}")
     argv += [src.rstrip("/") + "/", dst.rstrip("/") + "/"]
@@ -36,9 +38,12 @@ def _total_size(stats):
     return int(m.group(1).replace(",", "")) if m else 0
 
 
-def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: (), warn_mb=0, now=None,
+def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: (),
+             exclude_rel_for=lambda g: (), warn_mb=0, now=None,
              warn=lambda msg: print(msg, file=sys.stderr)):
-    """Back up every grant into one snapshot directory. Returns the snapshot path."""
+    """Back up every grant into one snapshot directory. Returns the snapshot path. `exclude_rel_for(g)`
+    gives paths (files or dirs, relative to the grant) to leave out: the masks and covers, so the backup
+    never holds a plaintext copy of a secret the agent cannot damage anyway."""
     now = now or datetime.datetime.now()
     project_dir = os.path.join(backups_dir, project)
     os.makedirs(project_dir, mode=0o700, exist_ok=True)
@@ -66,7 +71,8 @@ def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: ()
             cand = os.path.join(project_dir, prev[-1], g.lstrip("/"))
             if os.path.isdir(cand):
                 link = cand
-        p = subprocess.run(rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g)),
+        p = subprocess.run(rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g),
+                                      exclude_rel=exclude_rel_for(g)),
                            capture_output=True, text=True)
         # 24 = some files vanished during the copy; the snapshot is still usable.
         if p.returncode not in (0, 24):

@@ -406,7 +406,20 @@ class Session:
         if do_backup:
             grants = [p.root] + p.data_rw
             skip = lambda g: mounts._rel_skips(p.root, g, p.mask_skip)
+
+            def covers_rel(g):
+                # Leave the masks and covers (.env, secrets/, .git/hooks, .git/config, compose/lockdown
+                # covers, the dev-swap target) out of the backup: the agent cannot damage the real files,
+                # so copying them would only make plaintext secret copies in the backups dir. Back up code.
+                gr = os.path.realpath(g)
+                out = []
+                for c in covered:
+                    cr = os.path.realpath(c)
+                    if cr != gr and cr.startswith(gr.rstrip("/") + "/"):
+                        out.append(os.path.relpath(cr, gr))
+                return out
             backup.snapshot(self.settings.backups_dir, p.name, self.name, grants, skip_rel_for=skip,
+                            exclude_rel_for=covers_rel,
                             warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
             backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
@@ -1004,9 +1017,11 @@ class NetSession(Session):
         if not self.name:
             return
         super().teardown()
+        # super().teardown() -> module teardown -> sockguard.stop_service, which now reaps our service/gate
+        # Popen handles as well as killing by PID; this poll is a harmless belt-and-braces.
         for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None)):
             if proc:
-                proc.poll()                  # stop_service reaped it by PID; let the Popen object know
+                proc.poll()
 
 
 def make_session(settings, agent, project, **kw):

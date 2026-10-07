@@ -260,20 +260,28 @@ podman ps -a --format '{{{{.Names}}}}' | grep -v '^$' > /tmp/ps.txt; echo "PS $(
         self.assertIn(CANARY, running, "the other project's container is untouched")
 
     def test_d_build_ignores_a_client_namespace(self):
-        """The podman client forwards any namespace path it is given; the gate must overwrite it."""
+        """The podman client forwards any namespace path it is given; the gate must overwrite it. The tag is
+        unique per run (abt-<run>-nsx) and labelled by the gate, so teardown removes it and a stale image from
+        a prior run never collides with this one (a fixed `abt-nsx` tag did: the gate refused the second run's
+        build because an image it had not built already held the name)."""
         root = os.path.join(ENV.projects, "dv")
+        tag = f"abt-{harness.RUN}-nsx"
         script = (f"cd {root}; tar -cf /tmp/ctx.tar Containerfile; "
                   "curl -s --unix-socket /run/agentbox/podman.sock -X POST -H 'Content-Type: application/x-tar' "
-                  "--data-binary @/tmp/ctx.tar 'http://d/v5.0.0/libpod/build?dockerfile=Containerfile&t=abt-nsx"
+                  f"--data-binary @/tmp/ctx.tar 'http://d/v5.0.0/libpod/build?dockerfile=Containerfile&t={tag}"
                   "&networkmode=2&nsoptions=%5B%7B%22Name%22%3A%22network%22%2C%22Path%22%3A%22%2Fproc%2F1%2Fns%2Fnet%22%7D%5D'"
-                  " | python3 -c 'import json,sys; d=json.JSONDecoder(); t=sys.stdin.read(); i=0\n"
+                  " > /tmp/nsx.json; echo RAW_HEAD: >&2; head -c 400 /tmp/nsx.json >&2; echo >&2; "
+                  "cat /tmp/nsx.json | python3 -c 'import json,sys; d=json.JSONDecoder(); t=sys.stdin.read(); i=0\n"
                   "while i < len(t):\n"
                   "    t2=t[i:].lstrip(); i=len(t)-len(t2)\n"
                   "    if not t2: break\n"
                   "    o,n=d.raw_decode(t2); i+=n; print(o.get(\"stream\",\"\"),end=\"\")'"
                   " | grep -xE 'BUILD_[A-Z_]+(=.*)?' | sort -u")
         p, _sess, _ = in_session("dv", script)
-        print(f"\n{p.stdout[-1500:]}\n{p.stderr[-600:]}")
+        print(f"\n{p.stdout[-1500:]}\n{p.stderr[-800:]}")
+        if "BUILD_" not in p.stdout:
+            self.fail("build produced no BUILD_ output — the build was refused or did not run (not a leak). "
+                      f"Raw gate response in stderr:\n{p.stderr[-800:]}")
         self.assertIn("BUILD_LAN_BLOCKED", p.stdout)
         self.assertNotIn("BUILD_LAN_REACHED", p.stdout)
 

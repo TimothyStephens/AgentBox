@@ -25,6 +25,30 @@ import time
 
 from .errors import AgentboxError
 
+# Popen handles for the service/gate we started in THIS process, keyed by (real service dir, kind). They are
+# killed by PID (so `ab gc` can stop a crashed session's leftovers with no handle), but when we do hold the
+# handle, stop_service reaps it too — otherwise the Popen object is GC'd at exit with returncode unset and
+# CPython warns "subprocess <pid> is still running" even though it is long dead (found 7 Oct, itest leak).
+_PROCS = {}
+
+
+def _track(service_dir, kind, proc):
+    _PROCS[(os.path.realpath(service_dir), kind)] = proc
+
+
+def _reap_tracked(service_dir, kind):
+    proc = _PROCS.pop((os.path.realpath(service_dir), kind), None)
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    except ChildProcessError:
+        pass                                     # already reaped by PID (kill_service's waitpid)
+    if proc.returncode is None:
+        proc.returncode = 0                      # tell the Popen object it is done, so __del__ does not warn
+
 LISTEN = "/run/sg/sockguard.sock"
 UPSTREAM = "/run/podman/podman.sock"
 AGENT_SOCKET = "/run/agentbox/podman.sock"
@@ -221,6 +245,7 @@ def start_service(podman_bin, service_dir, timeout, *, slice_name="", unit="", t
     log.close()
     with open(os.path.join(d, "service.pid"), "w") as f:
         f.write(f"{proc.pid}\n")
+    _track(d, "service", proc)
     wait_socket(sock, timeout, "podman API service", alive=lambda: proc.poll() is None)
     return sock, proc
 
@@ -295,6 +320,8 @@ def stop_service(service_dir):
     dir (the PIDs may have been reused by something else)."""
     gate = _stop(service_dir, "gate.pid", ("agentbox.gate",))
     service = _stop(service_dir, "service.pid", ("system", "service"))
+    _reap_tracked(service_dir, "gate")           # reap our own Popen handles (if this process holds them)
+    _reap_tracked(service_dir, "service")
     return gate or service
 
 
@@ -312,5 +339,6 @@ def start_gate(cfg_path, service_dir, listen, timeout, *, slice_name="", unit=""
     log.close()
     with open(os.path.join(service_dir, "gate.pid"), "w") as f:
         f.write(f"{proc.pid}\n")
+    _track(service_dir, "gate", proc)
     wait_socket(listen, timeout, "agentbox gate", alive=lambda: proc.poll() is None)
     return proc
