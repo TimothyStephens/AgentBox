@@ -70,15 +70,39 @@ PODMAN_REMOTE_SHA256 := 0d1759e3fc42b0e3a4496176dabc7b65f0f334a0ab2b22eaed7c36af
 PODMAN_REMOTE_ARGS := --build-arg PODMAN_REMOTE_VERSION=$(PODMAN_REMOTE_VERSION) \
 	--build-arg PODMAN_REMOTE_SHA256=$(PODMAN_REMOTE_SHA256)
 
+# The agent CLI lives in the base image, built outside this repo, and these builds are --pull=never, so a
+# stale base would silently ship a stale CLI. Before building we fail loudly if the base is missing, print
+# its CLI version and age, warn if it is older than BASE_WARN_DAYS, and record the version as a label on the
+# built image (surfaced by `ab selftest`). This is visibility only; a tampered binary is out of scope.
+BASE_WARN_DAYS ?= 14
+
+# $(1) base image  $(2) CLI version command (run with no entrypoint)  $(3) adapter image name
+# $(4) build context dir  $(5) extra build args
+define build_agent_image
+	@base="$(1)"; \
+	if ! podman image exists "$$base"; then \
+	  echo "FATAL: base image $$base is missing. Build it first (it is built outside this repo); then rerun." >&2; \
+	  exit 1; \
+	fi; \
+	ver=$$(podman run --rm --entrypoint "" "$$base" $(2) 2>/dev/null | head -1 | tr -d '\r'); \
+	[ -n "$$ver" ] || ver="unknown"; \
+	created=$$(podman image inspect "$$base" --format '{{.Created}}'); \
+	age=$$(( ( $$(date +%s) - $$(date -d "$$created" +%s) ) / 86400 )); \
+	echo ">> base $$base: CLI '$$ver', image $$age day(s) old (created $$created)"; \
+	if [ "$$age" -gt "$(BASE_WARN_DAYS)" ]; then \
+	  echo ">> WARNING: base $$base is $$age days old (> $(BASE_WARN_DAYS)); rebuild it for a current CLI." >&2; \
+	fi; \
+	podman build --pull=never $(5) $(PODMAN_REMOTE_ARGS) --label "agentbox.cli-version=$$ver" \
+	  -t $(3):latest -t $(3):$$(date +%Y%m%d) $(4)
+endef
+
 # The OMP session image, derived from localhost/omp-env (images/omp/Containerfile explains each change).
 omp-image:
-	podman build --pull=never --build-arg AB_HOME=$(HOME) $(PODMAN_REMOTE_ARGS) -t localhost/agentbox-omp:latest \
-	  -t localhost/agentbox-omp:$$(date +%Y%m%d) images/omp
+	$(call build_agent_image,localhost/omp-env:latest,omp --version,localhost/agentbox-omp,images/omp,--build-arg AB_HOME=$(HOME))
 
 # The Claude session image, derived from localhost/claudecode (images/claude/Containerfile).
 claude-image:
-	podman build --pull=never $(PODMAN_REMOTE_ARGS) -t localhost/agentbox-claude:latest \
-	  -t localhost/agentbox-claude:$$(date +%Y%m%d) images/claude
+	$(call build_agent_image,localhost/claudecode:latest,claude --version,localhost/agentbox-claude,images/claude,)
 
 # Run by Tim, not by the builder: puts `agentbox` and an `ab` alias in ~/.local/bin (BINDIR=... to change).
 # Refuses to overwrite an `ab` or `agentbox` that is not ours (ApacheBench installs `ab`).

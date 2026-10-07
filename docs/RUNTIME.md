@@ -42,6 +42,20 @@ podman run --rm localhost/agentbox-claude:latest claude --version
 podman run --rm localhost/agentbox-omp:latest    omp   --version
 ```
 
+## Drift visibility (build-time + reporting)
+
+The agent CLI is unpinned and lives in a base built outside this repo, and `make …-image` is
+`--pull=never`, so a stale base would silently ship a stale CLI. There is no hash pin (a tampered binary is
+out of scope); instead the drift is made visible:
+
+- **`make claude-image` / `omp-image`** fail loudly if the base image is missing (they never build on
+  nothing), and before building print the base's CLI version and image age, e.g.
+  `>> base localhost/claudecode:latest: CLI '2.1.266 (Claude Code)', image 28 day(s) old`, with a
+  `WARNING` when the base is older than `BASE_WARN_DAYS` (default 14, override on the command line).
+- Each build records the base's CLI version as the **`agentbox.cli-version` label** on the adapter image.
+- **`ab selftest`** surfaces it as a line (`PASS  claude CLI: 2.1.266 (Claude Code)`), or a `SKIP` telling you
+  to rebuild if the image predates the label — so you always know which agent version a session ran.
+
 ## Upgrading
 
 ### The agent CLI (`claude` / `omp`)

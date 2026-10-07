@@ -123,6 +123,10 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     if proc.returncode != 0 and not out.strip():
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
     results += config_check + extra
+    cli_ver = sess.agent_cli_version()
+    results.append(Result(f"{agent} CLI: {cli_ver}", "PASS") if cli_ver else
+                   Result(f"{agent} CLI version", "SKIP",
+                          f"the image has no agentbox.cli-version label; rebuild with `make {agent}-image`"))
     results += host_checks(sess, settings, out + (proc.stderr or ""))
     secrets = _secret_values(sess)
     for r in results:

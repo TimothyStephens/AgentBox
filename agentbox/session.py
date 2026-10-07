@@ -610,6 +610,14 @@ class Session:
             return ["bash"] + list(extra)
         return self.adapter.agent_argv(self.project.value("approvals")) + list(extra)
 
+    def agent_cli_version(self):
+        """The agent CLI version baked into the adapter image, read from the `agentbox.cli-version` label that
+        `make <agent>-image` records. None if the image predates the label (rebuild to get it)."""
+        r = self.podman.run(["image", "inspect", self.adapter.image, "--format",
+                             '{{index .Labels "agentbox.cli-version"}}'], check=False)
+        v = (r.stdout or "").strip()
+        return v if v and v not in ("<no value>", "unknown") else None
+
     # ---- lifecycle ----------------------------------------------------------------------
     def start_infra(self):
         """Overridden by NetSession to bring up networks and sidecars. Base Session is never instantiated
