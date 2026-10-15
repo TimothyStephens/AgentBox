@@ -20,7 +20,7 @@ These are accepted under the threat model above, not TODOs: closing them matters
 - **Git-credential shapes (M3):** only `scheme://user:pass@host` in a remote URL is caught; a submodule's own `.git/config`, `http.extraheader` and credential-helper stores are not.
 - **Exempt and skipped names:** real values in `.env.dev`/`.env.example`, or a secret under `.venv`/`node_modules`/`.git`, are not flagged (the mask exempts or the walk skips them).
 - **Host-written files:** the scan and masks are fixed at session start; a host process writing a secret into a grant mid-session is not re-caught. The operational rule is that no live service writes into a grant.
-- **L-series (fail-closed or host-only):** `--with-secrets` can leave an ack unsatisfiable; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
+- **L-series (fail-closed or host-only):** `--with-secrets` on repo-local secrets is refused with the real requirement (not the dead-end `accept-grant-exposure`, fixed 14 Oct); a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
 
 Fuller detail, with the review item numbers, is in `docs/decisions.md` (6 Oct).
 

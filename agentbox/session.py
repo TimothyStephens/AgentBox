@@ -397,6 +397,20 @@ class Session:
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
+            if self.with_secrets:
+                # The exposure here is exactly what --with-secrets turned the masks off to reveal, so the
+                # default `accept-grant-exposure` remedy does not apply (it evaluates the masked config and
+                # finds nothing). State the real requirement instead of a dead-end remedy.
+                found = "\n".join(f"  - {f['text'] if isinstance(f, dict) else f}" for f in exposure)
+                raise AgentboxError(
+                    f"project {p.name}: --with-secrets turns the masks off, giving the agent read-write to "
+                    f"real secret/data files in the grant:\n{found}\n"
+                    "--with-secrets is only for a project whose real secrets live OUTSIDE the grant. For these "
+                    "repo-local files, run WITHOUT --with-secrets — they are masked and the agent sees "
+                    "`.env.dev` as `.env`. A key the agent itself needs goes through `ab keys set <provider>` "
+                    "(kept outside every grant, mounted read-only, exported as AB_KEY_<PROVIDER>); a pod's own "
+                    "runtime secret belongs in the real `.env` used at deploy, never in a session. "
+                    "(`ab project accept-grant-exposure` does not apply: it evaluates the masked default.)")
             raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")

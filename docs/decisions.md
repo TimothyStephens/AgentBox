@@ -647,7 +647,7 @@ The threat model is now written at the top of `docs/design.md`: agentbox targets
   - **Exempt names and skipped dirs** (shapes 6–7): real values in `.env.dev`/`.env.example`, or a secret under `.venv`/`node_modules`.
   - **Files written into a grant during a session by a host process** (shape 21): the scan runs at start; the masks are fixed then. The operational rule is that no live service writes into a grant.
   - ~~**The expensive half of H1:** the gate does not refuse a bind of a foreign-owned dir at bind time.~~ **Done 6 Oct** (see the `ab init` / session-guard entry below): the gate now refuses a gate-spawned container's bind whose source is owned by another uid (`_refuse_if_foreign`), and `grantcheck` still warns at scan time. A missing source is left to podman to reject.
-- **The L-series (lows) from the review:** `--with-secrets` can leave an ack unsatisfiable; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only. (Four items; earlier drafts miscounted this as "L1–L6".)
+- **The L-series (lows) from the review:** `--with-secrets` on repo-local secrets is refused with the real requirement (not the dead-end `accept-grant-exposure`, fixed 14 Oct); a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only. (Four items; earlier drafts miscounted this as "L1–L6".)
 
 ## 2026-10-06 · `ab init` scaffolds the safe layout; data in a named volume, `--data-bind` deferred (Tim)
 
@@ -706,3 +706,36 @@ Acting on `docs/reviews/2026-10-06-cleanup.md`, safe-now items only; no enforcem
 The session-management verbs — `ls`, `kill`, `gc`, `preview` — moved from the top level to a noun namespace, `ab session ls` / `kill` / `gc` / `preview`, mirroring `ab project` and `ab keys`. `ab run`, `ab init` and `ab selftest` stay top-level: `run`/`init` are the hot-path verbs that *create* a project or session, and `selftest` is keyed by `--project` (it spins up a throwaway session to check a project's boundaries), not an existing session. Clean cutover, no top-level aliases — the launcher is pre-release, so there is no installed base to keep compatible; aliases are easy to add later if wanted.
 
 Why: `ab ls` listed *sessions* while `ab project ls` listed *projects*, so bare `ab ls` was ambiguous. Now there are two parallel namespaces — **`ab project`** for the durable registry entries (the configuration: a root grant, preset, data grants, egress) and **`ab session`** for the live instances (list, kill, gc, preview) — and one project can have many sessions over time. Help text, printed warnings (idle/collision), the design-doc Usage table and inline references, trial.md, RUNTIME.md, progress.md, and the tests were all updated; older dated entries above that say `ab ls`/`ab kill`/`ab gc`/`ab preview` mean the `ab session …` forms now. `make test`: 494 OK.
+
+## 2026-10-14 · `--with-secrets` dead-end fixed; the keyed-pod secret model confirmed (Tim)
+
+**Bug (fixed, message only).** On a scaffolded pod (real `.env` in the repo root, masked by default),
+`ab run --with-secrets` turned the masks off, so Track 1 (`grantcheck`) saw an uncovered `.env` and refused —
+pointing at `ab project accept-grant-exposure`. But that command evaluates the project's *masked default*
+config (`_mask_dsts`), where `.env` is covered, so it reported "nothing to accept": a remedy that does
+nothing, and `--i-understand-grant-exposure` is an `ab project add` flag, not a `run` flag. The refusal under
+`--with-secrets` now states the real requirement instead of the dead-end command (`session._prepare_reserved`;
+`test_session.GrantExposure.test_with_secrets_message_states_the_real_requirement`). No change to *whether* it
+refuses — only the guidance.
+
+**Design, confirmed from the code (no behaviour change).** `--with-secrets` sets `secrets=exposed`, which
+`mounts.plan` reads as "apply no masks", giving the agent read-write to the real secret files in the grant.
+That is in tension with Track 1 and is **only cleanly usable for a project whose real secrets live OUTSIDE the
+grant** (nothing in the grant matches the mask names); for repo-local secrets it is refused by design (a grant
+is for code). The sanctioned ways a real external key reaches runtime without the agent getting read-write to
+it inside the grant:
+
+- **A key the agent itself needs** (e.g. an LLM-enrichment API the agent calls during development): `ab keys
+  set <provider>` → `~/.config/agentbox/keys/<provider>` (0600). That path is under `config_dir`, a protected
+  path no grant may overlap (`paths.protected_extra`), so it is never in the grant. It is mounted read-only
+  and exported as `AB_KEY_<PROVIDER>` just before the agent starts; the provider's API domain is allowlisted
+  in egress. The agent can *read* the value (env) but never has read-write to the key file.
+- **A pod's own runtime secret** (the live stack's external API key, e.g. life_updates LLM enrichment): lives
+  in the real `.env`, which is **host-only** and used at **deploy** (`ab deploy`, planned) when the live stack
+  runs on the host. In a session the pod uses `.env.dev` (low-value dev creds) via the dev-swap; the real
+  `.env` is never mounted into a session. So the keyed pod develops against dev creds and only ever uses the
+  real key outside any session.
+
+Net: the agent never needs — and is never given — read-write to a real external key inside the grant.
+`--with-secrets` remains a narrow escape hatch for the secrets-outside-the-grant case, not the keyed-pod path;
+whether to keep it at all, given Track 1, is left open for a later pass.
