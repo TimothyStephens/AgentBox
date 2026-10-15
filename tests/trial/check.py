@@ -1,4 +1,4 @@
-"""The throwaway trial's host-side checks (docs/trial.md). Run by Tim, not by the builder.
+"""The throwaway trial's host-side checks (docs/TRIAL.md). Run by Tim, not by the builder.
 
     python3 -m tests.trial.check snapshot   # make trial-snapshot: just before the session starts
     python3 -m tests.trial.check check      # make trial-check: after the session has ended
@@ -207,7 +207,7 @@ def snapshot(settings):
     for w in old_launchers(containers):
         print(f"WARNING: {w} is running outside agentbox (an old launcher: root in its container, LAN access). "
               "Stop it before the trial, or its writes will show up in the check")
-    print("now start the session (docs/trial.md, step b)")
+    print("now start the session (docs/TRIAL.md, step b)")
     return 0
 
 

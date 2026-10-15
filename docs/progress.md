@@ -73,7 +73,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 - **Before the trial** (`a16a74e`):
   - a project's own builds, from any session, are allowed by the gate's record of the image IDs it built, not by labels; `ab session gc` keeps the record in step;
   - failed proxied selftest checks carry diagnostics (proxy log lines, DNS answer, timings), with no retries;
-  - `docs/trial.md`, `make trial-snapshot` and `make trial-check`.
+  - `docs/TRIAL.md`, `make trial-snapshot` and `make trial-check`.
 
 - **After the trial** (`785ee15`). Security was clean; usability failed (the agent could not run an image it built).
   - `test_step5_compose` runs a real compose workflow through the real gate, and it failed first. These fixes made it pass:
@@ -128,5 +128,5 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Waiting on Tim
 
-- **The trial** (`docs/trial.md`).
+- **The trial** (`docs/TRIAL.md`).
 - **`make claude-live` and `make omp-live`:** both passed on 2 Oct against `91f8e93`; the gate, session and selftest changed again in this commit.

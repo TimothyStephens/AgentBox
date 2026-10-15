@@ -63,7 +63,7 @@ For users:
   MCP servers; which change affects one project vs all; change the scaffolded `AGENTS.md`.
 - **[docs/RUNTIME.md](docs/RUNTIME.md)** — where the session binaries (agent CLI, podman client, compose
   tool) come from and how to upgrade them.
-- **[docs/trial.md](docs/trial.md)** — a realistic end-to-end trial: a worked example that also exercises the
+- **[docs/TRIAL.md](docs/TRIAL.md)** — a realistic end-to-end trial: a worked example that also exercises the
   main features and the security boundaries.
 
 Design and internals:

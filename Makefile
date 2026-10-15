@@ -26,7 +26,7 @@ claude-live:
 itest-oom:
 	python3 -m tests.oom.itest_oom
 
-# Run by Tim, not by the builder: the throwaway trial (docs/trial.md). trial-snapshot just before the session
+# Run by Tim, not by the builder: the throwaway trial (docs/TRIAL.md). trial-snapshot just before the session
 # starts (live containers and the time); trial-check after it ends (live stacks unchanged, nothing else under
 # ~ changed, nothing of the session left, no grant volume over the trial root).
 # The egress flake (3 Oct): one packages-mode session, 300 sequential and 10x30 parallel requests through its
