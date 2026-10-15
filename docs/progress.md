@@ -129,4 +129,4 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 ## Waiting on Tim
 
 - **The trial** (`docs/TRIAL.md`).
-- **`make claude-live` and `make omp-live`:** both passed on 2 Oct against `91f8e93`; the gate, session and selftest changed again in this commit.
+- **`make claude-live` and `make omp-live`:** both re-passed on 15 Oct against `1f4644d` (claude-live egress=locked: search ok, fetch denied, bash ok, token in no log/state/output; omp-live egress=packages: PyPI allowed, all non-allowlisted provider/telemetry hosts denied, key in no log/state/output). `make itest` (165 tests) green on the same commit; the live-freshness warning is clear.
