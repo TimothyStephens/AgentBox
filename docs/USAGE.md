@@ -22,6 +22,8 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 
 ### `ab`
 
+The launcher. `ab project` manages saved configuration; `ab session` manages live runs; `ab run` and `ab init` create them.
+
 ```text
 usage: ab [-h] {init,project,run,session,selftest,keys} ...
 
@@ -55,6 +57,8 @@ examples:
 
 ### `ab init`
 
+Scaffold a new project with a safe-by-construction layout (secrets masked, live data in a named volume) and register it, so a fresh project starts a session with no warnings.
+
 ```text
 usage: ab init [-h] --name NAME [--upstream URL] {pod,python}
 
@@ -80,6 +84,8 @@ examples:
 ## ab run
 
 ### `ab run`
+
+Start an agent session against a project in the foreground — build the sandbox, run the agent, tear it down on exit.
 
 ```text
 usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--with-secrets]
@@ -117,6 +123,8 @@ examples:
 
 ### `ab selftest`
 
+Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
+
 ```text
 usage: ab selftest [-h] --agent AGENT --project PROJECT [--json]
 
@@ -136,6 +144,8 @@ examples:
 ## ab project
 
 ### `ab project`
+
+Manage the durable registry entries — a project names a code grant, a preset and any extra data grants. One project has many sessions over time.
 
 ```text
 usage: ab project [-h]
@@ -174,6 +184,8 @@ examples:
 ```
 
 ### `ab project add`
+
+Register a project with a preset, validating it against overlap and grant exposure.
 
 ```text
 usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
@@ -244,6 +256,8 @@ examples:
 
 ### `ab project show`
 
+Print a project's effective settings and whether each came from the preset or an override.
+
 ```text
 usage: ab project show [-h] name
 
@@ -261,6 +275,8 @@ examples:
 
 ### `ab project ls`
 
+List the registered projects.
+
 ```text
 usage: ab project ls [-h]
 
@@ -274,6 +290,8 @@ examples:
 ```
 
 ### `ab project rm`
+
+Remove projects from the registry; their files, state and backups are left untouched.
 
 ```text
 usage: ab project rm [-h] name [name ...]
@@ -294,6 +312,8 @@ examples:
 
 ### `ab project reset-state`
 
+Wipe a project's agent state (memory, settings, transcripts), keeping a copy.
+
 ```text
 usage: ab project reset-state [-h] [--yes] name
 
@@ -313,6 +333,8 @@ examples:
 
 ### `ab project accept-grant-exposure`
 
+Record that you accept the secrets/live data grantcheck found in a project's grant.
+
 ```text
 usage: ab project accept-grant-exposure [-h] name
 
@@ -329,6 +351,8 @@ examples:
 ```
 
 ### `ab project accept-history-secrets`
+
+Record that you accept (after rotating) the masked file names in a project's git history.
 
 ```text
 usage: ab project accept-history-secrets [-h] name
@@ -348,6 +372,8 @@ examples:
 ## ab session
 
 ### `ab session`
+
+Manage the live instances — list, preview, kill and garbage-collect running sessions.
 
 ```text
 usage: ab session [-h] {ls,preview,kill,gc} ...
@@ -377,6 +403,8 @@ examples:
 
 ### `ab session ls`
 
+List sessions with their project, start time, age and idle time.
+
 ```text
 usage: ab session ls [-h]
 
@@ -390,6 +418,8 @@ examples:
 ```
 
 ### `ab session preview`
+
+Publish one dev-stack service of a session on 127.0.0.1 so you can reach it over ssh -L.
 
 ```text
 usage: ab session preview [-h] [--port PORT] [--stop] session [SERVICE:PORT]
@@ -415,6 +445,8 @@ examples:
 
 ### `ab session kill`
 
+Tear down a session and everything it created, keeping its logs and end-of-session scan.
+
 ```text
 usage: ab session kill [-h] session
 
@@ -432,6 +464,8 @@ examples:
 
 ### `ab session gc`
 
+Remove containers, networks and sockets left by dead sessions (also runs after boot).
+
 ```text
 usage: ab session gc [-h]
 
@@ -447,6 +481,8 @@ examples:
 ## ab keys
 
 ### `ab keys`
+
+Manage model tokens and provider API keys; they live outside every grant and reach a session read-only as AB_KEY_<PROVIDER>.
 
 ```text
 usage: ab keys [-h] {rotate,set,ls,rm} ...
@@ -475,6 +511,8 @@ examples:
 
 ### `ab keys rotate`
 
+Replace the Claude subscription token.
+
 ```text
 usage: ab keys rotate [-h] agent
 
@@ -492,6 +530,8 @@ examples:
 ```
 
 ### `ab keys set`
+
+Set a provider's API key (use a dedicated, spend-capped key).
 
 ```text
 usage: ab keys set [-h] provider
@@ -512,6 +552,8 @@ examples:
 
 ### `ab keys ls`
 
+List providers that have a key (names only, never values).
+
 ```text
 usage: ab keys ls [-h]
 
@@ -525,6 +567,8 @@ examples:
 ```
 
 ### `ab keys rm`
+
+Remove a provider's key file.
 
 ```text
 usage: ab keys rm [-h] provider
