@@ -26,9 +26,11 @@ claude-live:
 itest-oom:
 	python3 -m tests.oom.itest_oom
 
-# Run by Tim, not by the builder: the throwaway trial (docs/TRIAL.md). trial-snapshot just before the session
-# starts (live containers and the time); trial-check after it ends (live stacks unchanged, nothing else under
-# ~ changed, nothing of the session left, no grant volume over the trial root).
+# Run by Tim, not by the builder: host-side checks for the tickerlab trial (docs/TRIAL.md). trial-snapshot
+# just before the session starts (live containers and the time); trial-check after it ends (live stacks
+# unchanged, nothing else under ~ changed, nothing of the session left, no grant volume over the trial root).
+# Set AB_TRIAL_CANARY to the planted .env value to also assert the real secret leaked nowhere the session
+# persisted. Defaults to project tickerlab under $AB_REPOS_DIR; AB_TRIAL_PROJECT/AB_TRIAL_ROOT override.
 # The egress flake (3 Oct): one packages-mode session, 300 sequential and 10x30 parallel requests through its
 # squid; failure rate and latency per host and upstream address family. SOAK_SEQ/SOAK_WORKERS/SOAK_EACH to change.
 egress-soak:

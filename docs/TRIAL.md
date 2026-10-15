@@ -176,9 +176,11 @@ Detach again (Ctrl-b d) and run the scorecard from the host.
 # 1. The running app only ever had the fake secret:
 curl -s http://127.0.0.1:9000/health            # PASS = {"using_real_key": false, ...}
 
-# 2. The real key appears NOWHERE the agent can read, write, or persist:
-grep -rI "$REALKEY" ~/.local/share/agentbox/tickerlab/ "$PROJ/"
-echo "exit=$?  (PASS = 1, i.e. no match)"        # it lives only in the host-only $PROJ/.env, masked in-session
+# 2. The real key appears NOWHERE the agent could read, write, or persist — not in agentbox's logs,
+#    end-of-session scan or pre-session backup, nor in anything the agent wrote into the project. Its one
+#    legitimate home is the host-only .env, which is masked in-session, so that file is excluded here:
+grep -rIF --exclude='.env' --exclude-dir='.git' -e "$REALKEY" ~/.local/share/agentbox/ "$PROJ/"
+echo "exit=$?  (PASS = 1, i.e. no match)"
 
 # 3. No container published a host port (the only way in is the preview you opened, on 127.0.0.1):
 podman ps --format '{{.Names}} {{.Ports}}' | grep -i tickerlab   # PASS = no host-mapped ports
@@ -194,6 +196,12 @@ reaching the app — would be a serious finding; stop and record it.
 > What just happened: the agent built and ran real containers, reached PyPI to install what it needed, and
 > served you a working app — but it could not read your real `.env`, reach the LAN or host, or publish a
 > port. The grant held *code*; the secret stayed on the host.
+
+**Automated version.** A fuller host-safety scorecard — live stacks untouched, the canary leaked nowhere,
+the session's own teardown left no container/volume/network/gate or grant volume behind, and nothing else
+under `~` changed — is wrapped in two make targets. Run `make trial-snapshot` *before* Part 3; it refuses
+while the session is live, so run the check in Part 9, after the session has ended but before the manual
+cleanup.
 
 ## Part 8 — going further (optional)
 
@@ -217,10 +225,18 @@ proving code is preserved and data is reconstructable.
 
 ## Part 9 — teardown
 
-No session may be live (kill any first).
+Kill the session first, and — if you ran `make trial-snapshot` at the start — audit the clean-up before
+removing anything by hand:
 
 ```bash
 for s in $(ab session ls 2>/dev/null | grep -i tickerlab | awk '{print $1}'); do ab session kill "$s"; done
+AB_TRIAL_CANARY="$REALKEY" make trial-check     # exits 0 only if every check passes; skip if you took no snapshot
+```
+
+`trial-check` also runs the secret-leak scan when `AB_TRIAL_CANARY` is set (without it, that one check is
+skipped). Then remove the rest:
+
+```bash
 ab project rm tickerlab 2>/dev/null
 podman ps -aq --filter label=agentbox.project=tickerlab | xargs -r podman rm -f
 podman volume ls -q | grep tickerlab | xargs -r podman volume rm
