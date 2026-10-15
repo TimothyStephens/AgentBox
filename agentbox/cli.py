@@ -341,108 +341,201 @@ def cmd_keys_rotate(s, a):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="ab", description="agentbox: coding agents in hardened podman sandboxes")
+    raw = argparse.RawDescriptionHelpFormatter
+
+    def ex(*lines):
+        """Format an examples epilog block."""
+        return "examples:\n" + "\n".join("  " + l for l in lines)
+
+    def add(subparsers, name, summary, epilog=None):
+        """A subparser whose one-line help also serves as its description, with an examples epilog that
+        keeps its own line breaks."""
+        return subparsers.add_parser(name, help=summary, description=summary, epilog=epilog, formatter_class=raw)
+
+    p = argparse.ArgumentParser(
+        prog="ab", formatter_class=raw,
+        description="agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one "
+                    "project per session.",
+        epilog="`ab project` manages the saved configuration; `ab session` manages the live runs; `ab run` "
+               "and `ab init` are the verbs that create them. Full reference: docs/USAGE.md.\n\n"
+               + ex("ab init pod --name web            scaffold and register a new project",
+                    "ab run --agent claude --project web   start a session (also: ab run claude web)",
+                    "ab session ls                     list running sessions",
+                    "ab project show web               a project's effective settings"))
     sub = p.add_subparsers(dest="cmd", required=True)
 
     from . import initproj
-    x = sub.add_parser("init", help="scaffold a new project with a grantcheck-clean layout (secrets masked, "
-                                    "live data in a named volume), then register it")
-    x.add_argument("template", choices=initproj.TEMPLATES)
-    x.add_argument("--name", required=True, help="project name; the repo is created at <repos_dir>/<name>")
-    x.add_argument("--upstream", help="git URL to add as origin and push to (an off-box CODE backup; "
-                                      "it does NOT back up .env or the data volume)")
+    x = add(sub, "init",
+            "scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named "
+            "volume), then register it",
+            ex("ab init pod --name filelab",
+               "ab init python --name dataproc --upstream git@github.com:me/dataproc.git"))
+    x.add_argument("template", choices=initproj.TEMPLATES,
+                   help="which scaffold to create: `pod` (a compose/dev-stack service, live data in a named "
+                        "volume) or `python` (a script/library, data path from DATA_DIR)")
+    x.add_argument("--name", required=True, metavar="NAME",
+                   help="project name; the repo is created at <repos_dir>/<name> and registered under it")
+    x.add_argument("--upstream", metavar="URL",
+                   help="git URL to add as origin and push to (an off-box CODE backup; it does NOT back up "
+                        ".env or the data volume)")
     x.set_defaults(fn=cmd_init)
 
-    proj = sub.add_parser("project", help="manage registered projects").add_subparsers(dest="sub", required=True)
-    x = proj.add_parser("add")
-    x.add_argument("name")
-    x.add_argument("root")
-    x.add_argument("--preset", required=True)
-    x.add_argument("--data-ro", action="append", default=[])
-    x.add_argument("--data-rw", action="append", default=[])
-    x.add_argument("--egress", choices=presets.EGRESS)
-    x.add_argument("--extra-domain", action="append", default=[], help="add a domain to the egress allowlist")
-    x.add_argument("--build-memory", help="memory limit for each build in the dev tier (default 2g)")
-    x.add_argument("--mask-skip", action="append", default=[], help="folder (relative to root) the mask walk skips")
-    x.add_argument("--podman", choices=presets.PODMAN_TIERS,
-                   help="podman tier (none/observe/dev are built; observe reads the live stack, dev runs the "
-                        "agent's own <project>-dev stack; exec is refused — not built)")
-    x.add_argument("--compose-project", help="the live stack's compose project name (default: the project name)")
+    proj = sub.add_parser(
+        "project", help="manage registered projects (the saved configuration)", formatter_class=raw,
+        description="manage registered projects (the saved configuration). A project names a code grant, a "
+                    "preset and any extra data grants.",
+        epilog=ex("ab project add web ~/repos/web --preset pods",
+                  "ab project show web", "ab project ls", "ab project rm web")).add_subparsers(
+        dest="sub", required=True)
+    x = add(proj, "add", "register a project with a preset (validated against overlap and grant exposure)",
+            ex("ab project add web ~/repos/web --preset pods",
+               "ab project add dataproc ~/repos/dataproc --preset python --data-ro ~/data/raw --data-rw ~/data/out",
+               "ab project add svc ~/repos/svc --preset pods --egress open --podman dev"))
+    x.add_argument("name", help="a short name for the project (lower-case letters, digits, '-' or '_')")
+    x.add_argument("root", help="path to the project's code directory — the read-write grant; must exist and "
+                                "not overlap another project or a protected path")
+    x.add_argument("--preset", required=True, metavar="PRESET",
+                   help="security profile: `lockdown` (review-only, no network/podman), `pods` (build and run "
+                        "the project's own dev stack), or `python` (scripts/data); or a custom preset in "
+                        "~/.config/agentbox/presets/. `ab project show` prints what one resolves to")
+    x.add_argument("--data-ro", action="append", default=[], metavar="DIR",
+                   help="an extra directory to mount read-only (repeatable); for input data that lives outside "
+                        "the code grant")
+    x.add_argument("--data-rw", action="append", default=[], metavar="DIR",
+                   help="an extra directory to mount read-write (repeatable); for output data outside the code "
+                        "grant")
+    x.add_argument("--egress", choices=presets.EGRESS, metavar="MODE",
+                   help="network egress: `locked` (model API only), `packages` (+ package registries), or "
+                        "`open` (+ any public host); the LAN and host are always refused. Overrides the preset")
+    x.add_argument("--extra-domain", action="append", default=[], metavar="DOMAIN",
+                   help="add a domain to the egress allowlist (repeatable)")
+    x.add_argument("--build-memory", metavar="SIZE",
+                   help="memory limit for each build in the dev tier (default 2g, e.g. 4g)")
+    x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
+                   help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
+                        "an exemption — grantcheck still scans it (repeatable)")
+    x.add_argument("--podman", choices=presets.PODMAN_TIERS, metavar="TIER",
+                   help="podman tier: `none`, `observe` (read the live stack), or `dev` (run the agent's own "
+                        "<project>-dev stack). `exec` is refused — not built")
+    x.add_argument("--compose-project", metavar="NAME",
+                   help="the live stack's compose project name for the observe tier (default: the project name)")
     x.add_argument("--dev-image", action="append", default=[], metavar="PATTERN",
                    help="dev tier: also allow running or building from images matching this name pattern "
-                        "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's builds")
+                        "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's "
+                        "builds (repeatable)")
     x.add_argument("--observe-logs", action="store_true",
-                   help="let the observe tier read the live stack's logs (off by default: logs can hold secrets, "
-                        "and what the agent reads goes to its model provider)")
+                   help="let the observe tier read the live stack's logs (off by default: logs can hold "
+                        "secrets, and what the agent reads goes to its model provider)")
     x.add_argument("--accept-history-secrets", action="store_true",
                    help="register even though masked file names (.env, *.key, ...) are in git history")
     x.add_argument("--i-understand-grant-exposure", action="store_true",
                    help="register even though the grant holds secrets or live data (a grant is for code; "
                         "move them outside it or add a mask)")
     x.set_defaults(fn=cmd_project_add)
-    x = proj.add_parser("accept-history-secrets",
-                        help="accept (after rotating them) the masked file names now in a project's git history")
-    x.add_argument("name")
+    x = add(proj, "accept-history-secrets",
+            "accept (after rotating them) the masked file names now in a project's git history",
+            ex("ab project accept-history-secrets web"))
+    x.add_argument("name", help="the registered project to record the acknowledgement for")
     x.set_defaults(fn=cmd_project_accept_history_secrets)
-    x = proj.add_parser("accept-grant-exposure",
-                        help="accept that this project's grant holds secrets or live data the agent can read")
-    x.add_argument("name")
+    x = add(proj, "accept-grant-exposure",
+            "accept that this project's grant holds secrets or live data the agent can read",
+            ex("ab project accept-grant-exposure web"))
+    x.add_argument("name", help="the registered project to record the acknowledgement for")
     x.set_defaults(fn=cmd_project_accept_grant_exposure)
-    x = proj.add_parser("show")
-    x.add_argument("name")
+    x = add(proj, "show", "print every effective setting and whether it came from the preset or an override",
+            ex("ab project show web"))
+    x.add_argument("name", help="the registered project to inspect")
     x.set_defaults(fn=cmd_project_show)
-    proj.add_parser("ls").set_defaults(fn=cmd_project_ls)
-    x = proj.add_parser("reset-state", help="wipe a project's agent state (memory, settings, transcripts); "
-                                            "asks first, keeps a copy in the backups dir")
-    x.add_argument("name")
-    x.add_argument("--yes", action="store_true", help="do not ask")
+    add(proj, "ls", "list registered projects (name, preset, root)",
+        ex("ab project ls")).set_defaults(fn=cmd_project_ls)
+    x = add(proj, "reset-state",
+            "wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy in the "
+            "backups dir", ex("ab project reset-state web", "ab project reset-state web --yes"))
+    x.add_argument("name", help="the registered project whose agent state to wipe")
+    x.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     x.set_defaults(fn=cmd_project_reset_state)
-    x = proj.add_parser("rm")
-    x.add_argument("name", nargs="+", help="one or more project names")
+    x = add(proj, "rm", "remove one or more projects from the registry (files, state and backups are untouched)",
+            ex("ab project rm web", "ab project rm web old-thing"))
+    x.add_argument("name", nargs="+", help="one or more registered project names (all-or-nothing: a bad name "
+                                           "removes none)")
     x.set_defaults(fn=cmd_project_rm)
 
-    x = sub.add_parser("run", help="start an agent session in the foreground")
-    x.add_argument("--agent", help="agent name (or give it positionally: `ab run <agent> <project>`)")
-    x.add_argument("--project", help="project name (or give it positionally)")
-    x.add_argument("--with-secrets", action="store_true")
-    x.add_argument("--shell", action="store_true", help="a bash shell in the sandbox instead of the agent")
-    x.add_argument("--no-tty", action="store_true")
-    x.add_argument("--timeout", type=int, default=3600, help="non-interactive runs only (seconds)")
-    x.add_argument("args", nargs=argparse.REMAINDER, help="after --: extra arguments for the agent or shell")
+    x = add(sub, "run", "start an agent session in the foreground",
+            ex("ab run --agent claude --project web",
+               "ab run claude web                 positional form of --agent/--project",
+               "ab run claude web --shell         a bash shell in the sandbox instead of the agent",
+               "ab run claude web -- --resume     pass everything after -- to the agent"))
+    x.add_argument("--agent", metavar="AGENT",
+                   help="agent to run: `claude` or `omp` (or give it positionally: `ab run <agent> <project>`)")
+    x.add_argument("--project", metavar="PROJECT",
+                   help="the registered project to run against (or give it positionally)")
+    x.add_argument("--with-secrets", action="store_true",
+                   help="expose the real secret files in the grant to the agent instead of masking them — only "
+                        "for a project whose real secrets live OUTSIDE the grant (see docs/decisions.md)")
+    x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
+    x.add_argument("--no-tty", action="store_true",
+                   help="do not allocate a TTY (for non-interactive or piped runs)")
+    x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
+                   help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
+    x.add_argument("args", nargs=argparse.REMAINDER,
+                   help="after `--`: extra arguments passed through to the agent or shell")
     x.set_defaults(fn=cmd_run)
 
     # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
     # verb that starts one.
-    sess = sub.add_parser("session", help="manage running sessions").add_subparsers(dest="sub", required=True)
-    sess.add_parser("ls", help="list sessions").set_defaults(fn=cmd_ls)
-    x = sess.add_parser("preview", help="open a session's dev service on 127.0.0.1 (reach it with ssh -L)")
-    x.add_argument("session")
-    x.add_argument("target", nargs="?", help="<service>:<port>, e.g. web:8000")
-    x.add_argument("--port", type=int, help="host port on 127.0.0.1 (default: a free one)")
-    x.add_argument("--stop", action="store_true", help="remove the session's previews")
+    sess = sub.add_parser(
+        "session", help="manage running sessions (the live instances)", formatter_class=raw,
+        description="manage running sessions (the live instances). Start one with `ab run`.",
+        epilog=ex("ab session ls", "ab session preview ab-claude-web-1 web:8000",
+                  "ab session kill ab-claude-web-1", "ab session gc")).add_subparsers(dest="sub", required=True)
+    add(sess, "ls", "list sessions with their project, start time, age and idle time",
+        ex("ab session ls")).set_defaults(fn=cmd_ls)
+    x = add(sess, "preview",
+            "open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)",
+            ex("ab session preview ab-claude-web-1 web:8000",
+               "ab session preview ab-claude-web-1 web:8000 --port 18080",
+               "ab session preview ab-claude-web-1 --stop"))
+    x.add_argument("session", help="the session name (from `ab session ls`)")
+    x.add_argument("target", nargs="?", metavar="SERVICE:PORT",
+                   help="the dev-stack service (or container) and the port inside it, e.g. web:8000; omit with "
+                        "--stop")
+    x.add_argument("--port", type=int, metavar="PORT",
+                   help="host port to publish on 127.0.0.1 (default: a free one, printed on start)")
+    x.add_argument("--stop", action="store_true", help="remove this session's previews instead of opening one")
     x.set_defaults(fn=cmd_preview)
-    x = sess.add_parser("kill", help="tear down a session")
-    x.add_argument("session")
+    x = add(sess, "kill", "tear down a session and everything it created (keeps its logs and end-of-session scan)",
+            ex("ab session kill ab-claude-web-1"))
+    x.add_argument("session", help="the session name to tear down (from `ab session ls`)")
     x.set_defaults(fn=cmd_kill)
-    sess.add_parser("gc", help="remove what dead sessions left behind").set_defaults(fn=cmd_gc)
+    add(sess, "gc", "remove containers, networks and sockets left by dead sessions (runs automatically after boot)",
+        ex("ab session gc")).set_defaults(fn=cmd_gc)
 
-    x = sub.add_parser("selftest", help="prove the sandbox boundaries hold")
-    x.add_argument("--agent", required=True)
-    x.add_argument("--project", required=True)
-    x.add_argument("--json", action="store_true")
+    x = add(sub, "selftest", "prove the sandbox boundaries hold (posture, egress, mounts, podman scoping)",
+            ex("ab selftest --agent claude --project web", "ab selftest --agent claude --project web --json"))
+    x.add_argument("--agent", required=True, metavar="AGENT", help="agent to run the checks as (claude or omp)")
+    x.add_argument("--project", required=True, metavar="PROJECT", help="the registered project to test")
+    x.add_argument("--json", action="store_true", help="print results as JSON instead of a table")
     x.set_defaults(fn=cmd_selftest)
 
-    ks = sub.add_parser("keys", help="model tokens and provider API keys").add_subparsers(dest="sub",
-                                                                                           required=True)
-    x = ks.add_parser("rotate", help="replace the Claude subscription token")
-    x.add_argument("agent")
+    ks = sub.add_parser(
+        "keys", help="model tokens and provider API keys", formatter_class=raw,
+        description="manage model tokens and provider API keys. Keys live in ~/.config/agentbox/keys/ (0600), "
+                    "outside every grant, and reach a session read-only as AB_KEY_<PROVIDER>.",
+        epilog=ex("ab keys rotate claude", "ab keys set openai", "ab keys ls", "ab keys rm openai")).add_subparsers(
+        dest="sub", required=True)
+    x = add(ks, "rotate", "replace the Claude subscription token (from `claude setup-token`)",
+            ex("ab keys rotate claude"))
+    x.add_argument("agent", help="the agent whose subscription token to replace (currently: claude)")
     x.set_defaults(fn=cmd_keys_rotate)
-    x = ks.add_parser("set", help="set a provider's API key (pay-per-use: make it dedicated and spend-capped)")
-    x.add_argument("provider")
+    x = add(ks, "set", "set a provider's API key (pay-per-use: make it dedicated and spend-capped)",
+            ex("ab keys set openai"))
+    x.add_argument("provider", help="the provider name; its key becomes AB_KEY_<PROVIDER> in sessions "
+                                    "(you are prompted for the value, which is never on the command line)")
     x.set_defaults(fn=cmd_keys_set)
-    ks.add_parser("ls", help="providers with a key (names only, never values)").set_defaults(fn=cmd_keys_ls)
-    x = ks.add_parser("rm", help="remove a provider's key file")
-    x.add_argument("provider")
+    add(ks, "ls", "list providers that have a key (names only, never values)",
+        ex("ab keys ls")).set_defaults(fn=cmd_keys_ls)
+    x = add(ks, "rm", "remove a provider's key file", ex("ab keys rm openai"))
+    x.add_argument("provider", help="the provider whose key file to remove")
     x.set_defaults(fn=cmd_keys_rm)
     return p
 
