@@ -1273,10 +1273,13 @@ def idle_seconds(settings, meta, now=None):
     the state dir is missing). A forgotten session shows up here and in `ab session ls`."""
     if not meta or not meta.get("project") or not meta.get("agent"):
         return None
-    m = _newest_mtime(settings.state_dir(meta["project"], meta["agent"]))
-    if m is None:
+    dirs = [settings.state_dir(meta["project"], meta["agent"])]
+    if meta.get("session"):          # a lockdown session writes an ephemeral per-session dir, not the persistent one
+        dirs.append(os.path.join(ephemeral_state(settings, meta["session"]), meta["agent"]))
+    mtimes = [m for m in (_newest_mtime(d) for d in dirs) if m is not None]
+    if not mtimes:
         return None
-    return max(0.0, (time.time() if now is None else now) - m)
+    return max(0.0, (time.time() if now is None else now) - max(mtimes))
 
 
 def gc_images(settings, podman, now=None, warn=lambda m: None):

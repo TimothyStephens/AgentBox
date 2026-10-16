@@ -32,6 +32,85 @@ class IdleTest(SettingsCase):
         self.assertIsNone(session.idle_seconds(self.settings, {}))
         self.assertIsNone(session.idle_seconds(self.settings, None))
 
+    def test_idle_seconds_uses_ephemeral_dir_for_lockdown(self):
+        # A lockdown session writes an ephemeral per-session dir, not the persistent one; idle must read it
+        # (audit 2026-10-15 #4), or ab session ls marks a busy lockdown session idle.
+        meta = {"project": "p1", "agent": "claude", "session": "abt-claude-p1-1"}
+        eph = os.path.join(session.ephemeral_state(self.settings, "abt-claude-p1-1"), "claude")
+        os.makedirs(eph)
+        f = os.path.join(eph, "transcript.jsonl")
+        open(f, "w").close()
+        now = time.time()
+        os.utime(f, (now, now))
+        os.utime(eph, (now, now))
+        idle = session.idle_seconds(self.settings, meta, now=now + 5)
+        self.assertAlmostEqual(idle, 5, delta=2)
+
+
+class RunParsing(SettingsCase):
+    def reaches(self, argv):
+        """Run `ab run ...` far enough to capture what parsing resolved (agent, project, shell, passthrough)."""
+        import types
+        cap = {}
+
+        class FakeSess:
+            name = "abt-claude-p1-1"
+
+            def prepare(self):
+                pass
+
+            def agent_command(self, shell=False, extra=()):
+                cap.update(shell=shell, extra=list(extra))
+                return ["c"]
+
+            def run_captured(self, *a, **k):
+                return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+            def run_interactive(self, *a, **k):
+                return 0
+
+        def fake_load(s, name, **kw):
+            cap["project"] = name
+            return types.SimpleNamespace(name=name)
+
+        def fake_make(s, agent, project, **kw):
+            cap["agent"] = agent
+            return FakeSess()
+
+        with unittest.mock.patch("agentbox.session.sessions", return_value={}), \
+             unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load), \
+             unittest.mock.patch("agentbox.session.make_session", side_effect=fake_make), \
+             unittest.mock.patch("sys.stdin") as stdin:
+            stdin.isatty.return_value = False
+            stdin.read.return_value = ""
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                cap["rc"] = cli.main(argv)
+        return cap
+
+    def test_shell_flag_after_positionals(self):
+        cap = self.reaches(["run", "claude", "p1", "--shell"])
+        self.assertEqual((cap["agent"], cap["project"]), ("claude", "p1"))
+        self.assertTrue(cap["shell"])
+
+    def test_flag_agent_with_positional_project(self):
+        cap = self.reaches(["run", "--agent", "claude", "p1"])
+        self.assertEqual((cap["agent"], cap["project"]), ("claude", "p1"))
+
+    def test_passthrough_after_double_dash(self):
+        cap = self.reaches(["run", "claude", "p1", "--", "--resume", "x"])
+        self.assertEqual(cap["extra"], ["--resume", "x"])
+        self.assertFalse(cap["shell"])
+
+    def test_shell_and_passthrough_together(self):
+        cap = self.reaches(["run", "claude", "p1", "--shell", "--", "-lc", "id"])
+        self.assertTrue(cap["shell"])
+        self.assertEqual(cap["extra"], ["-lc", "id"])
+
+    def test_too_many_positionals_is_rejected(self):
+        with redirect_stderr(io.StringIO()):
+            rc = cli.main(["run", "claude", "p1", "surplus"])
+        self.assertEqual(rc, 2)
+
 
 class LsTest(SettingsCase):
     def rows(self, idle_hours):
@@ -121,6 +200,16 @@ class ProjectRmTest(SettingsCase):
         self.assertEqual(rc, 2)
         from agentbox import registry
         self.assertIn("p1", registry.load(self.settings.registry_path), "a bad name removes none")
+
+    def test_rm_deduplicates_repeated_names(self):
+        # `ab project rm web web` used to del the same key twice -> KeyError traceback (audit 2026-10-15 #6).
+        from agentbox import registry
+        self.project("web")
+        with redirect_stdout(io.StringIO()) as out:
+            rc = cli.main(["project", "rm", "web", "web"])
+        self.assertEqual(rc, 0)
+        self.assertIn("removed project web", out.getvalue())
+        self.assertNotIn("web", registry.load(self.settings.registry_path))
 
 
 if __name__ == "__main__":

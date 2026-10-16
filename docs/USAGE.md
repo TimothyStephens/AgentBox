@@ -90,13 +90,14 @@ Start an agent session against a project in the foreground — build the sandbox
 ```text
 usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--with-secrets]
               [--shell] [--no-tty] [--timeout SECONDS]
-              ...
+              [[AGENT [PROJECT]] ...]
 
 start an agent session in the foreground
 
 positional arguments:
-  args               after `--`: extra arguments passed through to the agent
-                     or shell
+  [AGENT [PROJECT]]  positional AGENT and PROJECT (an alternative to
+                     --agent/--project); anything after a `--` is passed
+                     through to the agent or shell
 
 options:
   -h, --help         show this help message and exit

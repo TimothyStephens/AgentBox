@@ -187,13 +187,14 @@ def cmd_project_ls(s, a):
 
 def cmd_project_rm(s, a):
     reg = registry.load(s.registry_path)
-    missing = [n for n in a.name if n not in reg]
+    names = list(dict.fromkeys(a.name))          # de-duplicate (a repeated name would del twice -> KeyError)
+    missing = [n for n in names if n not in reg]
     if missing:                                  # all-or-nothing: a typo in one name removes none
         raise AgentboxError(f"no project named {', '.join(missing)}")
-    for n in a.name:
+    for n in names:
         del reg[n]
     registry.save(s.registry_path, reg)
-    print(f"removed project {', '.join(a.name)} from the registry (files, state and backups are untouched)")
+    print(f"removed project {', '.join(names)} from the registry (files, state and backups are untouched)")
 
 
 def _dur(seconds):
@@ -213,16 +214,18 @@ def _dur(seconds):
 
 
 def cmd_run(s, a):
-    # Positional shorthand `ab run <agent> <project> [-- extra...]`: the leading non-flag tokens of the
-    # REMAINDER are the agent and project when the flags were not given. Flags (--shell, extra agent args)
-    # still use the --agent/--project form, or come after `--`.
+    # Agent and project may be given as --agent/--project or positionally (`ab run <agent> <project>`), in any
+    # combination; flags like --shell are parsed normally, and anything after a `--` is passed through to the
+    # agent or shell (split off in main() as a.passthrough). Positionals fill whichever of agent/project the
+    # flags did not set, in order.
     agent, project_name = a.agent, a.project
-    if not agent and a.args and not a.args[0].startswith("-"):
-        agent = a.args.pop(0)
-        if not project_name and a.args and not a.args[0].startswith("-"):
-            project_name = a.args.pop(0)
-        if a.args[:1] == ["--"]:
-            a.args = a.args[1:]
+    for val in a.names:
+        if agent is None:
+            agent = val
+        elif project_name is None:
+            project_name = val
+        else:
+            raise AgentboxError(f"unexpected argument {val!r}; pass agent/shell arguments after `--`")
     if not agent or not project_name:
         raise AgentboxError("give an agent and a project: `ab run --agent <a> --project <p>` "
                             "or `ab run <a> <p>`")
@@ -234,7 +237,7 @@ def cmd_run(s, a):
     project = session.load_project(s, project_name, with_secrets=a.with_secrets)
     sess = session.make_session(s, agent, project, with_secrets=a.with_secrets, warn=warn)
     sess.prepare()
-    command = sess.agent_command(shell=a.shell, extra=a.args)
+    command = sess.agent_command(shell=a.shell, extra=list(getattr(a, "passthrough", []) or []))
     if sys.stdin.isatty() and not a.no_tty:
         return sess.run_interactive(command, tty=True)
     p = sess.run_captured(command, stdin=sys.stdin.read() if not sys.stdin.isatty() else "",
@@ -477,8 +480,9 @@ def parser():
                    help="do not allocate a TTY (for non-interactive or piped runs)")
     x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
                    help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
-    x.add_argument("args", nargs=argparse.REMAINDER,
-                   help="after `--`: extra arguments passed through to the agent or shell")
+    x.add_argument("names", nargs="*", metavar="[AGENT [PROJECT]]",
+                   help="positional AGENT and PROJECT (an alternative to --agent/--project); anything after a "
+                        "`--` is passed through to the agent or shell")
     x.set_defaults(fn=cmd_run)
 
     # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
@@ -564,9 +568,16 @@ def gc_once_per_boot(s):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `ab run ... -- <args>` passes everything after the first `--` to the agent/shell. Split it off before
+    # argparse so the positionals and flags on the left parse normally (a REMAINDER would swallow --shell).
+    passthrough = []
+    if argv[:1] == ["run"] and "--" in argv:
+        i = argv.index("--")
+        argv, passthrough = argv[:i], argv[i + 1:]
     a = parser().parse_args(argv)
-    if getattr(a, "args", None) and a.args[:1] == ["--"]:
-        a.args = a.args[1:]
+    if getattr(a, "fn", None) is cmd_run:
+        a.passthrough = passthrough
     try:
         s = config.load()
         if a.fn.__name__ in GC_ON_FIRST_USE:
