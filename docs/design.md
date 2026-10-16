@@ -20,7 +20,7 @@ These are accepted under the threat model above, not TODOs: closing them matters
 - **Git-credential shapes (M3):** only `scheme://user:pass@host` in a remote URL is caught; a submodule's own `.git/config`, `http.extraheader` and credential-helper stores are not.
 - **Exempt and skipped names:** real values in `.env.dev`/`.env.example`, or a secret under `.venv`/`node_modules`/`.git`, are not flagged (the mask exempts or the walk skips them).
 - **Host-written files:** the scan and masks are fixed at session start; a host process writing a secret into a grant mid-session is not re-caught. The operational rule is that no live service writes into a grant.
-- **L-series (fail-closed or host-only):** `--with-secrets` on repo-local secrets is refused with the real requirement (not the dead-end `accept-grant-exposure`, fixed 14 Oct); a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
+- **L-series (fail-closed or host-only):** `--with-secrets` on repo-local secrets was refused with the real requirement (fixed 14 Oct) and the flag has since been **removed entirely** (decisions.md, 16 Oct), so masks can no longer be turned off by any route; a growing DB re-prompts as it crosses each MB; symlinks across grants; a grant symlink retargeted by a host process between scan and mount. All fail closed or are host-process-only.
 
 Fuller detail, with the review item numbers, is in `docs/decisions.md` (6 Oct).
 
@@ -197,7 +197,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Validator: `realpath` every grant; refuse `/`, `$HOME`, its ancestors, `/etc`, `/var`, `/usr`, `/boot`, `/dev`, `/run`, `~/.ssh`, `~/.gnupg`, podman storage.
 - A grant may not contain or overlap another registered project.
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
-- `.env` files are masked (a read-only empty file bound over them) unless `--with-secrets` (see Project secrets for the full mask list).
+- `.env` files are masked (a read-only empty file bound over them); masks always apply and cannot be turned off (see Project secrets for the full mask list).
 - `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory that exists inside a read-write grant when the session starts: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched. A repo the agent creates during a session has writable hooks and config: the end-of-session report names it (NEW GIT REPO) and never runs git in it; check its `.git/config` and hooks before you use git there.
 - Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
@@ -346,7 +346,7 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 | Code | Read-write, backed up | Read-write, backed up | Read-write, backed up |
 | Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-only (changes via outbox, planned) |
 | Data grants | Read-only only | None unless declared | As declared (`data_ro`, `data_rw`) |
-| `.env` files | Masked; `--with-secrets` refused | Masked unless `--with-secrets` | Masked unless `--with-secrets` |
+| `.env` files | Masked | Masked | Masked |
 | Egress | `locked` | `packages` (`open` only if the project says so) | `packages` |
 | Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | none |
 | Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused |
@@ -525,7 +525,7 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab project reset-state <name>` | Wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy |
 | `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
 | `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
-| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [--with-secrets] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
+| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
 | `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
 | `ab session kill <session>` | Tear down everything the session created |

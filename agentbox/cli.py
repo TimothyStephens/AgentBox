@@ -234,8 +234,8 @@ def cmd_run(s, a):
     for n in running:
         warn(f"ab: a session for project {project_name} is already running ({n}); starting another means two "
              f"at once. `ab session ls` shows them; `ab session kill {n}` ends that one (keeping its logs and scan).")
-    project = session.load_project(s, project_name, with_secrets=a.with_secrets)
-    sess = session.make_session(s, agent, project, with_secrets=a.with_secrets, warn=warn)
+    project = session.load_project(s, project_name)
+    sess = session.make_session(s, agent, project, warn=warn)
     sess.prepare()
     command = sess.agent_command(shell=a.shell, extra=list(getattr(a, "passthrough", []) or []))
     if sys.stdin.isatty() and not a.no_tty:
@@ -472,9 +472,6 @@ def parser():
                    help="agent to run: `claude` or `omp` (or give it positionally: `ab run <agent> <project>`)")
     x.add_argument("--project", metavar="PROJECT",
                    help="the registered project to run against (or give it positionally)")
-    x.add_argument("--with-secrets", action="store_true",
-                   help="expose the real secret files in the grant to the agent instead of masking them — only "
-                        "for a project whose real secrets live OUTSIDE the grant (see docs/decisions.md)")
     x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
     x.add_argument("--no-tty", action="store_true",
                    help="do not allocate a TTY (for non-interactive or piped runs)")

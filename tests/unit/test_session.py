@@ -430,20 +430,6 @@ class BackupExcludesCovers(SessionTest):
 class GrantExposure(SessionTest):
     """Track 1 (6 Oct): a session refuses to start when the grant holds uncovered secrets or live data."""
 
-    def test_with_secrets_message_states_the_real_requirement(self):
-        """14 Oct: a repo-local .env under --with-secrets must not be refused with the dead-end
-        `ab project accept-grant-exposure` remedy (which evaluates the masked default and finds nothing).
-        The message states the real requirement and does not point at that command."""
-        p = session.load_project(self.settings, "p1", with_secrets=True)
-        s = session.make_session(self.settings, "claude", p, with_secrets=True, warn=lambda m: None)
-        with self.assertRaises(AgentboxError) as e:
-            s.prepare()
-        msg = str(e.exception)
-        self.assertIn("--with-secrets", msg)
-        self.assertIn("ab keys set", msg, "points at the sanctioned external-key mechanism")
-        self.assertNotIn("To run anyway", msg)                 # not the default accept-grant-exposure remedy
-        self.assertIn("accept-grant-exposure` does not apply", msg)
-
     def test_refuses_then_accepts(self):
         import os
         from agentbox import grantcheck, registry

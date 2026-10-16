@@ -53,11 +53,6 @@ class MountPlanTest(TempCase):
         m = self.by_dst(mounts.plan(root=self.root, swap={".env": ".env.dev", "secrets.env": "secrets.dev.env"}))
         self.assertEqual(m["secrets.env"].kind, "mask")
 
-    def test_with_secrets_exposes(self):
-        m = self.by_dst(mounts.plan(root=self.root, secrets="exposed"))
-        self.assertNotIn(".env.local", m)
-        self.assertNotIn(".env", m)
-
     def test_git_overlays(self):
         p = mounts.plan(root=self.root)
         m = self.by_dst(p)

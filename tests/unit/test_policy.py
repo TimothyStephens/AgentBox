@@ -62,11 +62,6 @@ class PresetTest(unittest.TestCase):
                 self.eff({"preset": "lockdown", **loosen})
         with self.assertRaises(AgentboxError):
             self.eff({"preset": "lockdown", "data_rw": ["/x"]})
-        with self.assertRaises(AgentboxError):
-            self.eff({"preset": "lockdown"}, with_secrets=True)
-
-    def test_with_secrets(self):
-        self.assertEqual(self.eff({"preset": "python"}, with_secrets=True)["secrets"][0], "exposed")
 
     def test_bad_values(self):
         with self.assertRaises(AgentboxError):

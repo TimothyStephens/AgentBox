@@ -88,8 +88,8 @@ examples:
 Start an agent session against a project in the foreground — build the sandbox, run the agent, tear it down on exit.
 
 ```text
-usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--with-secrets]
-              [--shell] [--no-tty] [--timeout SECONDS]
+usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--shell] [--no-tty]
+              [--timeout SECONDS]
               [[AGENT [PROJECT]] ...]
 
 start an agent session in the foreground
@@ -105,9 +105,6 @@ options:
                      `ab run <agent> <project>`)
   --project PROJECT  the registered project to run against (or give it
                      positionally)
-  --with-secrets     expose the real secret files in the grant to the agent
-                     instead of masking them — only for a project whose real
-                     secrets live OUTSIDE the grant (see docs/decisions.md)
   --shell            run a bash shell in the sandbox instead of the agent
   --no-tty           do not allocate a TTY (for non-interactive or piped runs)
   --timeout SECONDS  time limit for a non-interactive run (default 3600;

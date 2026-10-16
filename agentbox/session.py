@@ -58,7 +58,7 @@ def protected_extra(settings):
     return [settings.config_dir, settings.data_dir, settings.run_dir, keys_dir(settings)]
 
 
-def load_project(settings, name, *, with_secrets=False):
+def load_project(settings, name):
     reg = registry.load(settings.registry_path)
     if name not in reg:
         raise AgentboxError(f"no project named {name!r}; add it with `ab project add`")
@@ -66,7 +66,7 @@ def load_project(settings, name, *, with_secrets=False):
     unknown = set(p) - registry.PROJECT_KEYS - set(presets.SETTINGS)
     if unknown:
         raise AgentboxError(f"project {name}: unknown settings {', '.join(sorted(unknown))}")
-    eff = presets.effective(name, p, presets.load_presets(settings.presets_dir), with_secrets=with_secrets)
+    eff = presets.effective(name, p, presets.load_presets(settings.presets_dir))
     others = [(n, q["root"]) for n, q in reg.items() if n != name and q.get("root")]
     kw = dict(home=HOME, extra_protected=protected_extra(settings), other_roots=others)
     root = paths.check_grant(p.get("root", ""), kind=f"project {name} root", **kw)
@@ -312,11 +312,10 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
 
 
 class Session:
-    def __init__(self, settings, agent, project, *, with_secrets=False, podman=None, warn=None):
+    def __init__(self, settings, agent, project, *, podman=None, warn=None):
         self.settings = settings
         self.adapter = adapters.get(agent)
         self.project = project
-        self.with_secrets = with_secrets
         self.podman = podman or Podman(settings.podman)
         self.warn = warn or (lambda m: print(m, file=sys.stderr))
         self.name = None
@@ -365,14 +364,13 @@ class Session:
         if self.token_file:
             tokens.check_token_file(self.token_file)
         p = self.project
-        if p.value("secrets") != "exposed":
-            found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.swap, p.mask_skip)
-            new = [n for n in found if n not in p.history_secrets_accepted]
-            if new:
-                raise AgentboxError(history_secrets_message(p.name, new))
-            if found:
-                self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
-                          "are readable by the agent (accepted as rotated)")
+        found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.swap, p.mask_skip)
+        new = [n for n in found if n not in p.history_secrets_accepted]
+        if new:
+            raise AgentboxError(history_secrets_message(p.name, new))
+        if found:
+            self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
+                      "are readable by the agent (accepted as rotated)")
         self.reserve_name()
         try:
             self._prepare_reserved(do_backup)
@@ -390,27 +388,12 @@ class Session:
         fd = os.open(self.mask_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
         os.close(fd)
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
-                                compose=p.value("compose"), secrets=p.value("secrets"),
-                                mask_skip=p.mask_skip, swap=p.swap)
+                                compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap)
         exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip,
                                              covered=self._plan_covered())
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
-            if self.with_secrets:
-                # The exposure here is exactly what --with-secrets turned the masks off to reveal, so the
-                # default `accept-grant-exposure` remedy does not apply (it evaluates the masked config and
-                # finds nothing). State the real requirement instead of a dead-end remedy.
-                found = "\n".join(f"  - {f['text'] if isinstance(f, dict) else f}" for f in exposure)
-                raise AgentboxError(
-                    f"project {p.name}: --with-secrets turns the masks off, giving the agent read-write to "
-                    f"real secret/data files in the grant:\n{found}\n"
-                    "--with-secrets is only for a project whose real secrets live OUTSIDE the grant. For these "
-                    "repo-local files, run WITHOUT --with-secrets — they are masked and the agent sees "
-                    "`.env.dev` as `.env`. A key the agent itself needs goes through `ab keys set <provider>` "
-                    "(kept outside every grant, mounted read-only, exported as AB_KEY_<PROVIDER>); a pod's own "
-                    "runtime secret belongs in the real `.env` used at deploy, never in a session. "
-                    "(`ab project accept-grant-exposure` does not apply: it evaluates the masked default.)")
             raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")

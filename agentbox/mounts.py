@@ -187,7 +187,7 @@ def compose_overlays(grant, skip_rel=()):
     return out
 
 
-def plan(*, root, data_ro=(), data_rw=(), compose="rw", secrets="masked", mask_skip=(), swap=None):
+def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None):
     """Build the mount plan. All paths must already be validated real paths."""
     mounts, dirs, files, notes = [], [], [], []
     rw_grants = [root] + list(data_rw)
@@ -209,11 +209,10 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", secrets="masked", mask_s
     dirs += d
     if compose == "ro":
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
-    if secrets != "exposed":
-        for g in rw_grants + list(data_ro):
-            m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
-            mounts += m
-            files += c
+    for g in rw_grants + list(data_ro):          # secret masks always apply; there is no way to turn them off
+        m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
+        mounts += m
+        files += c
 
     mounts += hardlink_masks(mounts, rw_grants + list(data_ro), root, mask_skip, notes)
     # One mount per destination; later (more specific) entries win.

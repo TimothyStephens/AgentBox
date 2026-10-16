@@ -116,7 +116,7 @@ The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs
 ## Open decisions (Tim)
 
 - **Lockdown OMP:** resolved 15 Oct — keep `--no-extensions` (decisions.md).
-- **`--with-secrets`:** keep it or drop it now Track 1 (grantcheck) exists? Still open (decisions.md); tracked in the TECH-DEBT TODO.
+- **`--with-secrets`:** resolved 16 Oct — **dropped**; masks can no longer be turned off (decisions.md).
 
 ## Watch items
 

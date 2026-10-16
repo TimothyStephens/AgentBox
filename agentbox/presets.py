@@ -71,7 +71,7 @@ def _validate(values, where):
             raise AgentboxError(f"{where}: {k} = {v!r}, expected one of {', '.join(ALLOWED[k])}")
 
 
-def effective(project_name, project, presets, with_secrets=False):
+def effective(project_name, project, presets):
     """Return {setting: (value, source)} for a project."""
     preset_name = project.get("preset")
     if preset_name not in presets:
@@ -99,9 +99,4 @@ def effective(project_name, project, presets, with_secrets=False):
                                     f"it (preset: {preset[k]!r}); switch to another preset to loosen")
     if out["data"][0] == "ro-only" and project.get("data_rw"):
         raise AgentboxError(f"project {project_name}: preset {preset_name} allows read-only data grants only")
-
-    if with_secrets:
-        if out["secrets"][0] == "locked":
-            raise AgentboxError(f"project {project_name}: --with-secrets is refused by {out['secrets'][1]}")
-        out["secrets"] = ("exposed", "flag --with-secrets")
     return out

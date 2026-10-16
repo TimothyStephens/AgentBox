@@ -36,7 +36,7 @@ would join at deploy (`ab deploy`, not yet built). That is a separate, future te
   it, so no overrides are needed.
 - **Never `ab project rm` or run a teardown block while a session is live** — `rm` is registry-only and
   silently orphans the running session. Kill the session first.
-- `--with-secrets` is intentionally **not** used: session secrets are fake by design, and that is the point.
+- Session secrets are fake by design: the real `.env` is always masked and the agent sees `.env.dev` as `.env`. There is no flag to turn masks off — that is the point.
 
 ---
 

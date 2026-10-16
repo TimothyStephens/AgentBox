@@ -12,8 +12,8 @@ Updated 2026-10-16, after the pre-real-project re-review (`reviews/2026-10-15-pr
   *Gates cleared:* the independent re-review is **done** and actioned; `make claude-live` and `make omp-live` **re-passed 16 Oct against `563f352`** (after the review fixes), and `make test`/`make itest` are green on the same tree. The live-freshness check is clear.
 
 ### Could — valuable, not blocking
-- **`make claude-image`.** Rebuild to clear the one `ab selftest` SKIP (the current image predates the CLI-version label) and freshen the base CLI. Local and reversible; I can run it.
-- **Decide `--with-secrets`'s fate.** Left open in `decisions.md`; Track 1 (grantcheck) may make it redundant.
+- *(cleared 16 Oct: `make claude-image` rebuilt with the CLI-version label; `--with-secrets` dropped — see decisions.md.)*
+- Nothing outstanding here right now.
 
 ### Nice to have — cleanup / future
 - **Unify the duplicated git-identity lookup** (`initproj.py` / `session.py`) — review finding 10; detail under *Support refactors* below.
