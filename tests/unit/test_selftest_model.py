@@ -62,3 +62,20 @@ class EgressDiagnostics(unittest.TestCase):
         targets = {runner.proxied_target(c) for c in b.cases} - {None}
         self.assertTrue({"pypi.org", "example.com", "10.0.0.2", "::ffff:10.0.0.103", "2606:4700:4700::1111"} <= targets,
                         targets)
+
+
+class CliVersionLine(unittest.TestCase):
+    """Regression: every Result needs a detail. A labelled image (truthy cli_ver) must PASS, not crash
+    (the two-arg PASS was latent until `make claude-image` added the label, 16 Oct)."""
+
+    def test_pass_when_version_present(self):
+        from agentbox import selftest
+        r = selftest.cli_version_result("claude", "2.1.266 (Claude Code)")
+        self.assertEqual((r.label, r.verdict), ("claude CLI version", "PASS"))
+        self.assertEqual(r.detail, "2.1.266 (Claude Code)")
+
+    def test_skip_when_no_label(self):
+        from agentbox import selftest
+        r = selftest.cli_version_result("omp", "")
+        self.assertEqual((r.label, r.verdict), ("omp CLI version", "SKIP"))
+        self.assertIn("make omp-image", r.detail)

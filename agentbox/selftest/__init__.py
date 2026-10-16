@@ -100,6 +100,15 @@ def live_containers(sess):
     return sorted((p.stdout or "").split())
 
 
+def cli_version_result(agent, cli_ver):
+    """PASS with the image's recorded agent CLI version, or SKIP when the image carries no version label
+    (every Result needs a detail — an earlier two-arg PASS crashed once the label was present, 16 Oct)."""
+    if cli_ver:
+        return Result(f"{agent} CLI version", "PASS", cli_ver)
+    return Result(f"{agent} CLI version", "SKIP",
+                  f"the image has no agentbox.cli-version label; rebuild with `make {agent}-image`")
+
+
 def run(settings, agent, project_name, *, podman=None, warn=None):
     """Returns (results, raw_output)."""
     project = sessionmod.load_project(settings, project_name)
@@ -123,10 +132,7 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     if proc.returncode != 0 and not out.strip():
         results.append(Result("probe container ran", "FAIL", (proc.stderr or "").strip()[-400:]))
     results += config_check + extra
-    cli_ver = sess.agent_cli_version()
-    results.append(Result(f"{agent} CLI: {cli_ver}", "PASS") if cli_ver else
-                   Result(f"{agent} CLI version", "SKIP",
-                          f"the image has no agentbox.cli-version label; rebuild with `make {agent}-image`"))
+    results.append(cli_version_result(agent, sess.agent_cli_version()))
     results += host_checks(sess, settings, out + (proc.stderr or ""))
     secrets = _secret_values(sess)
     for r in results:
