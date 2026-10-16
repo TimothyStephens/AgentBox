@@ -111,11 +111,12 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Next
 
-1. **Independent re-review of the mount/covers area** (reopened 5 and 6 Oct) and of Track 1, then the first real project: `~/repos/Life_Updates/life-updates`, from its `wip/old-claude-session` branch, with Tim.
+The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs / could / nice). In short: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned); what remains before the first real project (`life-updates`, with Tim, `lockdown` first) is a re-run of `make claude-live` (stale after the review fixes).
 
 ## Open decisions (Tim)
 
-- **Lockdown OMP:** keep `--no-extensions` (your plugins off), or rely on the repo-code covers alone (plugins on)?
+- **Lockdown OMP:** resolved 15 Oct — keep `--no-extensions` (decisions.md).
+- **`--with-secrets`:** keep it or drop it now Track 1 (grantcheck) exists? Still open (decisions.md); tracked in the TECH-DEBT TODO.
 
 ## Watch items
 
@@ -128,5 +129,5 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Waiting on Tim
 
-- **The trial** (`docs/TRIAL.md`).
-- **`make claude-live` and `make omp-live`:** both re-passed on 15 Oct against `1f4644d` (claude-live egress=locked: search ok, fetch denied, bash ok, token in no log/state/output; omp-live egress=packages: PyPI allowed, all non-allowlisted provider/telemetry hosts denied, key in no log/state/output). `make itest` (165 tests) green on the same commit; the live-freshness warning is clear.
+- **The trial** (`docs/TRIAL.md`): **done** 15 Oct — `ab selftest` 105 pass / 0 fail, `make trial-check` all checks passed (the secret-leak scan clean).
+- **`make claude-live`:** re-passed 15 Oct against `1f4644d`, but **stale again** — the pre-real-project review fixes touched token-handling files, so re-run it before the real project (TECH-DEBT TODO → Needs). `make omp-live` likewise advisable. `make itest` (165) green on the fixes.
