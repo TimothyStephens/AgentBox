@@ -7,12 +7,12 @@ The **TODO** below is the prioritized "what's next" (needs / could / nice). Ever
 Updated 2026-10-16, after the pre-real-project re-review (`reviews/2026-10-15-pre-real-project.md`: all 10 findings actioned — 1–6 fixed with tests, 7–8 documented, 9 n/a, 10 below). `make test` (510) and `make itest` (165) green at that point.
 
 ### Needs — before the first real project
-- **Re-run `make claude-live`.** Stale again: the review fixes touched token-handling files (`adapters/claude.py`, `backup.py`, `session.py`), so the live-freshness check warns. Needs the real token — Tim runs it. *(The independent re-review that gated this is **done**.)*
 - **First real project, supervised.** Register `life-updates` as `lockdown`, `ab selftest` it, then run attended (step-7 commands / `docs/TRIAL.md`). Tim drives on his fork's current branch; I assist. Its live `deploy` stack stays untouched.
+
+  *Gates cleared:* the independent re-review is **done** and actioned; `make claude-live` and `make omp-live` **re-passed 16 Oct against `563f352`** (after the review fixes), and `make test`/`make itest` are green on the same tree. The live-freshness check is clear.
 
 ### Could — valuable, not blocking
 - **`make claude-image`.** Rebuild to clear the one `ab selftest` SKIP (the current image predates the CLI-version label) and freshen the base CLI. Local and reversible; I can run it.
-- **Re-run `make omp-live`.** The fixes changed shared code (`backup.py`, `session.py`); the freshness check is claude-only, so this one is on judgement.
 - **Decide `--with-secrets`'s fate.** Left open in `decisions.md`; Track 1 (grantcheck) may make it redundant.
 
 ### Nice to have — cleanup / future

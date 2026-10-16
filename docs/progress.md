@@ -111,7 +111,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Next
 
-The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs / could / nice). In short: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned); what remains before the first real project (`life-updates`, with Tim, `lockdown` first) is a re-run of `make claude-live` (stale after the review fixes).
+The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs / could / nice). In short: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned) and the live tests re-passed 16 Oct against `563f352`, so the only Needs item left is the first real project itself (`life-updates`, with Tim, `lockdown` first).
 
 ## Open decisions (Tim)
 
@@ -130,4 +130,4 @@ The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs
 ## Waiting on Tim
 
 - **The trial** (`docs/TRIAL.md`): **done** 15 Oct — `ab selftest` 105 pass / 0 fail, `make trial-check` all checks passed (the secret-leak scan clean).
-- **`make claude-live`:** re-passed 15 Oct against `1f4644d`, but **stale again** — the pre-real-project review fixes touched token-handling files, so re-run it before the real project (TECH-DEBT TODO → Needs). `make omp-live` likewise advisable. `make itest` (165) green on the fixes.
+- **`make claude-live` / `make omp-live`:** re-passed 16 Oct against `563f352` (after the review fixes). claude-live egress=locked (search ok, fetch denied, bash ok, token nowhere); omp-live egress=packages (PyPI allowed, non-allowlisted hosts denied, key nowhere). `make test` (510) and `make itest` (165) green on the same tree; live-freshness clear.
