@@ -95,7 +95,10 @@ class SessionTest(SettingsCase):
         # has it and the agent's own first-run write is not reported as a change (7 Oct)
         self.assertIs(settings["skipDangerousModePermissionPrompt"], True)
         md = _read(os.path.join(state, "CLAUDE.md"))
-        self.assertTrue(md.startswith("# agentbox sandbox"), "the sandbox preamble leads")
+        from agentbox.adapters import claude
+        self.assertTrue(md.startswith(claude.NOTES_BEGIN), "the sandbox block leads")
+        self.assertLess(md.index("# agentbox sandbox"), md.index("My rules."), "the preamble leads the user's")
+        self.assertEqual(md.count(claude.NOTES_BEGIN), 1, "the sandbox block is not stacked")
         self.assertIn("My rules.", md)                    # the user's CLAUDE.md follows it
         self.assertTrue(os.path.isfile(os.path.join(state, "commands", "x.md")))
         cj = json.loads(_read(os.path.join(state, ".claude.json")))
