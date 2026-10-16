@@ -57,6 +57,6 @@ All ten triaged and resolved before the real project.
 | 7 | Foreign-uid bind refusal blocks dev DB re-`up` | **Kept strict, documented** — dev DBs use a session-created named volume | `f86418b` · decisions.md + design.md |
 | 8 | Backups exclude covered git/compose files | **Kept, documented restore** — `.git/config` can hold creds; restore without `--delete` | `f86418b` · decisions.md + design.md |
 | 9 | Makefile `date -d` (macOS) | **No change** — GNU date on this host parses it; macOS not a target | — |
-| 10 | Duplicated git-identity lookup | **Deferred** — cleanup, noted in TECH-DEBT | TECH-DEBT.md |
+| 10 | Duplicated git-identity lookup | **Deferred** — cleanup, noted in the TODO backlog | docs/TODO.md |
 
 Also: the agentbox-claude image predates the CLI-version label, so `ab selftest` shows one `SKIP`; rebuild with `make claude-image` before the real project.

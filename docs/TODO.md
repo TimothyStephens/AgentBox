@@ -1,26 +1,15 @@
-# Tech debt & TODO
+# TODO & tech debt
 
-The **TODO** below is the prioritized "what's next" (needs / could / nice). Everything from **Maintainability backlog** onward is deferred, non-blocking work to pick up when a real change touches the area.
+Nothing here blocks use. These are the optional / deferred items left — pick them up when a real change touches the area, or when they become worth doing. (Active work and the build state live in `progress.md`.)
 
-## TODO — what's next
+Last reviewed 2026-10-16: the pre-real-project re-review's findings are all actioned (`reviews/2026-10-15-pre-real-project.md`), and `make test` / `make itest` / `make claude-live` / `make omp-live` are green.
 
-Updated 2026-10-16, after the pre-real-project re-review (`reviews/2026-10-15-pre-real-project.md`: all 10 findings actioned — 1–6 fixed with tests, 7–8 documented, 9 n/a, 10 below). `make test` (510) and `make itest` (165) green at that point.
-
-### Needs — before the first real project
-- **First real project, supervised.** Register `life-updates` as `lockdown`, `ab selftest` it, then run attended (step-7 commands / `docs/TRIAL.md`). Tim drives on his fork's current branch; I assist. Its live `deploy` stack stays untouched.
-
-  *Gates cleared:* the independent re-review is **done** and actioned; `make claude-live` and `make omp-live` **re-passed 16 Oct against `563f352`** (after the review fixes), and `make test`/`make itest` are green on the same tree. The live-freshness check is clear.
-
-### Could — valuable, not blocking
-- *(cleared 16 Oct: `make claude-image` rebuilt with the CLI-version label; `--with-secrets` dropped — see decisions.md.)*
-- Nothing outstanding here right now.
-
-### Nice to have — cleanup / future
+## Nice to have — cleanup / future
 - **Unify the duplicated git-identity lookup** (`initproj.py` / `session.py`) — review finding 10; detail under *Support refactors* below.
 - **Deferred-by-design features** (intentionally not built — see the `progress.md` Status table): `ab ws`/`attach`/`deploy`/`outbox`, the podman `exec` tier, the model-key gateway, `masked_paths`, `--data-bind`, Pi/Codex adapters.
 - The **Maintainability backlog** below: dead-code removal (each with a test proving deadness), the `gate.py`/`session.py` refactors, and the untested error paths E5–E12.
 
-### Watch only — not an action
+## Watch only — not an action
 - **Egress flakes** (squid upstream stalls; IPv6 suspected). Diagnostics are in place; act only if they recur. Candidate fix: a squid `dns_timeout` under the probe's 20 s. Full notes in `progress.md` → Watch items.
 
 ## Maintainability backlog

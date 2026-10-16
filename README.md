@@ -72,7 +72,7 @@ Design and internals:
 - **[docs/decisions.md](docs/decisions.md)** — dated log of decisions and deviations from the spec.
 - **[docs/progress.md](docs/progress.md)** — current build state, with the built / deferred / not-built Status
   table.
-- **[docs/TECH-DEBT.md](docs/TECH-DEBT.md)** — the deferred maintainability backlog (nothing here blocks use).
+- **[docs/TODO.md](docs/TODO.md)** — the remaining optional TODOs and the deferred maintainability backlog (nothing here blocks use).
 - **[docs/agentbox-masked-paths.md](docs/agentbox-masked-paths.md)** — a proposal (NOT implemented): a
   per-project masked-paths setting.
 - **[docs/reviews/](docs/reviews/)** — historical independent review records.

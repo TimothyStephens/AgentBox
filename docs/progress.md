@@ -31,7 +31,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
 
-Deferred maintainability work (none of it blocks use) lives in `docs/TECH-DEBT.md`.
+Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`.
 
 ## Current step
 
@@ -111,7 +111,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Next
 
-The prioritized what's-next now lives in `docs/TECH-DEBT.md` → **TODO** (needs / could / nice). In short: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned) and the live tests re-passed 16 Oct against `563f352`, so the only Needs item left is the first real project itself (`life-updates`, with Tim, `lockdown` first).
+The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.
 
 ## Open decisions (Tim)
 
