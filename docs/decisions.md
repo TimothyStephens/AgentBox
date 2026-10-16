@@ -739,3 +739,10 @@ it inside the grant:
 Net: the agent never needs — and is never given — read-write to a real external key inside the grant.
 `--with-secrets` remains a narrow escape hatch for the secrets-outside-the-grant case, not the keyed-pod path;
 whether to keep it at all, given Track 1, is left open for a later pass.
+
+## 2026-10-15 · Lockdown OMP keeps `--no-extensions` (plugins off in lockdown)
+
+- **What:** the `lockdown` preset continues to launch OMP with `--no-extensions` (plus `--approval-mode=always-ask` and the lockdown overlay), as it already does (`adapters/omp.py` `approvals_on_args`). This disables OMP's extension discovery entirely — the repo's `.omp/`/`.claude` code *and* the user's own `~/.omp` plugins.
+- **Considered:** dropping `--no-extensions` so the user's plugins load in lockdown, relying on the REPO_CODE covers alone (empty, read-only mounts over repo-shipped `.omp/`, `.claude/extensions|hooks|tools`, settings and MCP) to keep repo code from running. The covers were shown to neutralise repo code even with extensions on (itest, 1 Oct), so they — not `--no-extensions` — are the real enforcement.
+- **Why keep it:** lockdown is the "review-only, nothing runs unasked" profile; `--no-extensions` matches that intent and keeps the covers as defense-in-depth rather than the sole wall. The cost (the user's own plugins are off in lockdown) is small and bounded to lockdown — other presets run with extensions on — and one of the user's plugins (`@narumitw/pi-statusline`) is broken upstream regardless (seen in `make omp-live`, 15 Oct).
+- **To revisit:** if lockdown review sessions come to depend on the user's plugins, drop `--no-extensions` and lean on the covers; it is a one-line change in `approvals_on_args`.
