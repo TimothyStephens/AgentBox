@@ -13,14 +13,21 @@ EXCLUDE_NAMES = (".venv", "venv", "node_modules", "__pycache__", ".cache", ".pyt
 SNAP = re.compile(r"^(\d{8})-(\d{6})-(.+)$")
 
 
+def _rsync_literal(s):
+    """Escape rsync's exclude-pattern wildcards (\\ * ? [ ]) so a real file name is matched literally. Without
+    this a covered name like `prod[1].key` is read as a character class: the real file slips into the backup
+    and `prod1.key` is excluded instead (audit 2026-10-15 #5)."""
+    return re.sub(r"([\\*?\[\]])", r"\\\1", s)
+
+
 def rsync_argv(src, dst, *, link_dest=None, skip_rel=(), exclude_rel=()):
     argv = ["rsync", "-a", "--delete", "--numeric-ids", "--stats"]
     for n in EXCLUDE_NAMES:
         argv.append(f"--exclude={n}/")
     for s in skip_rel:
-        argv.append(f"--exclude=/{s.strip('/')}/")                 # a folder (mask_skip), anchored at the root
+        argv.append(f"--exclude=/{_rsync_literal(s.strip('/'))}/")  # a folder (mask_skip), anchored at the root
     for s in exclude_rel:
-        argv.append(f"--exclude=/{s.strip('/')}")                  # a covered file or dir, anchored at the root
+        argv.append(f"--exclude=/{_rsync_literal(s.strip('/'))}")   # a covered file or dir, anchored at the root
     if link_dest:
         argv.append(f"--link-dest={link_dest}")
     argv += [src.rstrip("/") + "/", dst.rstrip("/") + "/"]

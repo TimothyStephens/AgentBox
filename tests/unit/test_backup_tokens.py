@@ -111,3 +111,26 @@ class TokenTest(TempCase):
         with self.assertRaises(AgentboxError):
             tokens.rotate(p, "claude", read=lambda prompt: "  ", out=io.StringIO())
         self.assertFalse(os.path.exists(p))
+
+
+class BackupExcludeEscaping(TempCase):
+    """A covered file name with rsync glob metacharacters must be excluded literally, not as a pattern
+    (audit 2026-10-15 #5)."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.mkdir("proj")
+        self.write("proj/prod[1].key", "REAL-SECRET")       # the covered file (brackets are a glob class)
+        self.write("proj/prod1.key", "innocent")            # what the unescaped class would match instead
+        self.backups = self.mkdir("backups")
+
+    def test_bracket_name_is_excluded_literally(self):
+        s = backup.snapshot(self.backups, "p", "s1", [self.src],
+                            now=datetime.datetime(2026, 10, 15, 10, 0, 0),
+                            exclude_rel_for=lambda g: ["prod[1].key"])
+        dst = os.path.join(s, self.src.lstrip("/"))
+        self.assertFalse(os.path.exists(os.path.join(dst, "prod[1].key")), "the real secret leaked into the backup")
+        self.assertTrue(os.path.isfile(os.path.join(dst, "prod1.key")), "the glob twin was wrongly excluded")
+
+    def test_literal_helper_escapes_metacharacters(self):
+        self.assertEqual(backup._rsync_literal(r"a[1]*?\b"), r"a\[1\]\*\?\\b")
