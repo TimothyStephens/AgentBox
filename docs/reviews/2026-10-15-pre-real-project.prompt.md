@@ -2,6 +2,12 @@ Independent re-review gating the first REAL project. Defensive audit for the aut
 start containers. This is the sign-off CLAUDE.md requires before any real repo (life-updates) runs in a
 session, so the bar is "would I trust this with my real `.env` and a live database next to the grant?"
 
+Range: everything since the last security audit, base commit a02fbdd (docs/reviews/2026-10-06-final.md) to
+HEAD — ~850 lines of agentbox/ code plus tests and docs. For the diff-based `/code-review ultra`, that is
+`/code-review ultra a02fbdd`; ultra runs its own recipe over the diff and does not read this file, so this
+brief is the scope-of-record and the checklist for reading ultra's output (and the prompt for a human or a
+reading-agent reviewer who audits the whole files rather than the diff).
+
 ## Threat model (from docs/design.md, top; decisions.md 6 Oct)
 
 In scope: containing an ACCIDENT (a stray `rm -rf`, an over-eager fix) and stopping CROSS-PROJECT movement.
@@ -18,39 +24,45 @@ only CODE — grantcheck (Track 1) refuses a grant carrying secrets or live data
 defense-in-depth behind it. The real question is always the SEAM: for a shape grantcheck misses, does a cover
 still contain it, or is it exposed — including from a container the agent spawns through the gate?
 
-## Scope — three files, each with the property it must uphold
+## Scope — the two walls, and the files that changed under them
 
-- **agentbox/grantcheck.py** (200 lines, unchanged since the 2026-10-06 review) — the primary wall. Property:
-  a grant that carries a readable secret or live data does not start a session silently; anything it misses
-  must be caught by a cover or be genuinely harmless. Re-confirm the 20-shape table still holds; only report a
-  row if it is newly wrong or newly exploitable, or a shape the table omits.
-- **agentbox/mounts.py** (291 lines, unchanged since the review) — the masks/covers set. Property: every
-  secret-shaped name and the covered git/compose paths are masked/empty/read-only in the agent's own
-  namespace; `covered_paths()` is the single source the gate and the pre-session backup both derive from, so a
-  cover cannot be enforced in one place and missed in another.
-- **agentbox/gate.py** (2552 lines) — the podman wall. Property: a bind, exec, build or create a spawned
-  container asks for is only allowed if it is this session's own, user-owned, and reaches no covered path;
-  the client never gets to choose a namespace or a foreign bind source. This is the ONLY file changed since
-  the last review (see delta below) — spend the most new effort here.
+The core walls (audit even where unchanged — this is the gate before real data):
 
-session.py is supporting context (it wires grantcheck, the covers and the backup together); read
-`_prepare_reserved`, `covered_paths`, `_backup_grants` and `_write_scan_state`, but the audit's weight is on
-the three files above.
+- **agentbox/grantcheck.py** (200 lines, unchanged since 2026-10-06) — the primary wall. Property: a grant
+  carrying a readable secret or live data does not start a session silently; anything it misses must be caught
+  by a cover or be genuinely harmless. Re-confirm the 20-shape table still holds; report a row only if it is
+  newly wrong, newly exploitable, or a shape the table omits.
+- **agentbox/mounts.py** (291 lines, unchanged) — the masks/covers set. Property: every secret-shaped name and
+  the covered git/compose paths are masked/empty/read-only in the agent's own namespace; `covered_paths()` is
+  the single source the gate and the pre-session backup both derive from.
+- **agentbox/gate.py** (2552 lines) — the podman wall. Property: a bind/exec/build/create a spawned container
+  asks for is allowed only if it is this session's own, user-owned, and reaches no covered path; the client
+  never chooses a namespace or a foreign bind source.
 
-## The delta since the last review (base a02fbdd)
+The changed code since the base, in rough risk order (verify each still upholds the property above):
 
-Only gate.py changed: +35/-11 across 0f25eb9 and 57f94da. The substantive addition is `_refuse_if_foreign`
-(gate.py:585), the enforced half of audit-6-Oct H1: a bind source owned by another uid is refused, because
-under keep-id the agent's own files are user-owned, so a foreign uid means bytes a rootless container wrote
-(a live stack's database). Verify specifically:
-- it is called on EVERY path that becomes a spawned-container bind source (not just the first), before the
-  bind is accepted — trace each call site, including compose-provided binds and `--mount` forms;
-- `os.lstat` (not `stat`) so a symlink's own ownership is what's checked, and a symlink in the grant pointing
-  at a foreign-owned or covered target cannot launder past it;
-- the missing-source early return can't be used to slip a bind that later resolves to a foreign path (TOCTOU
-  between the check and podman's own resolution);
-- it composes correctly with `covers_intact()` / `covers_overlap()` in `_refuse_if_covered` — a path that is
-  both foreign and covered is refused either way, and re-checking covers mid-session still holds.
+- **agentbox/session.py** (+122) — the seam that wires it together: `covered_paths()` now the single source,
+  `_backup_grants` excludes exactly the covered set, `_write_scan_state`, lockdown ephemeral state. Confirm the
+  backup can never capture a masked secret and the three consumers can't drift.
+- **agentbox/gate.py** (+46) — `_refuse_if_foreign` (gate.py:585), the enforced half of audit-6-Oct H1: a bind
+  source owned by another uid is refused (under keep-id the agent's files are user-owned, so a foreign uid is
+  bytes a rootless container wrote — a live stack's DB). Verify it runs on EVERY spawned-container bind source
+  (compose binds and `--mount` forms included), uses `lstat` so a symlink can't launder past it, the
+  missing-source early return can't slip a TOCTOU bind, and it composes with `covers_intact`/`covers_overlap`.
+- **agentbox/sockguard.py** (+41) — the podman-socket filter (label scoping of list/inspect/logs, bind
+  allowlist). Property: no cross-project container is visible or reachable; exec stays gate-scoped.
+- **agentbox/initproj.py** (+372, NEW) — `ab init` scaffolding. Property it CLAIMS: the scaffold is
+  grantcheck-clean by construction (0600 gitignored `.env`, committed fake `.env.dev`, live data in a named
+  volume, no `./data` bind). Check the written files actually pass grantcheck and that no template writes a
+  real secret into a tracked file.
+- **agentbox/preview.py** (+8) — publishes a dev service on 127.0.0.1. Property: loopback only, this session's
+  own dev containers only, torn down on kill — no 0.0.0.0 bind, no other session's service.
+- **agentbox/cli.py** (+315) — mostly ergonomics (the `ab session` grouping, arg docs), but `project add`
+  validation (overlap, grant exposure, lockdown ceiling) and `accept-grant-exposure`/`reset-state` are
+  security-relevant: confirm they can't register an overlapping or exposed grant without the explicit ack.
+- **adapters/claude.py** (+38), **backup.py** (+16), **config.py** (+9), **scan.py**, **selftest/__init__.py**,
+  **builtrec.py** — supporting; skim for anything that weakens a property above (e.g. the scan no longer
+  flagging a file the agent writes at startup must not also stop flagging a real secret).
 
 ## Known-accepted, do NOT re-litigate (unless newly exploitable)
 
