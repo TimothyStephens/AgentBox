@@ -57,7 +57,7 @@ def _given(a, key):
     return value is not None and value != []
 
 
-def _apply_project_settings(entry, a, grant_kw):
+def _apply_project_settings(entry, a, grant_kw, presets_map):
     """Apply the override flags shared by `ab init`, `ab project add` and `ab project set` onto a registry
     entry dict. For add/init, `entry` starts empty, so "if a.x:" writes only what was given. For `set`,
     `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
@@ -74,7 +74,7 @@ def _apply_project_settings(entry, a, grant_kw):
         entry["preset"] = a.preset
     if a.egress:
         entry["egress"] = a.egress
-    presets.open_on_choice(entry)
+    presets.materialize_open_egress(entry, presets_map)
     if a.data_ro:
         entry["data_ro"] = [check_grant(d, kind="data_ro", **grant_kw) for d in a.data_ro]
     if a.data_rw:
@@ -103,10 +103,10 @@ def _print_cleared(cleared):
               f"(set them again if you still want them)")
 
 
-def _validate_and_save(s, reg, name, entry, a):
+def _validate_and_save(s, reg, name, entry, a, presets_map):
     """Validate a registry entry (preset exists, lockdown ceiling, build_memory, grantcheck, history
     secrets) and save it. Shared by `ab project add` and `ab project set`."""
-    presets.effective(name, entry, presets.load_presets(s.presets_dir))
+    presets.effective(name, entry, presets_map)
     if "build_memory" in entry:
         session.check_build_memory(s, name, entry["build_memory"])
     from . import grantcheck
@@ -138,10 +138,11 @@ def cmd_project_add(s, a):
     reg = registry.load(s.registry_path)
     if a.name in reg:
         raise AgentboxError(f"project {a.name} already exists")
+    presets_map = presets.load_presets(s.presets_dir)
     grant_kw = _grant_kw(s, reg)
     entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
-    cleared = _apply_project_settings(entry, a, grant_kw)
-    _validate_and_save(s, reg, a.name, entry, a)
+    cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
+    _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
     _print_cleared(cleared)
 

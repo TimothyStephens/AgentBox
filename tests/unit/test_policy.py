@@ -100,11 +100,11 @@ class PresetTest(unittest.TestCase):
         cases = {
             "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
                       "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
-            "build-open": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
+            "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
                            "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
             "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                        "secrets": "masked", "approvals": "off", "data": "declared"},
-            "research": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+            "research": {"compose": "ro", "egress": "open", "podman": {"tier": "none"}, "caps": "refused",
                          "secrets": "masked", "approvals": "off", "data": "declared"},
             "operate": {"compose": "ro", "egress": "packages", "podman": {"tier": "none", "live": "observe"},
                         "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
@@ -134,12 +134,16 @@ class PresetTest(unittest.TestCase):
         self.assertEqual(self.P["pods"], self.OLD_PODS)
         self.assertEqual(self.P["python"], self.OLD_PYTHON)
 
-    def test_research_and_build_open_never_carry_open_in_builtin(self):
-        """The egress-open-only-via-project-override rule depends on this: if a BUILTIN preset itself ever
-        held "open", effective() would silently downgrade it to "packages" for every project using it with
-        no override of its own."""
-        self.assertEqual(self.P["research"]["egress"], "packages")
-        self.assertEqual(self.P["build-open"]["egress"], "packages")
+    def test_an_open_preset_is_fail_closed_by_live_reference(self):
+        """An open preset declares `egress = "open"` in its definition, but a project is only actually open
+        when its own registry entry says so: a hand-written entry with preset = "research" and no egress key
+        resolves to `packages`, by design (F8). The registration path materialises the key explicitly."""
+        for name in ("research", "build-open"):
+            value, source = self.eff({"preset": name})["egress"]
+            self.assertEqual(value, "packages", f"{name}: fail-closed without an entry of its own")
+            self.assertIn("open only when the project says so", source)
+        # with the key on the entry (what init/add/set write), it is really open
+        self.assertEqual(self.eff({"preset": "research", "egress": "open"})["egress"], ("open", "project"))
 
     def test_podman_live_is_validated(self):
         for bad in ("obsrve", "dev", "yes"):
@@ -167,23 +171,61 @@ class DescriptionsTest(unittest.TestCase):
         self.assertIn("script", presets.DESCRIPTIONS["python"].lower())
 
 
-class OpenOnChoiceTest(unittest.TestCase):
-    def test_default_open_presets_get_egress_written_when_absent(self):
-        for name in presets.DEFAULT_OPEN_PRESETS:
+class MaterializeOpenEgressTest(TempCase):
+    """The open default is an attribute of the preset definition (its own `egress = "open"`), not a name
+    list, so a user's own research.toml that says locked stays locked (F8b)."""
+
+    def test_a_preset_declaring_open_gets_egress_written_when_absent(self):
+        for name in ("research", "build-open"):
             entry = {"preset": name}
-            presets.open_on_choice(entry)
+            presets.materialize_open_egress(entry, presets.BUILTIN)
             self.assertEqual(entry["egress"], "open", name)
 
     def test_an_explicit_egress_is_left_alone(self):
         entry = {"preset": "research", "egress": "packages"}
-        presets.open_on_choice(entry)
+        presets.materialize_open_egress(entry, presets.BUILTIN)
         self.assertEqual(entry["egress"], "packages")
 
-    def test_other_presets_get_no_egress_written(self):
+    def test_presets_that_do_not_declare_open_get_no_egress_written(self):
         for name in ("build", "script", "lockdown", "operate", "analysis-offline"):
             entry = {"preset": name}
-            presets.open_on_choice(entry)
+            presets.materialize_open_egress(entry, presets.BUILTIN)
             self.assertNotIn("egress", entry, name)
+
+    def test_a_user_preset_that_says_locked_stays_locked(self):
+        """F8b, the case a name list got wrong: the user's own research.toml is the definition that counts."""
+        self.write("presets/research.toml", 'egress = "locked"\n')
+        loaded = presets.load_presets(os.path.join(self.tmp, "presets"))
+        entry = {"preset": "research"}
+        presets.materialize_open_egress(entry, loaded)
+        self.assertNotIn("egress", entry, "no open egress written for a preset that says locked")
+        self.assertEqual(presets.effective("p", entry, loaded)["egress"][0], "locked")
+
+    def test_an_unknown_preset_name_writes_nothing(self):
+        entry = {"preset": "nope"}
+        presets.materialize_open_egress(entry, presets.BUILTIN)
+        self.assertNotIn("egress", entry)
+
+
+class CustomPresetDefaultsTest(TempCase):
+    """F8a: a brand-new user preset inherits lockdown's restrictive values for every key it omits. It used
+    to inherit BUILTIN["python"], so a minimal file silently got packages egress and approvals off."""
+
+    def test_a_new_preset_inherits_restrictive_defaults(self):
+        self.write("presets/web.toml", 'egress = "packages"\n')
+        ps = presets.load_presets(os.path.join(self.tmp, "presets"))
+        self.assertEqual(ps["web"]["egress"], "packages", "what the file says")
+        for key, value in (("compose", "ro"), ("caps", "refused"), ("secrets", "locked"),
+                           ("approvals", "on"), ("data", "ro-only")):
+            self.assertEqual(ps["web"][key], value, f"{key}: lockdown-equivalent default")
+        self.assertEqual(ps["web"]["podman"], {"tier": "none"})
+
+    def test_a_file_named_after_a_builtin_still_customises_that_builtin(self):
+        self.write("presets/build.toml", 'egress = "locked"\n')
+        ps = presets.load_presets(os.path.join(self.tmp, "presets"))
+        self.assertEqual(ps["build"]["egress"], "locked")
+        self.assertEqual(ps["build"]["compose"], "rw", "the rest of build's own shape is kept")
+        self.assertEqual(ps["build"]["podman"], {"tier": "dev", "live": "observe"})
 
 
 class CustomPresetTest(TempCase):
@@ -297,7 +339,7 @@ class PresetChangeTest(unittest.TestCase):
         entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True,
                  "extra_domains": ["x.com"], "podman": {"tier": "dev"}, "data_ro": ["/d"],
                  "data_rw": ["/w"], "build_memory": "4g"}
-        cleared = cli._apply_project_settings(entry, ns(preset="analysis-offline"), GRANT_KW)
+        cleared = cli._apply_project_settings(entry, ns(preset="analysis-offline"), GRANT_KW, presets.BUILTIN)
         self.assertEqual(cleared, ["egress", "podman", "data_ro", "data_rw", "extra_domains",
                                    "observe_logs"])
         self.assertEqual(entry["preset"], "analysis-offline")
@@ -310,27 +352,27 @@ class PresetChangeTest(unittest.TestCase):
 
     def test_overrides_given_in_the_same_command_are_kept(self):
         entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True}
-        cleared = cli._apply_project_settings(entry, ns(preset="build", egress="locked"), GRANT_KW)
+        cleared = cli._apply_project_settings(entry, ns(preset="build", egress="locked"), GRANT_KW, presets.BUILTIN)
         self.assertEqual(entry["egress"], "locked", "the flag given now wins over the clearing")
         self.assertNotIn("egress", cleared)
         self.assertEqual(cleared, ["observe_logs"])
 
     def test_switching_to_an_open_preset_applies_its_open_egress(self):
         entry = {"root": "/r", "preset": "script", "egress": "locked"}
-        cleared = cli._apply_project_settings(entry, ns(preset="research"), GRANT_KW)
+        cleared = cli._apply_project_settings(entry, ns(preset="research"), GRANT_KW, presets.BUILTIN)
         self.assertEqual(cleared, ["egress"])
         self.assertEqual(entry["egress"], "open", "cleared, then research's own open default applied")
         self.assertEqual(presets.effective("p", entry, presets.BUILTIN)["egress"], ("open", "project"))
 
     def test_keeping_the_same_preset_clears_nothing(self):
         entry = {"root": "/r", "preset": "build", "egress": "open", "observe_logs": True}
-        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW), [])
+        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW, presets.BUILTIN), [])
         self.assertEqual(entry["egress"], "open")
         self.assertEqual(entry["observe_logs"], True)
 
     def test_a_new_project_has_nothing_to_clear(self):
         entry = {"root": "/r"}
-        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW), [])
+        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW, presets.BUILTIN), [])
         self.assertEqual(entry, {"root": "/r", "preset": "build"})
 
 

@@ -1,8 +1,13 @@
 """Presets: named bundles of per-project settings, merged with project overrides.
 
 Rules beyond a plain merge:
-  * egress is `open` only when the project itself says so; a preset alone gives at most `packages`;
-  * `lockdown` is a ceiling: an override may tighten it, never loosen it.
+  * egress is `open` only when the project's own entry says so; a preset reference alone resolves to at
+    most `packages`. A preset that declares `egress = "open"` (research, build-open) has it written onto
+    the entry at registration/edit time -- see materialize_open_egress for why, and for what a hand-written
+    entry resolves to;
+  * `lockdown` is a ceiling: an override may tighten it, never loosen it (including podman.live and
+    observe_logs);
+  * a user preset file under a new name inherits lockdown's restrictive values for every key it omits.
 """
 import os
 import tomllib
@@ -31,26 +36,19 @@ BUILTIN = {
               "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
     "pods": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
              "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
-    "build-open": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
+    "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
                    "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
     "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                "secrets": "masked", "approvals": "off", "data": "declared"},
     "python": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                "secrets": "masked", "approvals": "off", "data": "declared"},
-    "research": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+    "research": {"compose": "ro", "egress": "open", "podman": {"tier": "none"}, "caps": "refused",
                  "secrets": "masked", "approvals": "off", "data": "declared"},
     "operate": {"compose": "ro", "egress": "packages", "podman": {"tier": "none", "live": "observe"},
                 "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
     "analysis-offline": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"}, "caps": "refused",
                          "secrets": "masked", "approvals": "off", "data": "ro-only"},
 }
-
-# research/build-open never carry "open" here: the "open only when the project says so" rule below would
-# silently downgrade it to "packages" for every project using the preset with no override of its own. These
-# two presets are meant to default to open, so whichever command registers or edits a project with one of
-# them (ab init / ab project add / ab project set) calls open_on_choice() to write egress="open" explicitly
-# onto the project's own registry entry instead.
-DEFAULT_OPEN_PRESETS = ("research", "build-open")
 
 # One line each, for `--preset`'s --help and the unknown-preset error. Aliases say so.
 DESCRIPTIONS = {
@@ -66,12 +64,24 @@ DESCRIPTIONS = {
 }
 
 
-def open_on_choice(entry):
-    """Called when a project is registered or edited with one of DEFAULT_OPEN_PRESETS: writes egress="open"
-    onto the entry unless the caller already gave an explicit --egress, so the preset's own open default is
-    a real, visible project override (`ab project show` prints it as project-sourced), never a live
-    reference to the preset file."""
-    if entry.get("preset") in DEFAULT_OPEN_PRESETS and "egress" not in entry:
+def materialize_open_egress(entry, presets):
+    """A preset whose definition declares `egress = "open"` gets that written onto the project's own
+    registry entry when the project is registered or edited (`ab init` / `ab project add` / `ab project
+    set`), unless an explicit --egress was given.
+
+    The invariant: open egress is never granted by live reference to a preset. effective() demotes a
+    preset-sourced "open" back to "packages", so the only thing that actually opens a project is an egress
+    key on its own entry -- visible in projects.toml and printed by `ab project show` as project-sourced.
+    Three consequences, all deliberate:
+
+      * editing a preset file to say "open" later does not open any already-registered project;
+      * a hand-written registry entry with `preset = "research"` and no egress key resolves to `packages`
+        (fail-closed), not open;
+      * the open default is an attribute of the preset definition, so a user's own `research.toml` that
+        says `egress = "locked"` stays locked -- there is no separate name list to fall out of step.
+    """
+    name = entry.get("preset")
+    if name in presets and presets[name].get("egress") == "open" and "egress" not in entry:
         entry["egress"] = "open"
 
 
@@ -97,7 +107,10 @@ def load_presets(presets_dir):
                 custom = tomllib.load(f)
             if name == "lockdown":
                 raise AgentboxError("the lockdown preset cannot be redefined")
-            base = dict(presets.get(name, BUILTIN["python"]))
+            # A brand-new preset name inherits lockdown's restrictive values for every key it omits, so a
+            # minimal user file is fail-closed (it used to inherit `python`, which quietly granted packages
+            # egress and turned approvals off). A file named after a built-in customises that built-in.
+            base = dict(presets.get(name, BUILTIN["lockdown"]))
             base.update(custom)
             _validate(base, f"preset {name}")
             presets[name] = base
