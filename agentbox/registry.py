@@ -3,14 +3,15 @@ import os
 import re
 import tomllib
 
+from . import projectkeys
 from .errors import AgentboxError
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
-# Settings a project may carry. Preset settings (presets.SETTINGS) may also be written here as overrides.
+# Every key a project may carry, derived from the one settings table (projectkeys.KEYS) -- preset-resolvable
+# settings included, since any of them may be written here as an override.
 PATH_KEYS = ("root", "data_ro", "data_rw")
-PROJECT_KEYS = {"root", "preset", "data_ro", "data_rw", "mask_skip", "extra_domains", "swap", "build_memory",
-                "history_secrets_accepted", "compose_project", "observe_logs", "dev_images", "grant_exposure_accepted"}
+PROJECT_KEYS = projectkeys.PROJECT_KEYS
 
 
 def load(path):

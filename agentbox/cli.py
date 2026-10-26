@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from . import config, keys, presets, registry, session, tokens
+from . import config, keys, presets, projectkeys, registry, session, tokens
 from .config import HOME
 from .errors import AgentboxError
 from .paths import check_grant
@@ -20,32 +20,21 @@ def cmd_init(s, a):
     return initproj.make(s, a, out=print, warn=warn)
 
 
+def _check(name, key, value, **kw):
+    """One value, through its own validator in the settings table (projectkeys.KEYS)."""
+    return projectkeys.validate_value(key, f"project {name}", value, **kw)
+
+
 def _grant_kw(s, reg, exclude=None):
     others = [(n, q["root"]) for n, q in reg.items() if q.get("root") and n != exclude]
     return dict(home=HOME, extra_protected=session.protected_extra(s), other_roots=others)
 
 
-# entry key -> (namespace attribute, the flag that sets it). The single place that maps a stored setting to
-# the flag it comes from: used to tell "given in this command" from "left alone", and to name the flag in
-# conflict messages.
-SETTING_FLAGS = {
-    "preset": ("preset", "--preset"),
-    "egress": ("egress", "--egress"),
-    "podman": ("podman", "--podman"),
-    "data_ro": ("data_ro", "--data-ro"),
-    "data_rw": ("data_rw", "--data-rw"),
-    "extra_domains": ("extra_domain", "--extra-domain"),
-    "mask_skip": ("mask_skip", "--mask-skip"),
-    "build_memory": ("build_memory", "--build-memory"),
-    "compose_project": ("compose_project", "--compose-project"),
-    "observe_logs": ("observe_logs", "--observe-logs"),
-    "dev_images": ("dev_image", "--dev-image"),
-}
-
-# Overrides that carry a security posture, so they are not allowed to outlive the preset they were set
-# against: changing the preset clears them (F2). A leftover egress=open from `research` is the case that
-# matters. `build_memory`, `compose_project`, `mask_skip` and `swap` are not posture, so they survive.
-SECURITY_OVERRIDES = ("egress", "podman", "data_ro", "data_rw", "extra_domains", "observe_logs")
+# All three derive from the one settings table (projectkeys.KEYS), which is where each key's properties are
+# decided: which flag sets it, whether a preset change clears it, whether --unset takes it. They used to be
+# hand-maintained lists, and five audit findings were keys missing from one of them.
+SETTING_FLAGS = projectkeys.SETTING_FLAGS
+SECURITY_OVERRIDES = projectkeys.CLEARED_ON_PRESET_CHANGE
 
 
 def _given(a, key):
@@ -57,14 +46,10 @@ def _given(a, key):
     return value is not None and value != []
 
 
-# Settings `ab project set --unset KEY` can drop, returning them to the preset's value. `root` and `preset`
-# are not here: a project's code grant and its profile are what the project IS (move a root with rm + add).
-UNSETTABLE = tuple(presets.SETTINGS) + ("data_ro", "data_rw", "extra_domains", "mask_skip", "build_memory",
-                                        "compose_project", "observe_logs", "dev_images")
-
-# --clear-<list> conveniences: argparse dest -> the entry key it empties.
-CLEAR_FLAGS = {"clear_data_ro": "data_ro", "clear_data_rw": "data_rw",
-               "clear_extra_domains": "extra_domains", "clear_dev_images": "dev_images"}
+# `--unset KEY` takes every key the table marks unsettable (`root`/`preset` are what the project IS, and
+# the acks have their own commands); `--clear-<list>` is the list-valued subset.
+UNSETTABLE = projectkeys.UNSETTABLE
+CLEAR_FLAGS = projectkeys.CLEAR_FLAGS
 
 
 def _unset_keys(a):
@@ -103,8 +88,7 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     if a.data_rw:
         entry["data_rw"] = [check_grant(d, kind="data_rw", **grant_kw) for d in a.data_rw]
     if a.extra_domain:
-        from .egress import check_domains
-        entry["extra_domains"] = check_domains(a.extra_domain, "--extra-domain")
+        entry["extra_domains"] = _check(a.name, "extra_domains", list(a.extra_domain))
     if a.build_memory:
         entry["build_memory"] = a.build_memory
     if a.mask_skip:
@@ -112,11 +96,11 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     if a.podman:
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
-        entry["compose_project"] = session.check_compose_project(a.name, a.compose_project)
+        entry["compose_project"] = _check(a.name, "compose_project", a.compose_project)
     if a.observe_logs is not None:
         entry["observe_logs"] = a.observe_logs
     if a.dev_image:
-        entry["dev_images"] = session.check_dev_images(a.name, list(a.dev_image))
+        entry["dev_images"] = _check(a.name, "dev_images", list(a.dev_image))
     return cleared
 
 
@@ -131,7 +115,7 @@ def precheck_project_settings(s, a):
     _apply_project_settings(entry, a, _grant_kw(s, reg), presets_map)
     presets.effective(a.name, entry, presets_map)
     if "build_memory" in entry:
-        session.check_build_memory(s, a.name, entry["build_memory"])
+        _check(a.name, "build_memory", entry["build_memory"], settings=s)
 
 
 def _print_cleared(cleared):
@@ -145,7 +129,7 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
     secrets) and save it. Shared by `ab project add` and `ab project set`."""
     presets.effective(name, entry, presets_map)
     if "build_memory" in entry:
-        session.check_build_memory(s, name, entry["build_memory"])
+        _check(name, "build_memory", entry["build_memory"], settings=s)
     from . import grantcheck
     exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
                                          entry.get("mask_skip", []), covered=_mask_dsts(s, entry),

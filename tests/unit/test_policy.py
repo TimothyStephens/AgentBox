@@ -390,6 +390,20 @@ class PresetChangeTest(unittest.TestCase):
         self.assertEqual(eff["egress"][0], "locked", "research -> analysis-offline resolves to locked")
         self.assertEqual(eff["podman"][0], {"tier": "none"})
 
+    def test_every_posture_override_is_cleared_including_the_preset_settings(self):
+        """The clearing set is the table's `clears` column, so a hand-written `approvals`/`compose`
+        override is dropped by a preset change exactly as `egress` is -- an override must not outlive the
+        preset it was set against. compose_project and dev_images are in it now too (audit F4)."""
+        entry = {"root": "/r", "preset": "build", "approvals": "on", "compose": "rw",
+                 "compose_project": "shop", "dev_images": ["localhost/x:*"], "mask_skip": ["big"],
+                 "build_memory": "4g"}
+        cleared = cli._apply_project_settings(entry, ns(preset="script"), GRANT_KW, presets.BUILTIN)
+        for key in ("approvals", "compose", "compose_project", "dev_images"):
+            self.assertIn(key, cleared, key)
+            self.assertNotIn(key, entry, key)
+        self.assertEqual(entry["mask_skip"], ["big"], "a property of the tree, not the posture: kept")
+        self.assertEqual(entry["build_memory"], "4g", "a resource limit, not posture: kept")
+
     def test_overrides_given_in_the_same_command_are_kept(self):
         entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True}
         cleared = cli._apply_project_settings(entry, ns(preset="build", egress="locked"), GRANT_KW, presets.BUILTIN)

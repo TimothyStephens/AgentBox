@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from agentbox import buildcap
+from agentbox import projectkeys, buildcap
 from agentbox.errors import AgentboxError
 
 GIB = 1 << 30
@@ -63,10 +63,12 @@ class BuildMemoryTest(unittest.TestCase):
                                  values=dict(config.DEFAULTS))
 
     def check(self, value, cap):
+        """Validate a stored build_memory and return it in bytes. The table's validator checks the stored
+        form (e.g. "2g") and returns it; load_project is what resolves it to bytes."""
         from unittest import mock
-        from agentbox import session
+        from agentbox.cgroup import parse_size
         with mock.patch("agentbox.cgroup.slice_memory_max", return_value=cap):
-            return session.check_build_memory(self.s, "p", value)
+            return parse_size(projectkeys.validate_value("build_memory", "project p", value, settings=self.s))
 
     def test_default_is_2g(self):
         self.assertEqual(self.s.build_memory, "2g")

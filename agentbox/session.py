@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, registry, tokens
+from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, projectkeys, registry, tokens
 from . import keys as keysmod
 from . import buildcap, builtrec, scan, sockguard
 from .config import HOME
@@ -76,42 +76,22 @@ def load_project(settings, name):
         _no_commas(g, "grant")
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
-                   swap=check_swap(name, p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
-                   build_memory=check_build_memory(settings, name, p.get("build_memory", settings.build_memory)),
+                   swap=_check(name, "swap", p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
+                   build_memory=cgroup.parse_size(
+                       _check(name, "build_memory", p.get("build_memory", settings.build_memory),
+                              settings=settings)),
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
                    grant_exposure_accepted=str(p.get("grant_exposure_accepted") or ""),
-                   compose_project=check_compose_project(name, p.get("compose_project", name)),
-                   observe_logs=_bool(name, "observe_logs", p.get("observe_logs", False)),
+                   compose_project=_check(name, "compose_project", p.get("compose_project", name)),
+                   observe_logs=_check(name, "observe_logs", p.get("observe_logs", False)),
                    preset=str(p.get("preset") or ""),
-                   dev_images=check_dev_images(name, p.get("dev_images", [])),
+                   dev_images=_check(name, "dev_images", p.get("dev_images", [])),
                    compose_project_explicit="compose_project" in p)
 
 
-IMAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/:@*?-]*$")
-
-
-def check_dev_images(name, patterns):
-    """Image name patterns (fnmatch, full names such as localhost/myapp:*) the dev tier may also use."""
-    if not isinstance(patterns, list) or not all(isinstance(p, str) and IMAGE_PATTERN.match(p) for p in patterns):
-        raise AgentboxError(f"project {name}: dev_images must be a list of image name patterns "
-                            "(e.g. localhost/myapp:*)")
-    return list(patterns)
-
-
-SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
-
-
-def check_compose_project(name, value):
-    if not isinstance(value, str) or not COMPOSE_NAME.match(value):
-        raise AgentboxError(f"project {name}: compose_project {value!r}: lower-case letters, digits, '-', '_'")
-    return value
-
-
-def _bool(name, key, value):
-    if not isinstance(value, bool):
-        raise AgentboxError(f"project {name}: {key} must be true or false")
-    return value
+def _check(name, key, value, **kw):
+    """One stored value, through its own validator in the settings table (projectkeys.KEYS)."""
+    return projectkeys.validate_value(key, f"project {name}", value, **kw)
 
 
 def podman_access(project, warn):
@@ -129,16 +109,6 @@ def podman_access(project, warn):
 
 def dev_tier(project):
     return (project.value("podman") or {}).get("tier") == "dev"
-
-
-def check_swap(name, swap):
-    """swap maps a file name to its dev stand-in in the same directory: plain file names only."""
-    for k, v in dict(swap).items():
-        for x in (k, v):
-            if not isinstance(x, str) or not SWAP_NAME.match(x) or x in (".", ".."):
-                raise AgentboxError(f"project {name}: swap entry {k!r} = {v!r}: use plain file names "
-                                    "(no '/', no '..')")
-    return dict(swap)
 
 
 def _history_masked(git_dir, swap, timeout):
@@ -180,18 +150,6 @@ def history_secrets_message(project, names):
             "Treat these secrets as exposed and rotate them (and consider rewriting the history). To go "
             "ahead once they are rotated, accept them with --accept-history-secrets "
             f"(`ab project accept-history-secrets {project}` for a registered project)")
-
-
-def check_build_memory(settings, name, value):
-    """A build's memory limit: positive, and within the slice's cap (a build over it could never finish)."""
-    size = cgroup.parse_size(value)
-    if size <= 0:
-        raise AgentboxError(f"project {name}: build_memory must be positive")
-    cap = cgroup.slice_memory_max(settings.cgroup_parent)
-    if cap is not None and size > cap:
-        raise AgentboxError(f"project {name}: build_memory {value} is over the {settings.cgroup_parent} cap "
-                            f"({cap >> 20} MB)")
-    return size
 
 
 def git_identity(settings, agent):

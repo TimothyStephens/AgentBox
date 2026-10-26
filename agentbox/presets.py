@@ -12,19 +12,16 @@ Rules beyond a plain merge:
 import os
 import tomllib
 
+from . import projectkeys
 from .errors import AgentboxError
 
-EGRESS = ("locked", "packages", "open")
-ALLOWED = {
-    "compose": ("ro", "rw"),
-    "egress": EGRESS,
-    "caps": ("refused", "opt-in"),
-    "secrets": ("locked", "masked"),
-    "approvals": ("on", "off"),
-    "data": ("ro-only", "declared"),
-}
-SETTINGS = tuple(ALLOWED) + ("podman",)
-PODMAN_TIERS = ("none", "observe", "exec", "dev")
+# Every one of these is derived from projectkeys.KEYS, the single settings table: which keys a preset may
+# set, their allowed values, and the looseness order a ceiling compares on (audit: five parallel lists).
+SETTINGS = projectkeys.PRESET_SETTINGS
+ALLOWED = projectkeys.ALLOWED
+LOOSENESS = projectkeys.LOOSENESS
+EGRESS = projectkeys.BY_NAME["egress"].values
+PODMAN_TIERS = projectkeys.PODMAN_TIERS
 
 # "build" and "script" are the canonical names; "pods" and "python" are kept as true aliases (separate
 # entries holding the identical dict, not a redirect), so a project already using "pods"/"python" resolves
@@ -122,17 +119,6 @@ def materialize_open_egress(entry, presets):
         entry["egress"] = "open"
 
 
-# How loose each value is; lockdown's ceiling refuses anything looser than its own value.
-LOOSENESS = {
-    "compose": {"ro": 0, "rw": 1},
-    "egress": {"locked": 0, "packages": 1, "open": 2},
-    "caps": {"refused": 0, "opt-in": 1},
-    "secrets": {"locked": 0, "masked": 1},
-    "approvals": {"on": 0, "off": 1},
-    "data": {"ro-only": 0, "declared": 1},
-}
-
-
 def load_presets(presets_dir):
     presets = {k: dict(v) for k, v in BUILTIN.items()}
     if os.path.isdir(presets_dir):
@@ -155,24 +141,13 @@ def load_presets(presets_dir):
 
 
 def _validate(values, where):
+    """Every value a preset (or a project override of one) may hold, checked by the table's own validator
+    for that key. `exec` stays a known podman value so its message is "not built" rather than "bad value",
+    and it is refused wherever a project is defined or loaded, not only when a session is prepared."""
     for k, v in values.items():
         if k not in SETTINGS:
             raise AgentboxError(f"{where}: unknown setting {k!r}")
-        if k == "podman":
-            tier = v.get("tier") if isinstance(v, dict) else None
-            if tier not in PODMAN_TIERS:
-                raise AgentboxError(f"{where}: podman tier must be one of {', '.join(PODMAN_TIERS)}")
-            live = v.get("live") if isinstance(v, dict) else None
-            if live not in (None, "observe", "exec"):
-                raise AgentboxError(f"{where}: podman live must be observe, exec, or unset")
-            # `exec` stays a known value so this message is "not built" rather than "bad value", but it is
-            # refused wherever a project is defined (add/init/set) and when one is loaded, not only once a
-            # session is being prepared (session.podman_access keeps its own check behind this).
-            if "exec" in (tier, live):
-                raise AgentboxError(f"{where}: exec on the live stack is not built; use observe for the live "
-                                    "stack, and the dev tier for a stack of the agent's own")
-        elif v not in ALLOWED[k]:
-            raise AgentboxError(f"{where}: {k} = {v!r}, expected one of {', '.join(ALLOWED[k])}")
+        projectkeys.validate_value(k, where, v)
 
 
 def effective(project_name, project, presets):

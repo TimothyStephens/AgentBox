@@ -1,0 +1,150 @@
+"""The project settings table (`agentbox/projectkeys.py`): one row per registry key, every property of that
+key decided in one place.
+
+Five audit findings (F4, F6, F8, F10, F11) were all the same shape: a key missing from one of five
+hand-maintained lists (cli.SECURITY_OVERRIDES, cli.UNSETTABLE, registry.PROJECT_KEYS, the display gating in
+_print_effective, the ceiling's looseness orders). These tests pin that the lists are now *derived*, and that
+a new key cannot be added without answering every column.
+"""
+import unittest
+
+from agentbox import cli, presets, projectkeys, registry
+
+
+# Frozen on purpose: adding a key means updating this list too, which is the moment to check that every
+# property below was decided rather than defaulted.
+EXPECTED_KEYS = {
+    "root", "preset",
+    "compose", "egress", "podman", "caps", "secrets", "approvals", "data",
+    "data_ro", "data_rw", "extra_domains", "compose_project", "observe_logs", "dev_images",
+    "mask_skip", "swap", "build_memory",
+    "history_secrets_accepted", "grant_exposure_accepted",
+}
+
+
+class TableIsComplete(unittest.TestCase):
+    def test_the_table_covers_exactly_the_registry_keys(self):
+        self.assertEqual({k.name for k in projectkeys.KEYS}, EXPECTED_KEYS)
+        self.assertEqual(set(registry.PROJECT_KEYS), EXPECTED_KEYS, "the registry accepts exactly these")
+
+    def test_every_row_answers_every_column(self):
+        for key in projectkeys.KEYS:
+            with self.subTest(key=key.name):
+                self.assertIn(key.kind, ("preset", "project", "structural", "ack"))
+                self.assertIn(key.arity, ("scalar", "list", "bool", "map"))
+                self.assertIn(key.display, ("always", "stored"))
+                self.assertIn(key.validate, projectkeys.VALIDATORS, "validator must exist")
+                self.assertIsInstance(key.security, bool)
+                self.assertIsInstance(key.clears, bool)
+                self.assertIsInstance(key.unsettable, bool)
+                self.assertIsInstance(key.values, tuple)
+                if key.inert:
+                    self.assertIn(key.inert, projectkeys.INERT_WHEN)
+                    self.assertTrue(key.inert_reason, "an inert key must say why")
+                if key.flags:
+                    self.assertTrue(key.dest, f"{key.name}: a flag needs a dest")
+
+    def test_a_new_row_must_decide_every_property(self):
+        """No defaults on the decision fields: a half-filled row is a TypeError at import, not a key that
+        quietly inherits someone else's answer."""
+        with self.assertRaises(TypeError):
+            projectkeys.Key(name="newkey")
+
+    def test_an_ordered_key_has_a_tightest_value(self):
+        for key in projectkeys.KEYS:
+            if key.values or key.name == "podman":
+                self.assertIsNotNone(key.tightest, key.name)
+
+
+class DerivedViews(unittest.TestCase):
+    def test_presets_settings_and_allowed_derive_from_the_table(self):
+        self.assertEqual(set(presets.SETTINGS), {k.name for k in projectkeys.KEYS if k.kind == "preset"})
+        for name, values in presets.ALLOWED.items():
+            self.assertEqual(tuple(values), projectkeys.BY_NAME[name].values, name)
+
+    def test_looseness_derives_from_the_table(self):
+        for name, order in presets.LOOSENESS.items():
+            self.assertEqual(list(order), list(projectkeys.BY_NAME[name].values), name)
+
+    def test_cli_lists_derive_from_the_table(self):
+        self.assertEqual(set(cli.UNSETTABLE), {k.name for k in projectkeys.KEYS if k.unsettable})
+        self.assertEqual(set(cli.SECURITY_OVERRIDES), {k.name for k in projectkeys.KEYS if k.clears})
+        self.assertEqual(set(cli.CLEAR_FLAGS.values()),
+                         {k.name for k in projectkeys.KEYS if k.arity == "list" and k.unsettable})
+        self.assertEqual(set(cli.SETTING_FLAGS), {k.name for k in projectkeys.KEYS if k.flags})
+
+    def test_compose_project_and_dev_images_are_security_relevant_and_cleared(self):
+        """F4: both were missing from SECURITY_OVERRIDES, so a preset change left a waived live-stack
+        ownership check and an extra image allowlist in place."""
+        for name in ("compose_project", "dev_images"):
+            key = projectkeys.BY_NAME[name]
+            self.assertTrue(key.security, name)
+            self.assertTrue(key.clears, name)
+            self.assertIn(name, cli.SECURITY_OVERRIDES)
+
+    def test_the_acks_and_tree_properties_are_not_cleared_by_a_preset_change(self):
+        for name in ("mask_skip", "swap", "build_memory", "root", "preset",
+                     "history_secrets_accepted", "grant_exposure_accepted"):
+            self.assertFalse(projectkeys.BY_NAME[name].clears, name)
+
+
+class Looseness(unittest.TestCase):
+    def test_scalar_orders(self):
+        self.assertTrue(projectkeys.is_looser("egress", "open", "locked"))
+        self.assertTrue(projectkeys.is_looser("egress", "packages", "locked"))
+        self.assertFalse(projectkeys.is_looser("egress", "locked", "open"))
+        self.assertFalse(projectkeys.is_looser("egress", "open", "open"))
+        self.assertTrue(projectkeys.is_looser("approvals", "off", "on"))
+        self.assertTrue(projectkeys.is_looser("observe_logs", True, False))
+        self.assertFalse(projectkeys.is_looser("observe_logs", False, True))
+
+    def test_podman_is_component_wise(self):
+        none, obs = {"tier": "none"}, {"tier": "none", "live": "observe"}
+        dev = {"tier": "dev", "live": "observe"}
+        self.assertTrue(projectkeys.is_looser("podman", obs, none), "live alone is looser")
+        self.assertTrue(projectkeys.is_looser("podman", dev, none))
+        self.assertTrue(projectkeys.is_looser("podman", dev, obs))
+        self.assertFalse(projectkeys.is_looser("podman", none, dev))
+        self.assertFalse(projectkeys.is_looser("podman", none, none))
+
+    def test_unordered_keys_are_never_looser(self):
+        self.assertFalse(projectkeys.is_looser("data_ro", ["/a"], []))
+        self.assertFalse(projectkeys.is_looser("mask_skip", ["x"], []))
+
+    def test_label_for_a_change(self):
+        self.assertEqual(projectkeys.change_label("egress", "locked", "open"), "loosened")
+        self.assertEqual(projectkeys.change_label("egress", "open", "locked"), "tightened")
+        self.assertEqual(projectkeys.change_label("egress", "open", "open"), "")
+        self.assertEqual(projectkeys.change_label("data_ro", ["/a"], []), "")
+
+
+class Inertness(unittest.TestCase):
+    def ctx(self, tier="none", live=None, egress="packages"):
+        return {"tier": tier, "live": live, "egress": egress, "live_access": "observe" in (tier, live)}
+
+    def test_always_inert_keys(self):
+        for name in ("caps", "secrets"):
+            self.assertEqual(projectkeys.BY_NAME[name].inert, "always", name)
+            self.assertTrue(projectkeys.inert_reason(name, self.ctx()), name)
+
+    def test_live_stack_keys_are_inert_without_live_access(self):
+        for name in ("compose_project", "observe_logs"):
+            self.assertTrue(projectkeys.inert_reason(name, self.ctx()), name)
+            self.assertFalse(projectkeys.inert_reason(name, self.ctx(live="observe")), name)
+
+    def test_dev_tier_keys_are_inert_off_the_dev_tier(self):
+        for name in ("dev_images", "build_memory"):
+            self.assertTrue(projectkeys.inert_reason(name, self.ctx()), name)
+            self.assertFalse(projectkeys.inert_reason(name, self.ctx(tier="dev")), name)
+
+    def test_extra_domains_is_inert_under_locked_egress(self):
+        self.assertTrue(projectkeys.inert_reason("extra_domains", self.ctx(egress="locked")))
+        self.assertFalse(projectkeys.inert_reason("extra_domains", self.ctx(egress="packages")))
+
+    def test_a_plain_key_is_never_inert(self):
+        self.assertEqual(projectkeys.inert_reason("egress", self.ctx()), "")
+        self.assertEqual(projectkeys.inert_reason("root", self.ctx()), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
