@@ -25,11 +25,51 @@ def _grant_kw(s, reg, exclude=None):
     return dict(home=HOME, extra_protected=session.protected_extra(s), other_roots=others)
 
 
+# entry key -> (namespace attribute, the flag that sets it). The single place that maps a stored setting to
+# the flag it comes from: used to tell "given in this command" from "left alone", and to name the flag in
+# conflict messages.
+SETTING_FLAGS = {
+    "preset": ("preset", "--preset"),
+    "egress": ("egress", "--egress"),
+    "podman": ("podman", "--podman"),
+    "data_ro": ("data_ro", "--data-ro"),
+    "data_rw": ("data_rw", "--data-rw"),
+    "extra_domains": ("extra_domain", "--extra-domain"),
+    "mask_skip": ("mask_skip", "--mask-skip"),
+    "build_memory": ("build_memory", "--build-memory"),
+    "compose_project": ("compose_project", "--compose-project"),
+    "observe_logs": ("observe_logs", "--observe-logs"),
+    "dev_images": ("dev_image", "--dev-image"),
+}
+
+# Overrides that carry a security posture, so they are not allowed to outlive the preset they were set
+# against: changing the preset clears them (F2). A leftover egress=open from `research` is the case that
+# matters. `build_memory`, `compose_project`, `mask_skip` and `swap` are not posture, so they survive.
+SECURITY_OVERRIDES = ("egress", "podman", "data_ro", "data_rw", "extra_domains", "observe_logs")
+
+
+def _given(a, key):
+    """Was this entry key given explicitly on this command line?"""
+    flag = SETTING_FLAGS.get(key)
+    if not flag:
+        return False
+    value = getattr(a, flag[0], None)
+    return value is not None and value != []
+
+
 def _apply_project_settings(entry, a, grant_kw):
     """Apply the override flags shared by `ab init`, `ab project add` and `ab project set` onto a registry
     entry dict. For add/init, `entry` starts empty, so "if a.x:" writes only what was given. For `set`,
     `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
-    value untouched, and giving one replaces it (a list flag replaces the whole list)."""
+    value untouched, and giving one replaces it (a list flag replaces the whole list).
+
+    Returns the stored overrides cleared because the preset changed, for the caller to print."""
+    cleared = []
+    if a.preset and entry.get("preset") and a.preset != entry["preset"]:
+        for key in SECURITY_OVERRIDES:
+            if key in entry and not _given(a, key):
+                del entry[key]
+                cleared.append(key)
     if a.preset:
         entry["preset"] = a.preset
     if a.egress:
@@ -54,7 +94,13 @@ def _apply_project_settings(entry, a, grant_kw):
         entry["observe_logs"] = a.observe_logs
     if a.dev_image:
         entry["dev_images"] = session.check_dev_images(a.name, list(a.dev_image))
-    return entry
+    return cleared
+
+
+def _print_cleared(cleared):
+    if cleared:
+        print(f"  cleared with the old preset: {', '.join(cleared)} "
+              f"(set them again if you still want them)")
 
 
 def _validate_and_save(s, reg, name, entry, a):
@@ -94,9 +140,10 @@ def cmd_project_add(s, a):
         raise AgentboxError(f"project {a.name} already exists")
     grant_kw = _grant_kw(s, reg)
     entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
-    _apply_project_settings(entry, a, grant_kw)
+    cleared = _apply_project_settings(entry, a, grant_kw)
     _validate_and_save(s, reg, a.name, entry, a)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
+    _print_cleared(cleared)
 
 
 def _mask_dsts(settings, entry):

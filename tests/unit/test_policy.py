@@ -239,6 +239,67 @@ class PathTest(TempCase):
             self.check(os.path.join(self.home, "nope"))
 
 
+def ns(**kw):
+    """A parsed `ab project add`/`set` namespace with every shared flag at its real default (taken from the
+    shared definition itself, so this helper cannot drift from the CLI)."""
+    p = argparse.ArgumentParser()
+    cli._add_project_setting_args(p, preset_required=False)
+    a = p.parse_args([])
+    a.name = "p"
+    for k, v in kw.items():
+        setattr(a, k, v)
+    return a
+
+
+GRANT_KW = dict(home="/home/nobody", extra_protected=[], other_roots=[])
+
+
+class PresetChangeTest(unittest.TestCase):
+    """F2: a new preset means a new security posture, so stored security-relevant overrides from the old one
+    are cleared rather than silently outliving it (a leftover egress=open from `research` is the case that
+    matters). Overrides given in the same command win over the clearing."""
+
+    def test_changing_the_preset_clears_stored_security_overrides(self):
+        entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True,
+                 "extra_domains": ["x.com"], "podman": {"tier": "dev"}, "data_ro": ["/d"],
+                 "data_rw": ["/w"], "build_memory": "4g"}
+        cleared = cli._apply_project_settings(entry, ns(preset="analysis-offline"), GRANT_KW)
+        self.assertEqual(cleared, ["egress", "podman", "data_ro", "data_rw", "extra_domains",
+                                   "observe_logs"])
+        self.assertEqual(entry["preset"], "analysis-offline")
+        for key in cleared:
+            self.assertNotIn(key, entry)
+        self.assertEqual(entry["build_memory"], "4g", "not security-relevant: kept")
+        eff = presets.effective("p", entry, presets.BUILTIN)
+        self.assertEqual(eff["egress"][0], "locked", "research -> analysis-offline resolves to locked")
+        self.assertEqual(eff["podman"][0], {"tier": "none"})
+
+    def test_overrides_given_in_the_same_command_are_kept(self):
+        entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True}
+        cleared = cli._apply_project_settings(entry, ns(preset="build", egress="locked"), GRANT_KW)
+        self.assertEqual(entry["egress"], "locked", "the flag given now wins over the clearing")
+        self.assertNotIn("egress", cleared)
+        self.assertEqual(cleared, ["observe_logs"])
+
+    def test_switching_to_an_open_preset_applies_its_open_egress(self):
+        entry = {"root": "/r", "preset": "script", "egress": "locked"}
+        cleared = cli._apply_project_settings(entry, ns(preset="research"), GRANT_KW)
+        self.assertEqual(cleared, ["egress"])
+        self.assertEqual(entry["egress"], "open", "cleared, then research's own open default applied")
+        self.assertEqual(presets.effective("p", entry, presets.BUILTIN)["egress"], ("open", "project"))
+
+    def test_keeping_the_same_preset_clears_nothing(self):
+        entry = {"root": "/r", "preset": "build", "egress": "open", "observe_logs": True}
+        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW), [])
+        self.assertEqual(entry["egress"], "open")
+        self.assertEqual(entry["observe_logs"], True)
+
+    def test_a_new_project_has_nothing_to_clear(self):
+        entry = {"root": "/r"}
+        self.assertEqual(cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW), [])
+        self.assertEqual(entry, {"root": "/r", "preset": "build"})
+
+
 class SharedArgsTest(unittest.TestCase):
     """Requirement 1's parity scaffolding: `ab init`, `ab project add` and `ab project set` must define the
     project-setting flags identically. This only exercises the shared add-arg function directly; the
