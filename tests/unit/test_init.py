@@ -34,7 +34,7 @@ class FreshProjectTest(InitCase):
     def test_fresh_project_is_clean_by_construction(self):
         """For both templates: registered with zero overrides, and grantcheck (what session start runs) finds
         nothing and warns about nothing."""
-        for template, preset in (("pod", "pods"), ("python", "python")):
+        for template, preset in (("pod", "build"), ("python", "script")):
             with self.subTest(template=template):
                 name = f"demo{template}"
                 rc, _ = self.init(template, name)
@@ -101,6 +101,54 @@ class FreshProjectTest(InitCase):
         self.assertNotIn("./data", live, "no repo-tree data bind in the live stack")
         self.assertTrue(os.path.isfile(os.path.join(root, "compose.dev.yaml")))
         self.assertFalse(os.path.isdir(os.path.join(root, "data")), "no ./data: --data-bind is deferred")
+
+
+class OverrideTest(InitCase):
+    """ab init shares the project-setting flags with ab project add/set (requirement 1); it is no longer
+    limited to the template's bare default preset with zero overrides."""
+
+    def test_init_accepts_override_flags(self):
+        rc, _ = self.init("pod", "openpod", "--egress", "open")
+        self.assertEqual(rc, 0)
+        e = self.entry("openpod")
+        self.assertEqual(set(e), {"root", "preset", "egress"})
+        self.assertEqual(e["preset"], "build")
+        self.assertEqual(e["egress"], "open", "the explicit override, not research/build-open's auto-open")
+
+    def test_init_accepts_an_explicit_preset(self):
+        rc, _ = self.init("python", "offline1", "--preset", "analysis-offline")
+        self.assertEqual(rc, 0)
+        e = self.entry("offline1")
+        self.assertEqual(set(e), {"root", "preset"})
+        self.assertEqual(e["preset"], "analysis-offline")
+
+    def test_init_with_a_default_open_preset_writes_egress_explicitly(self):
+        rc, _ = self.init("python", "researchy", "--preset", "research")
+        self.assertEqual(rc, 0)
+        e = self.entry("researchy")
+        self.assertEqual(e["preset"], "research")
+        self.assertEqual(e["egress"], "open", "research's own default-open, written as a project override")
+
+
+class SharedArgsParityTest(InitCase):
+    """Requirement 1, functional half: the same override flags passed to `ab init` and to `ab project add`
+    produce the same registry entry, modulo root/name."""
+
+    def test_init_and_add_apply_overrides_identically(self):
+        overrides = ["--egress", "packages", "--build-memory", "4g", "--mask-skip", "sub"]
+        rc, _ = self.init("pod", "viaint", *overrides)
+        self.assertEqual(rc, 0)
+        via_init = dict(self.entry("viaint"))
+
+        root = self.mkdir("manualroot")
+        rc = cli.main(["project", "add", "viaadd", root, "--preset", "build", *overrides])
+        self.assertEqual(rc, 0)
+        via_add = dict(self.entry("viaadd"))
+
+        for k in ("root", "preset"):
+            del via_init[k]
+            del via_add[k]
+        self.assertEqual(via_init, via_add)
 
 
 class UpstreamTest(InitCase):

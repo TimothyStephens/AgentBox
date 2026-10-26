@@ -7,9 +7,11 @@ by construction. The safe shape is the only thing this can make:
     `git clean` cannot take it, and no session is ever granted it;
   * `AGENTS.md` states the ENFORCED reality, not rules the agent must choose to obey.
 
-After writing the tree it runs `ab project add --preset {pods|python}` itself, so the project is registered
-and grant-checked the moment it exists. A freshly-init'd project starts a session with zero warnings and zero
-overrides (tests assert exactly that).
+After writing the tree it runs `ab project add --preset {build|script}` itself (`pods`/`python` are kept as
+aliases of those two), so the project is registered and grant-checked the moment it exists. A freshly-init'd
+project with no override flags starts a session with zero warnings and zero overrides (tests assert exactly
+that). `ab init` shares its override flags (--preset, --egress, --data-ro, ...) with `ab project add`/`set`
+(agentbox/cli.py's `_add_project_setting_args`), so a project can be fully configured at init time too.
 
 `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred. Its future
 contract: mask `./data` in sessions (the existing cover mechanism + grantcheck), and require the user to point
@@ -17,7 +19,6 @@ at their OWN external backup (`--data-backup <target>`); agentbox masks `./data`
 `init` prints that `./data` is the user's to back up. The per-session rsync snapshot is NOT a data backup
 (same disk, only as fresh as the last session start); see docs/decisions.md.
 """
-import argparse
 import os
 import subprocess
 
@@ -25,7 +26,7 @@ from . import registry
 from .errors import AgentboxError
 
 TEMPLATES = ("pod", "python")
-PRESET = {"pod": "pods", "python": "python"}
+PRESET = {"pod": "build", "python": "script"}
 # The ONLY scaffold files a user template dir may replace: documentation, never .env/.env.dev, the masks,
 # the compose/data-volume structure or anything else that keeps a fresh project grantcheck-clean. Any other
 # file in the template dir is ignored, so the safe layout always comes from the built-in constants.
@@ -303,8 +304,11 @@ def _template_overrides(settings, template, name):
     return out
 
 
-def make(settings, template, name, *, upstream=None, out=print, warn=None):
+def make(settings, a, *, out=print, warn=None):
+    """`a` is the parsed `ab init` Namespace: `.template`/`.name`/`.upstream`, plus the project-setting
+    override flags it shares with `ab project add`/`set` (`cli._add_project_setting_args`)."""
     warn = warn or (lambda m: None)
+    template, name, upstream = a.template, a.name, a.upstream
     if template not in TEMPLATES:
         raise AgentboxError(f"unknown template {template!r}; choose one of {', '.join(TEMPLATES)}")
     registry.check_name(name)
@@ -348,13 +352,13 @@ def make(settings, template, name, *, upstream=None, out=print, warn=None):
         shutil.rmtree(dest, ignore_errors=True)
         raise
 
-    # Register and grant-check the project the moment it exists, with no overrides.
+    # Register and grant-check the project the moment it exists. `a` already carries the project-setting
+    # override flags (ab init shares their definition with ab project add/set); only `root` and the
+    # per-template default preset are init-specific, filled in here.
     from . import cli
-    add = argparse.Namespace(name=name, root=dest, preset=PRESET[template], data_ro=[], data_rw=[], egress=None,
-                             extra_domain=[], build_memory=None, mask_skip=[], podman=None, compose_project=None,
-                             dev_image=[], observe_logs=None, accept_history_secrets=False,
-                             i_understand_grant_exposure=False)
-    cli.cmd_project_add(settings, add)
+    a.root = dest
+    a.preset = a.preset or PRESET[template]
+    cli.cmd_project_add(settings, a)
 
     out(f"\nscaffolded {template} project {name} at {dest}")
     out(f"  start:  ab run --agent <agent> --project {name}")

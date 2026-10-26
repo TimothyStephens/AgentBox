@@ -17,7 +17,7 @@ def warn(msg):
 
 def cmd_init(s, a):
     from . import initproj
-    return initproj.make(s, a.template, a.name, upstream=a.upstream, out=print, warn=warn)
+    return initproj.make(s, a, out=print, warn=warn)
 
 
 def _grant_kw(s, reg, exclude=None):
@@ -447,6 +447,7 @@ def parser():
     x.add_argument("--upstream", metavar="URL",
                    help="git URL to add as origin and push to (an off-box CODE backup; it does NOT back up "
                         ".env or the data volume)")
+    _add_project_setting_args(x, preset_required=False)
     x.set_defaults(fn=cmd_init)
 
     proj = sub.add_parser(
