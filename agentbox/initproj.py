@@ -321,6 +321,13 @@ def make(settings, a, *, out=print, warn=None):
     if os.path.exists(dest):
         raise AgentboxError(f"{dest} already exists; refusing to scaffold over it")
 
+    # Every setting is checked BEFORE anything is written, so a bad flag leaves no tree behind for a
+    # corrected retry to trip over. The template's default preset is resolved first, since the checks
+    # (lockdown ceiling included) are relative to it.
+    from . import cli
+    a.preset = a.preset or PRESET[template]
+    cli.precheck_project_settings(settings, a)
+
     files = _files(template, name)
     files.update(_template_overrides(settings, template, name))   # only OVERRIDABLE docs; structure stays built-in
     os.makedirs(dest, mode=0o700, exist_ok=True)
@@ -353,11 +360,9 @@ def make(settings, a, *, out=print, warn=None):
         raise
 
     # Register and grant-check the project the moment it exists. `a` already carries the project-setting
-    # override flags (ab init shares their definition with ab project add/set); only `root` and the
-    # per-template default preset are init-specific, filled in here.
-    from . import cli
+    # override flags (ab init shares their definition with ab project add/set) and its preset; only `root`
+    # is init-specific, filled in here.
     a.root = dest
-    a.preset = a.preset or PRESET[template]
     cli.cmd_project_add(settings, a)
 
     out(f"\nscaffolded {template} project {name} at {dest}")

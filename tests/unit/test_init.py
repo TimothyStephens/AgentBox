@@ -29,6 +29,13 @@ class InitCase(SettingsCase):
     def entry(self, name):
         return registry.load(self.settings.registry_path)[name]
 
+    def init_rc(self, template, name, *extra):
+        """Exit code of `ab init`, whether argparse refused it (SystemExit) or a check did."""
+        try:
+            return self.init(template, name, *extra)[0]
+        except SystemExit as e:
+            return e.code
+
 
 class FreshProjectTest(InitCase):
     def test_fresh_project_is_clean_by_construction(self):
@@ -128,6 +135,39 @@ class OverrideTest(InitCase):
         e = self.entry("researchy")
         self.assertEqual(e["preset"], "research")
         self.assertEqual(e["egress"], "open", "research's own default-open, written as a project override")
+
+
+class SettingsCheckedBeforeScaffoldTest(InitCase):
+    """F6: the settings are validated BEFORE anything is written, so a bad flag leaves no half-made tree
+    (which would then make a corrected retry fail with "already exists; refusing to scaffold over it")."""
+
+    def test_a_bad_setting_writes_nothing(self):
+        cases = {
+            "ceiling": ["--preset", "lockdown", "--observe-logs"],
+            "unknown-preset": ["--preset", "nope"],
+            "bad-build-memory": ["--build-memory", "not-a-size"],
+            "bad-domain": ["--extra-domain", "not a domain"],
+            "bad-dev-image": ["--dev-image", "NOT VALID"],
+            "missing-data-ro": ["--data-ro", "/does/not/exist/at/all"],
+            "bad-egress": ["--egress", "nope"],
+            "bad-compose-project": ["--compose-project", "Not Valid"],
+        }
+        for label, extra in cases.items():
+            with self.subTest(case=label):
+                name = f"pre{label.replace('-', '')}"
+                rc = self.init_rc("python", name, *extra)
+                self.assertNotEqual(rc, 0, "must be refused")
+                self.assertFalse(os.path.exists(os.path.join(self.repos, name)),
+                                 "a settings error must write nothing")
+                self.assertNotIn(name, registry.load(self.settings.registry_path))
+
+    def test_good_settings_still_scaffold_and_register(self):
+        rc, _ = self.init("pod", "fine", "--egress", "locked", "--build-memory", "3g")
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.isdir(os.path.join(self.repos, "fine")))
+        e = self.entry("fine")
+        self.assertEqual(e["egress"], "locked")
+        self.assertEqual(e["build_memory"], "3g")
 
 
 class SharedArgsParityTest(InitCase):

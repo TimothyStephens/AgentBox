@@ -120,6 +120,20 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     return cleared
 
 
+def precheck_project_settings(s, a):
+    """Validate the project-setting flags before anything is written. `ab init` calls this first, so a bad
+    flag leaves no half-scaffolded tree behind (which would then make a corrected retry fail with "already
+    exists; refusing to scaffold over it"). Everything here is re-checked by cmd_project_add afterwards;
+    only the checks that need the project root to exist are left to it."""
+    reg = registry.load(s.registry_path)
+    presets_map = presets.load_presets(s.presets_dir)
+    entry = {}
+    _apply_project_settings(entry, a, _grant_kw(s, reg), presets_map)
+    presets.effective(a.name, entry, presets_map)
+    if "build_memory" in entry:
+        session.check_build_memory(s, a.name, entry["build_memory"])
+
+
 def _print_cleared(cleared):
     if cleared:
         print(f"  cleared with the old preset: {', '.join(cleared)} "
