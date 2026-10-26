@@ -763,3 +763,100 @@ whether to keep it at all, given Track 1, is left open for a later pass.
 - **What:** the `ab run --with-secrets` flag is removed, along with its plumbing (the `with_secrets` path in `presets.effective` that set the secrets value to *exposed*, `session.load_project`/`Session`/`_prepare_reserved`, and `mounts.plan`'s `secrets` parameter). `ALLOWED` lists only `locked` and `masked` for the secrets setting, so the *exposed* value was reachable *only* through this flag; with it gone, secret masks always apply and there is no route to turn them off. The secrets project setting remains as displayed metadata (locked/masked) but no longer gates masking.
 - **Why:** reviewing the open question from 14 Oct, `--with-secrets` had no valid effective use. In its one "allowed" case (real secrets *outside* the grant) nothing in the grant matches the mask names, so turning masks off did nothing; in every case where it *would* act (secrets in the grant) Track 1 refused it; and a secret in a `data_ro` grant would have been exposed **unguarded**, since `grantcheck.scan` covers only `root + data_rw`. So it could never both run and be safe. The sanctioned paths cover the real needs: a key the agent itself needs via `ab keys set <provider>` (outside every grant, read-only, `AB_KEY_<PROVIDER>`), and a pod's own runtime secret via the real `.env` at deploy. Supersedes the "left open" note of 14 Oct.
 - **Tests/docs:** removed `test_policy.test_with_secrets` (+ the lockdown-refusal assertion), `test_mounts.test_with_secrets_exposes`, `test_session.…with_secrets_message…`; `make test` (505) green, `make itest` re-run to confirm the launcher still stands up a session. design.md, USAGE.md (regenerated), TRIAL.md, progress.md updated.
+
+## 2026-10-26 · The preset redesign, `ab project set`, and the open-egress invariant (Tim)
+
+`ab init` is now the one place a project is fully configured, and a registered project can be changed in
+place. The work landed in steps; an audit of the half-built state produced ten findings (F1-F10), all
+actioned here.
+
+**One definition of the project-setting flags.** `--preset`, `--data-ro`, `--data-rw`, `--egress`,
+`--extra-domain`, `--build-memory`, `--mask-skip`, `--podman`, `--compose-project`, `--dev-image`,
+`--observe-logs`/`--no-observe-logs`, `--accept-history-secrets` and `--i-understand-grant-exposure` are
+declared once (`cli._add_project_setting_args`) and applied once (`cli._apply_project_settings`), for
+`ab init`, `ab project add` and `ab project set` alike, so the three cannot drift. `test_policy.SharedArgsTest`
+compares the three parsers' actions; `test_init.SharedArgsParityTest` compares the registry entry the same
+flags produce through init and through add. `ab init` therefore configures a project completely at creation
+time (it used to hand `cmd_project_add` a hardcoded all-defaults namespace), and prints the effective
+configuration with each value's source, as add and set do.
+
+**The preset set.** `build` (was `pods`), `build-open`, `script` (was `python`), `research`, `operate`,
+`analysis-offline`, and `lockdown` unchanged. `pods`/`python` are kept as **true aliases**: separate BUILTIN
+entries holding the identical dict, not a redirect, so an existing registry entry resolves exactly as before,
+provenance string included (`test_pods_and_python_resolve_identically_before_and_after`). `ab init pod`
+defaults to `build`, `ab init python` to `script`.
+
+| | lockdown | build (=pods) | build-open | script (=python) | research | operate | analysis-offline |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| compose | ro | rw | rw | ro | ro | ro | ro |
+| egress | locked | packages | **open** | packages | **open** | packages | locked |
+| podman | none | dev + live observe | dev + live observe | none | none | **live observe only** | none |
+| caps | refused | opt-in | opt-in | refused | refused | refused | refused |
+| approvals | on | off | off | off | off | off | off |
+| data | ro-only | declared | declared | declared | declared | ro-only | ro-only |
+
+`operate`'s `{tier = "none", live = "observe"}` needed no new code: `session.podman_access` already keys on
+tier **or** live. The `secrets` value is vestigial metadata (16 Oct: masks can no longer be turned off).
+
+**The open-egress invariant (F8b), stated exactly.** `egress = "open"` is an attribute of the preset
+*definition* (research and build-open declare it). It is never granted by live reference: `effective()`
+demotes a preset-sourced `open` to `packages`, so the only thing that actually opens a project is an `egress`
+key on its own registry entry. `materialize_open_egress()` writes that key when a project is registered or
+edited with such a preset, so `ab project show` prints it as project-sourced and `projects.toml` shows it.
+Three consequences, all deliberate:
+- editing a preset file to say `open` later does **not** open any already-registered project;
+- a **hand-written** registry entry with `preset = "research"` and no `egress` key resolves to `packages`
+  (fail-closed), not open — `test_an_open_preset_is_fail_closed_by_live_reference`;
+- because the open default lives on the definition rather than in a name list, a user's own `research.toml`
+  that says `egress = "locked"` stays locked. (The first draft used a `DEFAULT_OPEN_PRESETS` name list, which
+  a user file could not override. That list is gone.)
+
+**F2 — changing a preset clears the overrides it was set against.** A project switched from `research` to
+`analysis-offline` kept `egress = "open"`, so "offline" was open. Changing the preset (via `set`, or `add`
+where there is nothing to clear) now drops the stored **security** overrides — `egress`, `podman`, `data_ro`,
+`data_rw`, `extra_domains`, `observe_logs` — applies the new preset including its open-egress attribute, and
+prints what it cleared. Overrides given in the same command are kept. `build_memory`, `compose_project`,
+`mask_skip` and `swap` are not posture and survive.
+
+**F8a — a user preset under a new name inherits lockdown's values** for every key it omits (it inherited
+`python`'s, so a one-line file quietly got packages egress and approvals off). A file named after a built-in
+still customises that built-in.
+
+**F1 — the lockdown ceiling now covers `podman.live` and `observe_logs`.** It checked `podman.tier` only, so
+`lockdown` + `live = "observe"` handed a review-only project read access to the live stack; `observe_logs` is
+not one of `presets.SETTINGS`, so the override loop never saw it.
+
+**F7 — `exec` (tier or live) is refused at validation**, so `ab project add/init/set --podman exec` is
+refused where it is written, not at the next `ab run`. The value stays known, so the message is "not built"
+rather than "bad value"; `session.podman_access` keeps its own check behind it.
+
+**F3 — no registry edit while a session for the project is live.** `ab project rm` used to succeed and orphan
+the session: the entry vanished, `ab project show` denied the project existed, the containers kept running,
+and the grant lost its overlap protection, so another project could be registered over the live grant. `rm`
+(all-or-nothing across names), `accept-grant-exposure`, `accept-history-secrets` and `reset-state` now refuse,
+naming the session and the `ab session kill <session>` that ends it. **No `--force`**: ending live work is
+`ab session kill`'s job, consistent with rejecting auto-reaping (6 Oct), and with the `ab project` /
+`ab session` namespace split (7 Oct).
+
+**F5/F9 — `ab project set NAME [flags]`** changes a registered project in place, re-running everything `add`
+validates (preset, ceiling, build_memory, grantcheck, history secrets, the root grant), so a `set` cannot
+leave an entry a fresh `add` would have refused. `--unset KEY` returns a setting to its preset value;
+`--clear-data-ro`/`--clear-data-rw`/`--clear-extra-domains`/`--clear-dev-images` empty a list setting; giving
+`--unset KEY` and that key's own flag together is refused. `--unset egress` on an open preset deliberately
+does not re-materialise open (otherwise it would be a no-op exactly where it matters); the fail-closed
+resolution applies instead. **`root` is still not editable** — moving a code grant stays `rm` + `add`, since
+it changes overlap, backups and orphaned state.
+
+**F4 — read-only data grants are scanned, as warnings.** `data_ro` was not scanned at all (the M2 known
+limitation), so whatever a read-only grant held was invisible. `grantcheck.scan(warn_grants=...)` now walks
+them with the same checks and reports the findings as warnings at add, set and session start. They stay
+**allowed**: a read-only grant full of live data is the declared purpose of `analysis-offline` and `operate`.
+
+**F6 — `ab init` validates every setting before writing anything.** A bad flag used to scaffold the tree,
+git-init it, commit, and only then fail at registration, leaving an unregistered directory that made the
+corrected retry fail with "already exists; refusing to scaffold over it".
+
+**F10 — `--preset` lists every preset that exists** (built-ins in table order, then user presets) with its
+one-line description, in `--help` and in the unknown-preset error, and `choices` now refuses an unknown name
+at parse time. `docs/gen_usage.py` generates `docs/USAGE.md` against an empty config dir so the reference
+lists the built-ins only, whoever runs it.

@@ -60,21 +60,82 @@ examples:
 Scaffold a new project with a safe-by-construction layout (secrets masked, live data in a named volume) and register it, so a fresh project starts a session with no warnings.
 
 ```text
-usage: ab init [-h] --name NAME [--upstream URL] {pod,python}
+usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
+               [--data-ro DIR] [--data-rw DIR] [--egress MODE]
+               [--extra-domain DOMAIN] [--build-memory SIZE] [--mask-skip DIR]
+               [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
+               [--observe-logs | --no-observe-logs] [--accept-history-secrets]
+               [--i-understand-grant-exposure]
+               {pod,python}
 
 scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named volume), then register it
 
 positional arguments:
-  {pod,python}    which scaffold to create: `pod` (a compose/dev-stack
-                  service, live data in a named volume) or `python` (a
-                  script/library, data path from DATA_DIR)
+  {pod,python}          which scaffold to create: `pod` (a compose/dev-stack
+                        service, live data in a named volume) or `python` (a
+                        script/library, data path from DATA_DIR)
 
 options:
-  -h, --help      show this help message and exit
-  --name NAME     project name; the repo is created at <repos_dir>/<name> and
-                  registered under it
-  --upstream URL  git URL to add as origin and push to (an off-box CODE
-                  backup; it does NOT back up .env or the data volume)
+  -h, --help            show this help message and exit
+  --name NAME           project name; the repo is created at
+                        <repos_dir>/<name> and registered under it
+  --upstream URL        git URL to add as origin and push to (an off-box CODE
+                        backup; it does NOT back up .env or the data volume)
+  --preset PRESET       security profile (default: the template's own — pod:
+                        build, python: script). One of: lockdown — review-
+                        only: no network beyond the model API, no podman
+                        access, approvals on; build — build, run and test the
+                        project's own pod/dev stack (packages egress); pods —
+                        alias of build; build-open — like build, with open web
+                        egress for fetching arbitrary sites; script — scripts
+                        and data processing, no podman access (packages
+                        egress); python — alias of script; research — review,
+                        planning and open web research; no podman access;
+                        operate — inspect a live stack (observe tier); data
+                        grants are read-only; analysis-offline — sensitive
+                        data, no egress beyond the model API, no podman
+                        access, data read-only. A file in
+                        ~/.config/agentbox/presets/ adds one of your own (it
+                        inherits lockdown's values for every key it omits).
+                        `ab project show` prints what a preset resolves to,
+                        and where each value came from
+  --data-ro DIR         an extra directory to mount read-only (repeatable);
+                        for input data that lives outside the code grant
+  --data-rw DIR         an extra directory to mount read-write (repeatable);
+                        for output data outside the code grant
+  --egress MODE         network egress: `locked` (model API only), `packages`
+                        (+ package registries), or `open` (+ any public host);
+                        the LAN and host are always refused. Overrides the
+                        preset (default: inherited from the preset)
+  --extra-domain DOMAIN
+                        add a domain to the egress allowlist (repeatable)
+  --build-memory SIZE   memory limit for each build in the dev tier (default:
+                        2g, e.g. 4g)
+  --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
+                        for speed on huge trees; NOT an exemption — grantcheck
+                        still scans it (repeatable)
+  --podman TIER         podman tier: `none`, `observe` (read the live stack),
+                        or `dev` (run the agent's own <project>-dev stack).
+                        `exec` is refused — not built (default: inherited from
+                        the preset)
+  --compose-project NAME
+                        the live stack's compose project name for the observe
+                        tier (default: the project name)
+  --dev-image PATTERN   dev tier: also allow running or building from images
+                        matching this name pattern (e.g. localhost/myapp:*);
+                        by default only allowlisted registries and this
+                        project's builds (repeatable)
+  --observe-logs, --no-observe-logs
+                        let the observe tier read the live stack's logs
+                        (default: off; logs can hold secrets, and what the
+                        agent reads goes to its model provider)
+  --accept-history-secrets
+                        register even though masked file names (.env, *.key,
+                        ...) are in git history
+  --i-understand-grant-exposure
+                        register even though the grant holds secrets or live
+                        data (a grant is for code; move them outside it or add
+                        a mask)
 
 examples:
   ab init pod --name filelab
@@ -147,15 +208,17 @@ Manage the durable registry entries — a project names a code grant, a preset a
 
 ```text
 usage: ab project [-h]
-                  {add,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+                  {add,set,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
                   ...
 
 manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
 
 positional arguments:
-  {add,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+  {add,set,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
     add                 register a project with a preset (validated against
                         overlap and grant exposure)
+    set                 change a registered project's settings in place (re-
+                        validated; refused while a session for it is live)
     accept-history-secrets
                         accept (after rotating them) the masked file names now
                         in a project's git history
@@ -175,7 +238,8 @@ options:
   -h, --help            show this help message and exit
 
 examples:
-  ab project add web ~/repos/web --preset pods
+  ab project add web ~/repos/web --preset build
+  ab project set web --egress open
   ab project show web
   ab project ls
   ab project rm web
@@ -190,7 +254,8 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
-                      [--observe-logs] [--accept-history-secrets]
+                      [--observe-logs | --no-observe-logs]
+                      [--accept-history-secrets]
                       [--i-understand-grant-exposure]
                       name root
 
@@ -205,11 +270,23 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --preset PRESET       security profile: `lockdown` (review-only, no
-                        network/podman), `pods` (build and run the project's
-                        own dev stack), or `python` (scripts/data); or a
-                        custom preset in ~/.config/agentbox/presets/. `ab
-                        project show` prints what one resolves to
+  --preset PRESET       security profile. One of: lockdown — review-only: no
+                        network beyond the model API, no podman access,
+                        approvals on; build — build, run and test the
+                        project's own pod/dev stack (packages egress); pods —
+                        alias of build; build-open — like build, with open web
+                        egress for fetching arbitrary sites; script — scripts
+                        and data processing, no podman access (packages
+                        egress); python — alias of script; research — review,
+                        planning and open web research; no podman access;
+                        operate — inspect a live stack (observe tier); data
+                        grants are read-only; analysis-offline — sensitive
+                        data, no egress beyond the model API, no podman
+                        access, data read-only. A file in
+                        ~/.config/agentbox/presets/ adds one of your own (it
+                        inherits lockdown's values for every key it omits).
+                        `ab project show` prints what a preset resolves to,
+                        and where each value came from
   --data-ro DIR         an extra directory to mount read-only (repeatable);
                         for input data that lives outside the code grant
   --data-rw DIR         an extra directory to mount read-write (repeatable);
@@ -217,17 +294,18 @@ options:
   --egress MODE         network egress: `locked` (model API only), `packages`
                         (+ package registries), or `open` (+ any public host);
                         the LAN and host are always refused. Overrides the
-                        preset
+                        preset (default: inherited from the preset)
   --extra-domain DOMAIN
                         add a domain to the egress allowlist (repeatable)
-  --build-memory SIZE   memory limit for each build in the dev tier (default
+  --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        `exec` is refused — not built
+                        `exec` is refused — not built (default: inherited from
+                        the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -235,9 +313,10 @@ options:
                         matching this name pattern (e.g. localhost/myapp:*);
                         by default only allowlisted registries and this
                         project's builds (repeatable)
-  --observe-logs        let the observe tier read the live stack's logs (off
-                        by default: logs can hold secrets, and what the agent
-                        reads goes to its model provider)
+  --observe-logs, --no-observe-logs
+                        let the observe tier read the live stack's logs
+                        (default: off; logs can hold secrets, and what the
+                        agent reads goes to its model provider)
   --accept-history-secrets
                         register even though masked file names (.env, *.key,
                         ...) are in git history
@@ -247,9 +326,108 @@ options:
                         a mask)
 
 examples:
-  ab project add web ~/repos/web --preset pods
-  ab project add dataproc ~/repos/dataproc --preset python --data-ro ~/data/raw --data-rw ~/data/out
-  ab project add svc ~/repos/svc --preset pods --egress open --podman dev
+  ab project add web ~/repos/web --preset build
+  ab project add dataproc ~/repos/dataproc --preset script --data-ro ~/data/raw --data-rw ~/data/out
+  ab project add notes ~/repos/notes --preset research
+  ab project add svc ~/repos/svc --preset build-open --podman dev
+```
+
+### `ab project set`
+
+Change a registered project's settings in place, re-validated, with the same flags `ab init`/`ab project add` take. Refused while a session for the project is live.
+
+```text
+usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
+                      [--egress MODE] [--extra-domain DOMAIN]
+                      [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
+                      [--compose-project NAME] [--dev-image PATTERN]
+                      [--observe-logs | --no-observe-logs]
+                      [--accept-history-secrets]
+                      [--i-understand-grant-exposure] [--unset KEY]
+                      [--clear-data-ro] [--clear-data-rw]
+                      [--clear-extra-domains] [--clear-dev-images]
+                      name
+
+change a registered project's settings in place (re-validated; refused while a session for it is live)
+
+positional arguments:
+  name                  the registered project to change (its root cannot be
+                        changed: use `ab project rm` + `ab project add` to
+                        move a code grant)
+
+options:
+  -h, --help            show this help message and exit
+  --preset PRESET       security profile (default: the project's current
+                        preset). One of: lockdown — review-only: no network
+                        beyond the model API, no podman access, approvals on;
+                        build — build, run and test the project's own pod/dev
+                        stack (packages egress); pods — alias of build; build-
+                        open — like build, with open web egress for fetching
+                        arbitrary sites; script — scripts and data processing,
+                        no podman access (packages egress); python — alias of
+                        script; research — review, planning and open web
+                        research; no podman access; operate — inspect a live
+                        stack (observe tier); data grants are read-only;
+                        analysis-offline — sensitive data, no egress beyond
+                        the model API, no podman access, data read-only. A
+                        file in ~/.config/agentbox/presets/ adds one of your
+                        own (it inherits lockdown's values for every key it
+                        omits). `ab project show` prints what a preset
+                        resolves to, and where each value came from
+  --data-ro DIR         an extra directory to mount read-only (repeatable);
+                        for input data that lives outside the code grant
+  --data-rw DIR         an extra directory to mount read-write (repeatable);
+                        for output data outside the code grant
+  --egress MODE         network egress: `locked` (model API only), `packages`
+                        (+ package registries), or `open` (+ any public host);
+                        the LAN and host are always refused. Overrides the
+                        preset (default: inherited from the preset)
+  --extra-domain DOMAIN
+                        add a domain to the egress allowlist (repeatable)
+  --build-memory SIZE   memory limit for each build in the dev tier (default:
+                        2g, e.g. 4g)
+  --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
+                        for speed on huge trees; NOT an exemption — grantcheck
+                        still scans it (repeatable)
+  --podman TIER         podman tier: `none`, `observe` (read the live stack),
+                        or `dev` (run the agent's own <project>-dev stack).
+                        `exec` is refused — not built (default: inherited from
+                        the preset)
+  --compose-project NAME
+                        the live stack's compose project name for the observe
+                        tier (default: the project name)
+  --dev-image PATTERN   dev tier: also allow running or building from images
+                        matching this name pattern (e.g. localhost/myapp:*);
+                        by default only allowlisted registries and this
+                        project's builds (repeatable)
+  --observe-logs, --no-observe-logs
+                        let the observe tier read the live stack's logs
+                        (default: off; logs can hold secrets, and what the
+                        agent reads goes to its model provider)
+  --accept-history-secrets
+                        register even though masked file names (.env, *.key,
+                        ...) are in git history
+  --i-understand-grant-exposure
+                        register even though the grant holds secrets or live
+                        data (a grant is for code; move them outside it or add
+                        a mask)
+  --unset KEY           drop a stored setting so the preset's value applies
+                        again (repeatable); one of: compose, egress, caps,
+                        secrets, approvals, data, podman, data_ro, data_rw,
+                        extra_domains, mask_skip, build_memory,
+                        compose_project, observe_logs, dev_images
+  --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
+  --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
+  --clear-extra-domains
+                        empty the extra_domains list (the same as --unset
+                        extra_domains)
+  --clear-dev-images    empty the dev_images list (the same as --unset
+                        dev_images)
+
+examples:
+  ab project set web --egress open
+  ab project set web --preset analysis-offline
+  ab project set web --unset egress --clear-extra-domains
 ```
 
 ### `ab project show`

@@ -4,8 +4,10 @@ installed launcher prints. Run from the repo root:
 
     python3 docs/gen_usage.py > docs/USAGE.md
 """
+import os
 import subprocess
 import sys
+import tempfile
 
 # (section heading, [(command title, argv)]) in the order the CLI presents them.
 GROUPS = [
@@ -16,6 +18,7 @@ GROUPS = [
     ("ab project", [
         ("ab project", ["project"]),
         ("ab project add", ["project", "add"]),
+        ("ab project set", ["project", "set"]),
         ("ab project show", ["project", "show"]),
         ("ab project ls", ["project", "ls"]),
         ("ab project rm", ["project", "rm"]),
@@ -53,6 +56,8 @@ INTENT = {
     "ab project": "Manage the durable registry entries — a project names a code grant, a preset and any extra "
                   "data grants. One project has many sessions over time.",
     "ab project add": "Register a project with a preset, validating it against overlap and grant exposure.",
+    "ab project set": "Change a registered project's settings in place, re-validated, with the same flags "
+                      "`ab init`/`ab project add` take. Refused while a session for the project is live.",
     "ab project show": "Print a project's effective settings and whether each came from the preset or an override.",
     "ab project ls": "List the registered projects.",
     "ab project rm": "Remove projects from the registry; their files, state and backups are left untouched.",
@@ -75,8 +80,15 @@ INTENT = {
 }
 
 
+EMPTY_CONFIG = tempfile.mkdtemp(prefix="ab-usage-")
+
+
 def help_text(args):
-    p = subprocess.run([sys.executable, "-m", "agentbox", *args, "--help"], capture_output=True, text=True)
+    # An empty config dir, so `--preset`'s dynamic list shows the built-in presets only: the generated
+    # reference must not depend on whose machine ran it (or on their ~/.config/agentbox/presets/).
+    env = dict(os.environ, AB_CONFIG_DIR=EMPTY_CONFIG)
+    p = subprocess.run([sys.executable, "-m", "agentbox", *args, "--help"], capture_output=True, text=True,
+                       env=env)
     return (p.stdout or p.stderr).rstrip("\n")
 
 

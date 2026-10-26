@@ -188,7 +188,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 
 ### Scaffolding new projects (`ab init`)
 
-`ab init <pod|python> --name <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {pods|python}` itself, so the project is registered and grant-checked the moment it exists; a freshly-init'd project starts a session with zero warnings and zero overrides. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
+`ab init <pod|python> --name <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {build|script}` itself (`pods`/`python` are aliases of those two), so the project is registered and grant-checked the moment it exists; a freshly-init'd project with no setting flags starts a session with zero warnings and zero overrides. `ab init` takes the same setting flags as `ab project add`/`set` (`--preset`, `--egress`, `--data-ro`, …), all validated **before** anything is written, so one place configures a project completely and a bad flag leaves no half-made tree behind; it then prints the effective configuration with each value's source. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
 
 ### Filesystem policy
 
@@ -340,29 +340,34 @@ Without the gate, a container created with no network, or a `podman build`, runs
 
 A preset is a named bundle of the settings above, so one word gives a project a known-good configuration. Presets change nothing the fixed hardening guarantees; they only choose among the per-project options.
 
-| Setting | `lockdown` | `pods` | `python` |
-| --- | --- | --- | --- |
-| For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | Scripts and data processing |
-| Code | Read-write, backed up | Read-write, backed up | Read-write, backed up |
-| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-only (changes via outbox, planned) |
-| Data grants | Read-only only | None unless declared | As declared (`data_ro`, `data_rw`) |
-| `.env` files | Masked | Masked | Masked |
-| Egress | `locked` | `packages` (`open` only if the project says so) | `packages` |
-| Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | none |
-| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused |
-| Agent approval prompts | On | Off (`--auto`) | Off (`--auto`) |
+The canonical names are `build` and `script`; **`pods` and `python` are kept as aliases of those two** (the same values under their old names, so an existing registry entry resolves exactly as it always did). `ab init pod` defaults to `build`, `ab init python` to `script`. `--preset` lists every preset that exists, with a one-line description, and refuses an unknown name with that list.
+
+| Setting | `lockdown` | `build` (=`pods`) | `build-open` | `script` (=`python`) | `research` | `operate` | `analysis-offline` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Inspecting a live stack | Sensitive data, offline analysis |
+| Code | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up |
+| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-write | Read-only | Read-only | Read-only | Read-only |
+| Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | Read-only only | Read-only only |
+| `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
+| Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `locked` |
+| Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | dev + observe, as `build` | none | none | observe on the live stack only | none |
+| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused | Refused | Refused | Refused | Refused |
+| Agent approval prompts | On | Off (`--auto`) | Off | Off | Off | Off | Off |
+
+There is no read-only *code* grant: the project root is read-write under every preset (a read-only root with one writable notes directory was considered and not built — it needs a new mount mode and another pass over the covers logic).
 
 **Overrides**
 
-- Any setting written on the project, or passed as a flag, overrides the preset: e.g. `python` with `egress = "open"` for web search.
-- Every preset defaults to `packages` or tighter. `open` comes only from `egress = "open"` written on the project, never from a preset. A stack that holds personal data (e.g. life-updates) should stay on `packages`, or use `lockdown`.
-- `lockdown` is a ceiling: overrides may only tighten it. To loosen, switch the project to another preset.
-- `ab project show <project>` prints every effective setting and whether it came from the preset or an override.
+- Any setting written on the project, or passed as a flag to `ab init` / `ab project add` / `ab project set`, overrides the preset: e.g. `script` with `egress = "open"` for web search. `ab project show` — and the output of init/add/set themselves — prints every effective setting and where it came from.
+- **`open` egress is never granted by a live preset reference.** A preset may *declare* `egress = "open"` (`research`, `build-open`); choosing it writes `egress = "open"` onto the project's own registry entry, where it is visible and printed as project-sourced. Resolution demotes a preset-sourced `open` to `packages`, so: editing a preset file later cannot open an already-registered project, and a hand-written entry naming an open preset with no `egress` key of its own resolves to `packages` (fail-closed).
+- **Changing a project's preset clears the security overrides set against the old one** (`egress`, `podman`, `data_ro`, `data_rw`, `extra_domains`, `observe_logs`) and prints what it cleared, so a stale `egress = "open"` cannot outlive the `research` preset it came with. Anything given in the same command is kept.
+- `lockdown` is a ceiling: overrides may only tighten it, `podman.live` and `observe_logs` included. To loosen, switch the project to another preset.
+- The `exec` podman tier is refused where a project is defined, not just when a session starts: it is not built.
 
 **Custom presets** are TOML files in `~/.config/agentbox/presets/`, for example:
 
 ```toml
-# ~/.config/agentbox/presets/pods.toml
+# ~/.config/agentbox/presets/myteam.toml
 compose   = "rw"
 egress    = "packages"
 podman    = { tier = "dev", live = "observe" }
@@ -370,6 +375,8 @@ caps      = "opt-in"
 secrets   = "masked"
 approvals = "off"
 ```
+
+A file under a **new** name inherits `lockdown`'s values for every key it omits (fail-closed, so a one-line file is not quietly permissive); a file named after a built-in customises that built-in. `lockdown` itself cannot be redefined. Because the open-egress default is an attribute of the definition, your own `research.toml` saying `egress = "locked"` stays locked.
 
 ## Failure and recovery
 
@@ -490,7 +497,7 @@ Existing stacks change one at a time, each after a hypervisor snapshot, and only
 5. **media\_server:** recreate `trashguides` with `isolate=strict`; keep the `10.0.0.103` LAN bindings; delete the orphan `media_server_trashguides`.
 6. **js-render-server:** move into a compose file with a `name:`, publish on `127.0.0.1`.
 7. **Host processes:** identify the python3 servers on `8004`/`8006`; decide whether glances on `8003` needs LAN exposure.
-8. **Register projects with presets:** life-updates as `lockdown`, or `pods` with `egress = "packages"` when an agent should run its stack; then run `ab selftest` for each.
+8. **Register projects with presets:** life-updates as `lockdown`, or `build` when an agent should run its stack; then run `ab selftest` for each.
 9. **Retire** `omp-workspace`, `claudeCode_start` and `podman-allow`.
 
 Every compose network change needs a `down`/`up`, so each step briefly takes that stack offline.
@@ -517,8 +524,9 @@ Day to day you register a project once, then start sessions by agent and project
 
 | Command | What it does |
 | --- | --- |
-| `ab init <pod\|python> --name <n> [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it |
+| `ab init <pod\|python> --name <n> [--preset <p>] [settings] [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written; the template chooses the layout, the preset the capabilities (pod → `build`, python → `script`) |
 | `ab project add <name> <root> --preset <p>` | Register a project with a preset (validated against overlap) |
+| `ab project set <name> [settings]` | Change a registered project's settings in place (same flags as `add`; re-validated; refused while a session for it is live). `--unset KEY` returns a setting to its preset value |
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
 | `ab project ls` | List registered projects |
 | `ab project rm <name>…` | Remove one or more projects from the registry (files, state and backups untouched) |
@@ -540,7 +548,7 @@ Day to day you register a project once, then start sessions by agent and project
 | --- | --- |
 | `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
 | `ab attach <name>` | Return to a running session |
-| `ab allow <name> --egress open` / `--cap …` / `--device …` | Per-project overrides from the CLI (today, edit the registry) |
+| `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
@@ -551,7 +559,7 @@ The examples below and the worked example that follows show the **full intended 
 **A web helper visible on your LAN (`pods`)**
 
 ```bash
-ab project add helper ~/repos/helper --preset pods
+ab project add helper ~/repos/helper --preset build
 ab ws --agent claude --project helper            # planned; today: ab run --agent claude --project helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
 ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
@@ -561,7 +569,7 @@ ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
 **A data-processing script (`python`)**
 
 ```bash
-ab project add dataproc ~/repos/dataproc --preset python \
+ab project add dataproc ~/repos/dataproc --preset script \
    --data-ro ~/data/raw --data-rw ~/data/processed
 ab ws --agent omp --project dataproc
 # detach tmux, come back later with: ab attach dataproc
@@ -583,9 +591,9 @@ A web page that takes a file upload, transforms it and charts the results, built
 ```bash
 mkdir -p ~/repos/filelab && cd ~/repos/filelab && git init
 mkdir -p ~/data/filelab-samples          # a few test files
-ab project add filelab ~/repos/filelab --preset pods \
+ab project add filelab ~/repos/filelab --preset build \
    --data-ro ~/data/filelab-samples
-ab project show filelab                  # confirm: pods, packages egress, dev tier
+ab project show filelab                  # confirm: build, packages egress, dev tier
 ab selftest --agent claude --project filelab
 ```
 
@@ -624,7 +632,7 @@ ab session preview <session> web:8000         # on the server (a free port unles
 ssh -N -L <port>:127.0.0.1:<port> ubuntu-dev  # on your desktop, with the port ab session preview printed
 ```
 
-Open `http://localhost:<port>`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab allow filelab ...`.
+Open `http://localhost:<port>`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab project set filelab --egress open` (or whichever flag it is) and start a fresh session — a settings change applies to the next session, not the running one.
 
 **5. Close the dev session and review**
 
@@ -656,7 +664,7 @@ ab deploy filelab --lan 10.0.0.103:8095
 
 The design above is the full target. These parts are **not built yet**; `docs/progress.md`'s Status table is the authoritative list, and this section is the prose index into it. Nothing here should be read as a current guarantee.
 
-- **Commands:** `ab ws` (workspace UI, step 7), `ab attach`, `ab allow` (CLI overrides — today, edit the registry), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
+- **Commands:** `ab ws` (workspace UI, step 7), `ab attach`, `ab allow` (loosening a *running* session; per-project settings are `ab project set`, which applies from the next session), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
 - **Podman exec tier:** refused in code (the `none`, `observe` and `dev` tiers are built; `exec` is not).
 - **Per-project caps/devices opt-in:** the gate refuses `cap_add`, `devices` and security options in every preset; the `caps` preset value is inert.
 - **Model key gateway:** deferred (see Model key gateway); provider keys enter as per-provider files exported at start.

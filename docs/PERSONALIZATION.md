@@ -92,6 +92,12 @@ change, and a per-project OMP tweak lives in the repo.
 | **C. OMP global toolchain** | host `~/.omp` (`omp-env install`, `omp plugin link`) | every OMP session, all projects | host-shared, ro |
 | **D. Per-project repo files** | files committed in the project (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`, `.omp/`, `dev/fixtures/`) | that one project | in the repo |
 | **E. Per-project agent state** | `~/.local/share/agentbox/<project>/<agent>/` | that one project, across sessions | on disk, `ab project reset-state` wipes it |
+| **F. Per-project settings** (preset, egress, grants, podman tier) | `ab project set <name> …` — the same flags `ab init`/`ab project add` take; `--unset KEY` returns one to its preset value | that one project, from its **next** session | `projects.toml` (`ab project show` prints each value's source) |
+
+A settings change applies to the next session, not a running one, and `ab project set` refuses while a
+session for that project is live (as do `rm`, `reset-state` and the `accept-*` commands) — end it with
+`ab session kill` first. Custom presets are TOML files in `~/.config/agentbox/presets/`; one under a new
+name inherits `lockdown`'s values for anything it omits (see `docs/design.md`, Presets).
 
 ### (a) Add a Claude plugin / MCP to **one** project
 

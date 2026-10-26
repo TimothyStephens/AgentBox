@@ -2,7 +2,7 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 6 Oct 2026
+**Updated:** 26 Oct 2026
 
 ## Status (single source of truth — what this tool does and does not do)
 
@@ -10,9 +10,11 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 
 | Feature | State | Notes |
 | --- | --- | --- |
-| **`ab init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. |
+| **`ab init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written. |
+| **Presets** (lockdown, build/pods, build-open, script/python, research, operate, analysis-offline) | **built** | `build`/`script` canonical, `pods`/`python` true aliases (resolve exactly as before). Open egress is a preset *attribute* materialised onto the project's entry, never a live reference — a hand-written entry naming an open preset is fail-closed; changing a preset clears the security overrides set against the old one. decisions.md, 26 Oct. |
+| **`ab project set`** | **built** | Changes a registered project in place with the shared flags, re-validated (ceiling, grantcheck, history secrets); `--unset KEY`, `--clear-<list>`. Refused while a session for the project is live — as are `rm`, `reset-state` and the `accept-*` commands (no `--force`). Moving `root` is still rm + add. |
 | **grantcheck (Track 1, primary wall)** | **built** | Refuses a session when a read-write grant holds an uncovered secret (`.env`/`*.pem`/`*.key`/`secrets/`), a git-credential URL, or live data (`*.db` etc. >1 MB, or a compose data bind). Ack via `accept-grant-exposure`, re-prompted on content change (M4). |
-| **grantcheck coverage** | **known limitation** | Catches common shapes only: secrets under other names, more DB shapes, `data_ro`, exempt names, host-written files all get past it (decisions.md H2/M1–M3). Operational rule (keep secrets/live data out of the grant) is the real control. |
+| **grantcheck coverage** | **known limitation** | Catches common shapes only: secrets under other names, more DB shapes, exempt names, host-written files all get past it (decisions.md H2/M1–M3). `data_ro` is now scanned, as warnings (26 Oct, F4). Operational rule (keep secrets/live data out of the grant) is the real control. |
 | **Covers / masks + gate enforcement** | **built** | Masks for secrets; `.git/hooks`/`.git/config`, compose/lockdown covers; enforced for gate-spawned containers (N1–N9, cover identity, parent pins, mountinfo). Reviewed 5–6 Oct (`docs/reviews/2026-10-0{5,6}-covers*.md`). |
 | **H1 (U/chown + foreign-uid binds)** | **built** | Gate refuses `U`/`chown` on grant binds/SubPaths and refuses a gate-spawned bind of a foreign-uid source; grantcheck warns on foreign-owned/unreadable entries. |
 | **H3 (mask_skip not an exemption)** | **built** | `mask_skip` is a speed knob; grantcheck still scans those folders; not offered as a remedy. |
@@ -24,7 +26,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
 | **Forgotten-session guards** | **built** | `ab session ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
 | **Backups (per-session rsync)** | **built, scoped** | `--link-dest` snapshots of the grant (incl. untracked/gitignored). A within-session undo, **NOT a data backup** (same disk, only fresh as of session start) — never presented as one. |
-| **`ab ws` / `attach` / `allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab run` is the way to start a session today; edit the registry for overrides). `deploy` is step 6, `ws` step 7. |
+| **`ab ws` / `attach` / `allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab run` starts a session; `ab project set` changes settings, from the next session). `ab allow` was the "loosen a *running* session" idea; `deploy` is step 6, `ws` step 7. |
 | **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) and per-provider key files; the per-model API-key gateway is not built. |
 | **`masked_paths`** (per-project masked dir) | **not built** | No such setting; only secret-name masks + `secrets/` tmpfs exist. `docs/agentbox-masked-paths.md` is a proposal, now marked as such. |
 | **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |

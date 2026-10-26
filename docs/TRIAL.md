@@ -32,10 +32,13 @@ would join at deploy (`ab deploy`, not yet built). That is a separate, future te
 ## Conventions worth knowing
 
 - Session verbs live under **`ab session`** (`ls`, `preview`, `kill`, `gc`); `ab run`/`ab init` create things.
-- The pod preset (`pods`) already includes the dev tier and `packages` egress; `ab init pod` registers with
-  it, so no overrides are needed.
-- **Never `ab project rm` or run a teardown block while a session is live** — `rm` is registry-only and
-  silently orphans the running session. Kill the session first.
+- The pod preset (`build`, formerly `pods`, still accepted as an alias) already includes the dev tier and
+  `packages` egress; `ab init pod` registers with it, so no overrides are needed. `ab project set <name> …`
+  changes a registered project's settings later (it applies from the next session).
+- **Kill the session before a teardown block.** `ab project rm`, `reset-state` and the `accept-*` commands
+  now *refuse* while a session for the project is live, naming the session and the `ab session kill` that
+  ends it — so a live session can no longer be orphaned by a registry edit. The teardown blocks below kill
+  the session first anyway.
 - Session secrets are fake by design: the real `.env` is always masked and the agent sees `.env.dev` as `.env`. There is no flag to turn masks off — that is the point.
 
 ---
@@ -63,7 +66,7 @@ rm -rf "$PROJ"
 
 ```bash
 ab init pod --name tickerlab
-ab project show tickerlab        # preset=pods, podman=dev, egress=packages
+ab project show tickerlab        # preset=build, podman=dev, egress=packages
 ls -la "$PROJ"
 ```
 
@@ -218,10 +221,11 @@ printf '\nTICKER_KEY=fake-key\n'      >> "$PROJ/.env.dev"
 
 Both agents should reach `using_real_key: false` with no leak and no host port. Any divergence is the finding.
 
-**Recovery from code.** Kill the session, `ab project rm tickerlab` (code/state/backups are kept), remove the
-dev data (`rm -rf "$PROJ/dev/data"/*`), `ab project add tickerlab "$PROJ" --preset pods`, run again, and ask
-the agent to bring the stack back up from the existing code — it rebuilds and repopulates an empty database,
-proving code is preserved and data is reconstructable.
+**Recovery from code.** Kill the session, `ab project rm tickerlab` (code/state/backups are kept; it refuses
+if a session is still live), remove the dev data (`rm -rf "$PROJ/dev/data"/*`),
+`ab project add tickerlab "$PROJ" --preset build`, run again, and ask the agent to bring the stack back up
+from the existing code — it rebuilds and repopulates an empty database, proving code is preserved and data is
+reconstructable. (This is a recovery drill, not how you change a setting: for that, `ab project set`.)
 
 ## Part 9 — teardown
 
@@ -252,8 +256,11 @@ Correctness held throughout; these are usability rough edges.
 
 1. `ab session preview` fails with a bare "no running dev container '<name>'" instead of listing the
    session's available dev services. It should enumerate the targets it can see.
-2. `ab project rm` silently orphans a live session (registry entry gone, containers keep running,
-   `ab project show` then denies the project exists). It should warn or refuse while a session is live.
+2. ~~`ab project rm` silently orphans a live session (registry entry gone, containers keep running,
+   `ab project show` then denies the project exists). It should warn or refuse while a session is live.~~
+   **Fixed** (26 Oct): `rm`, `reset-state`, `accept-grant-exposure`, `accept-history-secrets` and the new
+   `ab project set` all refuse while a session for the project is live, naming it and the `ab session kill`
+   that ends it. No `--force` (decisions.md, 26 Oct).
 3. There is no `ab attach`/`ab ws` yet, so detach/reattach relies on the user's own tmux, and a new prompt to
    a running session means reattaching rather than a first-class command. (Planned — see `docs/design.md`
    "Planned / not built".)
