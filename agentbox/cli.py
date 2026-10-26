@@ -134,7 +134,8 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
         session.check_build_memory(s, name, entry["build_memory"])
     from . import grantcheck
     exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
-                                         entry.get("mask_skip", []), covered=_mask_dsts(s, entry))
+                                         entry.get("mask_skip", []), covered=_mask_dsts(s, entry),
+                                         warn_grants=entry.get("data_ro", []))
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if exposure and not a.i_understand_grant_exposure:
@@ -221,7 +222,8 @@ def cmd_project_accept_grant_exposure(s, a):
     _refuse_if_live(s, [a.name], f"record a grant-exposure acknowledgement for {a.name}")
     e = reg[a.name]
     exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
-                                         covered=_mask_dsts(s, dict(e, name=a.name)))
+                                         covered=_mask_dsts(s, dict(e, name=a.name)),
+                                         warn_grants=e.get("data_ro", []))
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if not exposure:

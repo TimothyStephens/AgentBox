@@ -390,7 +390,7 @@ class Session:
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap)
         exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip,
-                                             covered=self._plan_covered())
+                                             covered=self._plan_covered(), warn_grants=p.data_ro)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:

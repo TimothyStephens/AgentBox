@@ -136,6 +136,23 @@ class SetTest(SettingsCase):
         self.assertEqual(self.entry()["egress"], "locked")
         self.assertIn("grant_exposure_accepted", self.entry())
 
+    def test_a_read_only_data_grant_warns_but_does_not_block(self):
+        """F4: read-only data grants stay allowed -- they are what analysis-offline and operate are for --
+        but what they hold is now reported instead of invisible."""
+        import io
+        from contextlib import redirect_stderr
+        ro = self.mkdir("rodata")
+        with open(os.path.join(ro, "customers.db"), "wb") as f:
+            f.write(b"x" * (2 << 20))
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = self.rc("project", "set", "p1", "--preset", "analysis-offline", "--data-ro", ro)
+        self.assertEqual(rc, 0, "allowed")
+        self.assertIn("customers.db", err.getvalue())
+        self.assertIn("read-only data grant", err.getvalue())
+        self.assertEqual(self.entry()["data_ro"], [ro])
+        self.assertNotIn("grant_exposure_accepted", self.entry(), "a warning is not an exposure ack")
+
     def test_revalidates_the_preset_ceiling(self):
         self.assertEqual(self.rc("project", "set", "p1", "--preset", "lockdown", "--observe-logs"), 2)
         self.assertEqual(self.entry()["preset"], "python", "refused: nothing saved")

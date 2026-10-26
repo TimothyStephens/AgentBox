@@ -2,9 +2,9 @@
 exposure is accepted. grantcheck.scan returns (findings, warnings); findings block, warnings only inform."""
 import os
 
-from agentbox import grantcheck
+from agentbox import grantcheck, session
 
-from .helpers import TempCase
+from .helpers import SettingsCase, TempCase
 
 
 def texts(findings):
@@ -115,6 +115,34 @@ class GrantScan(TempCase):
             findings, warnings = self.scan()
         self.assertTrue(any("data/dump" in w and "uid" in w for w in warnings), warnings)
 
+    def test_read_only_data_grants_warn_but_never_block(self):
+        """F4: data_ro was not scanned at all, so a read-only grant full of live data or secrets was
+        invisible. It is scanned now, as warnings: read-only data grants are the point of
+        analysis-offline/operate, so they stay allowed -- but you get told what is in them."""
+        ro = self.mkdir("rodata")
+        self.write("rodata/customers.db", "x" * (2 << 20))
+        self.write("rodata/prod.pem", "KEY\n")
+        self.write("proj/app/main.py", "code\n")
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ro])
+        self.assertEqual(findings, [], "a read-only data grant never blocks")
+        joined = "\n".join(warnings)
+        self.assertIn("customers.db", joined)
+        self.assertIn("prod.pem", joined)
+        self.assertIn("read-only", joined.lower())
+
+    def test_a_clean_read_only_grant_warns_about_nothing(self):
+        ro = self.mkdir("rodata")
+        self.write("rodata/sample.csv", "a,b\n1,2\n")
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ro])
+        self.assertEqual((findings, warnings), ([], []))
+
+    def test_a_covered_secret_in_a_read_only_grant_is_not_warned_about(self):
+        ro = self.mkdir("rodata")
+        self.write("rodata/.env", "SECRET=real\n")
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ro],
+                                             covered=[os.path.join(ro, ".env")])
+        self.assertEqual((findings, warnings), ([], []), "the mask covers it in the session too")
+
     def test_git_credentials_in_config_worktree(self):
         """E16: creds are checked in config AND config.worktree; only config was exercised."""
         gitdir = self.mkdir("proj", ".git")
@@ -143,3 +171,22 @@ class GrantScan(TempCase):
         covered_findings, _ = self.scan(covered=[os.path.join(self.root, "db"),
                                                  os.path.join(self.root, "onefile.db")])
         self.assertFalse(any("compose data bind" in t for t in texts(covered_findings)), texts(covered_findings))
+
+
+class ReadOnlyGrantAtSessionStart(SettingsCase):
+    """F4 at the third surface: starting a session reports what a read-only data grant holds, and still
+    starts. (add/set are covered in test_project_set.py.)"""
+
+    def test_a_read_only_data_grant_warns_at_session_start(self):
+        self.token()
+        ro = self.mkdir("rodata")
+        with open(os.path.join(ro, "customers.db"), "wb") as f:
+            f.write(b"x" * (2 << 20))
+        self.project("p1", preset="python", data_ro=[ro])
+        warnings = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                 warn=warnings.append)
+        s.prepare(do_backup=False)
+        self.addCleanup(s.teardown)
+        self.assertTrue(any("customers.db" in w for w in warnings), warnings)
+        self.assertTrue(any("read-only" in w for w in warnings), warnings)

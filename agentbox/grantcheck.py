@@ -111,12 +111,17 @@ def _under_mask_skip(root, path, mask_skip):
     return False
 
 
-def scan(root, grants, mask_skip=(), covered=()):
+def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
     """Return (findings, warnings). Each finding is {"text": <shown>, "sig": <for the fingerprint>}; a grant
     with any finding refuses to start until acknowledged. Warnings are shown but do not block (audit 6 Oct,
     the cheap half of H1: entries the scanner can't read or that another user owns). `mask_skip` is NOT
     honoured here (H3): it is a speed knob for the mask walk, not an exemption; a secret under it is unmasked,
-    so it must still be reported. `covered` are paths the masks hide (an empty cover makes a secret safe)."""
+    so it must still be reported. `covered` are paths the masks hide (an empty cover makes a secret safe).
+
+    `warn_grants` are the read-only data grants. They are scanned exactly the same way, but their findings
+    come back as warnings (F4): a read-only grant holding live data is the declared purpose of the
+    `analysis-offline` and `operate` presets, so it is reported, never refused. Before this they were not
+    scanned at all, so what was in them was invisible."""
     covered = {os.path.realpath(c) for c in covered}
     uid = os.getuid()
     limit = LIVE_DATA_MB << 20
@@ -124,13 +129,13 @@ def scan(root, grants, mask_skip=(), covered=()):
     def is_covered(p):
         return any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered)
 
-    found, warn = {}, set()
+    found, ro_found, warn = {}, {}, set()
 
     def onerror(e):
         warn.add(f"{getattr(e, 'filename', '?')}: unreadable ({getattr(e, 'strerror', e)}); a container's data "
                  "dir? move it out of the grant")
 
-    for grant in grants:
+    def walk(grant, found):
         for dirpath, dirnames, filenames in os.walk(grant, followlinks=False, onerror=onerror):
             rel = os.path.relpath(dirpath, grant)
             kept = []
@@ -180,6 +185,13 @@ def scan(root, grants, mask_skip=(), covered=()):
                             except OSError:
                                 sig = f"compose:{b}"
                             found[f"compose data bind: {b} (bound by {cf})"] = sig
+
+    for grant in grants:
+        walk(grant, found)
+    for grant in warn_grants:
+        walk(grant, ro_found)
+    for text in ro_found:
+        warn.add(f"in a read-only data grant (allowed, since read-only, but worth knowing): {text}")
     return [{"text": t, "sig": g} for t, g in sorted(found.items())], sorted(warn)
 
 
