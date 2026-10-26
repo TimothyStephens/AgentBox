@@ -58,7 +58,8 @@ DESCRIPTIONS = {
     "build-open": "like build, with open web egress for fetching arbitrary sites",
     "script": "scripts and data processing, no podman access (packages egress)",
     "python": "alias of script",
-    "research": "review, planning and open web research; no podman access",
+    "research": "review, planning and open web research; no podman access; the code grant is read-write, "
+                "as under every preset",
     "operate": "inspect a live stack (observe tier); data grants are read-only",
     "analysis-offline": "sensitive data, no egress beyond the model API, no podman access, data read-only",
 }

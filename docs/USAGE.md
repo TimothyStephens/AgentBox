@@ -90,7 +90,8 @@ options:
                         egress for fetching arbitrary sites; script — scripts
                         and data processing, no podman access (packages
                         egress); python — alias of script; research — review,
-                        planning and open web research; no podman access;
+                        planning and open web research; no podman access; the
+                        code grant is read-write, as under every preset;
                         operate — inspect a live stack (observe tier); data
                         grants are read-only; analysis-offline — sensitive
                         data, no egress beyond the model API, no podman
@@ -278,7 +279,8 @@ options:
                         egress for fetching arbitrary sites; script — scripts
                         and data processing, no podman access (packages
                         egress); python — alias of script; research — review,
-                        planning and open web research; no podman access;
+                        planning and open web research; no podman access; the
+                        code grant is read-write, as under every preset;
                         operate — inspect a live stack (observe tier); data
                         grants are read-only; analysis-offline — sensitive
                         data, no egress beyond the model API, no podman
@@ -366,7 +368,8 @@ options:
                         arbitrary sites; script — scripts and data processing,
                         no podman access (packages egress); python — alias of
                         script; research — review, planning and open web
-                        research; no podman access; operate — inspect a live
+                        research; no podman access; the code grant is read-
+                        write, as under every preset; operate — inspect a live
                         stack (observe tier); data grants are read-only;
                         analysis-offline — sensitive data, no egress beyond
                         the model API, no podman access, data read-only. A

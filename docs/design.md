@@ -345,7 +345,7 @@ The canonical names are `build` and `script`; **`pods` and `python` are kept as 
 | Setting | `lockdown` | `build` (=`pods`) | `build-open` | `script` (=`python`) | `research` | `operate` | `analysis-offline` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Inspecting a live stack | Sensitive data, offline analysis |
-| Code | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up |
+| Code | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up — `research` is **not** a read-only grant; the agent can write anywhere in the project root, as under every preset | Read-write, backed up | Read-write, backed up |
 | Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-write | Read-only | Read-only | Read-only | Read-only |
 | Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | Read-only only | Read-only only |
 | `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
