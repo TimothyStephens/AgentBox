@@ -69,6 +69,109 @@ class PresetTest(unittest.TestCase):
         with self.assertRaises(AgentboxError):
             self.eff({"preset": "nope"})
 
+    def test_unknown_preset_error_lists_every_known_name(self):
+        with self.assertRaises(AgentboxError) as cm:
+            self.eff({"preset": "nope"})
+        for name in self.P:
+            self.assertIn(name, str(cm.exception), name)
+
+    # --- the new preset shapes (build/build-open/script/research/operate/analysis-offline) ---
+
+    EXPECTED_NAMES = {"lockdown", "build", "pods", "build-open", "script", "python",
+                      "research", "operate", "analysis-offline"}
+
+    def test_exactly_these_builtin_presets_exist(self):
+        self.assertEqual(set(self.P), self.EXPECTED_NAMES)
+
+    def test_new_preset_values(self):
+        cases = {
+            "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
+                      "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+            "build-open": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
+                           "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+            "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+                       "secrets": "masked", "approvals": "off", "data": "declared"},
+            "research": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+                         "secrets": "masked", "approvals": "off", "data": "declared"},
+            "operate": {"compose": "ro", "egress": "packages", "podman": {"tier": "none", "live": "observe"},
+                        "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
+            "analysis-offline": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"},
+                                 "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
+        }
+        for name, want in cases.items():
+            with self.subTest(preset=name):
+                self.assertEqual(self.P[name], want)
+
+    def test_pods_and_python_are_true_aliases_not_redirects(self):
+        """pods/python are separate BUILTIN entries holding the same values as build/script, so their own
+        provenance string ("preset pods") is unchanged, not renamed to "preset build"."""
+        self.assertEqual(self.P["pods"], self.P["build"])
+        self.assertEqual(self.P["python"], self.P["script"])
+        e = self.eff({"preset": "pods"})
+        self.assertEqual(e["egress"], ("packages", "preset pods"))
+
+    # A frozen snapshot of what "pods"/"python" resolved to before this change (docs/design.md's preset
+    # table, pre-redesign). Pins that the redesign did not alter either alias's resolution.
+    OLD_PODS = {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
+                "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"}
+    OLD_PYTHON = {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+                  "secrets": "masked", "approvals": "off", "data": "declared"}
+
+    def test_pods_and_python_resolve_identically_before_and_after(self):
+        self.assertEqual(self.P["pods"], self.OLD_PODS)
+        self.assertEqual(self.P["python"], self.OLD_PYTHON)
+
+    def test_research_and_build_open_never_carry_open_in_builtin(self):
+        """The egress-open-only-via-project-override rule depends on this: if a BUILTIN preset itself ever
+        held "open", effective() would silently downgrade it to "packages" for every project using it with
+        no override of its own."""
+        self.assertEqual(self.P["research"]["egress"], "packages")
+        self.assertEqual(self.P["build-open"]["egress"], "packages")
+
+    def test_podman_live_is_validated(self):
+        for bad in ("obsrve", "dev", "yes"):
+            with self.assertRaises(AgentboxError, msg=bad):
+                self.eff({"preset": "python", "podman": {"tier": "none", "live": bad}})
+        # legal values do not raise
+        self.eff({"preset": "python", "podman": {"tier": "none", "live": "observe"}})
+        self.eff({"preset": "python", "podman": {"tier": "none", "live": "exec"}})
+
+    def test_operate_resolves_as_observe_only_no_dev_tier(self):
+        e = self.eff({"preset": "operate"})
+        self.assertEqual(e["podman"][0], {"tier": "none", "live": "observe"})
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "operate", "data_rw": ["/x"]})   # data = ro-only
+
+
+class DescriptionsTest(unittest.TestCase):
+    def test_every_builtin_preset_has_a_description(self):
+        for name in presets.BUILTIN:
+            self.assertIn(name, presets.DESCRIPTIONS, name)
+            self.assertTrue(presets.DESCRIPTIONS[name], name)
+
+    def test_aliases_say_so(self):
+        self.assertIn("build", presets.DESCRIPTIONS["pods"].lower())
+        self.assertIn("script", presets.DESCRIPTIONS["python"].lower())
+
+
+class OpenOnChoiceTest(unittest.TestCase):
+    def test_default_open_presets_get_egress_written_when_absent(self):
+        for name in presets.DEFAULT_OPEN_PRESETS:
+            entry = {"preset": name}
+            presets.open_on_choice(entry)
+            self.assertEqual(entry["egress"], "open", name)
+
+    def test_an_explicit_egress_is_left_alone(self):
+        entry = {"preset": "research", "egress": "packages"}
+        presets.open_on_choice(entry)
+        self.assertEqual(entry["egress"], "packages")
+
+    def test_other_presets_get_no_egress_written(self):
+        for name in ("build", "script", "lockdown", "operate", "analysis-offline"):
+            entry = {"preset": name}
+            presets.open_on_choice(entry)
+            self.assertNotIn("egress", entry, name)
+
 
 class CustomPresetTest(TempCase):
     def test_custom_preset_file(self):
