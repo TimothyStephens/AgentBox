@@ -139,13 +139,19 @@ def effective(project_name, project, presets):
     if preset_name == "lockdown":
         for k, v in overrides.items():
             if k == "podman":
-                if v.get("tier") != "none":
-                    raise AgentboxError(f"project {project_name}: lockdown allows no podman access; "
-                                        "switch to another preset to loosen")
+                # tier AND live: `live` alone would hand a review-only project read access to the live
+                # stack, which the ceiling is there to refuse.
+                if v.get("tier") != "none" or v.get("live"):
+                    raise AgentboxError(f"project {project_name}: lockdown allows no podman access (tier or "
+                                        "live); switch to another preset to loosen")
                 continue
             if LOOSENESS[k][v] > LOOSENESS[k][preset[k]]:
                 raise AgentboxError(f"project {project_name}: lockdown is a ceiling; {k} = {v!r} would loosen "
                                     f"it (preset: {preset[k]!r}); switch to another preset to loosen")
+        # observe_logs is a registry setting, not one of SETTINGS, so the loop above never sees it.
+        if project.get("observe_logs"):
+            raise AgentboxError(f"project {project_name}: lockdown allows no live-stack logs "
+                                "(observe_logs); switch to another preset to loosen")
     if out["data"][0] == "ro-only" and project.get("data_rw"):
         raise AgentboxError(f"project {project_name}: preset {preset_name} allows read-only data grants only")
     return out

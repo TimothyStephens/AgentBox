@@ -3,11 +3,11 @@ import argparse
 import os
 import unittest
 
-from agentbox import cli, presets, registry
+from agentbox import cli, presets, registry, session
 from agentbox.errors import AgentboxError
 from agentbox.paths import check_grant
 
-from .helpers import TempCase
+from .helpers import SettingsCase, TempCase
 
 
 class RegistryTest(TempCase):
@@ -69,6 +69,18 @@ class PresetTest(unittest.TestCase):
             self.eff({"preset": "python", "egress": "wide"})
         with self.assertRaises(AgentboxError):
             self.eff({"preset": "nope"})
+
+    def test_the_lockdown_ceiling_covers_podman_live_and_observe_logs(self):
+        """F1: the ceiling checked podman.tier but not podman.live, so lockdown + live=observe handed a
+        review-only project read access to the live stack; observe_logs is not a preset setting at all, so
+        the loop over overrides never saw it."""
+        for loosen in ({"podman": {"tier": "none", "live": "observe"}},
+                       {"podman": {"tier": "none", "live": "exec"}},
+                       {"observe_logs": True}):
+            with self.assertRaises(AgentboxError, msg=loosen):
+                self.eff({"preset": "lockdown", **loosen})
+        # the tight values stay legal
+        self.eff({"preset": "lockdown", "podman": {"tier": "none"}, "observe_logs": False})
 
     def test_unknown_preset_error_lists_every_known_name(self):
         with self.assertRaises(AgentboxError) as cm:
@@ -185,6 +197,28 @@ class CustomPresetTest(TempCase):
         self.write("presets/lockdown.toml", 'egress = "open"\n')
         with self.assertRaises(AgentboxError):
             presets.load_presets(os.path.join(self.tmp, "presets"))
+
+
+class LockdownCeilingEndToEnd(SettingsCase):
+    """F1 at the two surfaces that matter: starting a session (load_project) and registering one (add)."""
+
+    def test_refused_at_load(self):
+        self.project("lk", preset="lockdown", podman={"tier": "none", "live": "observe"})
+        with self.assertRaises(AgentboxError) as cm:
+            session.load_project(self.settings, "lk")
+        self.assertIn("lockdown", str(cm.exception))
+
+    def test_observe_logs_refused_at_load(self):
+        self.project("lk2", preset="lockdown", observe_logs=True)
+        with self.assertRaises(AgentboxError):
+            session.load_project(self.settings, "lk2")
+
+    def test_refused_at_add(self):
+        root = self.mkdir("lkroot")
+        self.assertEqual(cli.main(["project", "add", "lk3", root, "--preset", "lockdown",
+                                   "--observe-logs"]), 2)
+        self.assertNotIn("lk3", registry.load(self.settings.registry_path))
+        self.assertEqual(cli.main(["project", "add", "lk3", root, "--preset", "lockdown"]), 0)
 
 
 class PathTest(TempCase):
