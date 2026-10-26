@@ -183,6 +183,7 @@ def cmd_project_add(s, a):
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
     _print_cleared(cleared)
+    _print_effective(s, a.name)
 
 
 def cmd_project_set(s, a):
@@ -208,6 +209,7 @@ def cmd_project_set(s, a):
     if unset:
         print(f"  unset (back to the preset): {', '.join(unset)}")
     _print_cleared(cleared)
+    _print_effective(s, a.name)
 
 
 def _mask_dsts(settings, entry):
@@ -271,7 +273,14 @@ def cmd_project_accept_history_secrets(s, a):
 
 
 def cmd_project_show(s, a):
-    p = session.load_project(s, a.name)
+    _print_effective(s, a.name)
+
+
+def _print_effective(s, name):
+    """Every effective setting and where it came from (the preset, or an override on the project). Printed
+    by `ab project show`, and after `ab init` / `ab project add` / `ab project set`, so what you just
+    configured is never something you have to run a second command to see."""
+    p = session.load_project(s, name)
     print(f"project {p.name}")
     print(f"  root           {p.root}")
     for d in p.data_ro:
@@ -499,14 +508,17 @@ def cmd_keys_rotate(s, a):
     tokens.rotate(s.token_file(a.agent), a.agent)
 
 
-def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None):
+def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None,
+                              preset_note="", presets_map=None):
     """The override flags shared by `ab init`, `ab project add` and `ab project set`: same flag spellings,
     choices and help text everywhere, so they cannot drift (one shared definition instead of three)."""
+    catalog = presets_map if presets_map is not None else dict(presets.BUILTIN)
     x.add_argument("--preset", required=preset_required, default=preset_default, choices=preset_choices,
                    metavar="PRESET",
-                   help="security profile: `lockdown` (review-only, no network/podman), `pods` (build and run "
-                        "the project's own dev stack), or `python` (scripts/data); or a custom preset in "
-                        "~/.config/agentbox/presets/. `ab project show` prints what one resolves to")
+                   help="security profile" + preset_note + ". One of: " + presets.describe(catalog)
+                        + ". A file in ~/.config/agentbox/presets/ adds one of your own (it inherits "
+                          "lockdown's values for every key it omits). `ab project show` prints what a "
+                          "preset resolves to, and where each value came from")
     x.add_argument("--data-ro", action="append", default=[], metavar="DIR",
                    help="an extra directory to mount read-only (repeatable); for input data that lives outside "
                         "the code grant")
@@ -555,8 +567,12 @@ def _add_project_unset_args(x):
                        help=f"empty the {key} list (the same as --unset {key})")
 
 
-def parser():
+def parser(settings=None):
     raw = argparse.RawDescriptionHelpFormatter
+    # `--preset`'s choices and help come from the presets that actually exist, so an unknown name is
+    # refused at parse time with the full list, user presets included.
+    presets_map = presets.load_presets(settings.presets_dir) if settings else dict(presets.BUILTIN)
+    preset_choices = presets.names_in_order(presets_map)
 
     def ex(*lines):
         """Format an examples epilog block."""
@@ -593,24 +609,29 @@ def parser():
     x.add_argument("--upstream", metavar="URL",
                    help="git URL to add as origin and push to (an off-box CODE backup; it does NOT back up "
                         ".env or the data volume)")
-    _add_project_setting_args(x, preset_required=False)
+    _add_project_setting_args(x, preset_required=False, preset_choices=preset_choices,
+                              presets_map=presets_map,
+                              preset_note=" (default: the template's own — pod: build, python: script)")
     x.set_defaults(fn=cmd_init)
 
     proj = sub.add_parser(
         "project", help="manage registered projects (the saved configuration)", formatter_class=raw,
         description="manage registered projects (the saved configuration). A project names a code grant, a "
                     "preset and any extra data grants.",
-        epilog=ex("ab project add web ~/repos/web --preset pods",
-                  "ab project show web", "ab project ls", "ab project rm web")).add_subparsers(
+        epilog=ex("ab project add web ~/repos/web --preset build",
+                  "ab project set web --egress open", "ab project show web", "ab project ls",
+                  "ab project rm web")).add_subparsers(
         dest="sub", required=True)
     x = add(proj, "add", "register a project with a preset (validated against overlap and grant exposure)",
-            ex("ab project add web ~/repos/web --preset pods",
-               "ab project add dataproc ~/repos/dataproc --preset python --data-ro ~/data/raw --data-rw ~/data/out",
-               "ab project add svc ~/repos/svc --preset pods --egress open --podman dev"))
+            ex("ab project add web ~/repos/web --preset build",
+               "ab project add dataproc ~/repos/dataproc --preset script --data-ro ~/data/raw --data-rw ~/data/out",
+               "ab project add notes ~/repos/notes --preset research",
+               "ab project add svc ~/repos/svc --preset build-open --podman dev"))
     x.add_argument("name", help="a short name for the project (lower-case letters, digits, '-' or '_')")
     x.add_argument("root", help="path to the project's code directory — the read-write grant; must exist and "
                                 "not overlap another project or a protected path")
-    _add_project_setting_args(x, preset_required=True)
+    _add_project_setting_args(x, preset_required=True, preset_choices=preset_choices,
+                              presets_map=presets_map)
     x.set_defaults(fn=cmd_project_add)
     x = add(proj, "set", "change a registered project's settings in place (re-validated; refused while a "
                          "session for it is live)",
@@ -619,7 +640,9 @@ def parser():
                "ab project set web --unset egress --clear-extra-domains"))
     x.add_argument("name", help="the registered project to change (its root cannot be changed: use "
                                 "`ab project rm` + `ab project add` to move a code grant)")
-    _add_project_setting_args(x, preset_required=False)
+    _add_project_setting_args(x, preset_required=False, preset_choices=preset_choices,
+                              presets_map=presets_map,
+                              preset_note=" (default: the project's current preset)")
     _add_project_unset_args(x)
     x.set_defaults(fn=cmd_project_set)
     x = add(proj, "accept-history-secrets",
@@ -759,11 +782,16 @@ def main(argv=None):
     if argv[:1] == ["run"] and "--" in argv:
         i = argv.index("--")
         argv, passthrough = argv[:i], argv[i + 1:]
-    a = parser().parse_args(argv)
+    try:
+        s = config.load()
+        built = parser(s)          # the parser reads the presets, so a broken preset file reports cleanly
+    except AgentboxError as e:
+        print(f"ab: {e}", file=sys.stderr)
+        return 2
+    a = built.parse_args(argv)
     if getattr(a, "fn", None) is cmd_run:
         a.passthrough = passthrough
     try:
-        s = config.load()
         if a.fn.__name__ in GC_ON_FIRST_USE:
             gc_once_per_boot(s)
         rc = a.fn(s, a)

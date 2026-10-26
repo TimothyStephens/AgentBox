@@ -453,3 +453,59 @@ class SharedArgsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PresetHelpAndOutputTest(SettingsCase):
+    """F10: `--preset` lists every preset that exists with its one-line description and refuses an unknown
+    name at parse time; and init/add/set print the effective configuration with each value's source."""
+
+    def _run(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                code = cli.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        # argparse may wrap a line after a hyphen ("build- open"), so undo that for substring checks
+        flat = lambda t: " ".join(t.split()).replace("- ", "-")
+        return code, flat(out.getvalue()), flat(err.getvalue())
+
+    def test_every_preset_and_its_description_is_in_the_help(self):
+        for argv in (("project", "add"), ("project", "set"), ("init",)):
+            _code, out, _err = self._run(*argv, "--help")
+            for name, desc in presets.DESCRIPTIONS.items():
+                self.assertIn(name, out, f"{argv}: {name}")
+                self.assertIn(" ".join(desc.split())[:40], out, f"{argv}: {name}'s description")
+
+    def test_a_user_preset_is_listed_too(self):
+        os.makedirs(os.path.join(self.cfg, "presets"), exist_ok=True)
+        with open(os.path.join(self.cfg, "presets", "myteam.toml"), "w") as f:
+            f.write('egress = "packages"\n')
+        _code, out, _err = self._run("project", "add", "--help")
+        self.assertIn("myteam", out)
+
+    def test_an_unknown_preset_is_refused_at_parse_time_with_the_list(self):
+        root = self.mkdir("r")
+        code, _out, err = self._run("project", "add", "x", root, "--preset", "nope")
+        self.assertEqual(code, 2)
+        for name in presets.BUILTIN:
+            self.assertIn(name, err, name)
+        self.assertNotIn("x", registry.load(self.settings.registry_path))
+
+    def test_add_prints_the_effective_configuration_with_sources(self):
+        root = self.mkdir("eff")
+        code, out, _err = self._run("project", "add", "eff", root, "--preset", "build", "--egress", "locked")
+        self.assertEqual(code, 0)
+        self.assertIn("egress locked from project", out)
+        self.assertIn("compose rw from preset build", out)
+        self.assertIn("podman dev (live: observe) from preset build", out)
+
+    def test_set_prints_the_effective_configuration_with_sources(self):
+        self.project("p9", preset="python")
+        code, out, _err = self._run("project", "set", "p9", "--preset", "research")
+        self.assertEqual(code, 0)
+        self.assertIn("egress open from project", out, "research's open egress, materialised")
+        self.assertIn("approvals off from preset research", out)

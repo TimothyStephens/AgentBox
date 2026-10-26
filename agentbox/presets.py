@@ -64,6 +64,18 @@ DESCRIPTIONS = {
 }
 
 
+def names_in_order(presets_map):
+    """Built-ins first, in the order they are defined above (lockdown, build, ... analysis-offline), then
+    any user presets alphabetically."""
+    return [n for n in BUILTIN if n in presets_map] + sorted(set(presets_map) - set(BUILTIN))
+
+
+def describe(presets_map, sep="; "):
+    """Every preset that actually exists, with its one-line description: `--preset`'s help, and the list an
+    unknown preset name is answered with."""
+    return sep.join(f"{n} — {DESCRIPTIONS.get(n, 'custom preset')}" for n in names_in_order(presets_map))
+
+
 def materialize_open_egress(entry, presets):
     """A preset whose definition declares `egress = "open"` gets that written onto the project's own
     registry entry when the project is registered or edited (`ab init` / `ab project add` / `ab project
@@ -142,8 +154,8 @@ def effective(project_name, project, presets):
     """Return {setting: (value, source)} for a project."""
     preset_name = project.get("preset")
     if preset_name not in presets:
-        raise AgentboxError(f"project {project_name}: unknown preset {preset_name!r}; choose one of "
-                            f"{', '.join(sorted(presets))}")
+        raise AgentboxError(f"project {project_name}: unknown preset {preset_name!r}; choose one of:\n  "
+                            + describe(presets, sep="\n  "))
     preset = presets[preset_name]
     overrides = {k: v for k, v in project.items() if k in SETTINGS}
     _validate(overrides, f"project {project_name}")
