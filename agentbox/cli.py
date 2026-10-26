@@ -183,6 +183,11 @@ def cmd_project_set(s, a):
     for key in unset:
         if _given(a, key):
             raise AgentboxError(f"--unset {key} and {SETTING_FLAGS[key][1]} in the same command: pick one")
+    # Only the keys that were actually stored are "unset"; the rest had nothing to drop (audit F10: it used
+    # to report every --unset as a change, whether or not the project held that key).
+    dropped = [k for k in unset if k in entry]
+    absent = [k for k in unset if k not in entry]
+    for key in dropped:
         entry.pop(key, None)
     presets_map = presets.load_presets(s.presets_dir)
     grant_kw = _grant_kw(s, reg, exclude=a.name)
@@ -190,8 +195,10 @@ def cmd_project_set(s, a):
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map, unset=unset)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"updated project {a.name} ({entry['root']}, preset {entry['preset']})")
-    if unset:
-        print(f"  unset (back to the preset): {', '.join(unset)}")
+    if dropped:
+        print(f"  unset (back to the preset): {', '.join(dropped)}")
+    if absent:
+        print(f"  not stored on this project, so nothing to unset: {', '.join(absent)}")
     _print_cleared(cleared)
     _print_effective(s, a.name)
 
@@ -261,32 +268,55 @@ def cmd_project_show(s, a):
 
 
 def _print_effective(s, name):
-    """Every effective setting and where it came from (the preset, or an override on the project). Printed
-    by `ab project show`, and after `ab init` / `ab project add` / `ab project set`, so what you just
-    configured is never something you have to run a second command to see."""
+    """Every effective setting, where it came from, and whether it actually does anything right now.
+
+    Driven by the settings table (projectkeys.KEYS), so a key cannot be forgotten here: every stored key is
+    printed, and one with no effect under the current posture is MARKED `(ignored: ...)` rather than hidden
+    (audit F8 -- the old display gated compose_project/observe_logs/dev_images on the podman tier, which hid
+    a waived live-stack ownership check and a dead image allowlist). Printed by `ab project show`, and after
+    `ab init` / `ab project add` / `ab project set`."""
     p = session.load_project(s, name)
+    stored = registry.load(s.registry_path)[name]
+    ctx = projectkeys.posture(p)
+    resolved = {"root": p.root, "preset": p.preset, "data_ro": p.data_ro, "data_rw": p.data_rw,
+                "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
+                "compose_project": p.compose_project, "observe_logs": p.observe_logs,
+                "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
+                "history_secrets_accepted": p.history_secrets_accepted,
+                "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
-    print(f"  root           {p.root}")
-    for d in p.data_ro:
-        print(f"  data_ro        {d}")
-    for d in p.data_rw:
-        print(f"  data_rw        {d}")
-    for k in presets.SETTINGS:
-        v, src = p.eff[k]
-        v = v.get("tier") + (f" (live: {v['live']})" if v.get("live") else "") if isinstance(v, dict) else v
-        print(f"  {k:<14} {v:<24} from {src}")
-    src = "project" if "build_memory" in registry.load(s.registry_path)[p.name] else "default"
-    print(f"  build_memory   {p.build_memory >> 20} MB{'':<17} from {src}")
-    if p.mask_skip:
-        print(f"  mask_skip      {', '.join(p.mask_skip)}")
-    if p.extra_domains:
-        print(f"  extra_domains  {', '.join(p.extra_domains)}")
-    if p.value("podman") and p.value("podman").get("tier", "none") != "none" or (p.value("podman") or {}).get("live"):
-        print(f"  compose_project {p.compose_project}")
-        print(f"  observe_logs   {'true' if p.observe_logs else 'false (default)'}")
-        print(f"  dev_images     {', '.join(p.dev_images) or 'none (public registries and this project builds only)'}")
-    if p.history_secrets_accepted:
-        print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
+    for key in projectkeys.KEYS:
+        if key.display == "stored" and key.name not in stored:
+            continue
+        if key.kind == "preset":
+            value, source = p.eff[key.name]
+        else:
+            value, source = resolved.get(key.name), "project" if key.name in stored else "default"
+        notes = []
+        reason = projectkeys.inert_reason(key.name, ctx)
+        if reason:
+            notes.append(f"(ignored: {reason})")
+        if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
+            notes.append("(explicit: this stack's containers are not required to come from inside the "
+                         "project root)")
+        for line in _render(key, value):
+            print(f"  {key.name:<24} {line:<26} from {source}"
+                  + ("  " + " ".join(notes) if notes else ""))
+            notes = []                                  # the note belongs to the first line only
+
+
+def _render(key, value):
+    """A stored value as the one or more lines `ab project show` prints for it."""
+    if key.arity == "list":
+        return [", ".join(str(v) for v in value)] if value else ["(none)"]
+    if key.arity == "bool":
+        return ["true" if value else "false"]
+    if key.name == "podman":
+        value = value or {}
+        return [value.get("tier", "none") + (f" (live: {value['live']})" if value.get("live") else "")]
+    if key.name == "swap":
+        return [", ".join(f"{dev} shown as {target}" for target, dev in (value or {}).items()) or "(none)"]
+    return [str(value)]
 
 
 def _refuse_if_live(s, names, what):

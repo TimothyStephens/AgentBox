@@ -563,3 +563,64 @@ class PresetHelpAndOutputTest(SettingsCase):
         self.assertEqual(code, 0)
         self.assertIn("egress open from project", out, "research's open egress, materialised")
         self.assertIn("approvals off from preset research", out)
+
+
+class ShowDisplayTest(SettingsCase):
+    """`ab project show` renders from the settings table: every stored key is shown, and one that has no
+    effect under the current posture is MARKED rather than hidden (audit F8 -- hiding it made a waived
+    ownership check and a dead allowlist invisible)."""
+
+    def show(self, name):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["project", "show", name])
+        return buf.getvalue()
+
+    def test_inert_stored_settings_are_shown_with_the_reason(self):
+        self.project("p1", preset="analysis-offline", extra_domains=["example.com"],
+                     compose_project="shop", dev_images=["localhost/x:*"], observe_logs=True)
+        out = self.show("p1")
+        for key in ("extra_domains", "compose_project", "dev_images", "observe_logs"):
+            self.assertIn(key, out, key)
+        self.assertIn("locked egress has no extra-domain allowlist", out)
+        self.assertIn("no live-stack access", out)
+        self.assertIn("only the dev tier runs or builds images", out)
+        self.assertEqual(out.count("ignored:"), 7,
+                         "extra_domains, compose_project, observe_logs, dev_images, build_memory "
+                         "(no dev tier), caps and secrets")
+
+    def test_the_always_inert_settings_say_so(self):
+        self.project("p1", preset="build")
+        out = self.show("p1")
+        self.assertIn("caps opt-in is not built", out)
+        self.assertIn("masks always apply and cannot be turned off", out)
+
+    def test_an_explicit_compose_project_shows_the_waived_check(self):
+        """F4: an explicit compose_project skips the check that the live stack's containers come from
+        inside the project root, so `show` says so where you can see it."""
+        self.project("p1", preset="build", compose_project="shop")
+        out = self.show("p1")
+        self.assertIn("shop", out)
+        self.assertIn("not required to come from inside the project root", out)
+
+    def test_a_defaulted_compose_project_does_not_claim_a_waiver(self):
+        self.project("p1", preset="build")
+        self.assertNotIn("not required to come from inside", self.show("p1"))
+
+    def test_swap_and_the_acknowledgements_are_shown_when_stored(self):
+        self.project("p1", preset="build", swap={".env": ".env.dev", ".env.local": ".env.dev"},
+                     history_secrets_accepted=[".env"], grant_exposure_accepted="abc123")
+        out = self.show("p1")
+        self.assertIn("swap", out)
+        self.assertIn(".env.dev shown as .env", out)
+        self.assertIn("history_secrets_accepted", out)
+        self.assertIn("grant_exposure_accepted", out)
+
+    def test_keys_that_are_not_stored_are_not_printed(self):
+        self.project("p1", preset="build")
+        out = self.show("p1")
+        for key in ("swap", "mask_skip", "extra_domains", "dev_images", "grant_exposure_accepted"):
+            self.assertNotIn(key, out, key)
+        self.assertIn("egress", out, "a preset-resolvable setting always has a value")

@@ -109,6 +109,19 @@ class SetTest(SettingsCase):
         self.assertNotIn("egress", self.entry())
         self.assertEqual(self.eff("egress"), ("packages", "preset python"))
 
+    def test_unset_on_an_absent_key_says_nothing_changed(self):
+        """F10: it used to report "unset (back to the preset): egress" whether or not the project had an
+        egress override, so the output claimed a change that never happened."""
+        code, out = self.rc_out("project", "set", "p1", "--unset", "egress")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to unset", out)
+        self.assertNotIn("unset (back to the preset): egress", out)
+        # and when it IS stored, it really is unset and says so
+        self.rc("project", "set", "p1", "--egress", "locked")
+        code, out = self.rc_out("project", "set", "p1", "--unset", "egress")
+        self.assertIn("unset (back to the preset): egress", out)
+        self.assertNotIn("nothing to unset", out)
+
     def test_unset_takes_several_keys(self):
         self.project("p1", preset="pods", observe_logs=True, build_memory="4g")
         self.assertEqual(self.rc("project", "set", "p1", "--unset", "observe_logs",
