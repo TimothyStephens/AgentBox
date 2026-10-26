@@ -128,6 +128,12 @@ def _validate(values, where):
             live = v.get("live") if isinstance(v, dict) else None
             if live not in (None, "observe", "exec"):
                 raise AgentboxError(f"{where}: podman live must be observe, exec, or unset")
+            # `exec` stays a known value so this message is "not built" rather than "bad value", but it is
+            # refused wherever a project is defined (add/init/set) and when one is loaded, not only once a
+            # session is being prepared (session.podman_access keeps its own check behind this).
+            if "exec" in (tier, live):
+                raise AgentboxError(f"{where}: exec on the live stack is not built; use observe for the live "
+                                    "stack, and the dev tier for a stack of the agent's own")
         elif v not in ALLOWED[k]:
             raise AgentboxError(f"{where}: {k} = {v!r}, expected one of {', '.join(ALLOWED[k])}")
 

@@ -149,9 +149,15 @@ class PresetTest(unittest.TestCase):
         for bad in ("obsrve", "dev", "yes"):
             with self.assertRaises(AgentboxError, msg=bad):
                 self.eff({"preset": "python", "podman": {"tier": "none", "live": bad}})
-        # legal values do not raise
         self.eff({"preset": "python", "podman": {"tier": "none", "live": "observe"}})
-        self.eff({"preset": "python", "podman": {"tier": "none", "live": "exec"}})
+
+    def test_the_exec_tier_is_refused_at_validation(self):
+        """F7: exec is not built. It used to be refused only when a session was being prepared, so
+        `ab project add --podman exec` registered happily and failed later, at `ab run`."""
+        for value in ({"tier": "exec"}, {"tier": "none", "live": "exec"}, {"tier": "dev", "live": "exec"}):
+            with self.assertRaises(AgentboxError, msg=value) as cm:
+                self.eff({"preset": "python", "podman": value})
+            self.assertIn("exec on the live stack is not built", str(cm.exception))
 
     def test_operate_resolves_as_observe_only_no_dev_tier(self):
         e = self.eff({"preset": "operate"})
@@ -261,6 +267,31 @@ class LockdownCeilingEndToEnd(SettingsCase):
                                    "--observe-logs"]), 2)
         self.assertNotIn("lk3", registry.load(self.settings.registry_path))
         self.assertEqual(cli.main(["project", "add", "lk3", root, "--preset", "lockdown"]), 0)
+
+
+class ExecTierRefusedEndToEnd(SettingsCase):
+    """F7 at the registering surfaces, not just when a session is prepared."""
+
+    def test_refused_at_add(self):
+        root = self.mkdir("xroot")
+        self.assertEqual(cli.main(["project", "add", "x1", root, "--preset", "build",
+                                   "--podman", "exec"]), 2)
+        self.assertNotIn("x1", registry.load(self.settings.registry_path))
+
+    def test_refused_at_set(self):
+        self.project("x2", preset="build")
+        self.assertEqual(cli.main(["project", "set", "x2", "--podman", "exec"]), 2)
+        self.assertNotIn("podman", registry.load(self.settings.registry_path)["x2"])
+
+    def test_refused_at_init_before_scaffolding(self):
+        repos = self.mkdir("repos")
+        os.environ["AB_REPOS_DIR"] = repos
+        self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
+        from agentbox import config
+        settings = config.load()
+        self.assertEqual(cli.main(["init", "pod", "--name", "x3", "--podman", "exec"]), 2)
+        self.assertFalse(os.path.exists(os.path.join(repos, "x3")), "nothing written")
+        self.assertNotIn("x3", registry.load(settings.registry_path))
 
 
 class PathTest(TempCase):

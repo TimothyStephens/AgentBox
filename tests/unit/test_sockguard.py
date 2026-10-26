@@ -103,11 +103,11 @@ class Tiers(SettingsCase):
         self.assertIn("--label=agentbox.role=sockguard", args)
 
     def test_exec_tier_refused_until_the_gate(self):
+        """Since F7 the refusal lands when the project is loaded (and when one is registered), not only
+        once a session is being prepared; session.podman_access keeps its own check behind that."""
         self.project("p1", podman={"tier": "exec"})
-        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
-                                 warn=lambda m: None)
         with self.assertRaises(AgentboxError) as cm:
-            s.prepare()
+            session.load_project(self.settings, "p1")
         self.assertIn("exec on the live stack is not built", str(cm.exception))
 
     def test_pods_preset_gets_the_dev_tier_and_observe_on_live(self):
