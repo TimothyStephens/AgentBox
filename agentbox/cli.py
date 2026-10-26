@@ -74,6 +74,8 @@ def _validate_and_save(s, reg, name, entry, a):
         entry["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
         warn(grantcheck.message(name, exposure).split("\nTo run anyway")[0]
              + f"\naccepted (--i-understand-grant-exposure); move secrets/live data out of the grant when you can.")
+    else:
+        entry.pop("grant_exposure_accepted", None)   # a stale ack from before the exposure was cleaned up
     found = _history_secrets(entry)
     if found and not a.accept_history_secrets:
         raise AgentboxError(session.history_secrets_message(name, found))
@@ -120,6 +122,7 @@ def cmd_project_accept_grant_exposure(s, a):
     reg = registry.load(s.registry_path)
     if a.name not in reg:
         raise AgentboxError(f"no project named {a.name}")
+    _refuse_if_live(s, [a.name], f"record a grant-exposure acknowledgement for {a.name}")
     e = reg[a.name]
     exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
                                          covered=_mask_dsts(s, dict(e, name=a.name)))
@@ -142,6 +145,7 @@ def cmd_project_accept_history_secrets(s, a):
     reg = registry.load(s.registry_path)
     if a.name not in reg:
         raise AgentboxError(f"no project named {a.name}")
+    _refuse_if_live(s, [a.name], f"record a history-secrets acknowledgement for {a.name}")
     found = _history_secrets(reg[a.name])
     if not found:
         reg[a.name].pop("history_secrets_accepted", None)
@@ -180,12 +184,30 @@ def cmd_project_show(s, a):
         print(f"  history secrets accepted (rotate them): {', '.join(p.history_secrets_accepted)}")
 
 
+def _refuse_if_live(s, names, what):
+    """No registry edit while a session for one of these projects is running.
+
+    `ab project rm` used to orphan it: the entry went away, the containers kept running, and the grant lost
+    its overlap protection, so another project could be registered over the live grant. There is
+    deliberately no --force -- ending live work is `ab session kill`'s job (decisions.md, 6 Oct, on why
+    auto-reaping was rejected)."""
+    wanted = set(names)
+    blocked = []
+    for sess, info in session.sessions(s, Podman(s.podman)).items():
+        project = (info.get("meta") or {}).get("project")
+        if info.get("alive") and project in wanted:
+            blocked.append((project, sess))
+    if not blocked:
+        return
+    detail = ", ".join(f"{project}: {sess}" for project, sess in sorted(blocked))
+    kill = " ".join(f"`ab session kill {sess}`" for _project, sess in sorted(blocked))
+    raise AgentboxError(f"cannot {what} while a session is running ({detail}); end it with {kill} first "
+                        "(its logs and end-of-session scan are kept), then try again")
+
+
 def cmd_project_reset_state(s, a):
     session.load_project(s, a.name)
-    alive = [n for n, info in session.sessions(s, Podman(s.podman)).items()
-             if info.get("alive") and (info.get("meta") or {}).get("project") == a.name]
-    if alive:
-        raise AgentboxError(f"a session of {a.name} is running ({', '.join(alive)}); end it first")
+    _refuse_if_live(s, [a.name], f"reset the agent state of {a.name}")
     src = os.path.join(s.data_dir, a.name)
     if not os.path.isdir(src) or not os.listdir(src):
         print(f"{a.name} has no agent state")
@@ -212,6 +234,7 @@ def cmd_project_rm(s, a):
     missing = [n for n in names if n not in reg]
     if missing:                                  # all-or-nothing: a typo in one name removes none
         raise AgentboxError(f"no project named {', '.join(missing)}")
+    _refuse_if_live(s, names, f"remove {', '.join(names)}")   # all-or-nothing here too
     for n in names:
         del reg[n]
     registry.save(s.registry_path, reg)
