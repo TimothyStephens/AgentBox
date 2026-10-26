@@ -64,6 +64,30 @@ DESCRIPTIONS = {
 }
 
 
+# The old names, kept as aliases of the canonical ones. Both names exist in BUILTIN with identical values
+# (so provenance still reads "preset pods"); this map is what tells the preset-change check that moving a
+# project between the two is a rename, not a change of posture.
+ALIASES = {"pods": "build", "python": "script"}
+
+
+def canonical(name):
+    """The canonical name of a preset: `pods` and `python` are second names for `build` and `script`."""
+    return ALIASES.get(name, name)
+
+
+def same_preset(old, new, presets_map):
+    """Do these two preset names mean the same thing? True for a name against itself, and for an alias
+    against its target — as long as both still resolve to the same values. A user's own `pods.toml` that
+    has drifted from `build` is therefore treated as a different preset, fail-closed: switching between
+    them clears the overrides rather than letting them carry into a posture they were not set against."""
+    if old == new:
+        return True
+    if canonical(old) != canonical(new):
+        return False
+    values = presets_map.get(old)
+    return values is not None and values == presets_map.get(new)
+
+
 def names_in_order(presets_map):
     """Built-ins first, in the order they are defined above (lockdown, build, ... analysis-offline), then
     any user presets alphabetically."""

@@ -123,6 +123,15 @@ class PresetTest(unittest.TestCase):
         e = self.eff({"preset": "pods"})
         self.assertEqual(e["egress"], ("packages", "preset pods"))
 
+    def test_the_alias_map_matches_the_values(self):
+        """presets.ALIASES is what the preset-change check canonicalises through, so an entry there whose
+        values had drifted from its target would quietly treat two different postures as one."""
+        self.assertEqual(presets.ALIASES, {"pods": "build", "python": "script"})
+        for alias, target in presets.ALIASES.items():
+            self.assertEqual(self.P[alias], self.P[target], alias)
+            self.assertEqual(presets.canonical(alias), target)
+        self.assertEqual(presets.canonical("research"), "research", "a non-alias is its own canonical name")
+
     # A frozen snapshot of what "pods"/"python" resolved to before this change (docs/design.md's preset
     # table, pre-redesign). Pins that the redesign did not alter either alias's resolution.
     OLD_PODS = {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
@@ -394,6 +403,37 @@ class PresetChangeTest(unittest.TestCase):
         self.assertEqual(cleared, ["egress"])
         self.assertEqual(entry["egress"], "open", "cleared, then research's own open default applied")
         self.assertEqual(presets.effective("p", entry, presets.BUILTIN)["egress"], ("open", "project"))
+
+    def test_switching_between_an_alias_and_its_target_clears_nothing(self):
+        """`pods` and `python` are second names for `build` and `script`, so moving a project onto the
+        canonical name is not a change of posture and must not drop its overrides."""
+        for old, new in (("pods", "build"), ("build", "pods"), ("python", "script"), ("script", "python")):
+            with self.subTest(switch=f"{old} -> {new}"):
+                entry = {"root": "/r", "preset": old, "egress": "open", "observe_logs": True,
+                         "extra_domains": ["x.com"]}
+                cleared = cli._apply_project_settings(entry, ns(preset=new), GRANT_KW, presets.BUILTIN)
+                self.assertEqual(cleared, [])
+                self.assertEqual(entry["preset"], new)
+                self.assertEqual(entry["egress"], "open")
+                self.assertEqual(entry["observe_logs"], True)
+                self.assertEqual(entry["extra_domains"], ["x.com"])
+
+    def test_any_other_preset_change_still_clears(self):
+        for old, new in (("pods", "research"), ("build", "analysis-offline"), ("python", "build"),
+                         ("script", "operate"), ("research", "script")):
+            with self.subTest(switch=f"{old} -> {new}"):
+                entry = {"root": "/r", "preset": old, "observe_logs": True}
+                cleared = cli._apply_project_settings(entry, ns(preset=new), GRANT_KW, presets.BUILTIN)
+                self.assertIn("observe_logs", cleared)
+                self.assertNotIn("observe_logs", entry)
+
+    def test_a_customised_alias_counts_as_a_change(self):
+        """If a user's own pods.toml no longer resolves to build's values, the two are not the same posture
+        any more, so switching between them clears -- fail-closed."""
+        custom = dict(presets.BUILTIN, pods=dict(presets.BUILTIN["build"], egress="locked"))
+        entry = {"root": "/r", "preset": "pods", "observe_logs": True}
+        cleared = cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW, custom)
+        self.assertEqual(cleared, ["observe_logs"])
 
     def test_keeping_the_same_preset_clears_nothing(self):
         entry = {"root": "/r", "preset": "build", "egress": "open", "observe_logs": True}

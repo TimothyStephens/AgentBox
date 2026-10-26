@@ -32,6 +32,15 @@ class SetTest(SettingsCase):
         except SystemExit as e:
             return e.code
 
+    def rc_out(self, *argv):
+        """As rc(), plus what the command printed."""
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = self.rc(*argv)
+        return code, buf.getvalue()
+
     def test_unknown_project(self):
         self.assertEqual(self.rc("project", "set", "nope", "--egress", "locked"), 2)
 
@@ -70,6 +79,19 @@ class SetTest(SettingsCase):
         self.assertEqual(self.rc("project", "set", "p1", "--preset", "analysis-offline"), 0)
         self.assertNotIn("egress", self.entry())
         self.assertEqual(self.eff("egress")[0], "locked", "analysis-offline really is offline")
+
+    def test_moving_onto_the_canonical_preset_name_keeps_the_overrides(self):
+        """`pods` -> `build` is a rename, not a change of posture: migrating a project to the canonical
+        name must not silently drop its egress override."""
+        self.project("p1", preset="pods", egress="open", observe_logs=True)
+        code, out = self.rc_out("project", "set", "p1", "--preset", "build")
+        self.assertEqual(code, 0)
+        e = self.entry()
+        self.assertEqual(e["preset"], "build")
+        self.assertEqual(e["egress"], "open")
+        self.assertEqual(e["observe_logs"], True)
+        self.assertNotIn("cleared", out)
+        self.assertEqual(self.eff("egress"), ("open", "project"))
 
     def test_switching_to_lockdown_clears_what_would_have_hit_the_ceiling(self):
         self.project("p1", preset="pods", observe_logs=True, egress="open")

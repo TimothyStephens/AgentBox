@@ -84,7 +84,7 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
 
     Returns the stored overrides cleared because the preset changed, for the caller to print."""
     cleared = []
-    if a.preset and entry.get("preset") and a.preset != entry["preset"]:
+    if a.preset and entry.get("preset") and not presets.same_preset(entry["preset"], a.preset, presets_map):
         for key in SECURITY_OVERRIDES:
             if key in entry and not _given(a, key):
                 del entry[key]
