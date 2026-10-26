@@ -20,20 +20,25 @@ def cmd_init(s, a):
     return initproj.make(s, a.template, a.name, upstream=a.upstream, out=print, warn=warn)
 
 
-def cmd_project_add(s, a):
-    registry.check_name(a.name)
-    reg = registry.load(s.registry_path)
-    if a.name in reg:
-        raise AgentboxError(f"project {a.name} already exists")
-    others = [(n, q["root"]) for n, q in reg.items() if q.get("root")]
-    kw = dict(home=HOME, extra_protected=session.protected_extra(s), other_roots=others)
-    entry = {"root": check_grant(a.root, kind="root", **kw), "preset": a.preset}
-    if a.data_ro:
-        entry["data_ro"] = [check_grant(d, kind="data_ro", **kw) for d in a.data_ro]
-    if a.data_rw:
-        entry["data_rw"] = [check_grant(d, kind="data_rw", **kw) for d in a.data_rw]
+def _grant_kw(s, reg, exclude=None):
+    others = [(n, q["root"]) for n, q in reg.items() if q.get("root") and n != exclude]
+    return dict(home=HOME, extra_protected=session.protected_extra(s), other_roots=others)
+
+
+def _apply_project_settings(entry, a, grant_kw):
+    """Apply the override flags shared by `ab init`, `ab project add` and `ab project set` onto a registry
+    entry dict. For add/init, `entry` starts empty, so "if a.x:" writes only what was given. For `set`,
+    `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
+    value untouched, and giving one replaces it (a list flag replaces the whole list)."""
+    if a.preset:
+        entry["preset"] = a.preset
     if a.egress:
         entry["egress"] = a.egress
+    presets.open_on_choice(entry)
+    if a.data_ro:
+        entry["data_ro"] = [check_grant(d, kind="data_ro", **grant_kw) for d in a.data_ro]
+    if a.data_rw:
+        entry["data_rw"] = [check_grant(d, kind="data_rw", **grant_kw) for d in a.data_rw]
     if a.extra_domain:
         from .egress import check_domains
         entry["extra_domains"] = check_domains(a.extra_domain, "--extra-domain")
@@ -45,35 +50,51 @@ def cmd_project_add(s, a):
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
         entry["compose_project"] = session.check_compose_project(a.name, a.compose_project)
-    if a.observe_logs:
-        entry["observe_logs"] = True
+    if a.observe_logs is not None:
+        entry["observe_logs"] = a.observe_logs
     if a.dev_image:
         entry["dev_images"] = session.check_dev_images(a.name, list(a.dev_image))
-    # Validate the whole thing (preset exists, lockdown ceiling) before saving.
-    presets.effective(a.name, entry, presets.load_presets(s.presets_dir))
+    return entry
+
+
+def _validate_and_save(s, reg, name, entry, a):
+    """Validate a registry entry (preset exists, lockdown ceiling, build_memory, grantcheck, history
+    secrets) and save it. Shared by `ab project add` and `ab project set`."""
+    presets.effective(name, entry, presets.load_presets(s.presets_dir))
     if "build_memory" in entry:
-        session.check_build_memory(s, a.name, entry["build_memory"])
+        session.check_build_memory(s, name, entry["build_memory"])
     from . import grantcheck
     exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
                                          entry.get("mask_skip", []), covered=_mask_dsts(s, entry))
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if exposure and not a.i_understand_grant_exposure:
-        raise AgentboxError(grantcheck.message(a.name, exposure))
+        raise AgentboxError(grantcheck.message(name, exposure))
     if exposure:
         entry["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
-        warn(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0]
+        warn(grantcheck.message(name, exposure).split("\nTo run anyway")[0]
              + f"\naccepted (--i-understand-grant-exposure); move secrets/live data out of the grant when you can.")
     found = _history_secrets(entry)
     if found and not a.accept_history_secrets:
-        raise AgentboxError(session.history_secrets_message(a.name, found))
+        raise AgentboxError(session.history_secrets_message(name, found))
     if found:
         entry["history_secrets_accepted"] = found
         warn(f"ab: accepted {len(found)} masked file name(s) in git history: {', '.join(found[:15])}. "
              "The agent can read them through git: rotate them if you have not already.")
-    reg[a.name] = entry
+    reg[name] = entry
     registry.save(s.registry_path, reg)
-    print(f"added project {a.name} ({entry['root']}, preset {a.preset})")
+
+
+def cmd_project_add(s, a):
+    registry.check_name(a.name)
+    reg = registry.load(s.registry_path)
+    if a.name in reg:
+        raise AgentboxError(f"project {a.name} already exists")
+    grant_kw = _grant_kw(s, reg)
+    entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
+    _apply_project_settings(entry, a, grant_kw)
+    _validate_and_save(s, reg, a.name, entry, a)
+    print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
 
 
 def _mask_dsts(settings, entry):
@@ -343,6 +364,51 @@ def cmd_keys_rotate(s, a):
     tokens.rotate(s.token_file(a.agent), a.agent)
 
 
+def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None):
+    """The override flags shared by `ab init`, `ab project add` and `ab project set`: same flag spellings,
+    choices and help text everywhere, so they cannot drift (one shared definition instead of three)."""
+    x.add_argument("--preset", required=preset_required, default=preset_default, choices=preset_choices,
+                   metavar="PRESET",
+                   help="security profile: `lockdown` (review-only, no network/podman), `pods` (build and run "
+                        "the project's own dev stack), or `python` (scripts/data); or a custom preset in "
+                        "~/.config/agentbox/presets/. `ab project show` prints what one resolves to")
+    x.add_argument("--data-ro", action="append", default=[], metavar="DIR",
+                   help="an extra directory to mount read-only (repeatable); for input data that lives outside "
+                        "the code grant")
+    x.add_argument("--data-rw", action="append", default=[], metavar="DIR",
+                   help="an extra directory to mount read-write (repeatable); for output data outside the code "
+                        "grant")
+    x.add_argument("--egress", choices=presets.EGRESS, metavar="MODE",
+                   help="network egress: `locked` (model API only), `packages` (+ package registries), or "
+                        "`open` (+ any public host); the LAN and host are always refused. Overrides the "
+                        "preset (default: inherited from the preset)")
+    x.add_argument("--extra-domain", action="append", default=[], metavar="DOMAIN",
+                   help="add a domain to the egress allowlist (repeatable)")
+    x.add_argument("--build-memory", metavar="SIZE",
+                   help="memory limit for each build in the dev tier (default: 2g, e.g. 4g)")
+    x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
+                   help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
+                        "an exemption — grantcheck still scans it (repeatable)")
+    x.add_argument("--podman", choices=presets.PODMAN_TIERS, metavar="TIER",
+                   help="podman tier: `none`, `observe` (read the live stack), or `dev` (run the agent's own "
+                        "<project>-dev stack). `exec` is refused — not built (default: inherited from the "
+                        "preset)")
+    x.add_argument("--compose-project", metavar="NAME",
+                   help="the live stack's compose project name for the observe tier (default: the project name)")
+    x.add_argument("--dev-image", action="append", default=[], metavar="PATTERN",
+                   help="dev tier: also allow running or building from images matching this name pattern "
+                        "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's "
+                        "builds (repeatable)")
+    x.add_argument("--observe-logs", action=argparse.BooleanOptionalAction, default=None,
+                   help="let the observe tier read the live stack's logs (default: off; logs can hold "
+                        "secrets, and what the agent reads goes to its model provider)")
+    x.add_argument("--accept-history-secrets", action="store_true",
+                   help="register even though masked file names (.env, *.key, ...) are in git history")
+    x.add_argument("--i-understand-grant-exposure", action="store_true",
+                   help="register even though the grant holds secrets or live data (a grant is for code; "
+                        "move them outside it or add a mask)")
+
+
 def parser():
     raw = argparse.RawDescriptionHelpFormatter
 
@@ -397,43 +463,7 @@ def parser():
     x.add_argument("name", help="a short name for the project (lower-case letters, digits, '-' or '_')")
     x.add_argument("root", help="path to the project's code directory — the read-write grant; must exist and "
                                 "not overlap another project or a protected path")
-    x.add_argument("--preset", required=True, metavar="PRESET",
-                   help="security profile: `lockdown` (review-only, no network/podman), `pods` (build and run "
-                        "the project's own dev stack), or `python` (scripts/data); or a custom preset in "
-                        "~/.config/agentbox/presets/. `ab project show` prints what one resolves to")
-    x.add_argument("--data-ro", action="append", default=[], metavar="DIR",
-                   help="an extra directory to mount read-only (repeatable); for input data that lives outside "
-                        "the code grant")
-    x.add_argument("--data-rw", action="append", default=[], metavar="DIR",
-                   help="an extra directory to mount read-write (repeatable); for output data outside the code "
-                        "grant")
-    x.add_argument("--egress", choices=presets.EGRESS, metavar="MODE",
-                   help="network egress: `locked` (model API only), `packages` (+ package registries), or "
-                        "`open` (+ any public host); the LAN and host are always refused. Overrides the preset")
-    x.add_argument("--extra-domain", action="append", default=[], metavar="DOMAIN",
-                   help="add a domain to the egress allowlist (repeatable)")
-    x.add_argument("--build-memory", metavar="SIZE",
-                   help="memory limit for each build in the dev tier (default 2g, e.g. 4g)")
-    x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
-                   help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
-                        "an exemption — grantcheck still scans it (repeatable)")
-    x.add_argument("--podman", choices=presets.PODMAN_TIERS, metavar="TIER",
-                   help="podman tier: `none`, `observe` (read the live stack), or `dev` (run the agent's own "
-                        "<project>-dev stack). `exec` is refused — not built")
-    x.add_argument("--compose-project", metavar="NAME",
-                   help="the live stack's compose project name for the observe tier (default: the project name)")
-    x.add_argument("--dev-image", action="append", default=[], metavar="PATTERN",
-                   help="dev tier: also allow running or building from images matching this name pattern "
-                        "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's "
-                        "builds (repeatable)")
-    x.add_argument("--observe-logs", action="store_true",
-                   help="let the observe tier read the live stack's logs (off by default: logs can hold "
-                        "secrets, and what the agent reads goes to its model provider)")
-    x.add_argument("--accept-history-secrets", action="store_true",
-                   help="register even though masked file names (.env, *.key, ...) are in git history")
-    x.add_argument("--i-understand-grant-exposure", action="store_true",
-                   help="register even though the grant holds secrets or live data (a grant is for code; "
-                        "move them outside it or add a mask)")
+    _add_project_setting_args(x, preset_required=True)
     x.set_defaults(fn=cmd_project_add)
     x = add(proj, "accept-history-secrets",
             "accept (after rotating them) the masked file names now in a project's git history",

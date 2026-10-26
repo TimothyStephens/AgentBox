@@ -352,7 +352,7 @@ def make(settings, template, name, *, upstream=None, out=print, warn=None):
     from . import cli
     add = argparse.Namespace(name=name, root=dest, preset=PRESET[template], data_ro=[], data_rw=[], egress=None,
                              extra_domain=[], build_memory=None, mask_skip=[], podman=None, compose_project=None,
-                             dev_image=[], observe_logs=False, accept_history_secrets=False,
+                             dev_image=[], observe_logs=None, accept_history_secrets=False,
                              i_understand_grant_exposure=False)
     cli.cmd_project_add(settings, add)
 

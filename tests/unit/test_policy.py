@@ -1,8 +1,9 @@
 """Registry, presets and the path validator."""
+import argparse
 import os
 import unittest
 
-from agentbox import presets, registry
+from agentbox import cli, presets, registry
 from agentbox.errors import AgentboxError
 from agentbox.paths import check_grant
 
@@ -236,6 +237,50 @@ class PathTest(TempCase):
     def test_missing_dir(self):
         with self.assertRaises(AgentboxError):
             self.check(os.path.join(self.home, "nope"))
+
+
+class SharedArgsTest(unittest.TestCase):
+    """Requirement 1's parity scaffolding: `ab init`, `ab project add` and `ab project set` must define the
+    project-setting flags identically. This only exercises the shared add-arg function directly; the
+    functional half (same overrides produce the same registry entry through each command) lives in
+    test_init.py once `ab init` is wired to the same function."""
+
+    def _actions(self, **kw):
+        p = argparse.ArgumentParser()
+        cli._add_project_setting_args(p, **kw)
+        return {a.dest: a for a in p._actions if a.dest != "help"}
+
+    def test_every_shared_flag_is_identical_across_callers(self):
+        add_actions = self._actions(preset_required=True)
+        set_actions = self._actions(preset_required=False)
+        init_actions = self._actions(preset_required=False, preset_default="build")
+        self.assertEqual(set(add_actions), set(set_actions))
+        self.assertEqual(set(add_actions), set(init_actions))
+        for dest, a in add_actions.items():
+            with self.subTest(dest=dest):
+                b, c = set_actions[dest], init_actions[dest]
+                self.assertEqual(a.option_strings, b.option_strings)
+                self.assertEqual(a.option_strings, c.option_strings)
+                self.assertEqual(type(a), type(b))
+                self.assertEqual(type(a), type(c))
+                self.assertEqual(getattr(a, "choices", None), getattr(b, "choices", None))
+                self.assertEqual(getattr(a, "choices", None), getattr(c, "choices", None))
+                if dest != "preset":
+                    self.assertEqual(a.default, b.default)
+                    self.assertEqual(a.default, c.default)
+                    self.assertEqual(a.required, b.required)
+                    self.assertEqual(a.required, c.required)
+
+    def test_preset_required_and_default_vary_as_intended(self):
+        add_actions = self._actions(preset_required=True)
+        set_actions = self._actions(preset_required=False)
+        init_actions = self._actions(preset_required=False, preset_default="build")
+        self.assertTrue(add_actions["preset"].required)
+        self.assertIsNone(add_actions["preset"].default)
+        self.assertFalse(set_actions["preset"].required)
+        self.assertIsNone(set_actions["preset"].default)
+        self.assertFalse(init_actions["preset"].required)
+        self.assertEqual(init_actions["preset"].default, "build")
 
 
 if __name__ == "__main__":
