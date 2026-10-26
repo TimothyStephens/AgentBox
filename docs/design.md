@@ -671,6 +671,7 @@ The design above is the full target. These parts are **not built yet**; `docs/pr
 - **Adapters:** Claude Code and OMP are built; **Pi** and **Codex** are planned (step 8).
 - **`--data-bind`** and the **`dev/data`→`data` overlay:** deferred / not built (see `ab init` and decisions.md); the pod template's named-volume default and the python template's `DATA_DIR` config are what exist.
 - **`masked_paths`** (a per-project masked-directory setting, `docs/agentbox-masked-paths.md`): not implemented; the only masks are the secret-name masks and `secrets/` tmpfs.
+- **A read-only project-root mount mode** (for a planner preset that may read the code but not edit it, optionally with one writable notes directory): not built. The root is a read-write bind under every preset, `research` and `lockdown` included; this needs a new mount mode and another pass over the gate/covers logic. Mitigation today: commit before the session, and the per-session snapshot as a within-session undo (`docs/TODO.md`).
 - **Host migration** of the real stacks: not started (gated on an independent re-review of the mount/covers area and Track 1).
 
 ## Spike results
