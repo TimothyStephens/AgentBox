@@ -57,7 +57,26 @@ def _given(a, key):
     return value is not None and value != []
 
 
-def _apply_project_settings(entry, a, grant_kw, presets_map):
+# Settings `ab project set --unset KEY` can drop, returning them to the preset's value. `root` and `preset`
+# are not here: a project's code grant and its profile are what the project IS (move a root with rm + add).
+UNSETTABLE = tuple(presets.SETTINGS) + ("data_ro", "data_rw", "extra_domains", "mask_skip", "build_memory",
+                                        "compose_project", "observe_logs", "dev_images")
+
+# --clear-<list> conveniences: argparse dest -> the entry key it empties.
+CLEAR_FLAGS = {"clear_data_ro": "data_ro", "clear_data_rw": "data_rw",
+               "clear_extra_domains": "extra_domains", "clear_dev_images": "dev_images"}
+
+
+def _unset_keys(a):
+    """The keys this command removes from the entry: --unset KEY (repeatable) plus the --clear-<list> flags."""
+    keys = list(getattr(a, "unset", None) or [])
+    for dest, key in CLEAR_FLAGS.items():
+        if getattr(a, dest, False):
+            keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     """Apply the override flags shared by `ab init`, `ab project add` and `ab project set` onto a registry
     entry dict. For add/init, `entry` starts empty, so "if a.x:" writes only what was given. For `set`,
     `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
@@ -74,7 +93,11 @@ def _apply_project_settings(entry, a, grant_kw, presets_map):
         entry["preset"] = a.preset
     if a.egress:
         entry["egress"] = a.egress
-    presets.materialize_open_egress(entry, presets_map)
+    if "egress" not in unset:
+        # `--unset egress` means "no override of my own", so the fail-closed resolution applies (a
+        # preset-sourced open demotes to packages); writing it back would make --unset a no-op on exactly
+        # the presets where it matters.
+        presets.materialize_open_egress(entry, presets_map)
     if a.data_ro:
         entry["data_ro"] = [check_grant(d, kind="data_ro", **grant_kw) for d in a.data_ro]
     if a.data_rw:
@@ -144,6 +167,31 @@ def cmd_project_add(s, a):
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
+    _print_cleared(cleared)
+
+
+def cmd_project_set(s, a):
+    """Change a registered project in place. Everything `ab project add` validates is validated again, so a
+    `set` can never leave an entry a fresh `add` would have refused. Retires rm + add (which orphaned a live
+    session) and hand-editing projects.toml; moving `root` is still rm + add."""
+    reg = registry.load(s.registry_path)
+    if a.name not in reg:
+        raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
+    _refuse_if_live(s, [a.name], f"change {a.name}")
+    entry = dict(reg[a.name])
+    unset = _unset_keys(a)
+    for key in unset:
+        if _given(a, key):
+            raise AgentboxError(f"--unset {key} and {SETTING_FLAGS[key][1]} in the same command: pick one")
+        entry.pop(key, None)
+    presets_map = presets.load_presets(s.presets_dir)
+    grant_kw = _grant_kw(s, reg, exclude=a.name)
+    entry["root"] = check_grant(entry["root"], kind=f"project {a.name} root", **grant_kw)
+    cleared = _apply_project_settings(entry, a, grant_kw, presets_map, unset=unset)
+    _validate_and_save(s, reg, a.name, entry, a, presets_map)
+    print(f"updated project {a.name} ({entry['root']}, preset {entry['preset']})")
+    if unset:
+        print(f"  unset (back to the preset): {', '.join(unset)}")
     _print_cleared(cleared)
 
 
@@ -480,6 +528,17 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                         "move them outside it or add a mask)")
 
 
+def _add_project_unset_args(x):
+    """`ab project set`'s own flags for taking a setting away again (the add/init side has nothing to
+    unset)."""
+    x.add_argument("--unset", action="append", default=[], choices=UNSETTABLE, metavar="KEY",
+                   help="drop a stored setting so the preset's value applies again (repeatable); one of: "
+                        + ", ".join(UNSETTABLE))
+    for dest, key in CLEAR_FLAGS.items():
+        x.add_argument("--" + dest.replace("_", "-"), action="store_true",
+                       help=f"empty the {key} list (the same as --unset {key})")
+
+
 def parser():
     raw = argparse.RawDescriptionHelpFormatter
 
@@ -537,6 +596,16 @@ def parser():
                                 "not overlap another project or a protected path")
     _add_project_setting_args(x, preset_required=True)
     x.set_defaults(fn=cmd_project_add)
+    x = add(proj, "set", "change a registered project's settings in place (re-validated; refused while a "
+                         "session for it is live)",
+            ex("ab project set web --egress open",
+               "ab project set web --preset analysis-offline",
+               "ab project set web --unset egress --clear-extra-domains"))
+    x.add_argument("name", help="the registered project to change (its root cannot be changed: use "
+                                "`ab project rm` + `ab project add` to move a code grant)")
+    _add_project_setting_args(x, preset_required=False)
+    _add_project_unset_args(x)
+    x.set_defaults(fn=cmd_project_set)
     x = add(proj, "accept-history-secrets",
             "accept (after rotating them) the masked file names now in a project's git history",
             ex("ab project accept-history-secrets web"))
