@@ -69,7 +69,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
     value untouched, and giving one replaces it (a list flag replaces the whole list).
 
-    Returns the stored overrides cleared because the preset changed, for the caller to print."""
+    Returns [(key, the value it held)] for every override the preset change dropped, so the caller can
+    report what replaced it and whether that loosened the project (audit F7)."""
     cleared = []
     # Was a preset NEWLY chosen? True for a fresh entry (add/init, nothing to change from) and for a real
     # switch; False when no --preset was given, or when it names the same preset (an alias included). It
@@ -80,8 +81,7 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
     if newly_chosen and old_preset:
         for key in SECURITY_OVERRIDES:
             if key in entry and not _given(a, key):
-                del entry[key]
-                cleared.append(key)
+                cleared.append((key, entry.pop(key)))
     if a.preset:
         entry["preset"] = a.preset
     if a.egress:
@@ -127,10 +127,28 @@ def precheck_project_settings(s, a):
         _check(a.name, "build_memory", entry["build_memory"], settings=s)
 
 
-def _print_cleared(cleared):
-    if cleared:
-        print(f"  cleared with the old preset: {', '.join(cleared)} "
-              f"(set them again if you still want them)")
+def _print_cleared(cleared, name, entry, presets_map):
+    """What a preset change dropped, as before → after, labelled tightened/loosened/cleared.
+
+    "cleared: egress" did not say that the project had just gone from locked to open (audit F7), so each
+    line now names the value that replaced it: the new preset's for a setting it resolves, its tightest for
+    an ordered project key (observe_logs), (none) otherwise."""
+    if not cleared:
+        return
+    eff = presets.effective(name, entry, presets_map)
+    print("  dropped with the old preset (set them again if you still want them):")
+    for key, old in cleared:
+        k = projectkeys.BY_NAME[key]
+        if k.kind == "preset":
+            new = eff[key][0]
+        elif k.values:
+            new = k.tightest
+        else:
+            new = None
+        label = projectkeys.change_label(key, old, new) if new is not None else ""
+        new_text = _render(k, new)[0] if new is not None else "(none)"
+        print(f"    {key}: {_render(k, old)[0]} → {new_text} "
+              f"({label or 'cleared'} by the preset change)")
 
 
 def _validate_and_save(s, reg, name, entry, a, presets_map):
@@ -176,7 +194,7 @@ def cmd_project_add(s, a):
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
-    _print_cleared(cleared)
+    _print_cleared(cleared, a.name, entry, presets_map)
     _print_effective(s, a.name)
 
 
@@ -209,7 +227,7 @@ def cmd_project_set(s, a):
         print(f"  unset (back to the preset): {', '.join(dropped)}")
     if absent:
         print(f"  not stored on this project, so nothing to unset: {', '.join(absent)}")
-    _print_cleared(cleared)
+    _print_cleared(cleared, a.name, entry, presets_map)
     _print_effective(s, a.name)
 
 

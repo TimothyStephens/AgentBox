@@ -105,6 +105,37 @@ class SetTest(SettingsCase):
         self.assertNotIn("observe_logs", e)
         self.assertEqual(self.eff("egress")[0], "locked")
 
+    # --- F7: a preset change reports what it replaced, and whether that loosened it ---
+
+    def test_a_preset_change_that_loosens_says_so(self):
+        """F7: "cleared: egress" did not say that the project had just gone from locked to open."""
+        self.project("p1", preset="script", egress="locked")
+        code, out = self.rc_out("project", "set", "p1", "--preset", "research")
+        self.assertEqual(code, 0)
+        self.assertIn("egress: locked → open", out)
+        self.assertIn("loosened", out)
+
+    def test_a_preset_change_that_tightens_says_so(self):
+        self.project("p1", preset="research", egress="open")
+        code, out = self.rc_out("project", "set", "p1", "--preset", "analysis-offline")
+        self.assertEqual(code, 0)
+        self.assertIn("egress: open → locked", out)
+        self.assertIn("tightened", out)
+
+    def test_an_unordered_setting_is_reported_as_cleared(self):
+        self.project("p1", preset="build", extra_domains=["example.com"], compose_project="shop")
+        code, out = self.rc_out("project", "set", "p1", "--preset", "script")
+        self.assertEqual(code, 0)
+        self.assertIn("extra_domains: example.com → (none)", out)
+        self.assertIn("cleared", out)
+
+    def test_observe_logs_is_reported_as_a_tightening(self):
+        self.project("p1", preset="build", observe_logs=True)
+        code, out = self.rc_out("project", "set", "p1", "--preset", "script")
+        self.assertEqual(code, 0)
+        self.assertIn("observe_logs: true → false", out)
+        self.assertIn("tightened", out)
+
     # --- F1: open egress is written only when an open preset is NEWLY chosen ---
 
     def test_an_unrelated_set_never_writes_egress(self):

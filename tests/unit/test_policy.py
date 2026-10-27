@@ -369,6 +369,12 @@ def ns(**kw):
 GRANT_KW = dict(home="/home/nobody", extra_protected=[])
 
 
+def cleared_keys(cleared):
+    """_apply_project_settings returns [(key, the value it held)] so the caller can report what replaced
+    it (audit F7); these tests mostly care about which keys went."""
+    return [key for key, _old in cleared]
+
+
 class PresetChangeTest(unittest.TestCase):
     """F2: a new preset means a new security posture, so stored security-relevant overrides from the old one
     are cleared rather than silently outliving it (a leftover egress=open from `research` is the case that
@@ -379,10 +385,11 @@ class PresetChangeTest(unittest.TestCase):
                  "extra_domains": ["x.com"], "podman": {"tier": "dev"}, "data_ro": ["/d"],
                  "data_rw": ["/w"], "build_memory": "4g"}
         cleared = cli._apply_project_settings(entry, ns(preset="analysis-offline"), GRANT_KW, presets.BUILTIN)
-        self.assertEqual(cleared, ["egress", "podman", "data_ro", "data_rw", "extra_domains",
-                                   "observe_logs"])
+        self.assertEqual(cleared_keys(cleared), ["egress", "podman", "data_ro", "data_rw", "extra_domains",
+                                                 "observe_logs"])
+        self.assertIn(("egress", "open"), cleared, "the value it held, for the before -> after report")
         self.assertEqual(entry["preset"], "analysis-offline")
-        for key in cleared:
+        for key in cleared_keys(cleared):
             self.assertNotIn(key, entry)
         self.assertEqual(entry["build_memory"], "4g", "not security-relevant: kept")
         eff = presets.effective("p", entry, presets.BUILTIN)
@@ -398,7 +405,7 @@ class PresetChangeTest(unittest.TestCase):
                  "build_memory": "4g"}
         cleared = cli._apply_project_settings(entry, ns(preset="script"), GRANT_KW, presets.BUILTIN)
         for key in ("approvals", "compose", "compose_project", "dev_images"):
-            self.assertIn(key, cleared, key)
+            self.assertIn(key, cleared_keys(cleared), key)
             self.assertNotIn(key, entry, key)
         self.assertEqual(entry["mask_skip"], ["big"], "a property of the tree, not the posture: kept")
         self.assertEqual(entry["build_memory"], "4g", "a resource limit, not posture: kept")
@@ -407,13 +414,13 @@ class PresetChangeTest(unittest.TestCase):
         entry = {"root": "/r", "preset": "research", "egress": "open", "observe_logs": True}
         cleared = cli._apply_project_settings(entry, ns(preset="build", egress="locked"), GRANT_KW, presets.BUILTIN)
         self.assertEqual(entry["egress"], "locked", "the flag given now wins over the clearing")
-        self.assertNotIn("egress", cleared)
-        self.assertEqual(cleared, ["observe_logs"])
+        self.assertNotIn("egress", cleared_keys(cleared))
+        self.assertEqual(cleared_keys(cleared), ["observe_logs"])
 
     def test_switching_to_an_open_preset_applies_its_open_egress(self):
         entry = {"root": "/r", "preset": "script", "egress": "locked"}
         cleared = cli._apply_project_settings(entry, ns(preset="research"), GRANT_KW, presets.BUILTIN)
-        self.assertEqual(cleared, ["egress"])
+        self.assertEqual(cleared_keys(cleared), ["egress"])
         self.assertEqual(entry["egress"], "open", "cleared, then research's own open default applied")
         self.assertEqual(presets.effective("p", entry, presets.BUILTIN)["egress"], ("open", "project"))
 
@@ -437,7 +444,7 @@ class PresetChangeTest(unittest.TestCase):
             with self.subTest(switch=f"{old} -> {new}"):
                 entry = {"root": "/r", "preset": old, "observe_logs": True}
                 cleared = cli._apply_project_settings(entry, ns(preset=new), GRANT_KW, presets.BUILTIN)
-                self.assertIn("observe_logs", cleared)
+                self.assertIn("observe_logs", cleared_keys(cleared))
                 self.assertNotIn("observe_logs", entry)
 
     def test_a_customised_alias_counts_as_a_change(self):
@@ -446,7 +453,7 @@ class PresetChangeTest(unittest.TestCase):
         custom = dict(presets.BUILTIN, pods=dict(presets.BUILTIN["build"], egress="locked"))
         entry = {"root": "/r", "preset": "pods", "observe_logs": True}
         cleared = cli._apply_project_settings(entry, ns(preset="build"), GRANT_KW, custom)
-        self.assertEqual(cleared, ["observe_logs"])
+        self.assertEqual(cleared_keys(cleared), ["observe_logs"])
 
     def test_keeping_the_same_preset_clears_nothing(self):
         entry = {"root": "/r", "preset": "build", "egress": "open", "observe_logs": True}
