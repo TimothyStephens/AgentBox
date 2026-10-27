@@ -322,25 +322,42 @@ def _render(key, value):
     return [str(value)]
 
 
-def _refuse_if_live(s, names, what):
-    """No registry edit while a session for one of these projects is running.
+def _live_containers(s, names):
+    """Running containers of these projects, as (project, session, container name).
 
-    `ab project rm` used to orphan it: the entry went away, the containers kept running, and the grant lost
-    its overlap protection, so another project could be registered over the live grant. There is
+    Asked of podman, not of session.json: the project comes from the container's own `agentbox.project`
+    label and liveness from its state, so this sees the case `ab session gc` deliberately leaves alone --
+    launcher gone, containers still up -- which is exactly when a registry edit used to orphan them (audit
+    F2). The old check read the project from session.json and required a live launcher PID, so a session
+    whose launcher had died looked absent."""
+    wanted = set(names)
+    out = []
+    for c in Podman(s.podman).containers_json(s.labels):
+        labels = c.get("Labels") or {}
+        project = labels.get("agentbox.project")
+        if project not in wanted or (c.get("State") or "").lower() != "running":
+            continue
+        names_ = c.get("Names") or []
+        out.append((project, labels.get("agentbox.session") or "",
+                    names_[0] if names_ else (c.get("Id") or "")[:12]))
+    return sorted(out)
+
+
+def _refuse_if_live(s, names, what):
+    """No registry edit while a container of one of these projects is running.
+
+    `ab project rm` used to orphan the session: the entry went away, the containers kept running, and the
+    grant lost its overlap protection, so another project could be registered over the live grant. There is
     deliberately no --force -- ending live work is `ab session kill`'s job (decisions.md, 6 Oct, on why
     auto-reaping was rejected)."""
-    wanted = set(names)
-    blocked = []
-    for sess, info in session.sessions(s, Podman(s.podman)).items():
-        project = (info.get("meta") or {}).get("project")
-        if info.get("alive") and project in wanted:
-            blocked.append((project, sess))
+    blocked = _live_containers(s, names)
     if not blocked:
         return
-    detail = ", ".join(f"{project}: {sess}" for project, sess in sorted(blocked))
-    kill = " ".join(f"`ab session kill {sess}`" for _project, sess in sorted(blocked))
-    raise AgentboxError(f"cannot {what} while a session is running ({detail}); end it with {kill} first "
-                        "(its logs and end-of-session scan are kept), then try again")
+    detail = ", ".join(f"{project}: {container}" for project, _sess, container in blocked)
+    sessions = sorted({sess for _p, sess, _c in blocked if sess})
+    how = " ".join(f"`ab session kill {x}`" for x in sessions) or "`ab session ls` to find the session"
+    raise AgentboxError(f"cannot {what} while containers of that project are running ({detail}); end it "
+                        f"with {how} first (its logs and end-of-session scan are kept), then try again")
 
 
 def cmd_project_reset_state(s, a):

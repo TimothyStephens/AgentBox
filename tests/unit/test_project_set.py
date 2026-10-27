@@ -3,15 +3,19 @@
 (preset/lockdown ceiling, build_memory, grantcheck, history secrets), and refuses while a session for the
 project is live. `--unset KEY` returns a setting to its preset value; `--clear-<list>` empties a list one.
 """
+import json
 import os
-from unittest import mock
 
 from agentbox import cli, registry, session
 from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase
 
-ALIVE = {"ab-claude-p1-1": {"alive": True, "meta": {"project": "p1"}}}
+# What `podman ps --format json` reports for a running container of p1. The liveness guard reads the
+# project from the container label, so no session.json is needed to make a session "live" (audit F2).
+ALIVE = json.dumps([{"Names": ["ab-claude-p1-1-agent"], "State": "running",
+                     "Labels": {"agentbox.project": "p1", "agentbox.session": "ab-claude-p1-1",
+                                "agentbox.role": "agent", "agentbox-test": "1"}}])
 
 
 class SetTest(SettingsCase):
@@ -196,14 +200,16 @@ class SetTest(SettingsCase):
         self.assertEqual(self.rc("project", "set", "p1", "--preset", "nope"), 2)
 
     def test_refuses_while_a_session_is_live(self):
-        with mock.patch("agentbox.session.sessions", return_value=ALIVE):
-            self.assertEqual(self.rc("project", "set", "p1", "--egress", "open"), 2)
+        os.environ["FAKE_PODMAN_PSJSON"] = ALIVE
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        self.assertEqual(self.rc("project", "set", "p1", "--egress", "open"), 2)
         self.assertNotIn("egress", self.entry(), "refused: nothing saved")
 
     def test_the_live_refusal_names_the_session(self):
-        with mock.patch("agentbox.session.sessions", return_value=ALIVE):
-            with self.assertRaises(AgentboxError) as cm:
-                cli.cmd_project_set(self.settings, _ns(name="p1", egress="open"))
+        os.environ["FAKE_PODMAN_PSJSON"] = ALIVE
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        with self.assertRaises(AgentboxError) as cm:
+            cli.cmd_project_set(self.settings, _ns(name="p1", egress="open"))
         self.assertIn("ab-claude-p1-1", str(cm.exception))
         self.assertIn("ab session kill", str(cm.exception))
 

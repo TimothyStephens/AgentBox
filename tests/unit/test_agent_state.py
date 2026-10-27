@@ -122,9 +122,15 @@ class StateLifecycle(SettingsCase):
         with mock.patch("builtins.input", return_value="n"):
             self.assertEqual(cli.main(["project", "reset-state", "p1"]), 1)
         self.assertTrue(os.path.isdir(st), "declined: kept")
-        with mock.patch("agentbox.session.sessions", return_value={"s1": {"alive": True, "meta": {"project": "p1"}}}):
+        import json
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
+            [{"Names": ["s1-agent"], "State": "running",
+              "Labels": {"agentbox.project": "p1", "agentbox.session": "s1", "agentbox-test": "1"}}])
+        try:                                  # a running container of p1 blocks the reset (audit F2)
             with self.assertRaises(AgentboxError):
                 cli.cmd_project_reset_state(self.settings, type("A", (), {"name": "p1", "yes": True})())
+        finally:
+            os.environ.pop("FAKE_PODMAN_PSJSON", None)
         with mock.patch("builtins.input", return_value="y"):
             self.assertEqual(cli.main(["project", "reset-state", "p1"]), 0)
         self.assertFalse(os.path.exists(os.path.join(self.settings.data_dir, "p1")))
