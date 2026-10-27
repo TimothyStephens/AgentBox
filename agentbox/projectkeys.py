@@ -287,12 +287,30 @@ def masked_name(fn):
 
 
 def _swap(_name, where, value, **_kw):
-    """swap maps a masked file name to the dev stand-in mounted in its place, in the same directory."""
+    """swap maps a masked file name to the dev stand-in mounted in its place, in the same directory.
+
+    Two rules keep a swap from becoming a way to READ a secret (audit F6):
+
+      * the stand-in -- whose contents the agent sees -- may not itself be a masked name.
+        `swap = { "notes.txt" = ".env" }` otherwise mounted the real .env at an unmasked path, in plain
+        sight, while the mask dutifully covered the original;
+      * the destination must be a masked name, so a swap only ever stands in for a file that is hidden
+        anyway, rather than binding a dev file over arbitrary project files (and making them masked by
+        virtue of being a swap target).
+    """
     for target, dev in dict(value).items():
         for x in (target, dev):
             if not isinstance(x, str) or not SWAP_NAME.match(x) or x in (".", ".."):
                 raise AgentboxError(f"{where}: swap entry {target!r} = {dev!r}: use plain file "
                                     "names (no '/', no '..')")
+        if masked_name(dev):
+            raise AgentboxError(f"{where}: swap {target!r} = {dev!r}: the stand-in {dev!r} is itself a "
+                                "masked name, so mounting it would show the agent a real secret; point it "
+                                "at a dev file (e.g. .env.dev)")
+        if not masked_name(target):
+            raise AgentboxError(f"{where}: swap {target!r} = {dev!r}: {target!r} is not a masked name "
+                                "(.env, .env.*, *.pem, *.key), so there is no secret for it to stand in "
+                                "for; a swap only replaces a file the masks hide")
     return dict(value)
 
 

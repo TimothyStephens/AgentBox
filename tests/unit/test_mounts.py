@@ -49,9 +49,10 @@ class MountPlanTest(TempCase):
         self.assertEqual((st.st_size, st.st_mode & 0o777), (0, 0o600))
 
     def test_custom_swap_masks_target_without_dev_file(self):
-        self.write("proj/secrets.env", "X=1\n")
-        m = self.by_dst(mounts.plan(root=self.root, swap={".env": ".env.dev", "secrets.env": "secrets.dev.env"}))
-        self.assertEqual(m["secrets.env"].kind, "mask")
+        # A legal custom swap: the destination is a masked name and the stand-in is not (audit F6).
+        self.write("proj/.env.local", "X=1\n")
+        m = self.by_dst(mounts.plan(root=self.root, swap={".env": ".env.dev", ".env.local": ".env.local.dev"}))
+        self.assertEqual(m[".env.local"].kind, "mask")
 
     def test_git_overlays(self):
         p = mounts.plan(root=self.root)

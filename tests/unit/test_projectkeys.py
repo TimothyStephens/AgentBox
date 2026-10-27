@@ -9,6 +9,7 @@ a new key cannot be added without answering every column.
 import unittest
 
 from agentbox import cli, presets, projectkeys, registry
+from agentbox.errors import AgentboxError
 
 
 # Frozen on purpose: adding a key means updating this list too, which is the moment to check that every
@@ -148,3 +149,42 @@ class Inertness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwapNeverExposesASecret(unittest.TestCase):
+    """F6: `swap` maps a masked destination to the dev stand-in mounted in its place. Two rules keep it from
+    becoming a way to READ a secret: the stand-in may not itself be a masked name, and the destination must
+    be one."""
+
+    def check(self, swap):
+        return projectkeys.validate_value("swap", "project p", swap)
+
+    def test_the_default_swap_is_legal(self):
+        from agentbox import mounts
+        self.check(mounts.DEFAULT_SWAP)
+        self.check({".env": ".env.dev"})
+
+    def test_a_masked_name_as_the_stand_in_is_refused(self):
+        """`swap = {"notes.txt" = ".env"}` mounted the REAL .env at an unmasked path, in plain sight, while
+        the mask dutifully covered the original."""
+        for bad in ({"notes.txt": ".env"}, {".env": "other.pem"}, {".env": "id.key"},
+                    {".env": ".env.prod"}, {".env.local": ".env"}):
+            with self.assertRaises(AgentboxError, msg=bad) as cm:
+                self.check(bad)
+            self.assertIn("masked name", str(cm.exception))
+
+    def test_an_unmasked_destination_is_refused(self):
+        for bad in ({"notes.txt": ".env.dev"}, {"secrets.env": "secrets.dev.env"}, {"app.py": "app.dev.py"}):
+            with self.assertRaises(AgentboxError, msg=bad):
+                self.check(bad)
+
+    def test_a_masked_destination_with_a_plain_stand_in_is_allowed(self):
+        self.check({".env.local": ".env.dev"})
+        self.check({"server.pem": "dev-cert.txt"})
+        self.check({"id.key": "dev-key.txt"})
+        self.check({".env": ".env.example"})          # exempt, so not a secret the masks hide
+
+    def test_plain_file_names_only(self):
+        for bad in ({"../escape": ".env.dev"}, {".env": "../outside.env"}, {".env": "sub/dir.env"}):
+            with self.assertRaises(AgentboxError, msg=bad):
+                self.check(bad)
