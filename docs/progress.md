@@ -2,7 +2,7 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 26 Oct 2026
+**Updated:** 27 Oct 2026
 
 ## Status (single source of truth — what this tool does and does not do)
 
@@ -12,7 +12,8 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | --- | --- | --- |
 | **`ab init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written. |
 | **Presets** (lockdown, build/pods, build-open, script/python, research, operate, analysis-offline) | **built** | `build`/`script` canonical, `pods`/`python` true aliases (resolve exactly as before). Open egress is a preset *attribute* materialised onto the project's entry, never a live reference — a hand-written entry naming an open preset is fail-closed; changing a preset clears the security overrides set against the old one. decisions.md, 26 Oct. |
-| **`ab project set`** | **built** | Changes a registered project in place with the shared flags, re-validated (ceiling, grantcheck, history secrets); `--unset KEY`, `--clear-<list>`. Refused while a session for the project is live — as are `rm`, `reset-state` and the `accept-*` commands (no `--force`). Moving `root` is still rm + add. |
+| **One settings table** (`projectkeys.py`) | **built** | One row per registry key decides every property of it (flags, validator, looseness order, security, cleared-on-preset-change, unsettable, display, inertness); `presets.SETTINGS`/`ALLOWED`/`LOOSENESS`, `registry.PROJECT_KEYS`, the cli lists, the ceiling and `ab project show` all derive from it. A new key is a TypeError until each property is answered. Retired the five parallel lists behind five audit findings (decisions.md, 27 Oct). |
+| **`ab project set`** | **built** | Changes a registered project in place with the shared flags, re-validated (ceiling, grantcheck, history secrets); `--unset KEY`, `--clear-<list>`. Refused while a session for the project is live — as are `rm`, `reset-state` and the `accept-*` commands (no `--force`); liveness is any RUNNING container labelled `agentbox.project=<name>`, so a dead launcher no longer hides one. The whole entry (unknown keys included) is validated before anything is saved, and `load_project` is just as strict. Moving `root` is still rm + add. |
 | **grantcheck (Track 1, primary wall)** | **built** | Refuses a session when a read-write grant holds an uncovered secret (`.env`/`*.pem`/`*.key`/`secrets/`), a git-credential URL, or live data (`*.db` etc. >1 MB, or a compose data bind). Ack via `accept-grant-exposure`, re-prompted on content change (M4). |
 | **grantcheck coverage** | **known limitation** | Catches common shapes only: secrets under other names, more DB shapes, exempt names, host-written files all get past it (decisions.md H2/M1–M3). `data_ro` is now scanned, as warnings (26 Oct, F4). Operational rule (keep secrets/live data out of the grant) is the real control. |
 | **Covers / masks + gate enforcement** | **built** | Masks for secrets; `.git/hooks`/`.git/config`, compose/lockdown covers; enforced for gate-spawned containers (N1–N9, cover identity, parent pins, mountinfo). Reviewed 5–6 Oct (`docs/reviews/2026-10-0{5,6}-covers*.md`). |

@@ -348,6 +348,7 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
                       [--clear-extra-domains] [--clear-dev-images]
+                      [--clear-mask-skip]
                       name
 
 change a registered project's settings in place (re-validated; refused while a session for it is live)
@@ -415,10 +416,10 @@ options:
                         data (a grant is for code; move them outside it or add
                         a mask)
   --unset KEY           drop a stored setting so the preset's value applies
-                        again (repeatable); one of: compose, egress, caps,
-                        secrets, approvals, data, podman, data_ro, data_rw,
-                        extra_domains, mask_skip, build_memory,
-                        compose_project, observe_logs, dev_images
+                        again (repeatable); one of: compose, egress, podman,
+                        caps, secrets, approvals, data, data_ro, data_rw,
+                        extra_domains, compose_project, observe_logs,
+                        dev_images, mask_skip, swap, build_memory
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains
@@ -426,6 +427,8 @@ options:
                         extra_domains)
   --clear-dev-images    empty the dev_images list (the same as --unset
                         dev_images)
+  --clear-mask-skip     empty the mask_skip list (the same as --unset
+                        mask_skip)
 
 examples:
   ab project set web --egress open

@@ -860,3 +860,81 @@ corrected retry fail with "already exists; refusing to scaffold over it".
 one-line description, in `--help` and in the unknown-preset error, and `choices` now refuses an unknown name
 at parse time. `docs/gen_usage.py` generates `docs/USAGE.md` against an empty config dir so the reference
 lists the built-ins only, whoever runs it.
+
+## 2026-10-27 · Second preset/settings audit: one settings table, then F1-F11 (Tim)
+
+The audit returned eleven findings, and named the pattern behind five of them: a setting key missing from one
+of five hand-maintained parallel lists (`cli.SECURITY_OVERRIDES`, `cli.UNSETTABLE`, `registry.PROJECT_KEYS`,
+the display gating in `_print_effective`, the ceiling's looseness orders). Same drift class as the five
+duplicated "covered" computations in `docs/TODO.md`: when one property of a key lives in five places, adding
+a key gets four of them right. So the lists went first, and several findings then fell out for free.
+
+**One table (`agentbox/projectkeys.py`).** One row per registry key, answering every property of that key:
+its CLI flag(s) and argparse dest, which validator checks it, its allowed values **tightest first** (which
+*is* the ceiling's looseness order), whether it is security-relevant, whether a preset change clears it,
+whether `--unset` takes it, how `ab project show` displays it, and when it is inert and why. `Key` has no
+defaults on the decision fields, so a new key is a `TypeError` until each is answered, and `validate_entry`
+refuses a key that is not in the table — a key cannot be added anywhere else. Derived from it:
+`presets.SETTINGS`/`ALLOWED`/`LOOSENESS`/`EGRESS`/`PODMAN_TIERS`, `registry.PROJECT_KEYS`,
+`cli.SETTING_FLAGS`/`SECURITY_OVERRIDES`/`UNSETTABLE`/`CLEAR_FLAGS`, the ceiling comparison, F7's
+loosening labels and F8's inert markers. The small validators moved out of `session.py` into it, with no
+aliases left behind.
+
+**Deliberate consequences of the table, beyond the audit's list:**
+- the clearing set is the `clears` column, so a hand-written preset-setting override (`approvals`,
+  `compose`, ...) is cleared by a preset change too — an override must not outlive the preset it was set
+  against, whichever key it is;
+- `--clear-mask-skip` exists, falling out of "list-valued and unsettable";
+- `secrets` is marked `(ignored: masks always apply and cannot be turned off)` rather than removed — there is
+  nothing left for it to enforce (16 Oct), and the display now says so honestly; same treatment as `caps`.
+  Removing both keys is a clean follow-up but breaks existing preset files, so not in this round.
+
+**The findings.**
+- **F1 — open egress is written only when a preset is NEWLY chosen.** `materialize_open_egress` ran on every
+  edit, so `ab project set p1 --build-memory 4g` on a research project silently opened its egress. One
+  `newly_chosen` flag (fresh entry, or a real switch per `same_preset`) now gates both the clearing and the
+  write; re-choosing the same preset is not "newly chosen", so a hand-written entry with no `egress` key
+  stays fail-closed at `packages`.
+- **F2 — liveness is a running container's label.** `_refuse_if_live` read the project from `session.json`
+  and required a live launcher PID, so a session whose launcher had died looked absent — exactly the case
+  `ab session gc` leaves alone, and exactly when `rm` orphaned it. It now asks podman for any **running**
+  container labelled `agentbox.project=<name>`, taking the project and the session name from the container's
+  own labels. The tests drive the fake podman's `ps` output instead of mocking `sessions()`.
+- **F3 — overlap covers every grant pair.** `check_grant`'s `other_roots` only ever held other projects'
+  *roots*, so a `data_rw` grant could sit inside another project's `data_rw` or `data_ro`.
+  `paths.check_overlaps` is now the one cross-project check and the rule is the matrix: a read-write grant
+  may not overlap any grant of another project, in either direction; read-only may overlap read-only. Run at
+  add, set and session start. `check_grant` keeps only "is this path safe in itself?", so there is one
+  mechanism rather than two drifting ones.
+- **F4 — `compose_project` and `dev_images` are security-relevant and cleared** (from the table), and an
+  explicit `compose_project` is displayed together with the fact that it waives the live-stack ownership
+  check.
+- **F5 — the ceiling is a preset attribute**, `ceiling = true`, not `preset_name == "lockdown"`: true for
+  lockdown, and true by default for any preset a user file defines *or modifies* unless it says
+  `ceiling = false` (fail-closed, and consistent with a new user preset inheriting lockdown's values —
+  customising `build.toml` makes that a ceiling too). The comparison is generic, through the table's
+  looseness, so it covers `podman` component-wise and `observe_logs` with no per-key code.
+  `lockdown.toml` is still refused.
+- **F6 — a swap can no longer expose a secret.** The stand-in may not be a masked name and the destination
+  must be one, so `swap = { "notes.txt" = ".env" }` — the real `.env` mounted at an unmasked path while the
+  mask covered the original — is refused. This invalidates the design doc's old `secrets.env` example, which
+  is replaced with `.env.local`.
+- **F7 — a preset change reports before → after**, labelled from the looseness order:
+  `egress: locked → open (loosened by the preset change)`, `observe_logs: true → false (tightened ...)`,
+  `(cleared ...)` for an unordered key.
+- **F8, F10 — from the table.** Every stored setting is shown, with `(ignored: ...)` when the posture makes
+  it do nothing, instead of being hidden (which had hidden a waived ownership check, a dead allowlist, and
+  `swap` and both acknowledgement keys from every project); `--unset` on a key the project never stored says
+  so instead of claiming a change.
+- **F9 — left as-is, benign.** Noted in `docs/TODO.md`.
+- **F11 — the whole entry is validated before saving.** `set` checked only what the command touched, so a
+  hand-written key or value survived the save and failed afterwards — a secret-exposing `swap` was *stored*,
+  and only the closing effective-config display raised. `projectkeys.validate_entry` (unknown keys, every
+  value through its own validator, root/preset present) now runs before any write and again at session start,
+  so `load_project` is as strict as `set` and a failed `set` writes nothing. `projects.toml`'s header stops
+  inviting hand edits and points at `ab project set`.
+
+**Process (CLAUDE.md).** A rule was added after I reverted `tests/live/claude-live-pass.txt`, which held a
+genuine `make claude-live` result Tim had not yet committed: uncommitted changes I did not make are his —
+never revert, stage or commit them; report and ask. Baseline comparisons go in a separate worktree, never a
+`git checkout` in the live tree.

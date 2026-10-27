@@ -8,10 +8,19 @@ Last reviewed 2026-10-16: the pre-real-project re-review's findings are all acti
 - **A read-only project-root mount mode, for a planner preset** (the agent reads the code and writes a plan, but cannot edit the code). **Not built, and deliberately not bundled into the preset redesign** (26 Oct): the root is an unconditional read-write bind under every preset (`mounts.plan`: `rw_grants = [root] + data_rw`), so this needs a **new mount mode** *and* **another pass over the gate/covers logic** — the gate's read-only-grant handling (forcing `ro` on binds and grant-volume SubPaths), the after-start mountinfo check, and the cover pins all assume a writable root, and that area is security-reviewed (decisions.md, 5–6 Oct). It would also want a decision on one writable sub-directory inside a read-only root (notes/plans), which the grant validator does not model today. Raised because `research` reads as if the project were read-only and is not; design.md's preset table and the `--preset` description now say so explicitly. **Today's mitigation:** commit before a research session, plus the per-session rsync snapshot — a *within-session undo* that restores the grant to how it was at session start (explicitly not a data backup, decisions.md 6 Oct) — so unwanted edits are a `git diff` / `git checkout` away.
 - **Unify the duplicated git-identity lookup** (`initproj.py` / `session.py`) — review finding 10; detail under *Support refactors* below.
 - **Deferred-by-design features** (intentionally not built — see the `progress.md` Status table): `ab ws`/`attach`/`deploy`/`outbox`, the podman `exec` tier, the model-key gateway, `masked_paths`, `--data-bind`, Pi/Codex adapters.
+- **Audit finding F9** (second preset/settings audit, 27 Oct): left as-is by decision — judged benign. The finding's text was not in the hand-off I received, so this line is a placeholder: paste F9 here (or point at the audit file) so the record is complete.
 - The **Maintainability backlog** below: dead-code removal (each with a test proving deadness), the `gate.py`/`session.py` refactors, and the untested error paths E5–E12.
 
 ## Watch only — not an action
 - **Egress flakes** (squid upstream stalls; IPv6 suspected). Diagnostics are in place; act only if they recur. Candidate fix: a squid `dns_timeout` under the probe's 20 s. Full notes in `progress.md` → Watch items.
+
+## Retired by the 27 Oct settings table
+
+The five parallel per-key lists are gone: `cli.SECURITY_OVERRIDES`, `cli.UNSETTABLE`,
+`registry.PROJECT_KEYS`, `_print_effective`'s display gating and the ceiling's looseness orders all derive
+from `agentbox/projectkeys.py` now (decisions.md, 27 Oct). Five audit findings had been keys missing from one
+of them. The remaining duplication below is the same class and the same remedy when it next bites: one
+table, derived views.
 
 ## Maintainability backlog
 
