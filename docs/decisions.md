@@ -938,3 +938,23 @@ aliases left behind.
 genuine `make claude-live` result Tim had not yet committed: uncommitted changes I did not make are his —
 never revert, stage or commit them; report and ask. Baseline comparisons go in a separate worktree, never a
 `git checkout` in the live tree.
+
+**Added the same week (27 Oct).** Two follow-ups from reading the output on a real project:
+
+- **`ab project check <name>`** (read-only). `grant_exposure_accepted` is a fingerprint — a hash of each
+  finding's path, size, mtime and inode — so `ab project show` could only print an opaque number, and there
+  was no way to see *what* had been accepted or whether it still described the grant. `check` runs the same
+  scan a session runs and prints the findings in full, both fingerprints, and the verdict (accepted /
+  changed since accepted / not accepted / stale acceptance / clean), exiting 1 when a session would refuse.
+  It writes nothing, and unlike `rm`/`set`/`accept-*` it is **not** refused while a session is live: seeing
+  what a running project accepted is exactly when you want it. `ab project show` points at it whenever an
+  acknowledgement is stored, and `check` notes when an accepted exposure sits beside `egress = "open"`.
+  What the fingerprint does and does not catch, measured: editing a flagged file (size or mtime) re-prompts,
+  as does a new or removed finding; a change *inside* a flagged directory, or to the credential in a git
+  remote URL, does not, because those findings are fingerprinted at directory/path granularity.
+- **A provenance log beside the pass record.** `freshness.record` appends
+  `<commit> <ISO timestamp> egress=<mode> host=<hostname>` to `tests/live/claude-live-pass.log`
+  (append-only, committed with the record). The one-line record is overwritten by each run, so an overwrite
+  left no trace; the log makes it visible after the fact, which is why a loud-overwrite refusal was not
+  added — re-running and replacing the record is the normal case. Writing either file already requires
+  `from_live_run=True`, so only the live runner can produce a line.

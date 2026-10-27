@@ -255,6 +255,68 @@ def _history_secrets(entry):
                                    entry.get("mask_skip", []))
 
 
+def cmd_project_check(s, a):
+    """Read-only: what the grant scan finds now, what was accepted, and whether those are the same thing.
+
+    The stored acknowledgement is a fingerprint -- a hash of each finding's path, size, mtime and inode --
+    so `ab project show` can only print an opaque number. This runs the same scan a session runs and shows
+    the findings behind it, so "what did I accept?" is answerable without starting one. It writes nothing,
+    and unlike rm/set/accept-* it is not refused while a session is live: seeing what a running project
+    accepted is exactly when you want it. Exit 0 if a session would start, 1 if it would refuse."""
+    from . import grantcheck
+    reg = registry.load(s.registry_path)
+    if a.name not in reg:
+        raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
+    e = reg[a.name]
+    exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
+                                         covered=_mask_dsts(s, dict(e, name=a.name)),
+                                         warn_grants=e.get("data_ro", []))
+    accepted = str(e.get("grant_exposure_accepted") or "")
+    now = grantcheck.fingerprint(exposure) if exposure else ""
+
+    print(f"project {a.name}: grant exposure")
+    print(f"  scanned (read-write)  {', '.join([e['root']] + e.get('data_rw', []))}")
+    if e.get("data_ro"):
+        print(f"  scanned (read-only)   {', '.join(e['data_ro'])}   warnings only; never refused")
+    if exposure:
+        print(f"  findings now ({len(exposure)}):")
+        for f in exposure:
+            print(f"    - {f['text']}")
+    else:
+        print("  findings now          none")
+    for w in warnings:
+        print(f"  warning: {w}")
+    if exposure or accepted:
+        print(f"  fingerprint now       {now or '(nothing to fingerprint)'}")
+        print(f"  accepted              {accepted or '(nothing accepted)'}")
+        print("  the fingerprint covers each finding's path, size, mtime and inode, so editing a flagged")
+        print("  file re-prompts; a change inside a flagged directory, or to a credential in a git remote")
+        print("  URL, does not.")
+
+    if not exposure and accepted:
+        print(f"\n  => nothing is exposed any more: the stored acceptance is stale, and the next")
+        print(f"     `ab project set`/`add` or `ab project accept-grant-exposure {a.name}` drops it.")
+        print("     A session will start.")
+        return 0
+    if not exposure:
+        print("\n  => nothing in the grant the agent should not have. A session will start.")
+        return 0
+    if accepted == now:
+        print("\n  => the acceptance covers exactly these findings. A session will start.")
+        if e.get("egress") == "open":
+            print("     note: this project's egress is open, so what the agent reads here can leave the")
+            print(f"     box. `ab project set {a.name} --egress packages` narrows that.")
+        return 0
+    if accepted:
+        print("\n  => these findings have CHANGED since they were accepted, so a session will REFUSE.")
+        print(f"     Move them out of the grant, or accept the new state with")
+        print(f"     `ab project accept-grant-exposure {a.name}`.")
+    else:
+        print("\n  => not accepted, so a session will REFUSE. Move them out of the grant, or accept with")
+        print(f"     `ab project accept-grant-exposure {a.name}`.")
+    return 1
+
+
 def cmd_project_accept_grant_exposure(s, a):
     from . import grantcheck
     reg = registry.load(s.registry_path)
@@ -331,6 +393,8 @@ def _print_effective(s, name):
         reason = projectkeys.inert_reason(key.name, ctx)
         if reason:
             notes.append(f"(ignored: {reason})")
+        if key.name == "grant_exposure_accepted" and key.name in stored:
+            notes.append(f"(a fingerprint of the findings; `ab project check {name}` shows what it covers)")
         if key.name == "preset" and presets_map.get(value, {}).get("ceiling"):
             notes.append("(a ceiling: an override may only tighten it)")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
@@ -713,6 +777,11 @@ def parser(settings=None):
                               preset_note=" (default: the project's current preset)")
     _add_project_unset_args(x)
     x.set_defaults(fn=cmd_project_set)
+    x = add(proj, "check",
+            "show what the grant scan finds now and whether it matches what was accepted (read-only)",
+            ex("ab project check web"))
+    x.add_argument("name", help="the registered project to scan")
+    x.set_defaults(fn=cmd_project_check)
     x = add(proj, "accept-history-secrets",
             "accept (after rotating them) the masked file names now in a project's git history",
             ex("ab project accept-history-secrets web"))

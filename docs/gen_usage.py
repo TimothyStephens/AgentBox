@@ -20,6 +20,7 @@ GROUPS = [
         ("ab project add", ["project", "add"]),
         ("ab project set", ["project", "set"]),
         ("ab project show", ["project", "show"]),
+        ("ab project check", ["project", "check"]),
         ("ab project ls", ["project", "ls"]),
         ("ab project rm", ["project", "rm"]),
         ("ab project reset-state", ["project", "reset-state"]),
@@ -59,6 +60,8 @@ INTENT = {
     "ab project set": "Change a registered project's settings in place, re-validated, with the same flags "
                       "`ab init`/`ab project add` take. Refused while a session for the project is live.",
     "ab project show": "Print a project's effective settings and whether each came from the preset or an override.",
+    "ab project check": "Read-only: run the grant scan a session runs, print the findings, and say whether "
+                        "they still match what was accepted. Exits 1 if a session would refuse.",
     "ab project ls": "List the registered projects.",
     "ab project rm": "Remove projects from the registry; their files, state and backups are left untouched.",
     "ab project reset-state": "Wipe a project's agent state (memory, settings, transcripts), keeping a copy.",

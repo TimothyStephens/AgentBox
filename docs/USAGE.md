@@ -209,17 +209,19 @@ Manage the durable registry entries — a project names a code grant, a preset a
 
 ```text
 usage: ab project [-h]
-                  {add,set,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+                  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
                   ...
 
 manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
 
 positional arguments:
-  {add,set,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
     add                 register a project with a preset (validated against
                         overlap and grant exposure)
     set                 change a registered project's settings in place (re-
                         validated; refused while a session for it is live)
+    check               show what the grant scan finds now and whether it
+                        matches what was accepted (read-only)
     accept-history-secrets
                         accept (after rotating them) the masked file names now
                         in a project's git history
@@ -453,6 +455,25 @@ options:
 
 examples:
   ab project show web
+```
+
+### `ab project check`
+
+Read-only: run the grant scan a session runs, print the findings, and say whether they still match what was accepted. Exits 1 if a session would refuse.
+
+```text
+usage: ab project check [-h] name
+
+show what the grant scan finds now and whether it matches what was accepted (read-only)
+
+positional arguments:
+  name        the registered project to scan
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab project check web
 ```
 
 ### `ab project ls`

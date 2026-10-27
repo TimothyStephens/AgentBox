@@ -2,7 +2,7 @@
 exposure is accepted. grantcheck.scan returns (findings, warnings); findings block, warnings only inform."""
 import os
 
-from agentbox import grantcheck, session
+from agentbox import cli, grantcheck, registry, session
 
 from .helpers import SettingsCase, TempCase
 
@@ -190,3 +190,123 @@ class ReadOnlyGrantAtSessionStart(SettingsCase):
         self.addCleanup(s.teardown)
         self.assertTrue(any("customers.db" in w for w in warnings), warnings)
         self.assertTrue(any("read-only" in w for w in warnings), warnings)
+
+
+class CheckCommand(SettingsCase):
+    """`ab project check NAME`: read-only. The stored grant-exposure acknowledgement is an opaque
+    fingerprint, so there was no way to see WHAT had been accepted, or whether it still described the
+    grant. This runs the same scan a session runs and says so, changing nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.project("p1", preset="script")
+
+    def run_check(self, name="p1"):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        before = open(self.settings.registry_path, "rb").read()
+        with redirect_stdout(buf):
+            try:
+                code = cli.main(["project", "check", name])
+            except SystemExit as e:
+                code = e.code
+        self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+                         "check is read-only: the registry must be untouched")
+        return code, buf.getvalue()
+
+    def expose(self, mb=2):
+        with open(os.path.join(self.root, "data.db"), "wb") as f:
+            f.write(b"x" * (mb << 20))
+
+    def accept(self):
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["project", "accept-grant-exposure", "p1"]), 0)
+        return registry.load(self.settings.registry_path)["p1"]["grant_exposure_accepted"]
+
+    def test_a_clean_grant_reports_nothing_and_exits_zero(self):
+        code, out = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("none", out)
+
+    def test_findings_are_listed_in_full_and_refuse(self):
+        self.expose()
+        code, out = self.run_check()
+        self.assertEqual(code, 1, "a session would refuse, so check says so in its exit code")
+        self.assertIn("data.db", out)
+        self.assertIn("live data", out)
+        self.assertIn("not accepted", out)
+
+    def test_an_accepted_exposure_shows_what_it_covers_and_exits_zero(self):
+        self.expose()
+        fp = self.accept()
+        code, out = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("data.db", out, "the findings the fingerprint stands for")
+        self.assertIn(fp, out, "the stored fingerprint, so the opaque number in `show` can be matched")
+        self.assertIn("accepted", out)
+
+    def test_a_changed_finding_shows_the_acceptance_no_longer_matches(self):
+        self.expose()
+        fp = self.accept()
+        self.expose(mb=3)                                   # same path, new contents
+        code, out = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("changed", out.lower())
+        self.assertIn(fp, out, "what was accepted")
+        self.assertIn("accept-grant-exposure", out, "and how to accept the new state")
+
+    def test_a_stale_acceptance_is_called_stale(self):
+        self.expose()
+        self.accept()
+        os.remove(os.path.join(self.root, "data.db"))       # nothing exposed any more
+        code, out = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("stale", out.lower())
+
+    def test_it_works_while_a_session_is_live(self):
+        """Read-only, so unlike rm/set/accept-* it is not refused while containers are running -- seeing
+        what a live project accepted is exactly when you want it."""
+        import json
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
+            [{"Names": ["ab-claude-p1-1-agent"], "State": "running",
+              "Labels": {"agentbox.project": "p1", "agentbox.session": "ab-claude-p1-1",
+                         "agentbox-test": "1"}}])
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        self.expose()
+        code, out = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertNotIn("while containers", out)
+
+    def test_open_egress_beside_an_accepted_exposure_is_called_out(self):
+        self.expose()
+        self.accept()
+        self.project("p1", preset="script", egress="open",
+                     grant_exposure_accepted=registry.load(self.settings.registry_path)["p1"]
+                     ["grant_exposure_accepted"])
+        code, out = self.run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("egress is open", out.lower())
+
+    def test_unknown_project(self):
+        code, _out = self.run_check("nope")
+        self.assertEqual(code, 2)
+
+    def test_show_points_at_check_when_an_acceptance_is_stored(self):
+        import io
+        from contextlib import redirect_stdout
+
+        def show():
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["project", "show", "p1"])
+            return buf.getvalue()
+
+        self.assertNotIn("ab project check", show(), "nothing accepted: nothing to point at")
+        self.expose()
+        self.accept()
+        out = show()
+        self.assertIn("grant_exposure_accepted", out)
+        self.assertIn("ab project check p1", out)

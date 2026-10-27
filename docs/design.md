@@ -532,6 +532,7 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab project add <name> <root> --preset <p>` | Register a project with a preset (validated against overlap) |
 | `ab project set <name> [settings]` | Change a registered project's settings in place (same flags as `add`; re-validated; refused while a session for it is live). `--unset KEY` returns a setting to its preset value |
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
+| `ab project check <name>` | Read-only: the grant scan a session runs, the findings in full, and whether they still match what was accepted (the acknowledgement is a fingerprint, so `show` can only print an opaque number). Exits 1 if a session would refuse |
 | `ab project ls` | List registered projects |
 | `ab project rm <name>…` | Remove one or more projects from the registry (files, state and backups untouched) |
 | `ab project reset-state <name>` | Wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy |
