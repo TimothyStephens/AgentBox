@@ -137,7 +137,7 @@ def main():
     harness.cleanup()
     passed = ok1 and outcomes.get("Bash", (False,))[0] and not leaks and not left and not empty_logs
     if passed:
-        freshness.record(MODE)
+        freshness.record(MODE, from_live_run=True)
     return 0 if passed else 1
 
 

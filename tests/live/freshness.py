@@ -41,9 +41,20 @@ def changed_since(commit):
     return sorted(set(diff.stdout.split()) | set(new))
 
 
-def record(mode):
+def record(mode, *, from_live_run=False):
     """Record HEAD as the last passing commit, unless token-handling files have uncommitted changes (then the
-    pass does not describe any commit)."""
+    pass does not describe any commit).
+
+    `from_live_run=True` must be passed explicitly, and only `tests/live/claude_live.py` passes it. This
+    file is the sole evidence that the real token was exercised end to end, and `make itest` trusts it to
+    decide whether that evidence still describes the code -- so a line written by anything else is a FALSE
+    pass that silences the staleness warning. A line appeared here once that no live run had produced; the
+    writer was never identified, so the write is now opt-in rather than available to any caller."""
+    if not from_live_run:
+        raise RuntimeError(
+            "freshness.record: refusing to write the claude-live pass record. Only the live runner "
+            "(tests/live/claude_live.py) may, with from_live_run=True -- a line written by anything else "
+            "is a false pass that silences make itest's staleness warning.")
     dirty = changed_since("HEAD")
     if dirty:
         print(f"claude-live passed, but NOT recorded: uncommitted changes in {', '.join(dirty)}. "

@@ -37,12 +37,21 @@ class Freshness(unittest.TestCase):
     def check(self):
         return freshness.check(out=io.StringIO())
 
+    def test_recording_without_the_live_runs_opt_in_raises(self):
+        """The pass file is the only evidence the real token was exercised end to end, and `make itest`
+        trusts it; a line written by anything but the live runner is a false pass. A line once appeared
+        that no live run had produced, so writing it is opt-in."""
+        with self.assertRaises(RuntimeError) as cm:
+            freshness.record("locked")
+        self.assertIn("from_live_run", str(cm.exception))
+        self.assertFalse(os.path.exists(freshness.PASS_FILE), "nothing written")
+
     def test_never_recorded_warns(self):
         self.assertIn("no passing make claude-live", self.check())
 
     def test_recorded_and_current_is_quiet(self):
         with mock.patch("sys.stdout", io.StringIO()):
-            self.assertTrue(freshness.record("locked"))
+            self.assertTrue(freshness.record("locked", from_live_run=True))
         self.assertEqual(self.check(), "")
         self.write("agentbox/cli.py", "v2\n")               # not a token-handling file
         self.commit()
@@ -50,7 +59,7 @@ class Freshness(unittest.TestCase):
 
     def test_token_file_changes_warn_committed_uncommitted_and_new(self):
         with mock.patch("sys.stdout", io.StringIO()):
-            freshness.record("locked")
+            freshness.record("locked", from_live_run=True)
         self.write("agentbox/session.py", "v2\n")
         self.assertIn("agentbox/session.py", self.check())   # uncommitted
         self.commit()
@@ -61,7 +70,7 @@ class Freshness(unittest.TestCase):
     def test_record_refused_with_uncommitted_token_changes(self):
         self.write("agentbox/session.py", "dirty\n")
         with mock.patch("sys.stdout", io.StringIO()) as out:
-            self.assertFalse(freshness.record("locked"))
+            self.assertFalse(freshness.record("locked", from_live_run=True))
         self.assertIn("NOT recorded", out.getvalue())
         self.assertFalse(os.path.exists(freshness.PASS_FILE))
 
