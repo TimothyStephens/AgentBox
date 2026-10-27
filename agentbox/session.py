@@ -67,13 +67,14 @@ def load_project(settings, name):
     if unknown:
         raise AgentboxError(f"project {name}: unknown settings {', '.join(sorted(unknown))}")
     eff = presets.effective(name, p, presets.load_presets(settings.presets_dir))
-    others = [(n, q["root"]) for n, q in reg.items() if n != name and q.get("root")]
-    kw = dict(home=HOME, extra_protected=protected_extra(settings), other_roots=others)
+    kw = dict(home=HOME, extra_protected=protected_extra(settings))
     root = paths.check_grant(p.get("root", ""), kind=f"project {name} root", **kw)
     data_ro = [paths.check_grant(d, kind="data_ro", **kw) for d in p.get("data_ro", [])]
     data_rw = [paths.check_grant(d, kind="data_rw", **kw) for d in p.get("data_rw", [])]
     for g in [root] + data_ro + data_rw:
         _no_commas(g, "grant")
+    # A hand-written overlap is caught here too, not only where it was registered (audit F3).
+    paths.check_overlaps(name, {"root": root, "data_ro": data_ro, "data_rw": data_rw}, reg)
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    swap=_check(name, "swap", p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,

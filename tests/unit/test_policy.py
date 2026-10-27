@@ -342,13 +342,12 @@ class PathTest(TempCase):
         with self.assertRaises(AgentboxError):
             self.check(link)
 
-    def test_overlap_with_other_projects(self):
+    def test_cross_project_overlap_is_not_check_grants_job(self):
+        """check_grant answers "is this path safe in itself?"; every cross-project overlap now goes through
+        paths.check_overlaps, which compares every grant pair rather than roots only (GrantOverlapTest)."""
         b = os.path.join(self.home, "repos/b")
-        with self.assertRaises(AgentboxError):
-            self.check(os.path.join(b, "sub"), other_roots=[("b", b)])
-        with self.assertRaises(AgentboxError):
-            self.check(os.path.join(self.home, "repos"), other_roots=[("b", b)])
-        self.check(os.path.join(self.home, "repos/a"), other_roots=[("b", b)])
+        self.check(os.path.join(b, "sub"))
+        self.check(os.path.join(self.home, "repos/a"))
 
     def test_missing_dir(self):
         with self.assertRaises(AgentboxError):
@@ -367,7 +366,7 @@ def ns(**kw):
     return a
 
 
-GRANT_KW = dict(home="/home/nobody", extra_protected=[], other_roots=[])
+GRANT_KW = dict(home="/home/nobody", extra_protected=[])
 
 
 class PresetChangeTest(unittest.TestCase):
@@ -624,3 +623,92 @@ class ShowDisplayTest(SettingsCase):
         for key in ("swap", "mask_skip", "extra_domains", "dev_images", "grant_exposure_accepted"):
             self.assertNotIn(key, out, key)
         self.assertIn("egress", out, "a preset-resolvable setting always has a value")
+
+
+class GrantOverlapTest(TempCase):
+    """F3: overlap checking covers every grant pair, in both directions. A read-write grant (root or
+    data_rw) may not overlap ANY grant of another project; read-only may overlap read-only, which is what
+    shared reference data is for. check_grant's own pass only ever compared against other projects' ROOTS,
+    so a data_rw grant could sit inside another project's data_rw or data_ro."""
+
+    def setUp(self):
+        super().setUp()
+        for d in ("a", "a/sub", "b", "shared", "shared/inner"):
+            self.mkdir(d)
+
+    def p(self, *parts):
+        return os.path.join(self.tmp, *parts)
+
+    def check(self, entry, reg):
+        from agentbox.paths import check_overlaps
+        return check_overlaps("mine", entry, reg)
+
+    def test_rw_inside_another_projects_data_ro_is_refused(self):
+        reg = {"theirs": {"root": self.p("b"), "data_ro": [self.p("shared")]}}
+        with self.assertRaises(AgentboxError) as cm:
+            self.check({"root": self.p("a"), "data_rw": [self.p("shared", "inner")]}, reg)
+        self.assertIn("theirs", str(cm.exception))
+
+    def test_rw_inside_another_projects_data_rw_is_refused(self):
+        reg = {"theirs": {"root": self.p("b"), "data_rw": [self.p("shared")]}}
+        with self.assertRaises(AgentboxError):
+            self.check({"root": self.p("shared", "inner")}, reg)
+
+    def test_the_other_direction_is_refused_too(self):
+        """Their grant inside mine, not just mine inside theirs."""
+        reg = {"theirs": {"root": self.p("shared", "inner")}}
+        with self.assertRaises(AgentboxError):
+            self.check({"root": self.p("a"), "data_rw": [self.p("shared")]}, reg)
+
+    def test_read_only_may_overlap_read_only(self):
+        reg = {"theirs": {"root": self.p("b"), "data_ro": [self.p("shared")]}}
+        self.check({"root": self.p("a"), "data_ro": [self.p("shared", "inner")]}, reg)
+        self.check({"root": self.p("a"), "data_ro": [self.p("shared")]}, reg)
+
+    def test_read_only_inside_another_projects_read_write_is_refused(self):
+        reg = {"theirs": {"root": self.p("shared")}}
+        with self.assertRaises(AgentboxError):
+            self.check({"root": self.p("a"), "data_ro": [self.p("shared", "inner")]}, reg)
+
+    def test_a_projects_own_entry_is_skipped(self):
+        reg = {"mine": {"root": self.p("a"), "data_rw": [self.p("a", "sub")]}}
+        self.check({"root": self.p("a"), "data_rw": [self.p("a", "sub")]}, reg)
+
+    def test_disjoint_grants_are_fine(self):
+        reg = {"theirs": {"root": self.p("b"), "data_rw": [self.p("shared")]}}
+        self.check({"root": self.p("a"), "data_ro": [self.p("a", "sub")]}, reg)
+
+
+class GrantOverlapEndToEnd(SettingsCase):
+    """F3 at all three surfaces: add, set and session start."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.project("p1", preset="script")
+        self.shared = self.mkdir("shared")
+        self.inner = self.mkdir("shared", "inner")
+        self.project("p1", preset="script", data_rw=[self.shared])
+        self.other = self.mkdir("other")
+
+    def test_refused_at_add(self):
+        self.assertEqual(cli.main(["project", "add", "p2", self.inner, "--preset", "script"]), 2)
+        self.assertNotIn("p2", registry.load(self.settings.registry_path))
+
+    def test_refused_at_set(self):
+        self.assertEqual(cli.main(["project", "add", "p2", self.other, "--preset", "script"]), 0)
+        self.assertEqual(cli.main(["project", "set", "p2", "--data-rw", self.inner]), 2)
+        self.assertNotIn("data_rw", registry.load(self.settings.registry_path)["p2"])
+
+    def test_refused_at_session_start(self):
+        """A hand-written overlap is caught when the project is loaded, not just when it is registered."""
+        reg = registry.load(self.settings.registry_path)
+        reg["p2"] = {"root": self.inner, "preset": "script"}
+        registry.save(self.settings.registry_path, reg)
+        with self.assertRaises(AgentboxError) as cm:
+            session.load_project(self.settings, "p2")
+        self.assertIn("overlaps", str(cm.exception))
+
+    def test_a_read_only_pair_still_registers(self):
+        self.project("p1", preset="script", data_ro=[self.shared])
+        self.assertEqual(cli.main(["project", "add", "p2", self.other, "--preset", "script",
+                                   "--data-ro", self.inner]), 0)

@@ -7,6 +7,7 @@ import sys
 from . import config, keys, presets, projectkeys, registry, session, tokens
 from .config import HOME
 from .errors import AgentboxError
+from . import paths
 from .paths import check_grant
 from .podman import Podman
 
@@ -25,9 +26,10 @@ def _check(name, key, value, **kw):
     return projectkeys.validate_value(key, f"project {name}", value, **kw)
 
 
-def _grant_kw(s, reg, exclude=None):
-    others = [(n, q["root"]) for n, q in reg.items() if q.get("root") and n != exclude]
-    return dict(home=HOME, extra_protected=session.protected_extra(s), other_roots=others)
+def _grant_kw(s, _reg=None, exclude=None):
+    """check_grant's context: is a path safe in itself? Cross-project overlap is paths.check_overlaps,
+    called once per entry (it compares every grant pair, not just roots)."""
+    return dict(home=HOME, extra_protected=session.protected_extra(s))
 
 
 # All three derive from the one settings table (projectkeys.KEYS), which is where each key's properties are
@@ -125,9 +127,10 @@ def _print_cleared(cleared):
 
 
 def _validate_and_save(s, reg, name, entry, a, presets_map):
-    """Validate a registry entry (preset exists, lockdown ceiling, build_memory, grantcheck, history
-    secrets) and save it. Shared by `ab project add` and `ab project set`."""
+    """Validate a registry entry (preset exists, lockdown ceiling, grant overlap, build_memory, grantcheck,
+    history secrets) and save it. Shared by `ab project add` and `ab project set`."""
     presets.effective(name, entry, presets_map)
+    paths.check_overlaps(name, entry, reg)
     if "build_memory" in entry:
         _check(name, "build_memory", entry["build_memory"], settings=s)
     from . import grantcheck
