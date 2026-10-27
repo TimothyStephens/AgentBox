@@ -347,3 +347,22 @@ VALIDATORS = {
 def validate_value(name, where, value, *, settings=None):
     """Validate one stored value against its key's own validator, returning the normalised value."""
     return VALIDATORS[BY_NAME[name].validate](name, where, value, settings=settings)
+
+
+def validate_entry(name, entry, *, settings=None):
+    """Validate a WHOLE registry entry: no unknown keys, and every stored value through its own validator.
+
+    Run before saving (`ab project add`/`set`) and when loading one (session start), so an entry can never
+    be stored that the next `ab run` would refuse, and a hand-written key or value is caught where it is
+    written (audit F11). `set` used to validate only the keys the command touched, so a bad stored `swap`
+    or `extra_domains` survived the save and failed later. Returns the normalised entry; grants are
+    resolved by the caller, which holds the protected-path context (paths.check_grant/check_overlaps)."""
+    where = f"project {name}"
+    unknown = sorted(set(entry) - PROJECT_KEYS)
+    if unknown:
+        raise AgentboxError(f"{where}: unknown settings {', '.join(unknown)}; known settings are "
+                            f"{', '.join(sorted(PROJECT_KEYS))}")
+    for required in ("root", "preset"):
+        if not entry.get(required):
+            raise AgentboxError(f"{where}: no {required} (every project needs a code grant and a preset)")
+    return {key: validate_value(key, where, value, settings=settings) for key, value in entry.items()}

@@ -220,6 +220,47 @@ class SetTest(SettingsCase):
         for key in ("data_ro", "data_rw", "extra_domains", "dev_images"):
             self.assertNotIn(key, e, key)
 
+    # --- F11: the WHOLE entry is validated before saving, and a failed set writes nothing ---
+
+    def test_an_unknown_stored_key_is_refused_where_it_is_written(self):
+        """F11: `set` validated only what the command touched, so an unknown key (a typo in a hand edit)
+        survived the save and only exploded at the next `ab run`."""
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["egres"] = "open"                       # typo
+        registry.save(self.settings.registry_path, reg)
+        before = open(self.settings.registry_path, "rb").read()
+        code = self.rc("project", "set", "p1", "--build-memory", "4g")
+        self.assertEqual(code, 2)
+        self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+                         "refused BEFORE saving, not after the entry was already written")
+        with self.assertRaises(AgentboxError) as cm:
+            session.load_project(self.settings, "p1")     # load is just as strict
+        self.assertIn("egres", str(cm.exception))
+
+    def test_a_stored_value_the_command_did_not_touch_is_validated(self):
+        for bad in ({"extra_domains": ["not a domain"]}, {"swap": {"notes.txt": ".env"}},
+                    {"mask_skip": [""]}, {"dev_images": ["NOT VALID"]},
+                    {"observe_logs": "yes"}):
+            with self.subTest(bad=bad):
+                self.project("p1", preset="build", **bad)
+                before = open(self.settings.registry_path, "rb").read()
+                self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 2)
+                self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+                                 "refused before saving")
+                with self.assertRaises(AgentboxError):
+                    session.load_project(self.settings, "p1")
+
+    def test_a_failed_set_writes_nothing(self):
+        before = open(self.settings.registry_path, "rb").read()
+        self.assertEqual(self.rc("project", "set", "p1", "--preset", "lockdown", "--observe-logs"), 2)
+        self.assertEqual(open(self.settings.registry_path, "rb").read(), before, "registry untouched")
+
+    def test_a_stored_grant_is_rechecked_on_every_set(self):
+        """A hand-written data_ro pointing at a protected path is caught by the next `set`, not just at
+        session start."""
+        self.project("p1", preset="script", data_ro=[os.path.join(os.path.expanduser("~"), ".ssh")])
+        self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 2)
+
     # --- re-validation and the live-session guard ---
 
     def test_reruns_grantcheck_and_refuses_on_a_new_finding(self):

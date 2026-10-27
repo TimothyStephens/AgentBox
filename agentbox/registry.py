@@ -45,7 +45,16 @@ def _value(v):
 
 
 def dump(projects):
-    lines = ["# agentbox project registry. Edit with `ab project ...`, or by hand.", ""]
+    lines = [
+        "# agentbox project registry -- written by `ab project add` / `ab project set`.",
+        "#",
+        "# Prefer `ab project set <name> ...`: it re-runs every check (preset ceiling, grant overlap,",
+        "# grantcheck, git-history secrets), refuses while a session for the project is live, and prints",
+        "# what changed. A hand edit is still validated when it is used -- `ab project show`, `ab run` and",
+        "# the next `ab project set` all refuse an entry with an unknown key or a bad value -- but nothing",
+        "# tells you until then.",
+        "",
+    ]
     for name in sorted(projects):
         if not NAME.match(name):
             raise AgentboxError(f"bad project name {name!r}")

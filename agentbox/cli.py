@@ -154,10 +154,16 @@ def _print_cleared(cleared, name, entry, presets_map):
 def _validate_and_save(s, reg, name, entry, a, presets_map):
     """Validate a registry entry (preset exists, lockdown ceiling, grant overlap, build_memory, grantcheck,
     history secrets) and save it. Shared by `ab project add` and `ab project set`."""
+    # The WHOLE entry, not just what this command touched: unknown keys and every stored value, then the
+    # grants and their overlap (audit F11). All of it before anything is written.
+    entry.update(projectkeys.validate_entry(name, entry, settings=s))
+    grant_kw = _grant_kw(s)
+    entry["root"] = check_grant(entry["root"], kind=f"project {name} root", **grant_kw)
+    for key in ("data_ro", "data_rw"):
+        if entry.get(key):
+            entry[key] = [check_grant(d, kind=key, **grant_kw) for d in entry[key]]
     presets.effective(name, entry, presets_map)
     paths.check_overlaps(name, entry, reg)
-    if "build_memory" in entry:
-        _check(name, "build_memory", entry["build_memory"], settings=s)
     from . import grantcheck
     exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
                                          entry.get("mask_skip", []), covered=_mask_dsts(s, entry),

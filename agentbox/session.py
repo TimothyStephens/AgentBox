@@ -62,10 +62,9 @@ def load_project(settings, name):
     reg = registry.load(settings.registry_path)
     if name not in reg:
         raise AgentboxError(f"no project named {name!r}; add it with `ab project add`")
-    p = reg[name]
-    unknown = set(p) - registry.PROJECT_KEYS - set(presets.SETTINGS)
-    if unknown:
-        raise AgentboxError(f"project {name}: unknown settings {', '.join(sorted(unknown))}")
+    # Exactly what `ab project set` validates before saving (audit F11): unknown keys and every stored
+    # value, through the settings table's own validators.
+    p = projectkeys.validate_entry(name, reg[name], settings=settings)
     eff = presets.effective(name, p, presets.load_presets(settings.presets_dir))
     kw = dict(home=HOME, extra_protected=protected_extra(settings))
     root = paths.check_grant(p.get("root", ""), kind=f"project {name} root", **kw)
