@@ -305,6 +305,7 @@ def _print_effective(s, name):
     `ab init` / `ab project add` / `ab project set`."""
     p = session.load_project(s, name)
     stored = registry.load(s.registry_path)[name]
+    presets_map = presets.load_presets(s.presets_dir)
     ctx = projectkeys.posture(p)
     resolved = {"root": p.root, "preset": p.preset, "data_ro": p.data_ro, "data_rw": p.data_rw,
                 "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
@@ -324,6 +325,8 @@ def _print_effective(s, name):
         reason = projectkeys.inert_reason(key.name, ctx)
         if reason:
             notes.append(f"(ignored: {reason})")
+        if key.name == "preset" and presets_map.get(value, {}).get("ceiling"):
+            notes.append("(a ceiling: an override may only tighten it)")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
             notes.append("(explicit: this stack's containers are not required to come from inside the "
                          "project root)")

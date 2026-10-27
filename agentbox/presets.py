@@ -18,6 +18,9 @@ from .errors import AgentboxError
 # Every one of these is derived from projectkeys.KEYS, the single settings table: which keys a preset may
 # set, their allowed values, and the looseness order a ceiling compares on (audit: five parallel lists).
 SETTINGS = projectkeys.PRESET_SETTINGS
+# Ordered keys that are NOT preset settings, so the ceiling must check them against the project entry
+# itself (observe_logs). Derived, so a future ordered key is covered without touching the ceiling.
+ORDERED_NON_SETTINGS = tuple(k.name for k in projectkeys.KEYS if k.values and k.kind != "preset")
 ALLOWED = projectkeys.ALLOWED
 LOOSENESS = projectkeys.LOOSENESS
 EGRESS = projectkeys.BY_NAME["egress"].values
@@ -27,8 +30,10 @@ PODMAN_TIERS = projectkeys.PODMAN_TIERS
 # entries holding the identical dict, not a redirect), so a project already using "pods"/"python" resolves
 # exactly as it did before this preset set grew (test_policy.py's parity tests pin this).
 BUILTIN = {
+    # `ceiling` is preset metadata, not a project setting: overrides may only tighten this preset. It is
+    # an attribute rather than a name test, so a user's own preset can be one too (audit F5).
     "lockdown": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"}, "caps": "refused",
-                 "secrets": "locked", "approvals": "on", "data": "ro-only"},
+                 "secrets": "locked", "approvals": "on", "data": "ro-only", "ceiling": True},
     "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
               "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
     "pods": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
@@ -135,6 +140,9 @@ def load_presets(presets_dir):
             # egress and turned approvals off). A file named after a built-in customises that built-in.
             base = dict(presets.get(name, BUILTIN["lockdown"]))
             base.update(custom)
+            # Fail-closed: a preset a user file defines or modifies is a ceiling (overrides may only
+            # tighten it) unless the file turns that off explicitly.
+            base.setdefault("ceiling", True)
             _validate(base, f"preset {name}")
             presets[name] = base
     return presets
@@ -145,6 +153,10 @@ def _validate(values, where):
     for that key. `exec` stays a known podman value so its message is "not built" rather than "bad value",
     and it is refused wherever a project is defined or loaded, not only when a session is prepared."""
     for k, v in values.items():
+        if k == "ceiling":                       # preset metadata, not a project setting
+            if not isinstance(v, bool):
+                raise AgentboxError(f"{where}: ceiling must be true or false")
+            continue
         if k not in SETTINGS:
             raise AgentboxError(f"{where}: unknown setting {k!r}")
         projectkeys.validate_value(k, where, v)
@@ -160,29 +172,31 @@ def effective(project_name, project, presets):
     overrides = {k: v for k, v in project.items() if k in SETTINGS}
     _validate(overrides, f"project {project_name}")
 
-    out = {k: (v, f"preset {preset_name}") for k, v in preset.items()}
+    out = {k: (v, f"preset {preset_name}") for k, v in preset.items() if k in SETTINGS}
     for k, v in overrides.items():
         out[k] = (v, "project")
 
     if out["egress"][0] == "open" and out["egress"][1] != "project":
         out["egress"] = ("packages", f"preset {preset_name} (open only when the project says so)")
 
-    if preset_name == "lockdown":
-        for k, v in overrides.items():
-            if k == "podman":
-                # tier AND live: `live` alone would hand a review-only project read access to the live
-                # stack, which the ceiling is there to refuse.
-                if v.get("tier") != "none" or v.get("live"):
-                    raise AgentboxError(f"project {project_name}: lockdown allows no podman access (tier or "
-                                        "live); switch to another preset to loosen")
-                continue
-            if LOOSENESS[k][v] > LOOSENESS[k][preset[k]]:
-                raise AgentboxError(f"project {project_name}: lockdown is a ceiling; {k} = {v!r} would loosen "
-                                    f"it (preset: {preset[k]!r}); switch to another preset to loosen")
-        # observe_logs is a registry setting, not one of SETTINGS, so the loop above never sees it.
-        if project.get("observe_logs"):
-            raise AgentboxError(f"project {project_name}: lockdown allows no live-stack logs "
-                                "(observe_logs); switch to another preset to loosen")
+    if preset.get("ceiling"):
+        # "Overrides may only tighten this preset." Every comparison runs through the settings table's
+        # looseness order, so it covers podman (tier AND live, component-wise) and observe_logs -- which a
+        # hand-written per-key check kept forgetting -- and any ordered key added later.
+        def refuse(key, value, limit):
+            raise AgentboxError(f"project {project_name}: preset {preset_name} is a ceiling; {key} = "
+                                f"{value!r} would loosen it (the preset's own value is {limit!r}); switch "
+                                "to another preset to loosen")
+
+        for key, value in overrides.items():
+            limit = preset.get(key, projectkeys.BY_NAME[key].tightest)
+            if projectkeys.is_looser(key, value, limit):
+                refuse(key, value, limit)
+        for key in ORDERED_NON_SETTINGS:          # observe_logs: ordered, but not a preset setting
+            if key in project:
+                limit = projectkeys.BY_NAME[key].tightest
+                if projectkeys.is_looser(key, project[key], limit):
+                    refuse(key, project[key], limit)
     if out["data"][0] == "ro-only" and project.get("data_rw"):
         raise AgentboxError(f"project {project_name}: preset {preset_name} allows read-only data grants only")
     return out

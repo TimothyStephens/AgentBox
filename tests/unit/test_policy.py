@@ -615,6 +615,12 @@ class ShowDisplayTest(SettingsCase):
         self.project("p1", preset="build")
         self.assertNotIn("not required to come from inside", self.show("p1"))
 
+    def test_a_ceiling_preset_says_so(self):
+        self.project("p1", preset="lockdown")
+        self.assertIn("a ceiling", self.show("p1"))
+        self.project("p2", preset="build")
+        self.assertNotIn("a ceiling", self.show("p2"))
+
     def test_swap_and_the_acknowledgements_are_shown_when_stored(self):
         self.project("p1", preset="build", swap={".env": ".env.dev", ".env.local": ".env.dev"},
                      history_secrets_accepted=[".env"], grant_exposure_accepted="abc123")
@@ -719,3 +725,63 @@ class GrantOverlapEndToEnd(SettingsCase):
         self.project("p1", preset="script", data_ro=[self.shared])
         self.assertEqual(cli.main(["project", "add", "p2", self.other, "--preset", "script",
                                    "--data-ro", self.inner]), 0)
+
+
+class CeilingIsAPresetAttribute(TempCase):
+    """F5: "is this a ceiling?" was a name test (`preset_name == "lockdown"`), so no other preset could be
+    one. It is now an attribute of the definition: true for lockdown, true by DEFAULT for any preset a user
+    file defines or modifies (fail-closed), unless that file sets `ceiling = false`."""
+
+    def load(self):
+        return presets.load_presets(os.path.join(self.tmp, "presets"))
+
+    def eff(self, project, ps):
+        return presets.effective("p", project, ps)
+
+    def test_lockdown_is_a_ceiling_by_attribute(self):
+        self.assertTrue(presets.BUILTIN["lockdown"].get("ceiling"))
+        for name in ("build", "build-open", "script", "research", "operate", "analysis-offline"):
+            self.assertFalse(presets.BUILTIN[name].get("ceiling"), name)
+
+    def test_a_user_preset_is_a_ceiling_by_default(self):
+        self.write("presets/team.toml", 'egress = "packages"\n')
+        ps = self.load()
+        self.assertTrue(ps["team"]["ceiling"])
+        with self.assertRaises(AgentboxError) as cm:
+            self.eff({"preset": "team", "egress": "open"}, ps)
+        self.assertIn("ceiling", str(cm.exception))
+        self.eff({"preset": "team", "egress": "locked"}, ps)        # tighter: fine
+
+    def test_a_user_preset_can_turn_the_ceiling_off(self):
+        self.write("presets/team.toml", 'egress = "packages"\nceiling = false\n')
+        ps = self.load()
+        self.assertFalse(ps["team"]["ceiling"])
+        self.eff({"preset": "team", "egress": "open"}, ps)
+
+    def test_a_file_named_after_a_builtin_becomes_a_ceiling_too(self):
+        """Customising `build` makes it a ceiling unless the file says otherwise -- fail-closed, and the
+        same answer as for a brand-new name."""
+        self.write("presets/build.toml", 'egress = "packages"\n')
+        ps = self.load()
+        self.assertTrue(ps["build"]["ceiling"])
+        with self.assertRaises(AgentboxError):
+            self.eff({"preset": "build", "egress": "open"}, ps)
+
+    def test_a_ceiling_covers_every_ordered_key_not_just_egress(self):
+        self.write("presets/team.toml", 'egress = "locked"\n')   # inherits lockdown's other values
+        ps = self.load()
+        for loosen in ({"podman": {"tier": "dev"}}, {"podman": {"tier": "none", "live": "observe"}},
+                       {"observe_logs": True}, {"approvals": "off"}, {"compose": "rw"},
+                       {"caps": "opt-in"}, {"data": "declared"}):
+            with self.assertRaises(AgentboxError, msg=loosen):
+                self.eff({"preset": "team", **loosen}, ps)
+
+    def test_a_non_ceiling_preset_takes_any_override(self):
+        ps = presets.BUILTIN
+        self.eff({"preset": "script", "egress": "open", "observe_logs": True,
+                  "podman": {"tier": "dev", "live": "observe"}}, ps)
+
+    def test_lockdown_still_cannot_be_redefined(self):
+        self.write("presets/lockdown.toml", 'ceiling = false\n')
+        with self.assertRaises(AgentboxError):
+            self.load()
