@@ -105,6 +105,32 @@ class SetTest(SettingsCase):
         self.assertNotIn("observe_logs", e)
         self.assertEqual(self.eff("egress")[0], "locked")
 
+    # --- F1: open egress is written only when an open preset is NEWLY chosen ---
+
+    def test_an_unrelated_set_never_writes_egress(self):
+        """F1: materialising the open default ran on every edit, so `ab project set p1 --build-memory 4g`
+        on a hand-written research entry silently opened the project's egress. Only newly choosing an open
+        preset may write it."""
+        self.project("p1", preset="research")                 # hand-written: no egress key of its own
+        self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 0)
+        self.assertNotIn("egress", self.entry(), "an unrelated set must not write egress")
+        self.assertEqual(self.eff("egress")[0], "packages", "still fail-closed")
+
+    def test_re_choosing_the_same_open_preset_does_not_write_egress(self):
+        self.project("p1", preset="research")
+        self.assertEqual(self.rc("project", "set", "p1", "--preset", "research"), 0)
+        self.assertNotIn("egress", self.entry(), "not newly chosen: nothing to materialise")
+
+    def test_newly_choosing_an_open_preset_does_write_egress(self):
+        self.assertEqual(self.rc("project", "set", "p1", "--preset", "build-open"), 0)
+        self.assertEqual(self.entry()["egress"], "open")
+
+    def test_the_accept_commands_never_write_egress(self):
+        self.project("p1", preset="research")
+        for cmd in ("accept-grant-exposure", "accept-history-secrets"):
+            self.assertEqual(self.rc("project", cmd, "p1"), 0, cmd)
+            self.assertNotIn("egress", self.entry(), cmd)
+
     # --- F9: --unset and --clear-<list> ---
 
     def test_unset_returns_a_key_to_its_preset_value(self):

@@ -71,7 +71,13 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
 
     Returns the stored overrides cleared because the preset changed, for the caller to print."""
     cleared = []
-    if a.preset and entry.get("preset") and not presets.same_preset(entry["preset"], a.preset, presets_map):
+    # Was a preset NEWLY chosen? True for a fresh entry (add/init, nothing to change from) and for a real
+    # switch; False when no --preset was given, or when it names the same preset (an alias included). It
+    # gates both the clearing and the open-egress write.
+    old_preset = entry.get("preset")
+    newly_chosen = bool(a.preset) and not (old_preset
+                                           and presets.same_preset(old_preset, a.preset, presets_map))
+    if newly_chosen and old_preset:
         for key in SECURITY_OVERRIDES:
             if key in entry and not _given(a, key):
                 del entry[key]
@@ -80,10 +86,11 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["preset"] = a.preset
     if a.egress:
         entry["egress"] = a.egress
-    if "egress" not in unset:
-        # `--unset egress` means "no override of my own", so the fail-closed resolution applies (a
-        # preset-sourced open demotes to packages); writing it back would make --unset a no-op on exactly
-        # the presets where it matters.
+    if newly_chosen and "egress" not in unset:
+        # Only a newly chosen preset may write its open default (audit F1): it used to run on every edit,
+        # so `ab project set p1 --build-memory 4g` on a research project wrote egress=open as a side
+        # effect. `--unset egress` means "no override of my own", so the fail-closed resolution applies
+        # there instead (a preset-sourced open demotes to packages).
         presets.materialize_open_egress(entry, presets_map)
     if a.data_ro:
         entry["data_ro"] = [check_grant(d, kind="data_ro", **grant_kw) for d in a.data_ro]
