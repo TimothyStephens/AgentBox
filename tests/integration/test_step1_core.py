@@ -141,9 +141,11 @@ class Step1(unittest.TestCase):
         self.assertIn("ceiling", loosen.stderr)
 
     def test_project_show(self):
+        """The key, its value and where it came from are the contract; the column widths are not.
+        `ab project show` renders from the settings table (projectkeys.KEYS) now, so the columns are wider
+        than they were, and a literal-spacing assertion only pinned the formatting."""
         out = ENV.ab("project", "show", "p1", check=True).stdout
-        self.assertIn("egress         packages", out)
-        self.assertIn("from preset python", out)
+        self.assertRegex(out, r"egress\s+packages\s+from preset python")
 
     @unittest.skipUnless(harness.slice_installed(), "agentbox.slice not installed (make install-slice)")
     def test_slice_contains_the_session(self):
