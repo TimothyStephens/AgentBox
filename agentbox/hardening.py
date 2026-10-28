@@ -112,8 +112,11 @@ def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=(), mask_file=None
     # The only socket a sandbox may get is sockguard's; a raw podman socket would bypass it (review #6).
     try:
         is_socket = stat.S_ISSOCK(os.stat(real).st_mode)
-    except OSError:
-        is_socket = False
+    except FileNotFoundError:
+        is_socket = False            # nothing there to be a socket; podman rejects a missing source itself
+    except OSError as e:
+        raise AgentboxError(f"audit: cannot stat bind source {src} ({e}), so it cannot be confirmed not to "
+                            "be a socket")
     if is_socket and real not in [os.path.realpath(x) for x in allowed_sockets]:
         raise AgentboxError(f"audit: bind source {src} is a socket other than sockguard's")
     for bad in ("propagation", "bind-propagation", "relabel"):

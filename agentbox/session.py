@@ -1,4 +1,5 @@
 """Sessions: build, start and tear down everything one agent session needs."""
+import errno
 import json
 import os
 import re
@@ -809,13 +810,20 @@ class NetSession(Session):
 
     def cover_ids(self):
         """{covered path: [st_dev, st_ino]} at session start; the gate refuses binds if one changes (a cover
-        moved or was replaced)."""
+        moved or was replaced).
+
+        A cover left out of this map is one the gate's rename detection no longer applies to, so an identity
+        that cannot be read refuses the session rather than being skipped (audit F-2/F-10 sweep). A path that
+        does not exist has no identity to pin and nothing to rename."""
         out = {}
         for c in self.covered_paths():
             try:
                 st = os.lstat(c)
-            except OSError:
-                continue
+            except OSError as e:
+                if e.errno == errno.ENOENT:
+                    continue
+                raise AgentboxError(f"{c}: cannot read this cover's identity ({e}), so the gate could not "
+                                    "tell if it were renamed or replaced during the session")
             out[c] = [st.st_dev, st.st_ino]
         return out
 
@@ -1247,7 +1255,7 @@ def sessions(settings, podman):
                 {"name": names[0] if names else c.get("Id", "")[:12], "role": c["Labels"].get("agentbox.role"),
                  "state": c.get("State"), "project": c["Labels"].get("agentbox.project")})
     p = podman.run(["network", "ls", "--format", "{{.Name}} {{index .Labels \"agentbox.session\"}}"]
-                   + sum((["--filter", f"label={k}={v}"] for k, v in settings.labels.items()), []), check=False)
+                   + sum((["--filter", f"label={k}={v}"] for k, v in settings.labels.items()), []))
     for line in (p.stdout or "").splitlines():
         parts = line.split()
         if len(parts) == 2:
@@ -1335,10 +1343,12 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
 
 
 def _young(settings, session, seconds=60):
+    """Was this session's run dir touched just now? Used to tell a session starting right now (no metadata
+    yet) from a dead leftover. Unknown counts as starting, so gc never reaps a session mid-start."""
     try:
         return time.time() - os.stat(settings.session_run_dir(session)).st_mtime < seconds
     except OSError:
-        return False
+        return True
 
 
 def gc(settings, podman, warn=lambda m: None):

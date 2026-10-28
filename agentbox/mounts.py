@@ -3,10 +3,13 @@
 Everything mounts at its real host path, so paths inside and outside the sandbox agree.
 Masks are computed once, at session start.
 """
+import errno
 import fnmatch
 import os
 import stat
 from dataclasses import dataclass
+
+from .errors import AgentboxError
 
 MASK_FILES = (".env", ".env.*", "*.pem", "*.key")
 MASK_EXEMPT = (".env.example", ".env.sample", ".env.template", ".env.dev")
@@ -103,12 +106,15 @@ def _is_git_dir(path):
 
 
 def _gitfile_target(path):
-    """The git dir a `.git` file points to (`gitdir: <path>`), resolved, or None."""
+    """The git dir a `.git` file points to (`gitdir: <path>`), resolved, or None when it is not a gitdir
+    pointer. Refuses when the file cannot be READ: that would leave the repository it names uncovered, so
+    its hooks and config would be writable in the session and nothing would say so (audit F-10's class)."""
     try:
         with open(path) as f:
             line = f.readline().strip()
-    except OSError:
-        return None
+    except OSError as e:
+        raise AgentboxError(f"{path}: cannot read this .git file ({e}), so the git directory it names "
+                            "cannot be covered read-only; fix its permissions or move it out of the grant")
     if not line.startswith("gitdir:"):
         return None
     target = line[len("gitdir:"):].strip()
@@ -245,8 +251,11 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
     for f in covered_files:
         try:
             st = os.lstat(f)
-        except OSError:
-            continue
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                continue                      # gone: it cannot be the target of a live hard link
+            raise AgentboxError(f"{f}: cannot stat this covered file ({e}), so another hard link to it "
+                                "could not be found and masked")
         if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
             inodes[(st.st_dev, st.st_ino)] = f
     if not inodes:
@@ -260,8 +269,11 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
                     continue
                 try:
                     st = os.lstat(p)
-                except OSError:
-                    continue
+                except OSError as e:
+                    if e.errno == errno.ENOENT:
+                        continue              # vanished mid-walk: not a live hard link
+                    raise AgentboxError(f"{p}: cannot stat this file ({e}), so whether it is another hard "
+                                        "link to a covered file cannot be told")
                 key = (st.st_dev, st.st_ino)
                 if st.st_nlink > 1 and key in inodes:
                     out.append(Mount("mask", p))
