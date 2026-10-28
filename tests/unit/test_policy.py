@@ -754,6 +754,54 @@ class GrantOverlapEndToEnd(SettingsCase):
                                    "--data-ro", self.inner]), 0)
 
 
+class GrantsWithinOneProject(SettingsCase):
+    """F-7: the overlap check only looked at OTHER projects, so one project could declare a read-write grant
+    inside its own read-only one. The deeper mount wins, so that subtree is writable while `ab project show`
+    lists it under data_ro -- the display says read-only and the session is not. The other direction is
+    allowed: a read-only grant inside a read-write one makes that subtree read-only, which is tighter than
+    the display, not looser."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.project("p1", preset="script")
+        self.ro = self.mkdir("refdata")
+        self.inner = self.mkdir("refdata", "scratch")
+
+    def test_read_write_inside_its_own_read_only_grant_is_refused(self):
+        self.assertEqual(cli.main(["project", "set", "p1", "--data-ro", self.ro,
+                                   "--data-rw", self.inner]), 2)
+        e = registry.load(self.settings.registry_path)["p1"]
+        self.assertNotIn("data_rw", e, "refused: nothing saved")
+
+    def test_the_same_path_as_both_is_refused(self):
+        self.assertEqual(cli.main(["project", "set", "p1", "--data-ro", self.ro,
+                                   "--data-rw", self.ro]), 2)
+
+    def test_read_only_inside_its_own_read_write_grant_is_allowed(self):
+        rw = self.mkdir("work")
+        inner = self.mkdir("work", "vendor")
+        self.assertEqual(cli.main(["project", "set", "p1", "--data-rw", rw, "--data-ro", inner]), 0)
+
+    def test_a_subdirectory_of_the_root_as_its_own_data_rw_is_still_allowed(self):
+        """F9, left as it was: both mounts are read-write, so nothing is misdescribed."""
+        sub = self.mkdir("projects", "p1", "out")
+        self.assertEqual(cli.main(["project", "set", "p1", "--data-rw", sub]), 0)
+
+    def test_read_write_inside_the_root_counts_as_read_write(self):
+        """The root is a read-write grant, so a read-ONLY grant inside it is the allowed direction."""
+        sub = self.mkdir("projects", "p1", "vendor")
+        self.assertEqual(cli.main(["project", "set", "p1", "--data-ro", sub]), 0)
+
+    def test_refused_at_session_start_too(self):
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["data_ro"] = [self.ro]
+        reg["p1"]["data_rw"] = [self.inner]
+        registry.save(self.settings.registry_path, reg)
+        with self.assertRaises(AgentboxError) as cm:
+            session.load_project(self.settings, "p1")
+        self.assertIn(self.inner, str(cm.exception))
+
+
 class CeilingIsAPresetAttribute(TempCase):
     """F5: "is this a ceiling?" was a name test (`preset_name == "lockdown"`), so no other preset could be
     one. It is now an attribute of the definition: true for lockdown, true by DEFAULT for any preset a user

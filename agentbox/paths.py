@@ -28,6 +28,29 @@ def grants_of(entry):
     return out
 
 
+def _check_within_one_project(name, mine):
+    """One project's own grants: a read-write grant may not sit inside its own read-only one (audit F-7).
+
+    The deeper mount wins, so that subtree would be writable while `ab project show` lists it under data_ro:
+    the display would say read-only and the session would not be. The other direction is allowed -- a
+    read-only grant inside a read-write one makes that subtree read-only, which is tighter than the display,
+    not looser -- and so is a read-write grant inside the (read-write) root, where both mounts agree."""
+    for mine_real, mine_rw in mine:
+        if not mine_rw:
+            continue
+        for ro_real, ro_rw in mine:
+            if ro_rw or not _inside(mine_real, ro_real):
+                continue
+            same = mine_real == ro_real
+            raise AgentboxError(
+                f"project {name}: {mine_real} is declared read-write and "
+                + (f"read-only at the same time" if same else f"sits inside its own read-only grant "
+                   f"{ro_real}") +
+                ". The deeper mount wins, so that path would be writable while `ab project show` lists it "
+                "as read-only. Move it out of the read-only grant, or declare it read-only too "
+                "(a read-only grant inside a read-write one is fine: it makes that subtree read-only).")
+
+
 def check_overlaps(name, entry, reg):
     """No read-write grant may overlap another project's grants, in either direction; read-only may overlap
     read-only, which is what shared reference data is for.
@@ -37,6 +60,7 @@ def check_overlaps(name, entry, reg):
     data_ro: two projects writing one tree, or one writing what another reads, with neither session able to
     tell (audit F3). Run at `ab project add`, `ab project set` and session start."""
     mine = [(os.path.realpath(os.path.expanduser(p)), rw) for p, rw in grants_of(entry)]
+    _check_within_one_project(name, mine)
     for other_name, other in sorted(reg.items()):
         if other_name == name:
             continue
