@@ -71,7 +71,7 @@ class Tiers(SettingsCase):
         warnings = []
         s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
                                  warn=warnings.append)
-        s.prepare()
+        s.prepare(do_backup=False)          # the pre-session backup needs rsync and is not what these test
         self.addCleanup(s.teardown)
         return s, warnings
 
@@ -122,6 +122,19 @@ class Tiers(SettingsCase):
         notes = session.sandbox_notes(s.project, s.egress, s.podman_live, s.podman_dev)
         self.assertIn("dev tier", notes)
         self.assertIn("podman-live.sock", notes)
+
+    def test_the_dev_notes_state_this_projects_own_image_patterns(self):
+        """F-9: the notes said other local images are refused "unless the project lists them", which does not
+        say what this project lists -- so the agent could not tell whether an image was allowed without
+        trying it. They now name the patterns, or say there are none."""
+        s, _w = self.make(preset="pods")
+        self.assertIn("no other local image", session.sandbox_notes(
+            s.project, s.egress, s.podman_live, s.podman_dev).lower())
+        s2, _w2 = self.make(preset="pods", dev_images=["localhost/myapp:*", "localhost/db"])
+        notes = session.sandbox_notes(s2.project, s2.egress, s2.podman_live, s2.podman_dev)
+        self.assertIn("localhost/myapp:*", notes)
+        self.assertIn("localhost/db", notes)
+        self.assertIn("agentbox", notes, "and that agentbox's own names can never be listed")
 
     def test_lockdown_has_none(self):
         s, _w = self.make(preset="lockdown")

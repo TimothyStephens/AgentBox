@@ -36,6 +36,13 @@ COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 PODMAN_TIERS = ("none", "observe", "exec", "dev")
 PODMAN_TIGHTEST = {"tier": "none"}
 
+# agentbox's own image names, which no `dev_images` pattern may match (audit F-9). The gate already refuses
+# them as build tags; an allowlist entry broad enough to cover one of these (`*`, `localhost/*`) is broad
+# enough to cover every other local image too, which is the harm dev_images exists to bound. Each agent's
+# image is checked against this list by test_projectkeys, so adding an agent cannot quietly leave it out.
+RESERVED_IMAGES = ("localhost/agentbox-claude:latest", "localhost/agentbox-omp:latest",
+                   "localhost/agentbox-lockdown:latest", "agentbox-claude:latest", "agentbox")
+
 
 @dataclass(frozen=True)
 class Key:
@@ -321,6 +328,14 @@ def _image_patterns(_name, where, value, **_kw):
     if not isinstance(value, list) or not all(isinstance(p, str) and IMAGE_PATTERN.match(p) for p in value):
         raise AgentboxError(f"{where}: dev_images must be a list of image name patterns "
                             "(e.g. localhost/myapp:*)")
+    for pattern in value:
+        hit = next((n for n in RESERVED_IMAGES if fnmatch.fnmatchcase(n, pattern)), None)
+        if hit:
+            raise AgentboxError(
+                f"{where}: dev_images pattern {pattern!r} matches {hit}, one of agentbox's own image names. "
+                "Those are reserved (the gate refuses them as build tags too). A pattern this broad would "
+                "also cover every other local image, including other projects' builds and live stacks: name "
+                "the project's own images instead (e.g. localhost/myapp:*)")
     return list(value)
 
 

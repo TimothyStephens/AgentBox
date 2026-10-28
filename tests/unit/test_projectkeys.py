@@ -205,3 +205,37 @@ class SwapNeverExposesASecret(unittest.TestCase):
         for bad in ({"../escape": ".env.dev"}, {".env": "../outside.env"}, {".env": "sub/dir.env"}):
             with self.assertRaises(AgentboxError, msg=bad):
                 self.check(bad)
+
+
+class DevImagesCannotNameAgentboxsOwn(unittest.TestCase):
+    """F-9: `dev_images` patterns are matched against an image's RepoTags in the gate, so a broad pattern --
+    `--dev-image '*'`, `--dev-image 'localhost/*'` -- let the dev tier run agentbox's OWN images, which are
+    exactly what the gate's build-tag rule reserves. A pattern that can match a reserved name is refused
+    where it is written, not left to the gate."""
+
+    def check(self, patterns):
+        return projectkeys.validate_value("dev_images", "project p", patterns)
+
+    def test_a_pattern_that_matches_a_reserved_name_is_refused(self):
+        for bad in ("localhost/*", "localhost/agentbox-claude:latest", "localhost/agentbox*",
+                    "localhost/agentbox-omp:latest", "localhost/agentbox-lockdown:latest", "agentbox*"):
+            with self.assertRaises(AgentboxError, msg=bad) as cm:
+                self.check([bad])
+            self.assertIn("agentbox", str(cm.exception))
+            self.assertIn("reserved", str(cm.exception))
+
+    def test_a_bare_wildcard_was_already_refused_by_the_shape_rule(self):
+        """`*` and `*:*` never passed: a pattern must start with a letter or digit. `localhost/*` did."""
+        for bad in ("*", "*:*", "*agentbox*"):
+            with self.assertRaises(AgentboxError, msg=bad):
+                self.check([bad])
+
+    def test_a_normal_pattern_is_allowed(self):
+        self.check(["localhost/myapp:*", "localhost/shop_web", "localhost/x:1.2", "docker.io/library/*"])
+
+    def test_every_adapter_image_is_among_the_probes(self):
+        """The probes must stay the names agentbox actually runs, or the check tests nothing: each agent's
+        own image has to be one a pattern is probed against."""
+        from agentbox import adapters
+        for agent in ("claude", "omp"):
+            self.assertIn(adapters.get(agent).image, projectkeys.RESERVED_IMAGES, agent)

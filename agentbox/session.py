@@ -183,7 +183,7 @@ def labels_for(settings, project, session, role):
     return out
 
 
-def dev_notes(podman_live):
+def dev_notes(podman_live, dev_images=()):
     lines = [
         "- **Podman (dev tier):** `/run/agentbox/podman.sock` (`CONTAINER_HOST`, `DOCKER_HOST`) runs your own dev "
         "stack: `podman`, `podman build` and `podman-compose` work, with these rules, enforced outside the "
@@ -209,8 +209,10 @@ def dev_notes(podman_live):
         "  - named volumes must be ones you create in this session (a new name is created for you); bind mounts "
         "only inside the project, by absolute path;",
         "  - images: you can run and build from images on docker.io, ghcr.io, lscr.io and quay.io (pull them "
-        "first) and images built through agentbox for this project; other local images are refused unless the project lists "
-        "them;",
+        "first) and images built through agentbox for this project. "
+        + (f"This project also allows local images matching: {', '.join(dev_images)}. "
+           if dev_images else "No other local image is allowed. ")
+        + "agentbox's own image names (`agentbox-*`) can never be allowed, in a pattern or as a build tag;",
     ]
     if podman_live:
         lines.append(f"- The live stack (`{podman_live}`) is read-only on a second socket: "
@@ -255,7 +257,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
                      f"{desc}. Private and LAN addresses are always refused. Tools that ignore the proxy "
                      "variables cannot connect at all.")
     if podman_dev:
-        lines += dev_notes(podman_live)
+        lines += dev_notes(podman_live, project.dev_images)
     elif podman_live:
         lines.append(f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
          f"it): read-only access to the containers of compose project `{podman_live}`, the project's live "
