@@ -88,7 +88,10 @@ def load_project(settings, name):
                    observe_logs=_check(name, "observe_logs", p.get("observe_logs", False)),
                    preset=str(p.get("preset") or ""),
                    dev_images=_check(name, "dev_images", p.get("dev_images", [])),
-                   compose_project_explicit="compose_project" in p)
+                   # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
+                   # project would have had anyway waived the ownership check while changing nothing.
+                   compose_project_explicit=bool(p.get("compose_project")
+                                                 and p["compose_project"] != name))
 
 
 def _check(name, key, value, **kw):

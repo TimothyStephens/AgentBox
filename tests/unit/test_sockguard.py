@@ -248,14 +248,29 @@ class LiveStackOwnership(SettingsCase):
     def test_another_directorys_stack_refused(self):
         s = self.make(os.path.join(self.tmp, "another-repo"))
         with self.assertRaises(AgentboxError) as cm:
-            s.prepare()
+            s.prepare(do_backup=False)
         self.assertIn("not this project's stack", str(cm.exception))
 
     def test_own_stack_fine(self):
-        self.make(None).prepare()
+        self.make(None).prepare(do_backup=False)
 
-    def test_explicit_compose_project_is_trusted(self):
-        self.make(os.path.join(self.tmp, "another-repo"), compose_project="shop").prepare()
+    def test_a_compose_project_equal_to_the_default_waives_nothing(self):
+        """F-4: the waiver was `"compose_project" in entry`, so storing the value the project would have
+        anyway -- `compose_project = "shop"` on project `shop`, which `ab project add --compose-project shop`
+        writes -- turned the ownership check off while changing nothing about what is observed."""
+        s = self.make(os.path.join(self.tmp, "another-repo"), compose_project="shop")
+        with self.assertRaises(AgentboxError) as cm:
+            s.prepare(do_backup=False)
+        self.assertIn("not this project's stack", str(cm.exception))
+
+    def test_a_compose_project_that_differs_is_trusted(self):
+        """Naming a DIFFERENT stack is the deliberate act the waiver is for: you cannot have meant the
+        project's own stack, so its containers need not come from inside the project root."""
+        s = self.make(os.path.join(self.tmp, "another-repo"), compose_project="other-stack")
+        ps = [{"Names": ["other_web_1"], "Labels": {"io.podman.compose.project": "other-stack",
+               "com.docker.compose.project.working_dir": os.path.join(self.tmp, "another-repo")}}]
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(ps)
+        s.prepare(do_backup=False)
 
 
 class GcOncePerBoot(SettingsCase):

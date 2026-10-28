@@ -406,7 +406,9 @@ def _print_effective(s, name):
             notes.append("(a ceiling: an override may only tighten it)")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
             notes.append("(explicit: this stack's containers are not required to come from inside the "
-                         "project root)")
+                         "project root)" if p.compose_project_explicit else
+                         "(the same name the project would have by default, so this stack's containers must "
+                         "still come from inside the project root)")
         for line in _render(key, value):
             print(f"  {key.name:<24} {line:<26} from {source}"
                   + ("  " + " ".join(notes) if notes else ""))

@@ -634,6 +634,14 @@ class ShowDisplayTest(SettingsCase):
         self.project("p1", preset="build")
         self.assertNotIn("not required to come from inside", self.show("p1"))
 
+    def test_a_stored_compose_project_equal_to_the_name_says_nothing_is_waived(self):
+        """F-4: storing the default waived the ownership check, and `show` called it explicit. It waives
+        nothing now, and says so where the waiver note used to be."""
+        self.project("p1", preset="build", compose_project="p1")
+        out = self.show("p1")
+        self.assertNotIn("are not required to come from inside", out)
+        self.assertIn("must still come from inside the project root", out)
+
     def test_a_ceiling_preset_says_so(self):
         self.project("p1", preset="lockdown")
         self.assertIn("a ceiling", self.show("p1"))
