@@ -30,6 +30,14 @@ from .helpers import SettingsCase
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+# Provenance of tests/unit/fixtures/podman_network_ls.json, so nothing in it is taken for host output that
+# is not (29 Oct):
+#   * the `-egr` entry is verbatim `podman network ls --format json` from ubuntu-dev;
+#   * the `-int` entry was truncated in the hand-off after its first subnet, so its remaining fields were
+#     completed to the same shape -- Tim is pasting the full output to replace it;
+#   * the `podman` default-network entry is hand-made (its id and created date are invented), there to pin
+#     that a network with no session label invents no session.
+# Only the key NAMES and nesting matter to the parser, and those come from the verbatim entry.
 NETWORK_LS_JSON = (HERE / "fixtures" / "podman_network_ls.json").read_text()
 MANUAL_SCRIPT = REPO / "tests" / "manual" / "podman_formats.sh"
 
