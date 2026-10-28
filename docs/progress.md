@@ -112,6 +112,20 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 - **Covers audit** (`5690d9f`; `docs/reviews/2026-10-05-covers.md`, no rejections): H1 (cover parents pinned, cover identity checked), H2 (start = init, check mounts before the entrypoint, then start; fail closed), H3 (read-only grants stay read-only), builds (COPY of masks arrives empty; a context carrying masked content is refused), plus M1/L1-L4.
 - **Covers enforced at the gate** (`76e5721`): the critical real-project finding. A spawned container's bind that reaches a mask or read-only cover (secrets, `.git/hooks`, `.git/config`, compose/lockdown covers, the `.env` swap) is refused; `.git/config` cannot be written from a spawned container either. `test_step6_covers` (the spec's §5.2 bypass test). decisions.md / the coverage review, 5 Oct.
 
+- **Third preset/settings audit** (28 Oct, F-1 … F-12; decisions.md 28 Oct): the model held — the
+  open-egress invariant intact, all eleven previous findings closed — but both highs were the same defect:
+  unknown state read as "nothing running". Fixed as two structural changes plus the rest. One liveness
+  predicate (`session.project_is_live`), fail-closed by construction, used by every command that refuses on
+  a live project; podman's readers raise instead of returning `[]`; a fail-open sweep of every swallowed
+  error on a safety path (six fixed, four left with the reasoning recorded). One grant preflight
+  (`grantcheck.preflight`) so `ab project check`'s verdict is `ab run`'s, which also split "covered" into
+  `mounts.hidden` (unreadable) and `mounts.covered` (what the gate refuses binds onto) — a read-only cover
+  had been hiding secrets from the scan. Acknowledgements are honoured on `ab project set`, and a tightening
+  is never blocked. Podman access became a capability set, not a ladder. Plus `compose_project`
+  explicitness, same-project grant nesting, `dev_images` reserved names, the `security` column made to drive
+  four real things, and the history-secrets acknowledgement tracking its whole found set. **F-12's text was
+  never supplied** (TODO.md).
+
 ## Next
 
 The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.

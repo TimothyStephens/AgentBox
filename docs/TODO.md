@@ -2,7 +2,11 @@
 
 Nothing here blocks use. These are the optional / deferred items left — pick them up when a real change touches the area, or when they become worth doing. (Active work and the build state live in `progress.md`.)
 
-Last reviewed 2026-10-16: the pre-real-project re-review's findings are all actioned (`reviews/2026-10-15-pre-real-project.md`), and `make test` / `make itest` / `make claude-live` / `make omp-live` are green.
+Last reviewed 2026-10-28, after the third preset/settings audit (F-1 … F-12, decisions.md 28 Oct): every
+finding is closed except **F-12, whose text was never supplied** — the hand-off listed it as "the grouped
+cleanups" with nothing under it, the same gap as F9 the round before. If it matters, paste it and it lands
+on its own. `make test` is green; `make itest` and `make claude-live` are Tim's to re-run (both
+`session.py` and `podman.py` changed, so the recorded live pass reads as stale until he does).
 
 ## Nice to have — cleanup / future
 - **A read-only project-root mount mode, for a planner preset** (the agent reads the code and writes a plan, but cannot edit the code). **Not built, and deliberately not bundled into the preset redesign** (26 Oct): the root is an unconditional read-write bind under every preset (`mounts.plan`: `rw_grants = [root] + data_rw`), so this needs a **new mount mode** *and* **another pass over the gate/covers logic** — the gate's read-only-grant handling (forcing `ro` on binds and grant-volume SubPaths), the after-start mountinfo check, and the cover pins all assume a writable root, and that area is security-reviewed (decisions.md, 5–6 Oct). It would also want a decision on one writable sub-directory inside a read-only root (notes/plans), which the grant validator does not model today. Raised because `research` reads as if the project were read-only and is not; design.md's preset table and the `--preset` description now say so explicitly. **Today's mitigation:** commit before a research session, plus the per-session rsync snapshot — a *within-session undo* that restores the grant to how it was at session start (explicitly not a data backup, decisions.md 6 Oct) — so unwanted edits are a `git diff` / `git checkout` away.
@@ -49,7 +53,13 @@ Proven to have no production caller, but it guards a boundary, so removal waits 
 Do not merge pre-emptively. Consolidate when a real bug is traced to one of these diverging. Add tests pinning the shared behaviour first.
 
 - **Secret-name test, three copies:** `mounts._masked` (includes custom swap targets), `grantcheck._is_secret_name` with its own `SECRET_FILES` (`grantcheck.py:30` vs `mounts.py:11`), and inline in `gate.unmasked_secret_under` (`gate.py` ~:628-632, ignores swap targets). Known drift: a custom swap target (e.g. `secrets.env`) is masked, but the gate's N6 check does not flag one created mid-session — this is the accepted host-writes-during-session known limitation (`docs/decisions.md`), not a bug to fix here.
-- **"Covered" computed five ways:** `session._prepare_reserved` (~:397-398, excludes read-only git/compose covers, runs before adapter covers exist — fails closed), `cli._mask_dsts` (~:88-89), `session.covered_paths`, `session.masked_paths`, `mounts.hardlink_masks` (~:236-241). `cli._mask_dsts` should eventually reuse the session's computation.
+- ~~**"Covered" computed five ways**~~ — **done 28 Oct** (audit F-6). There are now two named computations
+  with different jobs: `mounts.hidden` (paths that read EMPTY — masks, mask dirs, dev-swap targets; the only
+  set the grant scan may use) and `mounts.covered` (that plus the read-only covers; what the gate refuses a
+  bind onto). `cli._mask_dsts` is gone, `session._plan_covered` delegates, and every grant scan goes through
+  `grantcheck.preflight`. `session.masked_paths` (build contexts) and `mounts.hardlink_masks` still walk the
+  plan themselves — both answer a third question (what a packed context must carry empty, and which inodes
+  have another name) and neither decides a verdict, so they are left alone.
 - **`mask_skip` resolved three times:** `mounts._rel_skips`, the dead `grantcheck._rel_skips` (see D-E7), and `grantcheck._under_mask_skip`.
 
 ## Uncovered gate HTTP error-paths (low value; cover opportunistically)

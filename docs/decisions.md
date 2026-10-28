@@ -958,3 +958,92 @@ never revert, stage or commit them; report and ask. Baseline comparisons go in a
   left no trace; the log makes it visible after the fact, which is why a loud-overwrite refusal was not
   added — re-running and replacing the record is the normal case. Writing either file already requires
   `from_live_run=True`, so only the live runner can produce a line.
+
+## 2026-10-28 — Third audit: liveness fail-closed by construction, one grant preflight, and the rest
+
+The audit (F-1 … F-12) found the preset/settings model holding — the open-egress invariant intact, all
+eleven previous findings closed — and two highs that were the same defect in the same question. **"Is this
+project live?" had now been answered wrongly in three audits running** (F3: `rm` succeeded during a live
+session; F2: the launcher PID was the only signal, so a dead launcher hid running containers; F-1: the fix
+for F2 *replaced* the session.json signal with container labels, so a session still in `prepare()` became
+invisible again; F-2/F-10: a failing `podman ps`, a missing binary or unparseable output all returned "no
+containers"). So this round was two structural fixes plus the rest, not twelve patches.
+
+- **One liveness predicate, fail-closed by construction.** `session.project_is_live(settings, podman, name)
+  -> (live, why)`. Every signal is consulted and **any** of them says live; an unreadable signal **also**
+  says live, with the reason named. Used by `project set`/`rm`/`reset-state`/both `accept-*` and by
+  `ab run`'s already-running warning, so there is one answer, not five. A session run dir whose metadata
+  cannot be attributed to a project counts as live for *every* project (and names the session, suggesting
+  `ab session gc`) — the alternative was parsing the project out of the session name, which is exactly the
+  kind of inference that got this wrong three times. There is still no `--force`.
+- **Podman stopped swallowing failures on safety paths.** `podman.run` turns an `OSError` into an `ab:`
+  error (a missing binary was a traceback); `containers_json` and `ids` raise on a non-zero exit or
+  unparseable JSON instead of returning `[]`. `_check_live_stack_is_ours` therefore refuses when `ps` fails
+  rather than passing vacuously, and `teardown` warns per kind when a listing cannot be read instead of
+  reporting a clean teardown.
+- **The fail-open sweep.** Every `check=False`, bare `except` and `or "[]"` in `agentbox/` was classified by
+  what a swallowed failure decides. Fixed: an unreadable `.git` *file* left that repo's hooks/config
+  uncovered and started anyway; an un-lstat'able candidate in `hardlink_masks` left another hard link to a
+  masked secret unmasked; an un-stat'able bind source read as "not a socket"; an unreadable cover identity
+  was omitted from `cover_ids`, so the gate's rename detection silently did not cover it; `sessions()`'
+  network listing and `_young` both read a failure as "nothing there". `ENOENT` is the one tolerated failure
+  at each site, and only where absence is itself the answer. Left as they were, with the reasoning recorded
+  in the commit: `egress.host_addresses` (empty makes `squid_conf` refuse), `gate.covers_intact` (an
+  unreadable cover reads as "not intact"), `grantcheck`'s walk handlers (each unreadable entry becomes a
+  warning), and the end-of-session scan's broad `except` (it informs after the session ended and must not
+  stop the removal).
+- **One grant preflight, and two senses of "covered" pulled apart.** `ab project check` built its own mount
+  plan and its own covered predicate while a session built another, so `check`'s verdict was not `run`'s.
+  `grantcheck.preflight(settings, name, entry, *, plan=None)` is now the only entry point, and `ab run`
+  passes the plan it already built. Separating the two sets fixed a real under-report: a session passed the
+  *gate's* covered set to the scan, which includes the read-only covers, so a non-empty
+  `.git/hooks/deploy.key` was invisible to it — a read-only cover stops writes, not reads. The scan uses
+  `mounts.hidden` (masks, mask dirs, dev-swap targets); the gate uses `mounts.covered` (that plus the
+  read-only covers).
+- **Acknowledgements are honoured, and a tightening is never blocked.** `ab project set` demanded
+  `--i-understand-grant-exposure` again on every edit to a project with an accepted exposure, including
+  `--egress locked`, which only makes the project safer. Now: findings matching the acknowledgement proceed
+  silently; findings that changed refuse an edit that **grants something new** (naming what is new, changed
+  or gone) and let through one that grants nothing new, with the change reported; the flag re-accepts and
+  prints what is newly accepted. `ab project add` is unchanged — a new project has nothing to be safer than.
+  The same rule was applied to the history-secrets acknowledgement, which had the same defect.
+  **Shape change:** `grant_exposure_accepted` now stores the accepted findings' *signatures*, not only
+  their fingerprint, because "refuse with a diff" has to know what was accepted. The fingerprint is derived
+  from them, so `show` and `check` print the same short id as before, and an acknowledgement stored as a
+  bare fingerprint (every existing one) still works — it just cannot be diffed, which both commands say.
+  One key, so there is no second place to drift.
+- **`projectkeys.loosenings`** is the one answer to "does this edit grant anything new?", used by the two
+  acknowledgement settlers and by `set`'s report. Conservative so that *empty* can be trusted: ordered keys
+  compare on their order, a list setting counts unless the new value is a subset of the old, any other
+  security-relevant change counts, and a grant counts unless it is already inside a grant with the same or
+  wider access. `preset` is not compared as a value (a preset change shows up in the settings it resolves
+  to); `root` is compared as a grant.
+- **Podman access is a capability set, not a ladder.** `none < observe < dev < exec` made a ceiling of
+  `{tier = "dev"}` *allow* an override of `{tier = "observe"}` — but observe reads the live host stack while
+  dev runs the project's own sandboxed one. `podman_capabilities` maps each spelling to a set
+  (`dev-stack`, `live-observe`, `live-exec`) and "looser" is "not a subset", so a dev ceiling refuses
+  observe and an observe ceiling refuses dev.
+- **`compose_project` is explicit only when it differs.** The waiver was `"compose_project" in entry`, so
+  storing the default (what `--compose-project shop` writes on project `shop`) turned off the live-stack
+  ownership check while changing nothing about what is observed. `show` no longer calls that explicit.
+- **A read-write grant may not sit inside the same project's read-only grant** (the deeper mount wins, so
+  the path would be writable while `show` lists it read-only), nor may one path be declared as both. The
+  other direction stays allowed: read-only inside read-write is tighter than the display, not looser.
+- **`dev_images` may not match agentbox's own image names**, which is what catches `*` and `localhost/*` —
+  patterns broad enough to cover every other local image. The dev-tier notes now list the project's actual
+  patterns instead of saying "unless the project lists them".
+- **The settings table's `security` column was a column nothing read.** Rather than delete it, it now
+  decides which settings `loosenings` compares, which overrides `show` marks as loosening their preset,
+  what `set` reports about the edit it made, and an invariant: `clears` implies `security`. That invariant
+  caught `secrets`, which was cleared on a preset change while marked not security-relevant (it decides
+  whether secret files are masked; that it does nothing *today* is what the `inert` column says), and the
+  comparison caught that `observe_logs`/`compose_project`/`dev_images`/`mask_skip`/`swap` were skipped
+  because they are absent from the effective dict — so `set --observe-logs` had counted as granting nothing.
+
+**F-12 was never supplied.** The hand-off listed it as "the grouped cleanups" with no text, the same gap as
+F9 last round; nothing was done for it. F9 itself stays as recorded in TODO.md.
+
+**Test-only change worth noting:** several session tests called `prepare()`, whose pre-session backup needs
+`rsync`, which the agentbox sandbox has not got — so they could not run while this work was being done.
+Those that do not test the backup now call `prepare(do_backup=False)`, which took the sandbox's unrunnable
+count from 132 to 121.

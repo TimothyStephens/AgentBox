@@ -166,7 +166,8 @@ for Claude it is **prepended** to `CLAUDE.md` (so it leads), and for OMP it is t
   swap) and that they are enforced for containers the agent starts too;
 - the **actual egress mode** (`locked` / `packages` / `open`) with the concrete reachable set, and that private
   and LAN addresses are always refused;
-- the exact podman access for the tier (none / observe / dev), or that there is none.
+- the exact podman access for the tier (none / observe / dev), or that there is none — and, on the dev
+  tier, the project's own `dev_images` patterns, or that no other local image is allowed (28 Oct).
 
 These live facts stay **in the per-session notes, not baked into the committed scaffold**, because they come
 from the project's registry entry and preset at session time, not from `ab init`; writing them into the
