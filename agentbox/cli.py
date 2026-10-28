@@ -233,6 +233,7 @@ def cmd_project_set(s, a):
         raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
     _refuse_if_live(s, [a.name], f"change {a.name}")
     entry = dict(reg[a.name])
+    before = dict(reg[a.name])          # for the "what did this grant?" report, before anything is applied
     unset = _unset_keys(a)
     for key in unset:
         if _given(a, key):
@@ -254,6 +255,7 @@ def cmd_project_set(s, a):
     if absent:
         print(f"  not stored on this project, so nothing to unset: {', '.join(absent)}")
     _print_cleared(cleared, a.name, entry, presets_map)
+    _print_granted(a.name, before, entry, presets_map)
     _print_effective(s, a.name)
 
 
@@ -370,6 +372,18 @@ def cmd_project_show(s, a):
     _print_effective(s, a.name)
 
 
+def _print_granted(name, before, after, presets_map):
+    """What this edit grants that the project did not have (audit F-8: one of the things the settings table's
+    `security` column decides). Only security-relevant settings and grants are listed, so an edit to, say,
+    build_memory says nothing."""
+    gained = projectkeys.loosenings(presets.effective(name, before, presets_map),
+                                    presets.effective(name, after, presets_map), before, after)
+    if gained:
+        print("  this edit grants more than the project had:")
+        for g in gained:
+            print(f"    {g}")
+
+
 def _print_effective(s, name):
     """Every effective setting, where it came from, and whether it actually does anything right now.
 
@@ -382,6 +396,9 @@ def _print_effective(s, name):
     stored = registry.load(s.registry_path)[name]
     presets_map = presets.load_presets(s.presets_dir)
     ctx = projectkeys.posture(p)
+    # The preset's own posture, with none of this project's overrides, so an override that LOOSENS it can be
+    # marked (audit F-8). Only security-relevant keys are compared; the rest are never "looser".
+    base = presets.effective(name, {"preset": p.preset}, presets_map)
     resolved = {"root": p.root, "preset": p.preset, "data_ro": p.data_ro, "data_rw": p.data_rw,
                 "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
                 "compose_project": p.compose_project, "observe_logs": p.observe_logs,
@@ -404,6 +421,9 @@ def _print_effective(s, name):
             notes.append(f"(a fingerprint of the findings; `ab project check {name}` shows what it covers)")
         if key.name == "preset" and presets_map.get(value, {}).get("ceiling"):
             notes.append("(a ceiling: an override may only tighten it)")
+        if (key.name in stored and key.security and key.name in base
+                and projectkeys.is_looser(key.name, value, base[key.name][0])):
+            notes.append(f"(loosens preset {p.preset}, whose value is {_render(key, base[key.name][0])[0]})")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
             notes.append("(explicit: this stack's containers are not required to come from inside the "
                          "project root)" if p.compose_project_explicit else

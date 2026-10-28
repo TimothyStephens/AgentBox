@@ -322,6 +322,31 @@ class SetTest(SetBase):
         self.assertEqual(self.entry()["egress"], "locked")
 
 
+class LooseningIsAnnounced(SetBase):
+    """F-8: `security` was a column nothing read. One of the things it decides now is this: an edit that
+    grants a security-relevant setting more than the project had says so, where you can see it. An edit to a
+    setting that is not security-relevant (build_memory) says nothing."""
+
+    def test_a_loosening_edit_says_what_it_granted(self):
+        code, out = self.rc_out("project", "set", "p1", "--egress", "open")
+        self.assertEqual(code, 0)
+        self.assertIn("grants more", out.lower())
+        self.assertIn("egress", out)
+
+    def test_a_tightening_edit_says_nothing(self):
+        self.assertNotIn("grants more", self.rc_out("project", "set", "p1", "--egress", "locked")[1].lower())
+
+    def test_a_non_security_setting_says_nothing(self):
+        self.assertNotIn("grants more", self.rc_out("project", "set", "p1", "--build-memory", "8g")[1].lower())
+
+    def test_a_new_grant_is_announced(self):
+        extra = self.mkdir("extra")
+        code, out = self.rc_out("project", "set", "p1", "--data-rw", extra)
+        self.assertEqual(code, 0)
+        self.assertIn(extra, out)
+        self.assertIn("grants more", out.lower())
+
+
 class AcknowledgementsOnSet(SetBase):
     """F-5: `set` re-ran the grant scan but ignored what had already been accepted, so EVERY edit to a
     project with an accepted exposure demanded --i-understand-grant-exposure again -- including

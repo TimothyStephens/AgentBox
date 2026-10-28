@@ -239,3 +239,47 @@ class DevImagesCannotNameAgentboxsOwn(unittest.TestCase):
         from agentbox import adapters
         for agent in ("claude", "omp"):
             self.assertIn(adapters.get(agent).image, projectkeys.RESERVED_IMAGES, agent)
+
+
+class TheSecurityColumnDrivesSomething(unittest.TestCase):
+    """F-8: `security` was a column nothing read -- documentation pretending to be code. It now decides
+    three things, each tested here or alongside: which settings `projectkeys.loosenings` compares (so which
+    edits `ab project set` will not let past an unacknowledged grant exposure, audit F-5), which overrides
+    `ab project show` marks as loosening their preset, and the invariant below."""
+
+    def test_every_cleared_key_is_security_relevant(self):
+        """A preset change drops an override so it cannot outlive the posture it was set against. That is a
+        security measure, so `clears` without `security` would be a contradiction -- and the two columns
+        cannot drift apart without this failing."""
+        for key in projectkeys.KEYS:
+            if key.clears:
+                self.assertTrue(key.security, f"{key.name}: cleared on a preset change but not security")
+
+    def loosenings(self, before, after):
+        ps = presets.BUILTIN
+        return projectkeys.loosenings(presets.effective("p", before, ps), presets.effective("p", after, ps),
+                                      before, after)
+
+    def test_a_non_security_setting_is_never_a_loosening(self):
+        base = {"root": "/r", "preset": "script"}
+        self.assertEqual(self.loosenings(base, {**base, "build_memory": "8g"}), [])
+
+    def test_an_ordered_security_setting_is(self):
+        base = {"root": "/r", "preset": "script"}
+        got = self.loosenings(base, {**base, "egress": "open"})
+        self.assertTrue(any("egress" in g for g in got), got)
+        self.assertEqual(self.loosenings({**base, "egress": "open"}, base), [], "tightening is not")
+
+    def test_a_security_key_that_is_not_a_preset_setting_is_compared_too(self):
+        """observe_logs, compose_project, dev_images and mask_skip are not resolvable from a preset, so they
+        are absent from the effective dict; comparing only that dict skipped them."""
+        base = {"root": "/r", "preset": "build"}
+        for key, value in (("observe_logs", True), ("compose_project", "other"),
+                           ("dev_images", ["localhost/x:*"]), ("mask_skip", ["vendor"])):
+            got = self.loosenings(base, {**base, key: value})
+            self.assertTrue(any(key in g for g in got), f"{key}: {got}")
+
+    def test_shortening_a_list_setting_is_not_a_loosening(self):
+        base = {"root": "/r", "preset": "build", "dev_images": ["localhost/x:*", "localhost/y:*"]}
+        self.assertEqual(self.loosenings(base, {**base, "dev_images": ["localhost/x:*"]}), [])
+        self.assertEqual(self.loosenings(base, {k: v for k, v in base.items() if k != "dev_images"}), [])

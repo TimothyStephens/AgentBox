@@ -94,7 +94,7 @@ KEYS = (
          values=("refused", "opt-in"), security=True, clears=True, unsettable=True, display="always",
          inert="always", inert_reason="caps opt-in is not built; capabilities and devices are always refused"),
     _key("secrets", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
-         values=("locked", "masked"), security=False, clears=True, unsettable=True, display="always",
+         values=("locked", "masked"), security=True, clears=True, unsettable=True, display="always",
          inert="always", inert_reason="secret masks always apply and cannot be turned off"),
     _key("approvals", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
          values=("on", "off"), security=True, clears=True, unsettable=True, display="always", inert="",
@@ -221,9 +221,15 @@ def loosenings(before_eff, after_eff, before_entry, after_entry):
     for k in KEYS:
         if not k.security or k.kind in ("ack", "structural") or k.name in GRANT_KEYS:
             continue
-        if k.name not in before_eff or k.name not in after_eff:
-            continue
-        old, new = before_eff[k.name][0], after_eff[k.name][0]
+        if k.name in before_eff and k.name in after_eff:
+            old, new = before_eff[k.name][0], after_eff[k.name][0]
+        else:
+            # observe_logs, compose_project, dev_images, mask_skip and swap are not resolvable from a preset,
+            # so they are absent from the effective dict: their stored value IS the whole truth, and an
+            # absent one means the key's tightest (False for observe_logs). Comparing only the effective
+            # dict skipped them, which let `--observe-logs` count as granting nothing new.
+            old = before_entry.get(k.name, k.tightest)
+            new = after_entry.get(k.name, k.tightest)
         if old == new:
             continue
         if is_looser(k.name, new, old):

@@ -642,6 +642,17 @@ class ShowDisplayTest(SettingsCase):
         self.assertNotIn("are not required to come from inside", out)
         self.assertIn("must still come from inside the project root", out)
 
+    def test_show_marks_an_override_that_loosens_its_preset(self):
+        """F-8: another thing the `security` column decides. On the host, `podcasts` shows `egress open from
+        project` with nothing to say that this is looser than the preset it was chosen for."""
+        self.project("p1", preset="script", egress="open")
+        out = self.show("p1")
+        self.assertIn("loosens preset script", out)
+        self.project("p2", preset="build", egress="locked")
+        self.assertNotIn("loosens", self.show("p2"), "a tightening override is not marked")
+        self.project("p3", preset="build", build_memory="8g")
+        self.assertNotIn("loosens", self.show("p3"), "build_memory is not security-relevant")
+
     def test_a_ceiling_preset_says_so(self):
         self.project("p1", preset="lockdown")
         self.assertIn("a ceiling", self.show("p1"))
