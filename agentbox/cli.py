@@ -420,42 +420,34 @@ def _render(key, value):
     return [str(value)]
 
 
-def _live_containers(s, names):
-    """Running containers of these projects, as (project, session, container name).
-
-    Asked of podman, not of session.json: the project comes from the container's own `agentbox.project`
-    label and liveness from its state, so this sees the case `ab session gc` deliberately leaves alone --
-    launcher gone, containers still up -- which is exactly when a registry edit used to orphan them (audit
-    F2). The old check read the project from session.json and required a live launcher PID, so a session
-    whose launcher had died looked absent."""
-    wanted = set(names)
-    out = []
-    for c in Podman(s.podman).containers_json(s.labels):
-        labels = c.get("Labels") or {}
-        project = labels.get("agentbox.project")
-        if project not in wanted or (c.get("State") or "").lower() != "running":
-            continue
-        names_ = c.get("Names") or []
-        out.append((project, labels.get("agentbox.session") or "",
-                    names_[0] if names_ else (c.get("Id") or "")[:12]))
-    return sorted(out)
-
-
 def _refuse_if_live(s, names, what):
-    """No registry edit while a container of one of these projects is running.
+    """No registry edit while anything of one of these projects is running -- or while that cannot be
+    determined. session.project_is_live is the single predicate (see its docstring: three audits got this
+    wrong by trusting one signal and reading "unreadable" as "nothing running").
 
-    `ab project rm` used to orphan the session: the entry went away, the containers kept running, and the
-    grant lost its overlap protection, so another project could be registered over the live grant. There is
-    deliberately no --force -- ending live work is `ab session kill`'s job (decisions.md, 6 Oct, on why
-    auto-reaping was rejected)."""
-    blocked = _live_containers(s, names)
+    There is deliberately no --force: ending live work is `ab session kill`'s job (decisions.md, 6 Oct, on
+    why auto-reaping was rejected)."""
+    podman = Podman(s.podman)
+    blocked = []
+    for name in names:
+        live, why = session.project_is_live(s, podman, name)
+        if live:
+            blocked.append(f"{name}: {why}")
     if not blocked:
         return
-    detail = ", ".join(f"{project}: {container}" for project, _sess, container in blocked)
-    sessions = sorted({sess for _p, sess, _c in blocked if sess})
-    how = " ".join(f"`ab session kill {x}`" for x in sessions) or "`ab session ls` to find the session"
-    raise AgentboxError(f"cannot {what} while containers of that project are running ({detail}); end it "
-                        f"with {how} first (its logs and end-of-session scan are kept), then try again")
+    raise AgentboxError(f"cannot {what} while a session may be running:\n  " + "\n  ".join(blocked)
+                        + "\nEnd the session named above and try again; its logs and end-of-session scan "
+                          "are kept.")
+
+
+def _warn_if_live(s, name, warn=warn):
+    """`ab run` warns (never blocks) when a session for the same project is already up, through the same
+    predicate the refusals use."""
+    live, why = session.project_is_live(s, Podman(s.podman), name)
+    if live:
+        warn(f"ab: a session for project {name} may already be running ({why}); starting another means two "
+             f"at once. `ab session ls` shows them; `ab session kill <session>` ends one (keeping its logs "
+             f"and scan).")
 
 
 def cmd_project_reset_state(s, a):
@@ -526,11 +518,7 @@ def cmd_run(s, a):
     if not agent or not project_name:
         raise AgentboxError("give an agent and a project: `ab run --agent <a> --project <p>` "
                             "or `ab run <a> <p>`")
-    running = [n for n, info in session.sessions(s, Podman(s.podman)).items()
-               if info["alive"] and (info["meta"] or {}).get("project") == project_name]
-    for n in running:
-        warn(f"ab: a session for project {project_name} is already running ({n}); starting another means two "
-             f"at once. `ab session ls` shows them; `ab session kill {n}` ends that one (keeping its logs and scan).")
+    _warn_if_live(s, project_name)
     project = session.load_project(s, project_name)
     sess = session.make_session(s, agent, project, warn=warn)
     sess.prepare()

@@ -151,15 +151,22 @@ class RunGuardTest(SettingsCase):
         self.project("p1")
 
     def test_run_warns_when_a_session_for_the_project_is_already_running(self):
-        running = {"abt-old-1": {"meta": {"project": "p1", "agent": "claude"},
-                                 "containers": [], "networks": [], "alive": True}}
+        """The warning goes through session.project_is_live now (third audit, F-1), so it is driven by a real
+        running container rather than by mocking our own session table -- and it fires on a session still in
+        prepare(), which the container-only check missed."""
+        import json
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
+            [{"Names": ["abt-old-1-agent"], "State": "running",
+              "Labels": {"agentbox.project": "p1", "agentbox.session": "abt-old-1",
+                         "agentbox-test": "1"}}])
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
         err = io.StringIO()
-        with unittest.mock.patch("agentbox.session.sessions", return_value=running), \
-             unittest.mock.patch("agentbox.session.load_project", side_effect=AgentboxError("stop here")):
+        with unittest.mock.patch("agentbox.session.load_project", side_effect=AgentboxError("stop here")):
             with redirect_stderr(err):
                 rc = cli.main(["run", "--agent", "claude", "--project", "p1"])
         self.assertEqual(rc, 2)
-        self.assertIn("already running (abt-old-1)", err.getvalue())
+        self.assertIn("abt-old-1", err.getvalue())
+        self.assertIn("may already be running", err.getvalue())
 
     def test_run_takes_positional_agent_and_project(self):
         seen = {}
@@ -168,8 +175,7 @@ class RunGuardTest(SettingsCase):
             seen["project"] = name
             raise AgentboxError("stop here")
 
-        with unittest.mock.patch("agentbox.session.sessions", return_value={}), \
-             unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load):
+        with unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load):
             with redirect_stderr(io.StringIO()):
                 rc = cli.main(["run", "claude", "p1"])
         self.assertEqual(rc, 2)

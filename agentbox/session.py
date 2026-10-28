@@ -422,7 +422,13 @@ class Session:
         another stack on the host would observe it. Unless compose_project is set explicitly, every container
         of that compose project must have been brought up from inside the project root (review 2026-10-01 #7)."""
         p = self.project
-        for c in self.podman.containers_json({sockguard.COMPOSE_LABEL: p.compose_project}):
+        try:
+            containers = self.podman.containers_json({sockguard.COMPOSE_LABEL: p.compose_project})
+        except AgentboxError as e:
+            raise AgentboxError(f"project {p.name}: cannot confirm that compose project "
+                                f"{p.compose_project!r} is this project's stack: {e}. Refusing rather than "
+                                "observing a stack that may not be yours.")
+        for c in containers:
             wd = (c.get("Labels") or {}).get("com.docker.compose.project.working_dir", "")
             real = os.path.realpath(wd) if wd else ""
             if not real or not _inside(real, p.root):
@@ -1092,14 +1098,21 @@ def teardown(settings, podman, session, warn=None):
         except Exception as e:
             warn(f"agentbox: could not keep the session's logs: {e!r}")
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
-        for c in podman.ids("container", sel):
-            podman.run(["rm", "-f", "-v", "-t", "5", c], check=False)     # -v: its anonymous volumes too
-        for pod in podman.ids("pod", sel):
-            podman.run(["pod", "rm", "-f", pod], check=False)
-        for v in podman.ids("volume", sel):
-            podman.run(["volume", "rm", "-f", v], check=False)
-        for n in podman.ids("network", sel):
-            podman.run(["network", "rm", "-f", n], check=False)
+        # A listing that cannot be read must not look like "nothing to remove": warn per kind, keep going
+        # with the others, and never let a failed listing pass for a clean teardown (audit F-2/F-10).
+        for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
+                           ("pod", ["pod", "rm", "-f"]),
+                           ("volume", ["volume", "rm", "-f"]),
+                           ("network", ["network", "rm", "-f"])):
+            try:
+                found = podman.ids(kind, sel)
+            except AgentboxError as e:
+                warn(f"agentbox: could not list this session's {kind}s, so some may be left behind: {e}. "
+                     f"Check with `podman {kind if kind != 'container' else 'ps -a'} --filter "
+                     f"label=agentbox.session={session}`.")
+                continue
+            for target in found:
+                podman.run(argv + [target], check=False)
         if settings.cgroup_parent:
             # the per-session build cgroup the gate names; empty once the builds are gone
             build_cg = "/sys/fs/cgroup" + buildcap.slice_cgroup_path(settings.cgroup_parent) + f"/{session}-build"
@@ -1157,6 +1170,70 @@ def _alive(meta):
     """The launcher that started the session is still running (same PID and the same process)."""
     pid = int(meta.get("pid", 0))
     return pid > 0 and _start_time(pid) is not None and _start_time(pid) == meta.get("pid_start")
+
+
+def session_metas(settings):
+    """[(session, meta or None)] for every session run dir; None means session.json is missing or
+    unparseable. Kept separate from sessions() so a podman failure cannot hide this signal, and vice
+    versa."""
+    out = []
+    base = os.path.join(settings.run_dir, "sessions")
+    try:
+        names = sorted(os.listdir(base))
+    except FileNotFoundError:
+        return out
+    except OSError as e:
+        raise AgentboxError(f"cannot read the session directory {base}: {e}")
+    for s in names:
+        try:
+            with open(os.path.join(settings.session_run_dir(s), "session.json")) as f:
+                out.append((s, json.load(f)))
+        except (OSError, ValueError):
+            out.append((s, None))
+    return out
+
+
+def project_is_live(settings, podman, name):
+    """Is anything of this project running? Returns (live, why).
+
+    EVERY signal is consulted, ANY of them says live, and a signal that cannot be READ also says live.
+
+    Three audits found this question answered wrong, each time the same way -- one signal taken for the
+    whole truth, and an unreadable signal read as "nothing is running":
+      * the launcher PID alone, so a dead launcher hid running containers (F2);
+      * then container labels alone, so a session still in prepare() -- session.json written, containers not
+        yet created -- was invisible (F-1);
+      * and `podman ps` failing, a missing binary or unparseable output all returning "no containers",
+        which every caller read as "nothing is running" (F-2, F-10).
+
+    So the signals are: a running container labelled with the project; a session.json naming it whose
+    launcher is alive; and any session run dir whose session.json cannot be read -- that one cannot be
+    attributed to a project, so it counts for every project rather than being guessed at by parsing the
+    session name."""
+    reasons = []
+    try:
+        for c in podman.containers_json(settings.labels):
+            labels = c.get("Labels") or {}
+            if labels.get("agentbox.project") != name or (c.get("State") or "").lower() != "running":
+                continue
+            shown = (c.get("Names") or [(c.get("Id") or "")[:12]])[0]
+            sess = labels.get("agentbox.session") or ""
+            reasons.append(f"container {shown} (session {sess or '?'}) is running"
+                           + (f" -- `ab session kill {sess}`" if sess else ""))
+    except AgentboxError as e:
+        return True, f"cannot tell whether its containers are running: {e}"
+    try:
+        metas = session_metas(settings)
+    except AgentboxError as e:
+        return True, f"cannot tell whether a session is starting: {e}"
+    for sess, meta in metas:
+        if meta is None:
+            reasons.append(f"session {sess} has no readable session.json, so it cannot be told apart from a "
+                           "session starting right now (`ab session gc` clears one left by a crash)")
+        elif meta.get("project") == name and _alive(meta):
+            reasons.append(f"session {sess} is running (launcher pid {meta.get('pid')}) -- "
+                           f"`ab session kill {sess}`")
+    return (True, "; ".join(reasons)) if reasons else (False, "")
 
 
 def sessions(settings, podman):
