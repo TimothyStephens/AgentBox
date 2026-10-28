@@ -82,6 +82,25 @@ class PresetTest(unittest.TestCase):
         # the tight values stay legal
         self.eff({"preset": "lockdown", "podman": {"tier": "none"}, "observe_logs": False})
 
+    def test_a_dev_ceiling_refuses_the_observe_tier(self):
+        """F-3: podman access was a ladder (none < observe < dev < exec), so a ceiling preset capped at
+        `{tier = "dev"}` ALLOWED an override of `{tier = "observe"}` -- a project that may run its own
+        sandboxed stack was thereby allowed to read the live host stack instead. Capability sets, not
+        degrees."""
+        custom = dict(self.P, devcap=dict(self.P["build"], podman={"tier": "dev"}, ceiling=True))
+        presets.effective("t", {"preset": "devcap", "podman": {"tier": "dev"}}, custom)   # the same: fine
+        for loosen in ({"tier": "observe"}, {"tier": "dev", "live": "observe"},
+                       {"tier": "none", "live": "observe"}):
+            with self.assertRaises(AgentboxError, msg=loosen):
+                presets.effective("t", {"preset": "devcap", "podman": loosen}, custom)
+        presets.effective("t", {"preset": "devcap", "podman": {"tier": "none"}}, custom)  # tighter: fine
+
+    def test_an_observe_ceiling_refuses_the_dev_tier(self):
+        custom = dict(self.P, obscap=dict(self.P["operate"], podman={"tier": "observe"}, ceiling=True))
+        presets.effective("t", {"preset": "obscap", "podman": {"tier": "observe"}}, custom)
+        with self.assertRaises(AgentboxError):
+            presets.effective("t", {"preset": "obscap", "podman": {"tier": "dev"}}, custom)
+
     def test_unknown_preset_error_lists_every_known_name(self):
         with self.assertRaises(AgentboxError) as cm:
             self.eff({"preset": "nope"})

@@ -99,14 +99,31 @@ class Looseness(unittest.TestCase):
         self.assertTrue(projectkeys.is_looser("observe_logs", True, False))
         self.assertFalse(projectkeys.is_looser("observe_logs", False, True))
 
-    def test_podman_is_component_wise(self):
-        none, obs = {"tier": "none"}, {"tier": "none", "live": "observe"}
-        dev = {"tier": "dev", "live": "observe"}
-        self.assertTrue(projectkeys.is_looser("podman", obs, none), "live alone is looser")
-        self.assertTrue(projectkeys.is_looser("podman", dev, none))
-        self.assertTrue(projectkeys.is_looser("podman", dev, obs))
-        self.assertFalse(projectkeys.is_looser("podman", none, dev))
-        self.assertFalse(projectkeys.is_looser("podman", none, none))
+    def test_podman_is_a_capability_set_not_a_ladder(self):
+        """F-3: `none < observe < dev < exec` made a ceiling of `{tier = "dev"}` ALLOW an override of
+        `{tier = "observe"}` -- but observe reads the LIVE host stack while dev runs the project's own
+        sandboxed one. Different capabilities, not degrees, so looser is "not a subset"."""
+        caps = projectkeys.podman_capabilities
+        self.assertEqual(caps({"tier": "none"}), frozenset())
+        self.assertEqual(caps(None), frozenset())
+        self.assertEqual(caps({"tier": "observe"}), frozenset({"live-observe"}))
+        self.assertEqual(caps({"tier": "dev"}), frozenset({"dev-stack"}))
+        self.assertEqual(caps({"tier": "none", "live": "observe"}), frozenset({"live-observe"}))
+        self.assertEqual(caps({"tier": "dev", "live": "observe"}),
+                         frozenset({"dev-stack", "live-observe"}))
+
+        looser = lambda v, than: projectkeys.is_looser("podman", v, than)
+        self.assertTrue(looser({"tier": "observe"}, {"tier": "dev"}),
+                        "a dev ceiling must refuse observe: it reads the live stack, which dev cannot")
+        self.assertTrue(looser({"tier": "dev"}, {"tier": "observe"}))
+        self.assertTrue(looser({"tier": "dev", "live": "observe"}, {"tier": "dev"}))
+        self.assertTrue(looser({"tier": "observe"}, {"tier": "none"}))
+        self.assertFalse(looser({"tier": "none"}, {"tier": "dev"}), "none is never looser")
+        self.assertFalse(looser(None, {"tier": "observe"}))
+        self.assertFalse(looser({"tier": "dev"}, {"tier": "dev"}))
+        self.assertFalse(looser({"tier": "dev"}, {"tier": "dev", "live": "observe"}), "a subset")
+        self.assertFalse(looser({"tier": "none", "live": "observe"}, {"tier": "observe"}),
+                         "the same capability by another spelling")
 
     def test_unordered_keys_are_never_looser(self):
         self.assertFalse(projectkeys.is_looser("data_ro", ["/a"], []))

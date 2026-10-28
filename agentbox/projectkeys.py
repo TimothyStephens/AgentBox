@@ -34,8 +34,6 @@ IMAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/:@*?-]*$")
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 PODMAN_TIERS = ("none", "observe", "exec", "dev")
-TIER_RANK = {"none": 0, "observe": 1, "dev": 2, "exec": 3}
-LIVE_RANK = {None: 0, "observe": 1, "exec": 2}
 PODMAN_TIGHTEST = {"tier": "none"}
 
 
@@ -152,17 +150,28 @@ SETTING_FLAGS = {k.name: (k.dest, k.flags[0]) for k in KEYS if k.flags}
 CLEAR_FLAGS = {f"clear_{k.name}": k.name for k in KEYS if k.arity == "list" and k.unsettable}
 
 
-def _podman_rank(value):
+def podman_capabilities(value):
+    """What a `podman` setting actually grants, as a set (audit F-3).
+
+    This was ranked `none < observe < dev < exec`, so a ceiling of `{tier = "dev"}` ALLOWED an override of
+    `{tier = "observe"}`. But the two are not degrees of one thing: `observe` reads the LIVE host stack
+    (another project's running containers), while `dev` runs a stack of the agent's OWN inside the sandbox.
+    Neither contains the other, so they are compared as sets and "looser" means "not a subset".
+
+    `live-exec` has no spelling that validates (`_podman` refuses exec), but it is named here so the
+    comparison stays right if it is ever built."""
     value = value or {}
-    return TIER_RANK.get(value.get("tier", "none"), 0), LIVE_RANK.get(value.get("live"), 0)
+    out = set()
+    for spelling in (value.get("tier", "none"), value.get("live")):
+        out |= {"observe": {"live-observe"}, "exec": {"live-exec"}, "dev": {"dev-stack"}}.get(spelling, set())
+    return frozenset(out)
 
 
 def is_looser(name, value, than):
     """Is `value` looser than `than` on this key's order? False for a key with no order, so an unordered
     key is never treated as a loosening (it may still be *inert*, which is a display matter)."""
     if name == "podman":
-        a, b = _podman_rank(value), _podman_rank(than)
-        return a[0] > b[0] or a[1] > b[1]
+        return not podman_capabilities(value) <= podman_capabilities(than)
     order = LOOSENESS.get(name)
     if not order or value not in order or than not in order:
         return False
