@@ -195,6 +195,29 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
     return [{"text": t, "sig": g} for t, g in sorted(found.items())], sorted(warn)
 
 
+def preflight(settings, name, entry, *, plan=None):
+    """The one grant scan (audit F-6). `ab run`, `ab project check` and add/set validation all come here, so
+    the verdict `check` prints is the verdict `run` reaches. Returns (findings, warnings, fingerprint); the
+    fingerprint is "" when there is nothing to accept.
+
+    `plan` is the session's already-built mount plan, passed by `ab run` so there is no second plan and no
+    chance of divergence. Without one, the plan is built from the registry entry exactly as a session would
+    build it: `compose` is an effective setting (a preset can set it), while `mask_skip` and `swap` are the
+    project's own (see projectkeys.KEYS).
+    """
+    from . import presets
+    if plan is None:
+        eff = presets.effective(name, dict(entry, name=name), presets.load_presets(settings.presets_dir))
+        plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []),
+                           data_rw=entry.get("data_rw", []), compose=eff["compose"][0],
+                           mask_skip=entry.get("mask_skip", []),
+                           swap=entry.get("swap", mounts.DEFAULT_SWAP))
+    findings, warnings = scan(entry["root"], [entry["root"]] + list(entry.get("data_rw", [])),
+                              entry.get("mask_skip", []), covered=mounts.hidden(plan),
+                              warn_grants=entry.get("data_ro", []))
+    return findings, warnings, (fingerprint(findings) if findings else "")
+
+
 def fingerprint(findings):
     """A stable id for a set of findings, over each finding's content signature, so the ack re-prompts when a
     finding's content changes, not just its path (audit 6 Oct, M4). Accepts finding dicts or plain strings."""

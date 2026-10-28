@@ -348,11 +348,12 @@ class Session:
         os.close(fd)
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                 compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap)
-        exposure, warnings = grantcheck.scan(p.root, [p.root] + p.data_rw, p.mask_skip,
-                                             covered=self._plan_covered(), warn_grants=p.data_ro)
+        exposure, warnings, exposure_fp = grantcheck.preflight(
+            self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
+                                    "mask_skip": p.mask_skip, "swap": p.swap}, plan=self.plan)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
-        if exposure and grantcheck.fingerprint(exposure) != p.grant_exposure_accepted:
+        if exposure and exposure_fp != p.grant_exposure_accepted:
             raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")
@@ -842,22 +843,17 @@ class NetSession(Session):
         return sorted(c for c in covered if not any(c.startswith(d.rstrip("/") + "/") for d in under))
 
     def _plan_covered(self):
-        """The cover/mask paths the session PLAN creates, as real paths: secret masks and mask dirs, the
-        `.env` dev-swap target (the real file behind the swap), and the read-only git hooks/config and
-        compose covers. This is the single source both `covered_paths()` (what the gate enforces) and the
-        pre-session backup's exclude list are built from, so a cover added in one place cannot be missed by
-        the other. `covered_paths()` adds the adapter's project covers on top (known only after setup)."""
-        roots = {os.path.realpath(r) for r in self.bind_roots}
-        covered = set()
-        for m in (self.plan.mounts if self.plan else []):
-            dst = os.path.realpath(m.dst)
-            if m.kind in ("mask", "tmpfs"):
-                covered.add(dst)
-            elif m.kind == "bind" and dst not in roots and (m.ro or os.path.realpath(m.src) != dst):
-                # git hooks/config and compose covers (ro, dst==src); the .env dev-swap (dst != src): a spawned
-                # container binding the root would see the real file, not the empty/dev substitute
-                covered.add(dst)
-        return covered
+        """The cover/mask paths the session PLAN creates (`mounts.covered`: masks, mask dirs, the `.env`
+        dev-swap target, and the read-only git hooks/config and compose covers). The single source both
+        `covered_paths()` (what the gate enforces) and the pre-session backup's exclude list are built from,
+        so a cover added in one place cannot be missed by the other. `covered_paths()` adds the adapter's
+        project covers on top (known only after setup).
+
+        NOT what the grant scan may treat as covered: a read-only cover is readable (audit F-6). The scan
+        uses `mounts.hidden`, through `grantcheck.preflight`."""
+        if not self.plan:
+            return set()
+        return set(mounts.covered(self.plan, self.bind_roots))
 
     def sockguard_dev_config(self):
         return sockguard.dev_config(self.name, bind_roots=self.bind_roots)

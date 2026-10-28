@@ -51,9 +51,7 @@ class FreshProjectTest(InitCase):
                 self.assertEqual(e["preset"], preset)
                 self.assertEqual(e["root"], os.path.join(self.repos, name))
 
-                covered = cli._mask_dsts(self.settings, e)
-                findings, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []),
-                                                     e.get("mask_skip", []), covered=covered)
+                findings, warnings, _fp = grantcheck.preflight(self.settings, name, e)
                 self.assertEqual(findings, [], f"{template}: grantcheck findings")
                 self.assertEqual(warnings, [], f"{template}: grantcheck warnings")
 
@@ -270,8 +268,7 @@ class TemplateOverrideTest(InitCase):
         # still clean, zero overrides
         e = self.entry("ov2")
         self.assertEqual(set(e), {"root", "preset"})
-        covered = cli._mask_dsts(self.settings, e)
-        findings, warnings = grantcheck.scan(e["root"], [e["root"]], e.get("mask_skip", []), covered=covered)
+        findings, warnings, _fp = grantcheck.preflight(self.settings, "ov2", e)
         self.assertEqual((findings, warnings), ([], []), "scaffold stays grantcheck-clean")
 
 

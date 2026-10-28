@@ -234,6 +234,37 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None)
     return Plan(kept, dirs, files, notes)
 
 
+def hidden(plan):
+    """Paths a session makes UNREADABLE: the secret masks, the directory masks, and the dev-swap targets
+    (where the agent sees the substitute, not the real file). A secret at one of these paths cannot be read
+    from inside, so grantcheck does not flag it -- this is the only "covered" the scan may use.
+
+    Not the same set as `covered()`. A read-only cover is fully readable; it only stops writes."""
+    out = set()
+    for m in plan.mounts:
+        if m.kind in ("mask", "tmpfs"):
+            out.add(os.path.realpath(m.dst))
+        elif m.kind == "bind" and not m.ro and os.path.realpath(m.src) != os.path.realpath(m.dst):
+            out.add(os.path.realpath(m.dst))
+    return sorted(out)
+
+
+def covered(plan, roots):
+    """Paths the agent's own container mounts over and a container it SPAWNS would not: `hidden()` plus the
+    read-only covers (git hooks/config, compose files). The gate refuses a spawned container's bind that
+    reaches any of these, since none of these in-container mounts exist there (crit 5 Oct).
+
+    A read-only bind whose destination is a grant root is not a cover: it is a data_ro grant the agent may
+    read, and the gate keeps it read-only in spawned containers (`ro_roots`, audit 5 Oct H3)."""
+    real_roots = {os.path.realpath(r) for r in roots}
+    out = set(hidden(plan))
+    for m in plan.mounts:
+        dst = os.path.realpath(m.dst)
+        if m.kind == "bind" and m.ro and dst not in real_roots:
+            out.add(dst)
+    return sorted(out)
+
+
 def hardlink_masks(mounts, grants, root, mask_skip, notes):
     """A cover hides a path, not an inode (audit 6 Oct, N4; spec 4.4): every other name of a covered regular
     file (a mask, a file under a mask dir, the real file behind the .env swap, a read-only cover such as

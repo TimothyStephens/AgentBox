@@ -3,6 +3,7 @@ exposure is accepted. grantcheck.scan returns (findings, warnings); findings blo
 import os
 
 from agentbox import cli, grantcheck, registry, session
+from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase, TempCase
 
@@ -310,3 +311,84 @@ class CheckCommand(SettingsCase):
         out = show()
         self.assertIn("grant_exposure_accepted", out)
         self.assertIn("ab project check p1", out)
+
+
+class OnePreflight(SettingsCase):
+    """F-6: `add`/`set`/`check` built their own mount plan and their own "covered" predicate (cli._mask_dsts),
+    while a session used another (session._plan_covered). So the verdict `ab project check` printed was not
+    the one `ab run` reached. One plan, one covered computation, one scan entry point.
+
+    Unifying them also separates two senses of "covered" that shared a name. A mask reads EMPTY, so a secret
+    behind one is unreachable and not a finding. A read-only cover (`.git/hooks`, `.git/config`, compose
+    files) is still fully READABLE -- it only stops writes -- so it must never hide a secret from the scan,
+    which is what the session's set did."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+        self.root = self.project("p1", preset="script")
+        self.write("projects/p1/app.py", "code\n")
+
+    def entry(self):
+        return dict(registry.load(self.settings.registry_path)["p1"])
+
+    def preflight(self):
+        return grantcheck.preflight(self.settings, "p1", self.entry())
+
+    def start(self):
+        """What `ab run` decides, through the real session path."""
+        warnings = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                 warn=warnings.append)
+        s.prepare(do_backup=False)
+        self.addCleanup(s.teardown)
+        return s, warnings
+
+    def secret_in_a_read_only_cover(self):
+        p = os.path.join(self.root, ".git", "hooks", "deploy.key")
+        with open(p, "w") as f:
+            f.write("PRIVATE KEY\n")
+        return p
+
+    def test_a_read_only_cover_does_not_hide_a_secret_from_the_scan(self):
+        self.secret_in_a_read_only_cover()
+        findings, _warnings, fp = self.preflight()
+        self.assertIn("deploy.key", "\n".join(texts(findings)), "a read-only cover is readable")
+        self.assertTrue(fp)
+        with self.assertRaises(AgentboxError) as cm:
+            self.start()
+        self.assertIn("deploy.key", str(cm.exception), "and the session refuses on the same finding")
+
+    def test_a_mask_does_hide_one(self):
+        """The other half: `.env` IS masked (it reads empty), so it is not a finding -- in both places."""
+        self.write("projects/p1/.env", "SECRET=real\n")
+        findings, _w, _fp = self.preflight()
+        self.assertEqual(texts(findings), [])
+        self.start()
+
+    def test_check_and_the_session_reach_the_same_findings(self):
+        self.secret_in_a_read_only_cover()
+        with open(os.path.join(self.root, "live.db"), "wb") as f:
+            f.write(b"x" * (2 << 20))
+        findings, _w, fp = self.preflight()
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["grant_exposure_accepted"] = fp
+        registry.save(self.settings.registry_path, reg)
+        self.start()        # the fingerprint the pre-session scan produced is the one a session checks
+        self.assertEqual(len(findings), 2, texts(findings))
+
+    def test_the_two_covered_sets_are_each_computed_once(self):
+        from agentbox import mounts
+        self.write("projects/p1/.env", "SECRET=real\n")
+        s, _w = self.start()
+        hooks = os.path.realpath(os.path.join(self.root, ".git", "hooks"))
+        env = os.path.realpath(os.path.join(self.root, ".env"))
+        hidden = mounts.hidden(s.plan)
+        covered = mounts.covered(s.plan, s.bind_roots)
+        self.assertIn(env, hidden, "a mask reads empty")
+        self.assertNotIn(hooks, hidden, "a read-only cover is readable, so it hides nothing")
+        self.assertLess(set(hidden), set(covered))
+        self.assertIn(hooks, covered, "the gate still refuses a spawned bind onto a read-only cover")
+        self.assertEqual(set(s._plan_covered()), set(covered), "the session has no second computation")
+        self.assertIn(hooks, s.covered_paths())
+        self.assertNotIn(os.path.realpath(self.root), covered, "a grant root is not a cover")

@@ -165,15 +165,13 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
     presets.effective(name, entry, presets_map)
     paths.check_overlaps(name, entry, reg)
     from . import grantcheck
-    exposure, warnings = grantcheck.scan(entry["root"], [entry["root"]] + entry.get("data_rw", []),
-                                         entry.get("mask_skip", []), covered=_mask_dsts(s, entry),
-                                         warn_grants=entry.get("data_ro", []))
+    exposure, warnings, exposure_fp = grantcheck.preflight(s, name, entry)
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if exposure and not a.i_understand_grant_exposure:
         raise AgentboxError(grantcheck.message(name, exposure))
     if exposure:
-        entry["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+        entry["grant_exposure_accepted"] = exposure_fp
         warn(grantcheck.message(name, exposure).split("\nTo run anyway")[0]
              + f"\naccepted (--i-understand-grant-exposure); move secrets/live data out of the grant when you can.")
     else:
@@ -237,17 +235,6 @@ def cmd_project_set(s, a):
     _print_effective(s, a.name)
 
 
-def _mask_dsts(settings, entry):
-    """The paths agentbox will mask or swap for this project (so an already-covered secret is not flagged)."""
-    from . import mounts
-    plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []), data_rw=entry.get("data_rw", []),
-                       compose=presets.effective(entry.get("name", "?"), entry,
-                                                 presets.load_presets(settings.presets_dir))["compose"][0],
-                       mask_skip=entry.get("mask_skip", []), swap=entry.get("swap", mounts.DEFAULT_SWAP))
-    return [m.dst for m in plan.mounts if m.kind in ("mask", "tmpfs")
-            or (m.kind == "bind" and os.path.realpath(m.src) != m.dst)]
-
-
 def _history_secrets(entry):
     from .mounts import DEFAULT_SWAP
     grants = [entry["root"]] + entry.get("data_rw", []) + entry.get("data_ro", [])
@@ -268,11 +255,8 @@ def cmd_project_check(s, a):
     if a.name not in reg:
         raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
     e = reg[a.name]
-    exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
-                                         covered=_mask_dsts(s, dict(e, name=a.name)),
-                                         warn_grants=e.get("data_ro", []))
+    exposure, warnings, now = grantcheck.preflight(s, a.name, e)
     accepted = str(e.get("grant_exposure_accepted") or "")
-    now = grantcheck.fingerprint(exposure) if exposure else ""
 
     print(f"project {a.name}: grant exposure")
     print(f"  scanned (read-write)  {', '.join([e['root']] + e.get('data_rw', []))}")
@@ -324,9 +308,7 @@ def cmd_project_accept_grant_exposure(s, a):
         raise AgentboxError(f"no project named {a.name}")
     _refuse_if_live(s, [a.name], f"record a grant-exposure acknowledgement for {a.name}")
     e = reg[a.name]
-    exposure, warnings = grantcheck.scan(e["root"], [e["root"]] + e.get("data_rw", []), e.get("mask_skip", []),
-                                         covered=_mask_dsts(s, dict(e, name=a.name)),
-                                         warn_grants=e.get("data_ro", []))
+    exposure, warnings, exposure_fp = grantcheck.preflight(s, a.name, e)
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if not exposure:
@@ -336,7 +318,7 @@ def cmd_project_accept_grant_exposure(s, a):
         return 0
     # show the full findings before recording the ack, not a count afterwards (audit 6 Oct, M4)
     print(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0])
-    reg[a.name]["grant_exposure_accepted"] = grantcheck.fingerprint(exposure)
+    reg[a.name]["grant_exposure_accepted"] = exposure_fp
     registry.save(s.registry_path, reg)
     print(f"\naccepted for {a.name}. Move secrets and live data out of the grant when you can.")
     return 0
