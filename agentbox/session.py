@@ -148,9 +148,20 @@ def history_secrets(root, grants, swap, mask_skip=(), timeout=120):
     return sorted(found)
 
 
-def history_secrets_message(project, names):
+def history_secrets_changes(found, accepted):
+    """(new, gone) between a stored history-secrets acknowledgement and what is in the history now."""
+    return ([n for n in found if n not in accepted], [n for n in accepted if n not in found])
+
+
+def history_secrets_message(project, names, accepted=()):
     shown = ", ".join(names[:15]) + (f" (and {len(names) - 15} more)" if len(names) > 15 else "")
-    return (f"project {project}: {len(names)} masked file name(s) are in git history: {shown}. The agent can "
+    tail = ""
+    if accepted:
+        new, gone = history_secrets_changes(names, accepted)
+        parts = ([f"new since the acknowledgement: {', '.join(new)}"] if new else []) + \
+                ([f"no longer in the history: {', '.join(gone)}"] if gone else [])
+        tail = " (" + "; ".join(parts) + ")" if parts else ""
+    return (f"project {project}: {len(names)} masked file name(s) are in git history: {shown}{tail}. The agent can "
             "read them through git (`git log -p`, `git show`) even though the working-tree files are masked. "
             "Treat these secrets as exposed and rotate them (and consider rewriting the history). To go "
             "ahead once they are rotated, accept them with --accept-history-secrets "
@@ -330,9 +341,12 @@ class Session:
             tokens.check_token_file(self.token_file)
         p = self.project
         found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.swap, p.mask_skip)
-        new = [n for n in found if n not in p.history_secrets_accepted]
+        # The whole found set, not just the additions (audit F-11): a name that left the history means the
+        # acknowledgement no longer describes it, and `ab project show` was still listing it to rotate.
+        new = found if grantcheck.fingerprint(found) != grantcheck.fingerprint(
+            p.history_secrets_accepted) else []
         if new:
-            raise AgentboxError(history_secrets_message(p.name, new))
+            raise AgentboxError(history_secrets_message(p.name, new, p.history_secrets_accepted))
         if found:
             self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
                       "are readable by the agent (accepted as rotated)")

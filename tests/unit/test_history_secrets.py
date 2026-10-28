@@ -46,13 +46,13 @@ class HistorySecrets(SettingsCase):
     def test_clean_history_is_fine(self):
         root = self.project("p1")
         commit_then_untrack(root, ".env.example")         # exempt from masking
-        self.make().prepare()
+        self.make().prepare(do_backup=False)
 
     def test_session_refused_before_anything_is_created(self):
         root = self.project("p1")
         commit_then_untrack(root, ".env")
         with self.assertRaises(AgentboxError) as cm:
-            self.make().prepare()
+            self.make().prepare(do_backup=False)
         msg = str(cm.exception)
         self.assertIn(".env", msg)
         self.assertIn("rotate", msg)
@@ -64,12 +64,14 @@ class HistorySecrets(SettingsCase):
     def test_accepted_names_pass_new_ones_do_not(self):
         root = self.project("p1", history_secrets_accepted=[".env"])
         commit_then_untrack(root, ".env")
-        self.make().prepare()
+        self.make().prepare(do_backup=False)
         commit_then_untrack(root, "tls/server.key")
         with self.assertRaises(AgentboxError) as cm:
-            self.make().prepare()
-        self.assertIn("tls/server.key", str(cm.exception))
-        self.assertNotIn(".env,", str(cm.exception))
+            self.make().prepare(do_backup=False)
+        msg = str(cm.exception)
+        self.assertIn("tls/server.key", msg)
+        # the whole set is named, with the one that is new since the acknowledgement called out (F-11)
+        self.assertIn("new since the acknowledgement: tls/server.key", msg)
 
     def test_nested_repo_and_secrets_dir(self):
         root = self.project("p1")
@@ -101,7 +103,7 @@ class HistorySecrets(SettingsCase):
         self.assertEqual(registry.load(self.settings.registry_path)["p2"]["history_secrets_accepted"],
                          [".env.local"])
         self.assertIn("rotate", err)
-        self.make("p2").prepare()
+        self.make("p2").prepare(do_backup=False)
 
     def test_accept_command_for_registered_project(self):
         root = self.project("p1")
@@ -109,6 +111,93 @@ class HistorySecrets(SettingsCase):
         rc, out, _err = ab("project", "accept-history-secrets", "p1")
         self.assertEqual(rc, 0)
         self.assertIn("id.pem", out)
-        self.make().prepare()
+        self.make().prepare(do_backup=False)
         rc, out, _err = ab("project", "show", "p1")
         self.assertIn("id.pem", out)
+
+
+class TheAcknowledgementTracksTheWholeFoundSet(SettingsCase):
+    """F-11: the check was `[n for n in found if n not in accepted]`, so only ADDITIONS re-prompted. A name
+    that left the history (a rewrite, a repo removed from the grants) left a stale acknowledgement standing,
+    and an acknowledgement was never dropped once the history was clean -- so `ab project show` kept listing
+    secrets that were no longer there to rotate. The whole set is compared now, through the same fingerprint
+    the grant-exposure acknowledgement uses, and a clean history drops the record.
+
+    It also honours a MATCHING acknowledgement, the same way `ab project set` does for grant exposure
+    (audit F-5): an edit that grants nothing new is never blocked by one."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+        self.root = self.project("p1", preset="python")
+
+    def make(self):
+        return session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                    warn=lambda m: None)
+
+    def entry(self):
+        return registry.load(self.settings.registry_path)["p1"]
+
+    def accept(self):
+        rc, out, _err = ab("project", "accept-history-secrets", "p1")
+        self.assertEqual(rc, 0, out)
+        return self.entry().get("history_secrets_accepted")
+
+    def test_a_name_that_left_the_history_re_prompts(self):
+        commit_then_untrack(self.root, ".env")
+        self.assertEqual(self.accept(), [".env"])
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["history_secrets_accepted"] = [".env", "tls/old.key"]      # as a rewrite would leave it
+        registry.save(self.settings.registry_path, reg)
+        with self.assertRaises(AgentboxError) as cm:
+            self.make().prepare(do_backup=False)
+        self.assertIn("tls/old.key", str(cm.exception))
+        self.assertIn("no longer", str(cm.exception).lower())
+
+    def test_an_added_name_still_re_prompts(self):
+        commit_then_untrack(self.root, ".env")
+        self.accept()
+        commit_then_untrack(self.root, "tls/server.key")
+        with self.assertRaises(AgentboxError) as cm:
+            self.make().prepare(do_backup=False)
+        self.assertIn("tls/server.key", str(cm.exception))
+
+    def test_an_unchanged_set_starts(self):
+        commit_then_untrack(self.root, ".env")
+        self.accept()
+        self.make().prepare(do_backup=False)
+
+    def test_a_clean_history_drops_the_acknowledgement_on_set(self):
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["history_secrets_accepted"] = [".env"]        # nothing in this history matches it
+        registry.save(self.settings.registry_path, reg)
+        self.assertEqual(ab("project", "set", "p1", "--build-memory", "4g")[0], 0)
+        self.assertNotIn("history_secrets_accepted", self.entry())
+
+    def test_a_matching_acknowledgement_needs_no_flag_and_says_nothing(self):
+        commit_then_untrack(self.root, ".env")
+        self.accept()
+        rc, out, err = ab("project", "set", "p1", "--build-memory", "4g")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.entry()["history_secrets_accepted"], [".env"])
+        self.assertNotIn("are in git history", out + err,
+                         "an acknowledgement that still describes the history is not news")
+
+    def test_a_changed_set_refuses_an_edit_that_grants_more(self):
+        commit_then_untrack(self.root, ".env")
+        self.accept()
+        commit_then_untrack(self.root, "tls/server.key")
+        self.assertEqual(ab("project", "set", "p1", "--podman", "dev")[0], 2)
+        self.assertNotIn("podman", self.entry())
+        rc, _out, err = ab("project", "set", "p1", "--podman", "dev", "--accept-history-secrets")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.entry()["history_secrets_accepted"], [".env", "tls/server.key"])
+
+    def test_a_tightening_proceeds_with_a_changed_set(self):
+        commit_then_untrack(self.root, ".env")
+        self.accept()
+        commit_then_untrack(self.root, "tls/server.key")
+        rc, out, err = ab("project", "set", "p1", "--egress", "locked")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("tls/server.key", out + err)
+        self.assertEqual(self.entry()["history_secrets_accepted"], [".env"], "proceeding is not accepting")

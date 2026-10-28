@@ -151,6 +151,46 @@ def _print_cleared(cleared, name, entry, presets_map):
               f"({label or 'cleared'} by the preset change)")
 
 
+def _grants_more(name, before, after, presets_map):
+    """What this edit grants that the project did not have. A new project (`before` is None) counts as
+    granting everything: there is nothing it could be safer than."""
+    if before is None:
+        return ["this is a new project"]
+    return projectkeys.loosenings(presets.effective(name, before, presets_map),
+                                  presets.effective(name, after, presets_map), before, after)
+
+
+def _settle_history_secrets(name, entry, a, presets_map, before, found):
+    """What an add/set does about masked file names in git history (audit F-11, and F-5 applied to this
+    acknowledgement too).
+
+    The whole found set is compared, so a name that LEFT the history re-prompts as well; a clean history
+    drops the record, so `ab project show` stops listing secrets that are no longer there to rotate; and an
+    edit that grants nothing new is never blocked by a stale acknowledgement."""
+    accepted = list((before or {}).get("history_secrets_accepted") or [])
+    if not found:
+        entry.pop("history_secrets_accepted", None)     # nothing in the history: the record is stale
+        return
+    from . import grantcheck
+    if grantcheck.fingerprint(found) == grantcheck.fingerprint(accepted):
+        entry["history_secrets_accepted"] = accepted    # unchanged: nothing to decide
+        return
+    if a.accept_history_secrets:
+        entry["history_secrets_accepted"] = found
+        new, gone = session.history_secrets_changes(found, accepted)
+        warn(f"ab: accepted {len(found)} masked file name(s) in git history: {', '.join(found[:15])}."
+             + (f" New since the last acknowledgement: {', '.join(new)}." if new and accepted else "")
+             + (f" No longer in the history: {', '.join(gone)}." if gone else "")
+             + " The agent can read them through git: rotate them if you have not already.")
+        return
+    gained = _grants_more(name, before, entry, presets_map)
+    if gained:
+        raise AgentboxError(session.history_secrets_message(name, found, accepted))
+    warn("ab: " + session.history_secrets_message(name, found, accepted)
+         + "\n  this edit grants nothing new, so it proceeds. A SESSION WILL REFUSE to start until they are "
+           "accepted.")
+
+
 def _settle_grant_exposure(s, name, entry, a, presets_map, before, exposure):
     """What an add/set does about a grant exposure (audit F-5).
 
@@ -172,9 +212,7 @@ def _settle_grant_exposure(s, name, entry, a, presets_map, before, exposure):
         warn(grantcheck.acceptance_message(name, exposure, accepted))
         return
     # An `add` has no "before" to be safer than, so a new project with an exposure still needs the flag.
-    gained = ["this is a new project"] if before is None else projectkeys.loosenings(
-        presets.effective(name, before, presets_map), presets.effective(name, entry, presets_map),
-        before, entry)
+    gained = _grants_more(name, before, entry, presets_map)
     if gained:
         raise AgentboxError(grantcheck.change_message(name, exposure, accepted, gained))
     warn(grantcheck.unblocked_message(name, exposure, accepted))
@@ -198,13 +236,7 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     _settle_grant_exposure(s, name, entry, a, presets_map, reg.get(name), exposure)
-    found = _history_secrets(entry)
-    if found and not a.accept_history_secrets:
-        raise AgentboxError(session.history_secrets_message(name, found))
-    if found:
-        entry["history_secrets_accepted"] = found
-        warn(f"ab: accepted {len(found)} masked file name(s) in git history: {', '.join(found[:15])}. "
-             "The agent can read them through git: rotate them if you have not already.")
+    _settle_history_secrets(name, entry, a, presets_map, reg.get(name), _history_secrets(entry))
     reg[name] = entry
     registry.save(s.registry_path, reg)
 
@@ -376,8 +408,7 @@ def _print_granted(name, before, after, presets_map):
     """What this edit grants that the project did not have (audit F-8: one of the things the settings table's
     `security` column decides). Only security-relevant settings and grants are listed, so an edit to, say,
     build_memory says nothing."""
-    gained = projectkeys.loosenings(presets.effective(name, before, presets_map),
-                                    presets.effective(name, after, presets_map), before, after)
+    gained = _grants_more(name, before, after, presets_map)
     if gained:
         print("  this edit grants more than the project had:")
         for g in gained:
