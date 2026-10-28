@@ -30,14 +30,14 @@ from .helpers import SettingsCase
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-# Provenance of tests/unit/fixtures/podman_network_ls.json, so nothing in it is taken for host output that
-# is not (29 Oct):
-#   * the `-egr` entry is verbatim `podman network ls --format json` from ubuntu-dev;
-#   * the `-int` entry was truncated in the hand-off after its first subnet, so its remaining fields were
-#     completed to the same shape -- Tim is pasting the full output to replace it;
-#   * the `podman` default-network entry is hand-made (its id and created date are invented), there to pin
-#     that a network with no session label invents no session.
-# Only the key NAMES and nesting matter to the parser, and those come from the verbatim entry.
+# tests/unit/fixtures/podman_network_ls.json is `podman network ls --format json` from ubuntu-dev, podman
+# 5.7, verbatim -- trimmed by Tim to agentbox's own networks and podman's default one, nothing edited and
+# nothing added (29 Oct). It holds two sessions' networks (`-egr` and `-int` each) and the label-less
+# `podman` network.
+#
+# Keeping it real earned its keep immediately: a network with no labels has NO `labels` KEY AT ALL, where
+# the hand-made entry it replaced had `"labels": {}`. The parser has to read a missing key, which the
+# invented shape never exercised.
 NETWORK_LS_JSON = (HERE / "fixtures" / "podman_network_ls.json").read_text()
 MANUAL_SCRIPT = REPO / "tests" / "manual" / "podman_formats.sh"
 
@@ -67,19 +67,26 @@ class NetworkListing(SettingsCase):
                          ["ab-claude-agentbox-1-egr", "ab-claude-agentbox-1-int"])
         self.assertEqual(nets[0]["labels"]["agentbox.session"], "ab-claude-agentbox-1")
 
-    def test_sessions_finds_a_sessions_networks(self):
-        """The whole point of the listing: `ab session ls`, `kill`, `gc` and `preview` work off this."""
+    def test_sessions_finds_each_sessions_own_networks(self):
+        """The whole point of the listing: `ab session ls`, `kill`, `gc` and `preview` work off this. The
+        host output holds two sessions, so it also pins that their networks are not pooled."""
         found = session.sessions(self.settings, self.podman)
-        self.assertIn("ab-claude-agentbox-1", found)
-        self.assertEqual(sorted(found["ab-claude-agentbox-1"]["networks"]),
-                         ["ab-claude-agentbox-1-egr", "ab-claude-agentbox-1-int"])
+        for n in ("1", "2"):
+            self.assertEqual(sorted(found[f"ab-claude-agentbox-{n}"]["networks"]),
+                             [f"ab-claude-agentbox-{n}-egr", f"ab-claude-agentbox-{n}-int"])
 
-    def test_a_network_with_no_session_label_is_ignored(self):
-        """podman's own default network is in the listing (the fake ignores --filter, as the fixture is the
-        already-filtered answer); nothing may invent a session from it."""
+    def test_a_network_with_no_labels_key_at_all_is_ignored(self):
+        """podman's own default network has no `labels` key whatsoever in the real report -- not an empty
+        one. Reading it must not raise, and must not invent a session. (The fake ignores --filter, since the
+        fixture is the answer podman gives for the already-filtered query.)"""
+        nets = self.podman.networks_json(self.settings.labels)
+        plain = [n for n in nets if n["name"] == "podman"]
+        self.assertEqual(len(plain), 1)
+        self.assertNotIn("labels", plain[0], "the fixture must keep the real shape, or this tests nothing")
         found = session.sessions(self.settings, self.podman)
         self.assertNotIn("podman", found)
         self.assertNotIn("", found)
+        self.assertNotIn(None, found)
 
     def test_a_failing_listing_still_raises(self):
         os.environ["FAKE_PODMAN_FAIL"] = "network"
