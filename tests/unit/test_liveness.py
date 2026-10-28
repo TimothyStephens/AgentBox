@@ -14,6 +14,7 @@ So: every signal is consulted, ANY of them says live, and an unreadable signal A
 """
 import json
 import os
+import time
 import unittest
 
 from agentbox import cli, registry, session
@@ -207,3 +208,139 @@ class RegistryEditsRefuseOnUnknownState(SettingsCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def infra_ps(session_name="ab-claude-p1-1", project="p1"):
+    """What a CRASHED session leaves behind: its proxy and sockguard still running, no agent. Both carry
+    the project label, which is what makes `project_is_live` -- rightly -- call the project live."""
+    return json.dumps([
+        {"Names": [f"{session_name}-proxy"], "State": "running",
+         "Labels": {"agentbox.project": project, "agentbox.session": session_name,
+                    "agentbox.role": "proxy", "agentbox-test": "1"}},
+        {"Names": [f"{session_name}-sockguard"], "State": "running",
+         "Labels": {"agentbox.project": project, "agentbox.session": session_name,
+                    "agentbox.role": "sockguard", "agentbox-test": "1"}}])
+
+
+class GcAsksADifferentQuestion(SettingsCase):
+    """"Is this project live?" and "is this session still doing work?" are opposite kinds of question, and
+    `ab session gc` must ask the second one.
+
+    `project_is_live` guards a registry EDIT, so it is pessimistic: any running container labelled with the
+    project counts, and an unreadable signal counts too. Reaping needs the opposite: a crashed session
+    leaves its proxy, sockguard and networks RUNNING, and those are exactly what gc exists to remove.
+    Counting them as "something is live" would make a husk immortal -- and since project_is_live does count
+    them, the husk's project would stay unmanageable for good.
+
+    The regression this pins (itest test_f_gc_stops_what_a_crashed_session_left, 29 Oct) was neither of
+    those: `_young` returned True for a run dir that does NOT EXIST, so a husk looked like a session being
+    started this second and gc skipped it. A missing run dir is the opposite of a session mid-start --
+    prepare() creates the dir and writes session.json before anything else exists.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.project("p1", preset="script")
+        self.name = "ab-claude-p1-1"
+
+    def ps(self, value):
+        os.environ["FAKE_PODMAN_PSJSON"] = value
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+
+    def podman(self):
+        return Podman(self.settings.podman)
+
+    def husk(self):
+        """A crashed session: launcher dead, run dir gone, agent removed, infrastructure still up."""
+        self.ps(infra_ps(self.name))
+        self.assertFalse(os.path.isdir(self.settings.session_run_dir(self.name)))
+
+    def removals(self):
+        return [c for c in self.podman_calls() if c[:1] in (["rm"], ["pod"], ["volume"], ["network"])]
+
+    # --- the reaping question ---
+
+    def test_a_husk_is_reaped(self):
+        self.husk()
+        self.assertEqual(session.gc(self.settings, self.podman()), [self.name])
+        self.assertTrue(self.removals(), "teardown actually removed what the husk left")
+
+    def test_infrastructure_alone_is_not_alive(self):
+        self.husk()
+        info = session.sessions(self.settings, self.podman())[self.name]
+        alive, why = session.session_is_alive(self.settings, self.name, info)
+        self.assertFalse(alive, why)
+
+    def test_a_running_agent_is_left_alone_and_says_how_to_end_it(self):
+        self.ps(ps_json(sess=self.name, role="agent"))
+        warned = []
+        self.assertEqual(session.gc(self.settings, self.podman(), warn=warned.append), [])
+        self.assertTrue(any(f"ab session kill {self.name}" in w for w in warned), warned)
+
+    def test_a_session_being_started_is_left_alone(self):
+        """Its run dir exists and was touched seconds ago, before any container of it exists."""
+        self.ps("[]")
+        os.makedirs(self.settings.session_run_dir(self.name), exist_ok=True)
+        self.assertEqual(session.gc(self.settings, self.podman()), [])
+
+    def test_an_old_run_dir_with_no_metadata_is_reaped(self):
+        self.ps("[]")
+        d = self.settings.session_run_dir(self.name)
+        os.makedirs(d, exist_ok=True)
+        old = time.time() - 600
+        os.utime(d, (old, old))
+        self.assertEqual(session.gc(self.settings, self.podman()), [self.name])
+
+    def test_an_unreadable_podman_reaps_nothing(self):
+        self.husk()
+        os.environ["FAKE_PODMAN_FAIL"] = "ps"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_FAIL", None)
+        with self.assertRaises(AgentboxError):
+            session.gc(self.settings, self.podman())
+        self.assertEqual(self.removals(), [], "nothing is removed on a guess")
+
+    # --- _young: absence is an answer, unreadable is not ---
+
+    def test_young_reads_a_missing_run_dir_as_gone_not_starting(self):
+        self.assertFalse(session._young(self.settings, self.name))
+
+    def test_young_still_fails_closed_when_it_cannot_tell(self):
+        from unittest import mock
+        real = os.stat
+
+        def fake(path, *a, **kw):
+            if "sessions" in str(path):
+                raise OSError(13, "nope")           # EACCES: cannot tell, so do not reap
+            return real(path, *a, **kw)
+
+        with mock.patch("agentbox.session.os.stat", side_effect=fake):
+            self.assertTrue(session._young(self.settings, self.name))
+
+    # --- the asymmetry, end to end ---
+
+    def test_the_husk_blocks_registry_edits_until_gc_runs(self):
+        """Both halves of why this matters: a husk's containers DO make the project live (that is
+        project_is_live doing its job), and gc is the way out -- after which the edit works."""
+        self.husk()
+        self.assertEqual(cli.main(["project", "set", "p1", "--egress", "locked"]), 2)
+        self.assertNotIn("egress", registry.load(self.settings.registry_path)["p1"])
+        self.assertEqual(session.gc(self.settings, self.podman()), [self.name])
+        self.ps("[]")                                # the husk is gone now
+        self.assertEqual(cli.main(["project", "set", "p1", "--egress", "locked"]), 0)
+        self.assertEqual(registry.load(self.settings.registry_path)["p1"]["egress"], "locked")
+
+    def test_session_kill_removes_a_husk_by_hand(self):
+        """The manual way out must always exist, whatever gc decides."""
+        self.husk()
+        self.assertEqual(cli.main(["session", "kill", self.name]), 0)
+        self.assertTrue(self.removals())
+
+    def test_session_kill_finds_a_husk_that_is_only_networks(self):
+        """Everything of it is gone except its networks -- which were invisible until the network listing
+        was fixed (28 Oct), so `kill` used to answer "no session named ...".""" 
+        self.ps("[]")
+        os.environ["FAKE_PODMAN_NETJSON"] = json.dumps(
+            [{"name": f"{self.name}-int", "labels": {"agentbox.session": self.name,
+                                                     "agentbox.project": "p1", "agentbox-test": "1"}}])
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_NETJSON", None)
+        self.assertEqual(cli.main(["session", "kill", self.name]), 0)

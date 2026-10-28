@@ -1362,32 +1362,75 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
 
 def _young(settings, session, seconds=60):
     """Was this session's run dir touched just now? Used to tell a session starting right now (no metadata
-    yet) from a dead leftover. Unknown counts as starting, so gc never reaps a session mid-start."""
+    yet) from a dead leftover.
+
+    A run dir that does NOT EXIST is not a session starting up -- `prepare()` creates it and writes
+    session.json before anything else of the session exists -- so absence is an answer: not young. Any other
+    error means "cannot tell", which must still read as young, so gc never reaps a session mid-start.
+
+    (The fail-open sweep made every OSError read as young, including ENOENT, which is how a crashed
+    session's husk became unreapable: itest test_f_gc_stops_what_a_crashed_session_left, 29 Oct.)"""
     try:
         return time.time() - os.stat(settings.session_run_dir(session)).st_mtime < seconds
+    except FileNotFoundError:
+        return False
     except OSError:
         return True
 
 
+# Containers a session runs for itself. None of them is the agent doing work: a crashed session leaves them
+# running, and they are exactly what `ab session gc` exists to remove.
+INFRA_ROLES = ("proxy", "sockguard", "gate", "holder", "dev")
+
+
+def session_is_alive(settings, name, info):
+    """Is this SESSION still doing work? Returns (alive, reason).
+
+    Deliberately NOT `project_is_live`, and the difference is the point:
+
+      * `project_is_live` guards a registry EDIT, so it is pessimistic -- any running container labelled
+        with the project counts, and a signal it cannot read counts too. That is right there: editing a
+        project under a running session is what it must prevent.
+      * this guards REAPING, where the pessimistic answer is the wrong one. A crashed session leaves its
+        proxy, sockguard and networks running; treating those as "alive" would make the husk immortal, and
+        because project_is_live *does* count them, the husk's project would stay unmanageable for good
+        (no `ab project set`/`rm` while it is live). `ab session kill <name>` stays the manual way out.
+
+    Alive: the launcher process is alive ("launcher"), an AGENT container is still running ("agent"), or the
+    session is being started this second -- its run dir exists and was touched seconds ago, before any
+    container of it exists ("starting"). Infrastructure containers on their own are a husk.
+    """
+    if info["alive"]:
+        return True, "launcher"
+    if [c for c in info["containers"] if c.get("state") == "running" and c.get("role") == "agent"]:
+        return True, "agent"
+    if info["meta"] is None and _young(settings, name):
+        return True, "starting"
+    return False, ""
+
+
 def gc(settings, podman, warn=lambda m: None):
-    """Tear down sessions whose launcher is gone. A session whose agent container is still running is left
-    alone even if its metadata is missing or unreadable (ab session kill removes it explicitly); an orphaned proxy
-    or network with no running agent is removed."""
+    """Tear down sessions that are no longer doing work: the launcher is gone and no agent container is
+    running, so what is left is a husk -- an orphaned proxy, sockguard, gate or network. `session_is_alive`
+    is the predicate, and its docstring says why this is NOT the question `project_is_live` answers.
+
+    A session whose agent is still running is left alone even if its launcher died (`ab session kill` ends
+    that one explicitly, and the warning says so). Nothing is reaped on a guess: an unreadable podman makes
+    `sessions()` raise, so gc removes nothing rather than deciding a session is dead."""
     removed, kept = [], set()
     for s, info in sessions(settings, podman).items():
-        agent_running = [c["name"] for c in info["containers"]
-                         if c.get("state") == "running" and c.get("role") == "agent"]
-        if not info["alive"] and agent_running:
-            warn(f"agentbox: {s} has no live launcher but its agent is running; left alone (use `ab session kill {s}`)")
+        alive, why = session_is_alive(settings, s, info)
+        if alive:
+            if why == "agent":
+                warn(f"agentbox: {s} has no live launcher but its agent is running; left alone "
+                     f"(use `ab session kill {s}`)")
             kept.add(s)
             continue
-        if not info["alive"] and info["meta"] is None and _young(settings, s):
-            continue                     # being started right now: session.json is not written yet
-        if not info["alive"]:
-            teardown(settings, podman, s, warn=warn)
-            removed.append(s)
+        teardown(settings, podman, s, warn=warn)
+        removed.append(s)
     # A podman service whose session is dead, even if its run dir and containers are already gone.
-    live = {s for s, info in sessions(settings, podman).items() if info["alive"]} | kept
+    live = {s for s, info in sessions(settings, podman).items()
+            if session_is_alive(settings, s, info)[0]} | kept
     for pid, s in sockguard.services_under(settings.run_dir).items():
         if s not in live:
             sockguard.kill_service(pid)
