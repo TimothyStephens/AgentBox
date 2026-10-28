@@ -225,7 +225,8 @@ class CheckCommand(SettingsCase):
         from contextlib import redirect_stdout
         with redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["project", "accept-grant-exposure", "p1"]), 0)
-        return registry.load(self.settings.registry_path)["p1"]["grant_exposure_accepted"]
+        stored = registry.load(self.settings.registry_path)["p1"]["grant_exposure_accepted"]
+        return grantcheck.acceptance_fingerprint(stored)     # the short id `show` and `check` print
 
     def test_a_clean_grant_reports_nothing_and_exits_zero(self):
         code, out = self.run_check()

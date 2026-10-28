@@ -18,7 +18,9 @@ ALIVE = json.dumps([{"Names": ["ab-claude-p1-1-agent"], "State": "running",
                                 "agentbox.role": "agent", "agentbox-test": "1"}}])
 
 
-class SetTest(SettingsCase):
+class SetBase(SettingsCase):
+    """Fixture and helpers only, so a second test class can reuse them without inheriting the cases."""
+
     def setUp(self):
         super().setUp()
         self.root = self.project("p1", preset="python")
@@ -45,6 +47,8 @@ class SetTest(SettingsCase):
             code = self.rc(*argv)
         return code, buf.getvalue()
 
+
+class SetTest(SetBase):
     def test_unknown_project(self):
         self.assertEqual(self.rc("project", "set", "nope", "--egress", "locked"), 2)
 
@@ -264,13 +268,15 @@ class SetTest(SettingsCase):
     # --- re-validation and the live-session guard ---
 
     def test_reruns_grantcheck_and_refuses_on_a_new_finding(self):
+        """An edit that GRANTS something new is refused while the grant holds an unacknowledged finding.
+        (An edit that grants nothing new is not: see AcknowledgementsOnSet, audit F-5.)"""
         with open(os.path.join(self.root, "data.db"), "wb") as f:
             f.write(b"x" * (2 << 20))
-        self.assertEqual(self.rc("project", "set", "p1", "--egress", "locked"), 2)
-        self.assertNotIn("egress", self.entry(), "the refused set must not have saved")
-        self.assertEqual(self.rc("project", "set", "p1", "--egress", "locked",
+        self.assertEqual(self.rc("project", "set", "p1", "--podman", "dev"), 2)
+        self.assertNotIn("podman", self.entry(), "the refused set must not have saved")
+        self.assertEqual(self.rc("project", "set", "p1", "--podman", "dev",
                                    "--i-understand-grant-exposure"), 0)
-        self.assertEqual(self.entry()["egress"], "locked")
+        self.assertEqual(self.entry()["podman"], {"tier": "dev"})
         self.assertIn("grant_exposure_accepted", self.entry())
 
     def test_a_read_only_data_grant_warns_but_does_not_block(self):
@@ -314,6 +320,149 @@ class SetTest(SettingsCase):
     def test_succeeds_once_the_session_is_gone(self):
         self.assertEqual(self.rc("project", "set", "p1", "--egress", "locked"), 0)
         self.assertEqual(self.entry()["egress"], "locked")
+
+
+class AcknowledgementsOnSet(SetBase):
+    """F-5: `set` re-ran the grant scan but ignored what had already been accepted, so EVERY edit to a
+    project with an accepted exposure demanded --i-understand-grant-exposure again -- including
+    `--egress locked`, which only makes the project safer. Now:
+
+      * the findings still match the acceptance    -> the edit proceeds, no flag;
+      * they changed and the edit loosens nothing  -> it still proceeds, with the change reported;
+      * they changed and the edit loosens something-> refused, naming what changed;
+      * --i-understand-grant-exposure              -> re-accepts, printing what is NEWLY accepted.
+
+    A tightening is never blocked: making a project safer must never be gated on an acknowledgement. The
+    session's own check is unchanged, so an unacknowledged exposure still refuses to RUN.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.db = os.path.join(self.root, "data.db")
+        with open(self.db, "wb") as f:
+            f.write(b"x" * (2 << 20))
+
+    def accept(self):
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.rc("project", "accept-grant-exposure", "p1"), 0)
+        return self.entry()["grant_exposure_accepted"]
+
+    def second_finding(self):
+        """A second finding. Not a `*.pem`: the masks cover those, so the scan rightly ignores them."""
+        with open(os.path.join(self.root, "other.db"), "wb") as f:
+            f.write(b"x" * (2 << 20))
+
+    def err(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        buf, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(buf), redirect_stdout(out):
+            code = self.rc(*argv)
+        return code, buf.getvalue() + out.getvalue()
+
+    # --- the acceptance still describes the grant ---
+
+    def test_an_unchanged_exposure_needs_no_flag_and_keeps_the_acceptance(self):
+        ack = self.accept()
+        self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 0)
+        self.assertEqual(self.entry()["grant_exposure_accepted"], ack, "unchanged, so untouched")
+        self.assertEqual(self.entry()["build_memory"], "4g")
+
+    def test_a_loosening_edit_proceeds_too_while_the_acceptance_matches(self):
+        self.accept()
+        self.assertEqual(self.rc("project", "set", "p1", "--podman", "dev"), 0)
+
+    # --- the acceptance no longer describes the grant ---
+
+    def test_a_changed_exposure_refuses_a_loosening_and_says_what_changed(self):
+        self.accept()
+        self.second_finding()
+        code, text = self.err("project", "set", "p1", "--podman", "dev")
+        self.assertEqual(code, 2)
+        self.assertIn("other.db", text, "the new finding is named")
+        self.assertIn("new since", text.lower())
+        self.assertNotIn("podman", self.entry(), "refused: nothing saved")
+
+    def test_a_finding_that_went_away_is_named_too(self):
+        self.accept()
+        os.unlink(self.db)
+        self.second_finding()
+        code, text = self.err("project", "set", "p1", "--podman", "dev")
+        self.assertEqual(code, 2)
+        self.assertIn("data.db", text)
+        self.assertIn("no longer", text.lower())
+
+    def test_an_edited_finding_is_reported_as_changed_not_new(self):
+        self.accept()
+        with open(self.db, "wb") as f:
+            f.write(b"y" * (3 << 20))               # same path, new content
+        code, text = self.err("project", "set", "p1", "--podman", "dev")
+        self.assertEqual(code, 2)
+        self.assertIn("data.db", text)
+        self.assertIn("changed since", text.lower())
+
+    def test_re_accepting_takes_the_flag_and_prints_what_is_newly_accepted(self):
+        ack = self.accept()
+        self.second_finding()
+        code, text = self.err("project", "set", "p1", "--podman", "dev",
+                              "--i-understand-grant-exposure")
+        self.assertEqual(code, 0)
+        self.assertIn("other.db", text, "what is newly accepted is printed")
+        self.assertNotEqual(self.entry()["grant_exposure_accepted"], ack, "the acceptance was updated")
+        self.assertEqual(self.entry()["podman"], {"tier": "dev"})
+
+    # --- a tightening is never blocked ---
+
+    def test_tightening_egress_works_with_an_unacknowledged_exposure(self):
+        """The whole point of F-5: `--egress locked` makes the project safer, so nothing may gate it."""
+        code, text = self.err("project", "set", "p1", "--egress", "locked")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.entry()["egress"], "locked")
+        self.assertNotIn("grant_exposure_accepted", self.entry(), "proceeding is not accepting")
+        self.assertIn("data.db", text, "the exposure is still reported")
+        self.assertIn("will refuse", text.lower(), "and a session still refuses to start")
+
+    def test_tightening_works_when_the_exposure_changed_under_an_acceptance(self):
+        self.accept()
+        self.second_finding()
+        code, text = self.err("project", "set", "p1", "--egress", "locked")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.entry()["egress"], "locked")
+        self.assertIn("other.db", text)
+
+    def test_dropping_a_grant_is_a_tightening(self):
+        extra = self.mkdir("extra")
+        self.assertEqual(self.rc("project", "set", "p1", "--data-rw", extra,
+                                 "--i-understand-grant-exposure"), 0)
+        self.second_finding()                                   # the acceptance no longer matches
+        self.assertEqual(self.rc("project", "set", "p1", "--clear-data-rw"), 0, "a grant removed")
+        self.assertEqual(self.entry().get("data_rw", []), [])
+
+    def test_adding_a_grant_is_a_loosening(self):
+        extra = self.mkdir("extra")
+        self.assertEqual(self.rc("project", "set", "p1", "--data-rw", extra), 2,
+                         "a new grant with an unacknowledged exposure is refused")
+        self.assertNotIn("data_rw", self.entry())
+
+    # --- add is unchanged: there is no "before" to be safer than ---
+
+    def test_add_still_demands_the_flag(self):
+        root = self.mkdir("p2root")
+        with open(os.path.join(root, "live.db"), "wb") as f:
+            f.write(b"x" * (2 << 20))
+        self.assertEqual(self.rc("project", "add", "p2", root, "--preset", "script"), 2)
+        self.assertEqual(self.rc("project", "add", "p2", root, "--preset", "script",
+                                 "--i-understand-grant-exposure"), 0)
+
+    def test_a_session_still_refuses_on_an_exposure_set_let_through(self):
+        self.token()
+        self.assertEqual(self.rc("project", "set", "p1", "--egress", "locked"), 0)
+        with self.assertRaises(AgentboxError) as cm:
+            session.make_session(self.settings, "claude",
+                                 session.load_project(self.settings, "p1")).prepare(do_backup=False)
+        self.assertIn("data.db", str(cm.exception))
 
 
 def _ns(**kw):

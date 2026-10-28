@@ -151,6 +151,35 @@ def _print_cleared(cleared, name, entry, presets_map):
               f"({label or 'cleared'} by the preset change)")
 
 
+def _settle_grant_exposure(s, name, entry, a, presets_map, before, exposure):
+    """What an add/set does about a grant exposure (audit F-5).
+
+    `set` used to demand --i-understand-grant-exposure again on EVERY edit to a project with an accepted
+    exposure, including `--egress locked`, which only makes the project safer. The stored acknowledgement is
+    honoured instead, and an edit that grants nothing new is never blocked by one. The session's own check is
+    untouched, so an unacknowledged exposure still refuses to RUN -- this only decides whether the registry
+    may be edited."""
+    from . import grantcheck
+    accepted = (before or {}).get("grant_exposure_accepted")
+    if not exposure:
+        entry.pop("grant_exposure_accepted", None)      # the exposure is gone, so the ack is stale
+        return
+    if grantcheck.matches(accepted, exposure):
+        entry["grant_exposure_accepted"] = accepted     # unchanged: nothing to decide
+        return
+    if a.i_understand_grant_exposure:
+        entry["grant_exposure_accepted"] = [f["sig"] for f in exposure]
+        warn(grantcheck.acceptance_message(name, exposure, accepted))
+        return
+    # An `add` has no "before" to be safer than, so a new project with an exposure still needs the flag.
+    gained = ["this is a new project"] if before is None else projectkeys.loosenings(
+        presets.effective(name, before, presets_map), presets.effective(name, entry, presets_map),
+        before, entry)
+    if gained:
+        raise AgentboxError(grantcheck.change_message(name, exposure, accepted, gained))
+    warn(grantcheck.unblocked_message(name, exposure, accepted))
+
+
 def _validate_and_save(s, reg, name, entry, a, presets_map):
     """Validate a registry entry (preset exists, lockdown ceiling, grant overlap, build_memory, grantcheck,
     history secrets) and save it. Shared by `ab project add` and `ab project set`."""
@@ -165,17 +194,10 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
     presets.effective(name, entry, presets_map)
     paths.check_overlaps(name, entry, reg)
     from . import grantcheck
-    exposure, warnings, exposure_fp = grantcheck.preflight(s, name, entry)
+    exposure, warnings, _fp = grantcheck.preflight(s, name, entry)
     for w in warnings:
         warn(f"ab: grant warning: {w}")
-    if exposure and not a.i_understand_grant_exposure:
-        raise AgentboxError(grantcheck.message(name, exposure))
-    if exposure:
-        entry["grant_exposure_accepted"] = exposure_fp
-        warn(grantcheck.message(name, exposure).split("\nTo run anyway")[0]
-             + f"\naccepted (--i-understand-grant-exposure); move secrets/live data out of the grant when you can.")
-    else:
-        entry.pop("grant_exposure_accepted", None)   # a stale ack from before the exposure was cleaned up
+    _settle_grant_exposure(s, name, entry, a, presets_map, reg.get(name), exposure)
     found = _history_secrets(entry)
     if found and not a.accept_history_secrets:
         raise AgentboxError(session.history_secrets_message(name, found))
@@ -256,7 +278,8 @@ def cmd_project_check(s, a):
         raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
     e = reg[a.name]
     exposure, warnings, now = grantcheck.preflight(s, a.name, e)
-    accepted = str(e.get("grant_exposure_accepted") or "")
+    stored = e.get("grant_exposure_accepted")
+    accepted = grantcheck.acceptance_fingerprint(stored)
 
     print(f"project {a.name}: grant exposure")
     print(f"  scanned (read-write)  {', '.join([e['root']] + e.get('data_rw', []))}")
@@ -293,6 +316,8 @@ def cmd_project_check(s, a):
         return 0
     if accepted:
         print("\n  => these findings have CHANGED since they were accepted, so a session will REFUSE.")
+        for line in grantcheck._diff_lines(stored, exposure):
+            print(f"   {line}")
         print(f"     Move them out of the grant, or accept the new state with")
         print(f"     `ab project accept-grant-exposure {a.name}`.")
     else:
@@ -308,7 +333,7 @@ def cmd_project_accept_grant_exposure(s, a):
         raise AgentboxError(f"no project named {a.name}")
     _refuse_if_live(s, [a.name], f"record a grant-exposure acknowledgement for {a.name}")
     e = reg[a.name]
-    exposure, warnings, exposure_fp = grantcheck.preflight(s, a.name, e)
+    exposure, warnings, _fp = grantcheck.preflight(s, a.name, e)
     for w in warnings:
         warn(f"ab: grant warning: {w}")
     if not exposure:
@@ -318,7 +343,7 @@ def cmd_project_accept_grant_exposure(s, a):
         return 0
     # show the full findings before recording the ack, not a count afterwards (audit 6 Oct, M4)
     print(grantcheck.message(a.name, exposure).split("\nTo run anyway")[0])
-    reg[a.name]["grant_exposure_accepted"] = exposure_fp
+    reg[a.name]["grant_exposure_accepted"] = [f["sig"] for f in exposure]
     registry.save(s.registry_path, reg)
     print(f"\naccepted for {a.name}. Move secrets and live data out of the grant when you can.")
     return 0
@@ -390,6 +415,9 @@ def _print_effective(s, name):
 
 def _render(key, value):
     """A stored value as the one or more lines `ab project show` prints for it."""
+    if key.name == "grant_exposure_accepted":
+        from . import grantcheck            # stored as the accepted signatures; shown as their short id
+        return [grantcheck.acceptance_fingerprint(value) or "(none)"]
     if key.arity == "list":
         return [", ".join(str(v) for v in value)] if value else ["(none)"]
     if key.arity == "bool":

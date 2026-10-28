@@ -169,6 +169,58 @@ def is_looser(name, value, than):
     return order[value] > order[than]
 
 
+GRANT_KEYS = ("root", "data_ro", "data_rw")
+
+
+def _covers(parent, child):
+    return child == parent or child.startswith(parent.rstrip("/") + "/")
+
+
+def _grant_loosenings(before, after):
+    """Grants in `after` that are not already inside a grant `before` had with the same or wider access."""
+    from . import paths
+    old = paths.grants_of(before)
+    out = []
+    for path, rw in paths.grants_of(after):
+        if any(_covers(o, path) and (writable or not rw) for o, writable in old):
+            continue
+        out.append(f"grant {path} ({'read-write' if rw else 'read-only'})")
+    return out
+
+
+def loosenings(before_eff, after_eff, before_entry, after_entry):
+    """Every security-relevant thing this edit would grant that the project does not already have, as short
+    descriptions. Empty means the edit grants nothing new — a tightening or a no-op — which is what lets
+    `ab project set` proceed while a grant-exposure acknowledgement is stale: making a project safer must
+    never be gated on an acknowledgement (audit F-5).
+
+    Conservative by construction, so "empty" can be trusted:
+      * a key with a looseness order is compared on it (`is_looser`);
+      * a list setting is a loosening unless the new value is a subset of the old one;
+      * any OTHER security-relevant setting that changed at all counts, since we cannot order it;
+      * a grant counts unless it is already inside a grant with the same or wider access.
+    `preset` and `root` are not compared as values: a preset change shows up in the settings it resolves to,
+    and `root` is compared as a grant."""
+    out = []
+    for k in KEYS:
+        if not k.security or k.kind in ("ack", "structural") or k.name in GRANT_KEYS:
+            continue
+        if k.name not in before_eff or k.name not in after_eff:
+            continue
+        old, new = before_eff[k.name][0], after_eff[k.name][0]
+        if old == new:
+            continue
+        if is_looser(k.name, new, old):
+            out.append(f"{k.name}: {old} -> {new}")
+        elif is_looser(k.name, old, new):
+            continue                                        # a tightening on this key's own order
+        elif k.arity == "list" and set(new or ()) <= set(old or ()):
+            continue                                        # a shorter list grants nothing new
+        else:
+            out.append(f"{k.name}: changed ({old} -> {new})")
+    return out + _grant_loosenings(before_entry, after_entry)
+
+
 def change_label(name, old, new):
     """"loosened" / "tightened" / "" for a value replaced by a preset change (audit F7)."""
     if is_looser(name, new, old):
@@ -276,8 +328,14 @@ def _name_list(name, where, value, **_kw):
 
 
 def _fingerprint(name, where, value, **_kw):
+    """A grant-exposure acknowledgement: the accepted findings' signatures, or (from before those were
+    recorded) the bare fingerprint string. grantcheck.acceptance_fingerprint reads either."""
+    if isinstance(value, list):
+        if not all(isinstance(v, str) and v for v in value):
+            raise AgentboxError(f"{where}: {name} must be a list of finding signatures")
+        return list(value)
     if not isinstance(value, str):
-        raise AgentboxError(f"{where}: {name} must be a string")
+        raise AgentboxError(f"{where}: {name} must be a string or a list of finding signatures")
     return value
 
 

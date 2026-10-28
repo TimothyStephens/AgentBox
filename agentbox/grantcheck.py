@@ -225,6 +225,107 @@ def fingerprint(findings):
     return hashlib.sha256("\n".join(sorted(sigs)).encode()).hexdigest()[:16]
 
 
+def sig_path(sig):
+    """The path a finding's signature is about. Signatures are `<path>|size|mtime|inode`, or `gitcred:<path>`
+    / `compose:<path>` where there is no file to stat."""
+    sig = str(sig)
+    for prefix in ("gitcred:", "compose:"):
+        if sig.startswith(prefix):
+            return sig[len(prefix):]
+    return sig.split("|", 1)[0]
+
+
+def accepted_sigs(value):
+    """The finding signatures a stored acknowledgement covers. An acknowledgement written before they were
+    recorded holds only the fingerprint (a bare string), so there is nothing to compare finding by finding:
+    () means "not known", not "nothing was accepted" — check `acceptance_fingerprint` for that."""
+    return tuple(str(s) for s in value) if isinstance(value, list) else ()
+
+
+def acceptance_fingerprint(value):
+    """The short id for a stored acknowledgement, whichever shape it is in. This is what `ab project show`
+    prints and what `ab project check` compares, so the display is unchanged by the stored shape."""
+    if isinstance(value, list):
+        return fingerprint(value) if value else ""
+    return str(value or "")
+
+
+def matches(value, findings):
+    """Does a stored acknowledgement describe exactly these findings?"""
+    return acceptance_fingerprint(value) == (fingerprint(findings) if findings else "")
+
+
+def compare(value, findings):
+    """(new, gone, changed) between what was accepted and what the scan finds now -- `new` and `changed` as
+    finding texts, `gone` as paths (the text of a finding that no longer exists is not recorded). None when
+    the acknowledgement holds only a fingerprint, so no comparison is possible."""
+    sigs = set(accepted_sigs(value))
+    if not sigs:
+        return None
+    by_path = {}
+    for s in sigs:
+        by_path.setdefault(sig_path(s), set()).add(s)
+    new, changed, seen = [], [], set()
+    for f in findings:
+        sig = f["sig"] if isinstance(f, dict) else f
+        text = f["text"] if isinstance(f, dict) else f
+        seen.add(sig_path(sig))
+        if sig in sigs:
+            continue
+        (changed if sig_path(sig) in by_path else new).append(text)
+    gone = sorted(p for p in by_path if p not in seen)
+    return new, gone, changed
+
+
+def _diff_lines(value, findings):
+    if not value:
+        return [f"  not accepted: {f['text'] if isinstance(f, dict) else f}" for f in findings]
+    diff = compare(value, findings)
+    if diff is None:
+        return ["  (the stored acknowledgement records only a fingerprint, so which findings changed cannot "
+                "be shown; the next acceptance records them)"]
+    new, gone, changed = diff
+    lines = []
+    for label, items in (("new since the acceptance", new), ("changed since the acceptance", changed)):
+        for t in items:
+            lines.append(f"  {label}: {t}")
+    for p in gone:
+        lines.append(f"  no longer in the grant: {p}")
+    return lines or ["  (the same findings, in a different order)"]
+
+
+def change_message(name, findings, accepted, loosenings):
+    lines = [f"project {name}: the grant exposure has changed since it was accepted, and this edit grants "
+             f"something new, so it is refused."]
+    lines += _diff_lines(accepted, findings)
+    lines.append("  this edit would also grant: " + "; ".join(loosenings))
+    lines.append(f"Accept the new state with `ab project accept-grant-exposure {name}` (or pass "
+                 f"--i-understand-grant-exposure here), or move the findings out of the grant. "
+                 f"`ab project check {name}` lists everything in it.")
+    return "\n".join(lines)
+
+
+def unblocked_message(name, findings, accepted):
+    """The edit grants nothing new, so it is not blocked -- but the exposure is still there and a session
+    will still refuse (audit F-5)."""
+    lines = [f"ab: project {name}: the grant exposure does not match what was accepted:"]
+    lines += _diff_lines(accepted, findings)
+    lines.append(f"  this edit grants nothing new, so it proceeds. A SESSION WILL REFUSE to start until the "
+                 f"findings are moved out of the grant or accepted with `ab project accept-grant-exposure "
+                 f"{name}`.")
+    return "\n".join(lines)
+
+
+def acceptance_message(name, findings, accepted):
+    lines = [f"ab: project {name}: accepted {len(findings)} grant finding(s):"]
+    lines += [f"  - {f['text'] if isinstance(f, dict) else f}" for f in findings]
+    if accepted:
+        lines.append("  newly accepted by this command:")
+        lines += _diff_lines(accepted, findings)
+    lines.append("  move secrets and live data out of the grant when you can.")
+    return "\n".join(lines)
+
+
 def message(name, findings):
     lines = [f"project {name}: the grant holds secrets or live data the agent would get read-write. A grant is "
              "for code; move these out of the grant (for a secret file, a masked name — .env, *.pem, *.key, or "

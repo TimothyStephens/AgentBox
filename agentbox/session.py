@@ -34,7 +34,8 @@ class Project:
     eff: dict                      # setting -> (value, source)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
-    grant_exposure_accepted: str = ""
+    # the accepted findings' signatures, or (from before those were recorded) their fingerprint string
+    grant_exposure_accepted: object = ""
     compose_project: str = ""      # the live stack's compose project (default: the project name)
     observe_logs: bool = False     # observe tier may read the live stack's logs (off: they can hold secrets)
     preset: str = ""
@@ -82,7 +83,7 @@ def load_project(settings, name):
                        _check(name, "build_memory", p.get("build_memory", settings.build_memory),
                               settings=settings)),
                    history_secrets_accepted=list(p.get("history_secrets_accepted", [])),
-                   grant_exposure_accepted=str(p.get("grant_exposure_accepted") or ""),
+                   grant_exposure_accepted=p.get("grant_exposure_accepted") or "",
                    compose_project=_check(name, "compose_project", p.get("compose_project", name)),
                    observe_logs=_check(name, "observe_logs", p.get("observe_logs", False)),
                    preset=str(p.get("preset") or ""),
@@ -353,7 +354,7 @@ class Session:
                                     "mask_skip": p.mask_skip, "swap": p.swap}, plan=self.plan)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
-        if exposure and exposure_fp != p.grant_exposure_accepted:
+        if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
             raise AgentboxError(grantcheck.message(p.name, exposure))
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")
