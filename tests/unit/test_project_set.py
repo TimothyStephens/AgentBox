@@ -500,3 +500,85 @@ def _ns(**kw):
     for k, v in kw.items():
         setattr(a, k, v)
     return a
+
+
+class SwapFromTheCommandLine(SetBase):
+    """F-12: `swap` is security-relevant (it decides which file the agent sees in place of a masked one) and
+    was hand-edit-only -- while `projects.toml`'s own header says not to hand-edit it, and `--unset swap`
+    existed to remove a key no command could set. It has a flag now, and a custom swap MERGES with the
+    default `.env` -> `.env.dev` instead of silently replacing it."""
+
+    def test_the_flag_stores_a_mapping(self):
+        self.write("projects/p1/.env.dev", "X=1\n")
+        code, out = self.rc_out("project", "set", "p1", "--swap", ".env.local=.env.dev")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.entry()["swap"], {".env.local": ".env.dev"})
+
+    def test_the_flag_is_repeatable_and_replaces_the_whole_map(self):
+        self.rc("project", "set", "p1", "--swap", ".env.local=.env.dev")
+        self.assertEqual(self.rc("project", "set", "p1", "--swap", "server.pem=dev-cert.txt",
+                                 "--swap", "id.key=dev-id.txt"), 0)
+        self.assertEqual(self.entry()["swap"], {"server.pem": "dev-cert.txt", "id.key": "dev-id.txt"})
+
+    def test_a_mapping_without_an_equals_sign_is_refused_with_the_spelling(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(self.rc("project", "set", "p1", "--swap", ".env.local"), 2)
+        self.assertIn("TARGET=STANDIN", err.getvalue(), "say how to write it, not just that it is invalid")
+        self.assertNotIn("swap", self.entry())
+
+    def test_the_flag_cannot_expose_a_secret(self):
+        """The F6 rules apply wherever a swap comes from: the stand-in may not be a masked name, and the
+        destination must be one."""
+        for bad in ("notes.txt=.env", ".env=other.pem", "app.py=app.dev.py"):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.rc("project", "set", "p1", "--swap", bad), 2)
+                self.assertNotIn("swap", self.entry())
+
+    def test_ab_init_refuses_an_exposing_swap_before_it_scaffolds(self):
+        """`ab init` validates the setting flags before writing anything, so a bad one leaves no half-made
+        tree behind. That check is the `_check` call in _apply_project_settings -- the registry-level
+        validation in _validate_and_save happens far too late for init."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        repos = self.mkdir("repos")
+        os.environ["AB_REPOS_DIR"] = repos
+        self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            rc = self.rc("init", "python", "--name", "fresh", "--swap", "notes.txt=.env")
+        self.assertEqual(rc, 2)
+        self.assertEqual(os.listdir(repos), [], "nothing was scaffolded")
+        self.assertNotIn("fresh", registry.load(self.settings.registry_path))
+
+    def test_unset_still_works(self):
+        self.rc("project", "set", "p1", "--swap", ".env.local=.env.dev")
+        self.assertEqual(self.rc("project", "set", "p1", "--unset", "swap"), 0)
+        self.assertNotIn("swap", self.entry())
+
+    def test_a_custom_swap_merges_with_the_default(self):
+        """It used to REPLACE it, so adding a `.env.local` mapping silently stopped `.env.dev` standing in
+        for `.env` -- the one mapping `ab init` builds every project around."""
+        self.rc("project", "set", "p1", "--swap", ".env.local=.env.dev")
+        self.assertEqual(session.load_project(self.settings, "p1").swap,
+                         {".env": ".env.dev", ".env.local": ".env.dev"})
+
+    def test_a_stored_mapping_for_the_same_target_still_wins(self):
+        self.rc("project", "set", "p1", "--swap", ".env=.env.sample")
+        self.assertEqual(session.load_project(self.settings, "p1").swap, {".env": ".env.sample"})
+
+    def test_the_default_applies_when_nothing_is_stored(self):
+        self.assertEqual(session.load_project(self.settings, "p1").swap, {".env": ".env.dev"})
+
+    def test_the_merged_swap_is_what_the_plan_and_the_scan_use(self):
+        from agentbox import grantcheck, mounts
+        self.write("projects/p1/.env.dev", "X=1\n")
+        self.write("projects/p1/.env", "REAL=1\n")
+        self.rc("project", "set", "p1", "--swap", ".env.local=.env.dev")
+        p = session.load_project(self.settings, "p1")
+        plan = mounts.plan(root=p.root, compose="ro", swap=p.swap)
+        env = os.path.realpath(os.path.join(self.root, ".env"))
+        self.assertIn(env, mounts.hidden(plan), "the default .env swap survived the custom one")
+        findings, _w, _fp = grantcheck.preflight(self.settings, "p1", self.entry())
+        self.assertEqual([f["text"] for f in findings], [], "and the scan agrees it is covered")

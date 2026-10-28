@@ -78,7 +78,7 @@ class HistorySecrets(SettingsCase):
         sub = os.path.join(root, "vendor", "lib")
         subprocess.run(["git", "init", "-q", sub], check=True)
         commit_then_untrack(sub, "secrets/db.txt")
-        found = session.history_secrets(root, [root], {".env": ".env.dev"})
+        found = session.history_secrets(root, [root])
         self.assertEqual(found, ["vendor/lib/secrets/db.txt"])
 
     def test_unreadable_history_refuses(self):
@@ -86,7 +86,7 @@ class HistorySecrets(SettingsCase):
         commit_then_untrack(root, "README")
         with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 120)):
             with self.assertRaises(AgentboxError) as cm:
-                session.history_secrets(root, [root], {})
+                session.history_secrets(root, [root])
         self.assertIn("refusing rather than guessing", str(cm.exception))
 
     def test_project_add_refuses_then_accepts(self):

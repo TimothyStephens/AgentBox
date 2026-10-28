@@ -129,7 +129,7 @@ KEYS = (
     _key("mask_skip", kind="project", arity="list", flags=("--mask-skip",), dest="mask_skip",
          validate="rel_names", values=(), security=True, clears=False, unsettable=True, display="stored",
          inert="", inert_reason=""),
-    _key("swap", kind="project", arity="map", flags=(), dest="", validate="swap", values=(),
+    _key("swap", kind="project", arity="map", flags=("--swap",), dest="swap", validate="swap", values=(),
          security=True, clears=False, unsettable=True, display="stored", inert="", inert_reason=""),
     _key("build_memory", kind="project", arity="scalar", flags=("--build-memory",), dest="build_memory",
          validate="size", values=(), security=False, clears=False, unsettable=True, display="always",

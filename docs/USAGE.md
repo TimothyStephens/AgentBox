@@ -64,8 +64,8 @@ usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
                [--data-ro DIR] [--data-rw DIR] [--egress MODE]
                [--extra-domain DOMAIN] [--build-memory SIZE] [--mask-skip DIR]
                [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
-               [--observe-logs | --no-observe-logs] [--accept-history-secrets]
-               [--i-understand-grant-exposure]
+               [--swap TARGET=STANDIN] [--observe-logs | --no-observe-logs]
+               [--accept-history-secrets] [--i-understand-grant-exposure]
                {pod,python}
 
 scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named volume), then register it
@@ -126,6 +126,15 @@ options:
                         matching this name pattern (e.g. localhost/myapp:*);
                         by default only allowlisted registries and this
                         project's builds (repeatable)
+  --swap TARGET=STANDIN
+                        show the agent `STANDIN` in place of the masked file
+                        `TARGET`, in every directory that has one
+                        (repeatable), e.g. --swap .env.local=.env.dev. TARGET
+                        must be a name the masks cover (.env, .env.*, *.pem,
+                        *.key) and STANDIN must not be, so a swap can never
+                        uncover a secret. Merged with the default
+                        .env=.env.dev; a mapping for the same target replaces
+                        it
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -257,6 +266,7 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
+                      [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure]
@@ -317,6 +327,15 @@ options:
                         matching this name pattern (e.g. localhost/myapp:*);
                         by default only allowlisted registries and this
                         project's builds (repeatable)
+  --swap TARGET=STANDIN
+                        show the agent `STANDIN` in place of the masked file
+                        `TARGET`, in every directory that has one
+                        (repeatable), e.g. --swap .env.local=.env.dev. TARGET
+                        must be a name the masks cover (.env, .env.*, *.pem,
+                        *.key) and STANDIN must not be, so a swap can never
+                        uncover a secret. Merged with the default
+                        .env=.env.dev; a mapping for the same target replaces
+                        it
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -345,6 +364,7 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
+                      [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
@@ -406,6 +426,15 @@ options:
                         matching this name pattern (e.g. localhost/myapp:*);
                         by default only allowlisted registries and this
                         project's builds (repeatable)
+  --swap TARGET=STANDIN
+                        show the agent `STANDIN` in place of the masked file
+                        `TARGET`, in every directory that has one
+                        (repeatable), e.g. --swap .env.local=.env.dev. TARGET
+                        must be a name the masks cover (.env, .env.*, *.pem,
+                        *.key) and STANDIN must not be, so a swap can never
+                        uncover a secret. Merged with the default
+                        .env=.env.dev; a mapping for the same target replaces
+                        it
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the

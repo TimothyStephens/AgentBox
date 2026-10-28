@@ -183,20 +183,24 @@ def effective(project_name, project, presets):
         # "Overrides may only tighten this preset." Every comparison runs through the settings table's
         # looseness order, so it covers podman (tier AND live, component-wise) and observe_logs -- which a
         # hand-written per-key check kept forgetting -- and any ordered key added later.
-        def refuse(key, value, limit):
+        def refuse(key, value, limit, *, from_preset):
+            # Where the limit comes from, truthfully (audit F-12): a preset VALUE for a setting the preset
+            # resolves, otherwise the settings table's tightest value -- `observe_logs = false` was being
+            # reported as "the preset's own value", which no preset sets.
+            why = (f"the preset's own value is {limit!r}" if from_preset
+                   else f"a ceiling allows only the tightest value for it, {limit!r}")
             raise AgentboxError(f"project {project_name}: preset {preset_name} is a ceiling; {key} = "
-                                f"{value!r} would loosen it (the preset's own value is {limit!r}); switch "
-                                "to another preset to loosen")
+                                f"{value!r} would loosen it ({why}); switch to another preset to loosen")
 
         for key, value in overrides.items():
             limit = preset.get(key, projectkeys.BY_NAME[key].tightest)
             if projectkeys.is_looser(key, value, limit):
-                refuse(key, value, limit)
+                refuse(key, value, limit, from_preset=key in preset)
         for key in ORDERED_NON_SETTINGS:          # observe_logs: ordered, but not a preset setting
             if key in project:
                 limit = projectkeys.BY_NAME[key].tightest
                 if projectkeys.is_looser(key, project[key], limit):
-                    refuse(key, project[key], limit)
+                    refuse(key, project[key], limit, from_preset=False)
     if out["data"][0] == "ro-only" and project.get("data_rw"):
         raise AgentboxError(f"project {project_name}: preset {preset_name} allows read-only data grants only")
     return out

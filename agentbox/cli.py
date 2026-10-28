@@ -26,9 +26,12 @@ def _check(name, key, value, **kw):
     return projectkeys.validate_value(key, f"project {name}", value, **kw)
 
 
-def _grant_kw(s, _reg=None, exclude=None):
+def _grant_kw(s):
     """check_grant's context: is a path safe in itself? Cross-project overlap is paths.check_overlaps,
-    called once per entry (it compares every grant pair, not just roots)."""
+    called once per entry (it compares every grant pair, not just roots).
+
+    It took a registry and an `exclude` name until check_overlaps took that job over; both were ignored,
+    while passing them read as if they still scoped the check (audit F-12)."""
     return dict(home=HOME, extra_protected=session.protected_extra(s))
 
 
@@ -110,7 +113,22 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["observe_logs"] = a.observe_logs
     if a.dev_image:
         entry["dev_images"] = _check(a.name, "dev_images", list(a.dev_image))
+    if a.swap:
+        entry["swap"] = _check(a.name, "swap", _parse_swap(a.swap))
     return cleared
+
+
+def _parse_swap(pairs):
+    """`--swap TARGET=STANDIN` (repeatable) into the map the registry stores. The validator then applies
+    F6's two rules: the target must be a masked name and the stand-in must not be."""
+    out = {}
+    for pair in pairs:
+        target, sep, standin = pair.partition("=")
+        if not sep or not target.strip() or not standin.strip():
+            raise AgentboxError(f"--swap {pair!r}: write it as TARGET=STANDIN, "
+                                "e.g. --swap .env.local=.env.dev")
+        out[target.strip()] = standin.strip()
+    return out
 
 
 def precheck_project_settings(s, a):
@@ -121,7 +139,7 @@ def precheck_project_settings(s, a):
     reg = registry.load(s.registry_path)
     presets_map = presets.load_presets(s.presets_dir)
     entry = {}
-    _apply_project_settings(entry, a, _grant_kw(s, reg), presets_map)
+    _apply_project_settings(entry, a, _grant_kw(s), presets_map)
     presets.effective(a.name, entry, presets_map)
     if "build_memory" in entry:
         _check(a.name, "build_memory", entry["build_memory"], settings=s)
@@ -247,7 +265,7 @@ def cmd_project_add(s, a):
     if a.name in reg:
         raise AgentboxError(f"project {a.name} already exists")
     presets_map = presets.load_presets(s.presets_dir)
-    grant_kw = _grant_kw(s, reg)
+    grant_kw = _grant_kw(s)
     entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
@@ -277,7 +295,7 @@ def cmd_project_set(s, a):
     for key in dropped:
         entry.pop(key, None)
     presets_map = presets.load_presets(s.presets_dir)
-    grant_kw = _grant_kw(s, reg, exclude=a.name)
+    grant_kw = _grant_kw(s)
     entry["root"] = check_grant(entry["root"], kind=f"project {a.name} root", **grant_kw)
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map, unset=unset)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
@@ -292,10 +310,8 @@ def cmd_project_set(s, a):
 
 
 def _history_secrets(entry):
-    from .mounts import DEFAULT_SWAP
     grants = [entry["root"]] + entry.get("data_rw", []) + entry.get("data_ro", [])
-    return session.history_secrets(entry["root"], grants, entry.get("swap", DEFAULT_SWAP),
-                                   entry.get("mask_skip", []))
+    return session.history_secrets(entry["root"], grants, entry.get("mask_skip", []))
 
 
 def cmd_project_check(s, a):
@@ -729,6 +745,12 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="dev tier: also allow running or building from images matching this name pattern "
                         "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's "
                         "builds (repeatable)")
+    x.add_argument("--swap", action="append", default=[], metavar="TARGET=STANDIN",
+                   help="show the agent `STANDIN` in place of the masked file `TARGET`, in every directory "
+                        "that has one (repeatable), e.g. --swap .env.local=.env.dev. TARGET must be a name "
+                        "the masks cover (.env, .env.*, *.pem, *.key) and STANDIN must not be, so a swap can "
+                        "never uncover a secret. Merged with the default .env=.env.dev; a mapping for the "
+                        "same target replaces it")
     x.add_argument("--observe-logs", action=argparse.BooleanOptionalAction, default=None,
                    help="let the observe tier read the live stack's logs (default: off; logs can hold "
                         "secrets, and what the agent reads goes to its model provider)")

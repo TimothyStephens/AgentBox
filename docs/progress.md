@@ -126,6 +126,15 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   four real things, and the history-secrets acknowledgement tracking its whole found set. **F-12's text was
   never supplied** (TODO.md).
 
+- **`podman network ls` had never worked** (28 Oct, after the audit round): its `--format` template is
+  rejected by podman 5.7 and the failure was swallowed, so session networks were invisible to
+  `ab session ls`/`kill`/`gc`/`preview`; the sweep made it loud, and it is fixed by reading `--format json`.
+  The fake podman now refuses the templates real podman refuses, a real-output fixture pins the shape, and
+  `tests/manual/podman_formats.sh` (read-only) checks every `--format` the code issues against real podman,
+  with a unit test keeping the two in step. F-12's cleanups landed with it: `--swap` exists as a flag, a
+  project's swap merges with the default `.env`→`.env.dev`, the ceiling refusal names the right limit, and
+  three dead parameters plus one dead branch are gone (decisions.md, 28 Oct later).
+
 ## Next
 
 The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.

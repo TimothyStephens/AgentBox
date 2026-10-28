@@ -1047,3 +1047,61 @@ F9 last round; nothing was done for it. F9 itself stays as recorded in TODO.md.
 `rsync`, which the agentbox sandbox has not got — so they could not run while this work was being done.
 Those that do not test the backup now call `prepare(do_backup=False)`, which took the sandbox's unrunnable
 count from 132 to 121.
+
+## 2026-10-28 (later) — `podman network ls` never worked, and F-12
+
+**The template podman 5.7 rejects.** `sessions()` ran
+`podman network ls --format '{{.Name}} {{index .Labels "agentbox.session"}}'`, which podman 5.7 refuses:
+"error calling index: cannot index slice/array with type string". The call passed `check=False`, so it
+failed silently — **network-based session detection had never worked** — and the fail-open sweep turned the
+silent failure into a raise, which broke `ab session ls`/`kill`/`gc`/`preview` and the itest's leftover
+checks (9 failures, one cause). Networks are listed as `--format json` now and the labels are read in
+Python; that report's keys are lowercase (`name`, `labels`), unlike `ps --format json`.
+
+A `--format` template is a contract with podman's internals *per subcommand* — `index .Labels` is fine on
+`image inspect` and refused on `network ls` — so three things now stand against this class:
+
+- **The fake podman refuses what real podman refuses** (`REJECTED_FORMATS`, quoting the host's own message),
+  instead of answering every `--format` with the same canned string. That is why no unit test could catch
+  it: the fake accepted a template real podman never would.
+- **`tests/unit/fixtures/podman_network_ls.json`** is real host output, so the shape the parser reads is the
+  shape podman prints.
+- **`tests/manual/podman_formats.sh`** runs every `--format` the code issues against real podman,
+  read-only, and a unit test asserts every `--format` literal in `agentbox/` appears in that script (plus
+  that every podman subcommand in it is a reading one). Tim runs it on the host; it is the only check that
+  can see this class for real.
+
+**Were the other swallowed calls ever working?** Five of the six fail-open sites the sweep fixed are pure
+filesystem (`_gitfile_target`, both `hardlink_masks` lstats, the mount audit's stat, `cover_ids`, `_young`)
+— no podman, and each demonstrably works (masks, covers and gc behave on the host). The sixth was this
+network listing. Of the podman readers made strict in the same round, only `ps -a --format {{.Names}}` and
+`ps -a --format json` have direct evidence from the host (the itest waits on non-empty output from the
+first; `ab session ls` printed a session's container and state, which needs the second). `network ls`,
+`pod ps` and `volume ls` with `{{.Name}}`, and the `network inspect`/`inspect`/`image inspect` templates,
+are standard documented formats but were **not** verified here — that is exactly what the script is for.
+`tests/integration/harness.py` had the same swallow in `leftovers()`/`leftover_images()`/`all_volumes()`: a
+rejected template there would have made every leftover check pass vacuously, so those listings now raise on
+a non-zero exit (the call sites that legitimately tolerate failure, such as `image exists`, are untouched).
+
+**F-12, the grouped cleanups.**
+
+- **`swap` has a CLI flag** (`--swap TARGET=STANDIN`, repeatable). It was security-relevant, hand-edit-only
+  — against `projects.toml`'s own header — and yet `--unset swap` existed to remove a key no command could
+  set. The flag's value goes through the same validator, which matters most for `ab init`, where
+  `_apply_project_settings` is the check that runs *before* anything is scaffolded.
+- **A project's swap merges with the default** `.env` → `.env.dev` instead of replacing it. Replacing it
+  meant adding one `.env.local` mapping silently stopped `.env.dev` standing in for `.env` — the mapping
+  every `ab init` project is built around. `mounts.effective_swap` is the one computation, idempotent, and
+  called at every boundary that reads a swap. A mapping for the same target still wins; what is no longer
+  expressible is "ignore `.env.dev` even though it exists", which no project wanted.
+- **The ceiling refusal names the right limit.** It said "the preset's own value is False" for
+  `observe_logs`, which no preset sets — the limit there is the settings table's tightest value. It now says
+  which of the two it is, and the same fix covers a setting the ceiling preset simply omits.
+- **Dead parameters removed:** `cli._grant_kw(s, _reg, exclude)` (both ignored since `paths.check_overlaps`
+  took over cross-project overlap, while passing them read as if they still scoped the check), and
+  `session.history_secrets(..., swap, ...)` / `_history_masked(..., swap, ...)`, which fell out of use with
+  the next item.
+- **`mounts._masked`'s `name in swap_targets` arm is gone.** Since F6 every swap target must itself be a
+  masked name, so the pattern test that followed already answered True. Removed with a test proving the
+  deadness first (CLAUDE.md's rule), which is a property of the validator rather than a coverage claim:
+  every swap the validator accepts has only masked names as targets.

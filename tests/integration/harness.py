@@ -87,24 +87,36 @@ def podman(*args, timeout=120):
     return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=timeout)
 
 
+def listing(*args):
+    """A podman listing whose EMPTY result the tests read as a verdict ("nothing left over"), so a failed
+    one must not look like an empty one. `podman network ls --format '{{index .Labels "x"}}'` was rejected
+    by podman 5.7 for a whole build while the code swallowed it (28 Oct); this harness swallowed the same
+    way, so a rejected template here would have made every leftover check pass vacuously."""
+    p = podman(*args)
+    if p.returncode != 0:
+        raise RuntimeError(f"podman {' '.join(args[:3])} failed ({p.returncode}): "
+                           f"{(p.stderr or '').strip()[:300]} -- an unreadable listing is not an empty one")
+    return p.stdout
+
+
 def leftovers():
     """Containers, pods, volumes and networks this run labelled (images: leftover_images)."""
-    c = podman("ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}").stdout.split()
-    p = podman("pod", "ps", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
-    v = podman("volume", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
-    n = podman("network", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").stdout.split()
+    c = listing("ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}").split()
+    p = listing("pod", "ps", "--format", "{{.Name}}", "--filter", f"label={LABEL}").split()
+    v = listing("volume", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").split()
+    n = listing("network", "ls", "--format", "{{.Name}}", "--filter", f"label={LABEL}").split()
     return c + p + v + n
 
 
 def leftover_images():
     """Images this run labelled, as 'repo:tag' (or the short ID when untagged)."""
-    out = podman("images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}", "--filter", f"label={LABEL}").stdout
+    out = listing("images", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}", "--filter", f"label={LABEL}")
     return sorted(line.split()[0] if not line.startswith("<none>") else line.split()[-1]
                   for line in out.splitlines() if line.strip())
 
 
 def all_volumes():
-    return set(podman("volume", "ls", "--format", "{{.Name}}").stdout.split())
+    return set(listing("volume", "ls", "--format", "{{.Name}}").split())
 
 
 def wait_for(pred, timeout=90, step=0.5):

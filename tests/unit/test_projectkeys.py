@@ -283,3 +283,70 @@ class TheSecurityColumnDrivesSomething(unittest.TestCase):
         base = {"root": "/r", "preset": "build", "dev_images": ["localhost/x:*", "localhost/y:*"]}
         self.assertEqual(self.loosenings(base, {**base, "dev_images": ["localhost/x:*"]}), [])
         self.assertEqual(self.loosenings(base, {k: v for k, v in base.items() if k != "dev_images"}), [])
+
+
+class SwapTargetsAreAlwaysMaskedNames(unittest.TestCase):
+    """F-12, the deadness proof for `mounts._masked`'s `name in swap_targets` branch.
+
+    That branch masked a swap TARGET whatever it was called. Since F6 every target must itself be a masked
+    name, so the pattern test that follows it already returns True -- the branch cannot change an answer.
+    Removing it needed this first (CLAUDE.md: dead code goes only with a test proving deadness)."""
+
+    def test_every_valid_swap_target_is_a_masked_name(self):
+        from agentbox import mounts
+        valid = [mounts.DEFAULT_SWAP, {".env.local": ".env.dev"}, {"server.pem": "dev-cert.txt"},
+                 {"id.key": "dev-id.txt"}, {".env.production": ".env.dev"}]
+        for swap in valid:
+            checked = projectkeys.validate_value("swap", "project p", swap)
+            for target in checked:
+                with self.subTest(target=target):
+                    self.assertTrue(projectkeys.masked_name(target),
+                                    "the validator let through a target the masks would not cover")
+
+    def test_the_branch_is_gone_and_the_masking_is_unchanged(self):
+        import inspect
+        from agentbox import mounts
+        self.assertEqual(list(inspect.signature(mounts._masked).parameters), ["name"])
+        self.assertTrue(mounts._masked(".env.local"))
+        self.assertTrue(mounts._masked("server.pem"))
+        self.assertFalse(mounts._masked(".env.dev"), "the stand-ins stay visible")
+        self.assertFalse(mounts._masked("notes.txt"))
+
+
+class CeilingMessageNamesTheRightLimit(unittest.TestCase):
+    """F-12: the refusal said "the preset's own value is False" for `observe_logs`, which no preset sets --
+    the limit there is the settings table's tightest value. It now says which it is."""
+
+    def refusal(self, project):
+        with self.assertRaises(AgentboxError) as cm:
+            presets.effective("p", project, presets.BUILTIN)
+        return str(cm.exception)
+
+    def test_a_key_the_preset_sets_is_called_the_presets_value(self):
+        msg = self.refusal({"preset": "lockdown", "egress": "open"})
+        self.assertIn("the preset's own value is 'locked'", msg)
+
+    def test_a_key_the_preset_does_not_set_is_called_the_tightest_value(self):
+        msg = self.refusal({"preset": "lockdown", "observe_logs": True})
+        self.assertNotIn("the preset's own value", msg)
+        self.assertIn("tightest", msg)
+        self.assertIn("False", msg)
+
+
+class NoDeadParameters(unittest.TestCase):
+    def test_grant_kw_takes_only_the_settings(self):
+        """F-12: `_grant_kw(s, _reg=None, exclude=None)` kept two parameters from before
+        paths.check_overlaps took over cross-project overlap; both were ignored, and passing them read as
+        if they still scoped the check."""
+        import inspect
+        self.assertEqual(list(inspect.signature(cli._grant_kw).parameters), ["s"])
+
+    def test_history_secrets_no_longer_takes_a_swap_map(self):
+        """It stopped using it when swap targets left the "is this masked?" test; a parameter that is read
+        nowhere still reads as if it narrowed the search."""
+        import inspect
+        from agentbox import session
+        self.assertEqual(list(inspect.signature(session.history_secrets).parameters),
+                         ["root", "grants", "mask_skip", "timeout"])
+        self.assertEqual(list(inspect.signature(session._history_masked).parameters),
+                         ["git_dir", "timeout"])

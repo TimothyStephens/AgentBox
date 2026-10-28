@@ -78,7 +78,7 @@ def load_project(settings, name):
     paths.check_overlaps(name, {"root": root, "data_ro": data_ro, "data_rw": data_rw}, reg)
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
-                   swap=_check(name, "swap", p.get("swap", mounts.DEFAULT_SWAP)), eff=eff,
+                   swap=mounts.effective_swap(_check(name, "swap", p.get("swap", {}))), eff=eff,
                    build_memory=cgroup.parse_size(
                        _check(name, "build_memory", p.get("build_memory", settings.build_memory),
                               settings=settings)),
@@ -116,7 +116,7 @@ def dev_tier(project):
     return (project.value("podman") or {}).get("tier") == "dev"
 
 
-def _history_masked(git_dir, swap, timeout):
+def _history_masked(git_dir, timeout):
     """Paths in one repo's history (all refs) whose names the masks cover. Raises if git cannot tell."""
     try:
         p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", "-c", "core.fsmonitor=false", "log",
@@ -127,14 +127,18 @@ def _history_masked(git_dir, swap, timeout):
     if p.returncode != 0 and "does not have any commits" not in p.stderr:
         raise AgentboxError(f"cannot read the git history of {git_dir}: {p.stderr.strip()[-200:]}")
     names = sorted({line for line in p.stdout.splitlines() if line})
-    return [n for n in names if mounts._masked(os.path.basename(n), swap)
+    return [n for n in names if mounts._masked(os.path.basename(n))
             or any(part in mounts.MASK_DIRS for part in n.split("/")[:-1])]
 
 
-def history_secrets(root, grants, swap, mask_skip=(), timeout=120):
+def history_secrets(root, grants, mask_skip=(), timeout=120):
     """Masked file names found in the history of every git repo the session can read: the masks hide the
     working tree, never git's objects. Names are shown relative to the project root (`<repo>/<path>` for a
-    nested repo). Raises if a history cannot be read."""
+    nested repo). Raises if a history cannot be read.
+
+    It took the project's `swap` map until the swap targets stopped being part of "is this name masked?"
+    (every target must now be a masked name anyway, audit F-12), so the parameter is gone rather than left
+    to read as if it still narrowed the search."""
     found = set()
     for g in grants:
         dirs, _outside = mounts.find_git_dirs(g, mounts._rel_skips(root, g, mask_skip))
@@ -143,7 +147,7 @@ def history_secrets(root, grants, swap, mask_skip=(), timeout=120):
                 continue                                    # not mounted, so not readable
             work = os.path.dirname(gd) if os.path.basename(gd) == ".git" else gd
             prefix = os.path.relpath(work, root)
-            for n in _history_masked(gd, swap, timeout):
+            for n in _history_masked(gd, timeout):
                 found.add(n if prefix == "." else os.path.join(prefix, n))
     return sorted(found)
 
@@ -340,7 +344,7 @@ class Session:
         if self.token_file:
             tokens.check_token_file(self.token_file)
         p = self.project
-        found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.swap, p.mask_skip)
+        found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.mask_skip)
         # The whole found set, not just the additions (audit F-11): a name that left the history means the
         # acknowledgement no longer describes it, and `ab project show` was still listing it to rotate.
         new = found if grantcheck.fingerprint(found) != grantcheck.fingerprint(

@@ -211,7 +211,7 @@ def preflight(settings, name, entry, *, plan=None):
         plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []),
                            data_rw=entry.get("data_rw", []), compose=eff["compose"][0],
                            mask_skip=entry.get("mask_skip", []),
-                           swap=entry.get("swap", mounts.DEFAULT_SWAP))
+                           swap=mounts.effective_swap(entry.get("swap")))
     findings, warnings = scan(entry["root"], [entry["root"]] + list(entry.get("data_rw", [])),
                               entry.get("mask_skip", []), covered=mounts.hidden(plan),
                               warn_grants=entry.get("data_ro", []))
