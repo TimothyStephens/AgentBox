@@ -1270,12 +1270,10 @@ def sessions(settings, podman):
             out.setdefault(s, {"containers": [], "networks": []})["containers"].append(
                 {"name": names[0] if names else c.get("Id", "")[:12], "role": c["Labels"].get("agentbox.role"),
                  "state": c.get("State"), "project": c["Labels"].get("agentbox.project")})
-    p = podman.run(["network", "ls", "--format", "{{.Name}} {{index .Labels \"agentbox.session\"}}"]
-                   + sum((["--filter", f"label={k}={v}"] for k, v in settings.labels.items()), []))
-    for line in (p.stdout or "").splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            out.setdefault(parts[1], {"containers": [], "networks": []})["networks"].append(parts[0])
+    for n in podman.networks_json(settings.labels):
+        s = (n.get("labels") or {}).get("agentbox.session")
+        if s and n.get("name"):
+            out.setdefault(s, {"containers": [], "networks": []})["networks"].append(n["name"])
     sess_dir = os.path.join(settings.run_dir, "sessions")
     if os.path.isdir(sess_dir):
         for s in os.listdir(sess_dir):

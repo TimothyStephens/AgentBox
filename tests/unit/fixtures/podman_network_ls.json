@@ -1,0 +1,80 @@
+[
+    {
+        "name": "ab-claude-agentbox-1-egr",
+        "id": "6b1d176427e6022acf48c90c125fb4f8c21c795833e49338f8cfda5dcaedae44",
+        "driver": "bridge",
+        "network_interface": "podman5",
+        "created": "2026-10-26T10:49:55.201693829-04:00",
+        "subnets": [
+            {
+                "subnet": "10.89.4.0/24",
+                "gateway": "10.89.4.1"
+            }
+        ],
+        "ipv6_enabled": false,
+        "internal": false,
+        "dns_enabled": true,
+        "labels": {
+            "agentbox": "1",
+            "agentbox.owner": "agentbox/ab-claude-agentbox-1",
+            "agentbox.project": "agentbox",
+            "agentbox.role": "network",
+            "agentbox.session": "ab-claude-agentbox-1"
+        },
+        "options": {
+            "isolate": "strict"
+        },
+        "ipam_options": {
+            "driver": "host-local"
+        }
+    },
+    {
+        "name": "ab-claude-agentbox-1-int",
+        "id": "bb6709c0b927278dbe14dcd8ab758c4dc8a5ee34efecffa1f2ddf8dffdb9dc3c",
+        "driver": "bridge",
+        "network_interface": "podman4",
+        "created": "2026-10-26T10:49:55.139810374-04:00",
+        "subnets": [
+            {
+                "subnet": "10.89.3.0/24",
+                "gateway": "10.89.3.1"
+            }
+        ],
+        "ipv6_enabled": false,
+        "internal": true,
+        "dns_enabled": true,
+        "labels": {
+            "agentbox": "1",
+            "agentbox.owner": "agentbox/ab-claude-agentbox-1",
+            "agentbox.project": "agentbox",
+            "agentbox.role": "network",
+            "agentbox.session": "ab-claude-agentbox-1"
+        },
+        "options": {
+            "isolate": "strict"
+        },
+        "ipam_options": {
+            "driver": "host-local"
+        }
+    },
+    {
+        "name": "podman",
+        "id": "2f259bab93aaaa3afb5c0f2b9a7b98e8a2dd42e5d6ff2e2cd2c30e7e2a1b7b5a",
+        "driver": "bridge",
+        "network_interface": "podman0",
+        "created": "2026-10-01T09:12:03.110441221-04:00",
+        "subnets": [
+            {
+                "subnet": "10.88.0.0/16",
+                "gateway": "10.88.0.1"
+            }
+        ],
+        "ipv6_enabled": false,
+        "internal": false,
+        "dns_enabled": false,
+        "labels": {},
+        "ipam_options": {
+            "driver": "host-local"
+        }
+    }
+]

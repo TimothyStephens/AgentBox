@@ -73,6 +73,23 @@ class Podman:
             raise ValueError(kind)
         return [x for x in (p.stdout or "").split() if x]
 
+    def networks_json(self, labels):
+        """Every network carrying all `labels`, as podman reports it.
+
+        `--format json`, not a Go template: podman 5.7 refuses `{{index .Labels "agentbox.session"}}` on
+        this command ("error calling index: cannot index slice/array with type string"), and because the
+        call was swallowed (`check=False`), network-based session detection had never worked at all. Keys in
+        this report are LOWERCASE (`name`, `labels`) -- `ps --format json` capitalises its own."""
+        filters = []
+        for k, v in labels.items():
+            filters += ["--filter", f"label={k}={v}"]
+        p = self.run(["network", "ls", "--format", "json"] + filters)
+        try:
+            return json.loads(p.stdout or "[]") or []
+        except ValueError as e:
+            raise AgentboxError(f"podman network ls output could not be read as JSON ({e}); "
+                                f"refusing to treat that as 'no networks'")
+
     def containers_json(self, labels):
         """Every container carrying all `labels`, as podman reports it.
 
