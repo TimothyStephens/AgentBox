@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import unittest
+from unittest import mock
 
 from agentbox import cli, profile, registry, session
 from agentbox.errors import AgentboxError
@@ -325,6 +326,77 @@ class StateMigratedToInbox(SettingsCase):
         self.write("data/p1/claude/CLAUDE.md", "notes with no profile counterpart\n")
         self.start()
         self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), ["from-state-CLAUDE.md"])
+
+    # --- what the CONTAINER RUNTIME leaves in the state dir (the bug behind the itest failure) ---
+    #
+    # The state dir is bind-mounted into the session, and the profile's paths are mounted on top of it. For
+    # a bind whose destination does not exist, the runtime creates the mount point -- inside its own user
+    # namespace, so the file lands in the state dir owned by a container subuid, 0 bytes, and the launcher
+    # cannot read it. The next session's migration then had to judge it.
+
+    def test_a_zero_byte_mount_point_left_by_the_runtime_is_removed_not_queued(self):
+        """It holds nothing, so there is nothing to review -- and queueing one every session would fill the
+        inbox with empty files, which is how a review queue stops being read."""
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")   # as on the host, so "" != seed
+        os.makedirs(self.state, exist_ok=True)
+        open(os.path.join(self.state, "CLAUDE.md"), "w").close()
+        os.makedirs(os.path.join(self.state, "skills"), exist_ok=True)
+        _s, warnings = self.start()
+        self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "CLAUDE.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "skills")))
+        self.assertFalse([w for w in warnings if "inbox" in w and "moved" in w], warnings)
+
+    def test_an_unreadable_state_file_is_kept_not_crashed_on(self):
+        """A file owned by a container subuid reads exactly like this from the launcher. We cannot tell
+        whether it holds anything, so it is preserved rather than judged -- and never fatal: this was a
+        PermissionError that stopped the session starting at all."""
+        os.makedirs(self.state, exist_ok=True)
+        path = os.path.join(self.state, "CLAUDE.md")
+        with open(path, "w") as f:
+            f.write("something a session wrote\n")
+        os.chmod(path, 0o000)
+        self.addCleanup(lambda: os.path.exists(path) and os.chmod(path, 0o600))
+        _s, warnings = self.start()
+        inbox = self.settings.inbox_dir("p1", "claude")
+        self.assertEqual(profile.items(inbox), ["from-state-CLAUDE.md"], "preserved, not deleted")
+        self.assertTrue(any("could not be read" in w for w in warnings), warnings)
+        self.assertFalse(os.path.exists(path))
+
+    def test_an_unreadable_state_directory_is_left_in_place_and_reported(self):
+        """A directory a container created cannot even be MOVED by us: renaming one needs write access to
+        the directory itself, since its `..` entry changes. So it stays where it is -- inert under the
+        read-only mount -- and the session reports it instead of failing to start."""
+        d = os.path.join(self.state, "skills")
+        os.makedirs(os.path.join(d, "mine"), exist_ok=True)
+        with open(os.path.join(d, "mine", "SKILL.md"), "w") as f:
+            f.write("x\n")
+        os.chmod(d, 0o000)
+        self.addCleanup(lambda: os.path.isdir(d) and os.chmod(d, 0o700))
+        _s, warnings = self.start()
+        self.assertTrue(os.path.isdir(d), "left exactly where it was")
+        self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [])
+        self.assertTrue(any("unmovable" in w and d in w for w in warnings), warnings)
+        self.assertTrue(any("nothing loads it" in w for w in warnings), warnings)
+
+    def test_the_path_it_judges_is_the_writable_state_copy(self):
+        """The two CLAUDE.md files are at different paths and must not be confused: the one being judged is
+        the writable state copy, and the one it is compared against is the profile's."""
+        seen = []
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")
+        self.write("data/p1/claude/CLAUDE.md", "house style\n")
+        from agentbox.adapters import claude
+        real = claude.ClaudeAdapter.redundant_state_copy
+
+        def spy(adapter, settings, name, path):
+            seen.append(path)
+            return real(adapter, settings, name, path)
+
+        with mock.patch.object(claude.ClaudeAdapter, "redundant_state_copy", spy):
+            self.start()
+        self.assertEqual(seen, [os.path.join(self.state, "CLAUDE.md")])
+        self.assertNotIn(self.settings.profiles_dir, seen[0], "never the read-only snapshot")
+        self.assertTrue(seen[0].startswith(os.path.join(self.settings.data_dir, "p1")), seen)
 
     def test_an_empty_state_dir_is_not_moved(self):
         os.makedirs(os.path.join(self.state, "skills"), exist_ok=True)

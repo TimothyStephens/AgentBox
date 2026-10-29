@@ -81,6 +81,14 @@ class SessionTest(SettingsCase):
             self.make().prepare()
 
     def test_state_seeded_by_copy_keeping_history(self):
+        """What the state dir keeps, and where the user's own instructions and commands now come from.
+
+        The fixture writes the PRE-PROFILE seed (`config/claude/{settings.json,CLAUDE.md,commands/}`). The
+        profile migration moves it into `config/claude/profile/` at session start, after which `settings.json`
+        is still copied into the state dir (Claude Code writes it), while `CLAUDE.md` is generated per
+        session and `commands/` is mounted read-only from the profile snapshot -- neither is copied into the
+        state dir any more. Every property this test checked still holds; two of them moved to the paths
+        where the content is actually delivered (29 Oct)."""
         s = self.make()
         state = s.state_dir
         os.makedirs(os.path.join(state, "projects"), exist_ok=True)
@@ -94,13 +102,17 @@ class SessionTest(SettingsCase):
         # approvals off (python preset): the adapter establishes Claude's startup flag so the scan baseline
         # has it and the agent's own first-run write is not reported as a change (7 Oct)
         self.assertIs(settings["skipDangerousModePermissionPrompt"], True)
-        md = _read(os.path.join(state, "CLAUDE.md"))
+        mounted = {dst: src for src, dst, _ro in s.setup.mounts}
+        md = _read(mounted["/run/agentbox/claude/CLAUDE.md"])
         from agentbox.adapters import claude
         self.assertTrue(md.startswith(claude.NOTES_BEGIN), "the sandbox block leads")
         self.assertLess(md.index("# agentbox sandbox"), md.index("My rules."), "the preamble leads the user's")
         self.assertEqual(md.count(claude.NOTES_BEGIN), 1, "the sandbox block is not stacked")
-        self.assertIn("My rules.", md)                    # the user's CLAUDE.md follows it
-        self.assertTrue(os.path.isfile(os.path.join(state, "commands", "x.md")))
+        self.assertIn("My rules.", md)                    # the user's instructions follow it
+        self.assertFalse(os.path.exists(os.path.join(state, "CLAUDE.md")),
+                         "generated and mounted read-only, not written into the state dir")
+        self.assertTrue(os.path.isfile(os.path.join(mounted["/run/agentbox/claude/commands"], "x.md")),
+                        "the seed's commands are mounted from the profile snapshot")
         cj = json.loads(_read(os.path.join(state, ".claude.json")))
         self.assertTrue(cj["projects"][self.root]["hasTrustDialogAccepted"])
         for dirpath, _d, files in os.walk(state):

@@ -1191,15 +1191,30 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
     Returns the names moved."""
     src_dir = settings.state_dir(project, adapter.name)
     inbox = settings.inbox_dir(project, adapter.name)
-    moved, removed = [], []
+    moved, removed, unreadable, stuck = [], [], [], []
     for name in adapter.migrate_to_inbox:
+        # Always the project's own WRITABLE state (`<data>/<project>/<agent>/<name>`) -- never the profile's
+        # read-only snapshot, which is a different path and is what gets mounted ON TOP of this one.
         src = os.path.join(src_dir, name)
         if not os.path.exists(src) or os.path.islink(src):
             continue
-        if os.path.isdir(src) and not os.listdir(src):
-            os.rmdir(src)                     # an empty dir an earlier session left: nothing to keep
+        # A bind whose destination does not exist gets its mount point created by the container runtime,
+        # inside the runtime's own user namespace -- so the state dir collects an empty file or directory
+        # owned by a container subuid, which the launcher may not be able to read. Neither holds anything,
+        # so neither is content to rescue: both are simply removed, as an empty directory always was.
+        try:
+            empty = (not os.listdir(src)) if os.path.isdir(src) else (os.lstat(src).st_size == 0)
+        except OSError:
+            empty = False                     # cannot even look: treat it as content and keep it below
+        if empty:
+            (os.rmdir if os.path.isdir(src) else os.unlink)(src)
             continue
-        if os.path.isfile(src) and adapter.redundant_state_copy(settings, name, src):
+        readable = os.access(src, os.R_OK | (os.X_OK if os.path.isdir(src) else 0))
+        try:
+            redundant = readable and os.path.isfile(src) and adapter.redundant_state_copy(settings, name, src)
+        except OSError:
+            redundant = False                 # unreadable mid-check: keep it rather than judge it
+        if redundant:
             os.unlink(src)
             removed.append(name)
             continue
@@ -1208,7 +1223,17 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
         n = 2
         while os.path.lexists(dst):
             dst, n = os.path.join(inbox, f"from-state-{name}.{n}"), n + 1
-        shutil.move(src, dst)
+        try:
+            shutil.move(src, dst)
+        except OSError as e:
+            # Renaming a DIRECTORY needs write access to the directory itself (its `..` entry changes), so
+            # one a container created cannot be moved by us at all. Leave it exactly where it is and say
+            # so: the read-only profile mount covers it, so nothing loads it and the session is unaffected.
+            stuck.append(f"{src} ({e.strerror or e})")
+            continue
+        if not readable:
+            # Preserved, not judged: we cannot tell whether it holds anything worth keeping.
+            unreadable.append(name)
         moved.append(os.path.basename(dst))
     if moved:
         warn(f"agentbox: moved {', '.join(moved)} out of {project}'s {adapter.name} state into {inbox} "
@@ -1218,6 +1243,15 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
         warn(f"agentbox: removed {', '.join(removed)} from {project}'s {adapter.name} state: it was a copy "
              f"of what the profile already holds, with nothing added, so there was nothing to review. The "
              f"profile's own copy is what sessions load.")
+    if unreadable:
+        warn(f"agentbox: {', '.join(unreadable)} in {project}'s {adapter.name} state could not be read (a "
+             f"file a container created belongs to a container uid, not to you), so it was moved to "
+             f"{inbox} unexamined rather than judged.")
+    if stuck:
+        warn(f"agentbox: left in place, unreadable and unmovable: {'; '.join(stuck)}. A container created "
+             f"it, so it belongs to a container uid rather than to you. The profile's read-only mount "
+             f"covers it, so nothing loads it and the session is unaffected; clearing it needs a tool that "
+             f"can act inside that user namespace.")
     return moved
 
 
