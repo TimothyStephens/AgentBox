@@ -46,9 +46,24 @@ def read_lock(project):
         return None
 
 
-def containers_of(project):
-    return podman("ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
-                  "--filter", f"label=agentbox.project={project}").stdout.split()
+def containers_of(project, role=None):
+    """By LABEL, not by name: the agent container is named after the SESSION itself (`<session>`), and only
+    the sidecars take a suffix (`<session>-proxy`). Looking for a `-agent` name finds nothing."""
+    args = ["ps", "-a", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
+            "--filter", f"label=agentbox.project={project}"]
+    if role:
+        args += ["--filter", f"label=agentbox.role={role}"]
+    return podman(*args).stdout.split()
+
+
+def run_shell(project, script, timeout=300):
+    """`ab run --shell -- -c <script>`, in one place so the form cannot drift.
+
+    `--shell` is the point: without it the passthrough goes to `claude` itself, which then tries to
+    authenticate with the harness's fake token and dies with a 401 -- which is what three of these tests
+    did on their first real run."""
+    return ENV.ab("run", "--agent", "claude", "--project", project, "--shell", "--no-tty", "--",
+                  "-c", script, timeout=timeout)
 
 
 class Lock(unittest.TestCase):
@@ -83,9 +98,9 @@ class Lock(unittest.TestCase):
 
     def test_a_second_run_is_refused_while_one_is_live(self):
         _proc, _master, sid = self.start()
-        p = ENV.ab("run", "--agent", "claude", "--project", "lk1", "--no-tty", "--", "-c", "true",
-                   timeout=240)
+        p = run_shell("lk1", "echo SHOULD_NOT_RUN", timeout=240)
         self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertNotIn("SHOULD_NOT_RUN", p.stdout, "refused before the agent ran")
         said = p.stdout + p.stderr
         self.assertIn(sid, said, "the refusal names the session that holds it")
         self.assertIn("ab attach lk1", said)
@@ -95,8 +110,7 @@ class Lock(unittest.TestCase):
     def test_another_project_is_unaffected(self):
         """The lock is per project, not a global one."""
         self.start("lk1")
-        p = ENV.ab("run", "--agent", "claude", "--project", "lk2", "--no-tty", "--", "-c", "echo OTHER_OK",
-                   timeout=300)
+        p = run_shell("lk2", "echo OTHER_OK")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("OTHER_OK", p.stdout)
         self.assertIsNone(read_lock("lk2"), "and it released its own lock on the way out")
@@ -111,8 +125,7 @@ class Lock(unittest.TestCase):
                         f"SIGHUP left the lock behind: {read_lock('lk1')}")
         left = [x for x in harness.leftovers() if x.startswith(sid)]
         self.assertEqual(left, [], "and nothing of the session is left running")
-        again = ENV.ab("run", "--agent", "claude", "--project", "lk1", "--no-tty", "--",
-                       "-c", "echo AFTER_HUP", timeout=300)
+        again = run_shell("lk1", "echo AFTER_HUP")
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("AFTER_HUP", again.stdout, "the project is usable again straight away")
 
@@ -138,16 +151,14 @@ class Lock(unittest.TestCase):
         os.close(master)
         self.assertEqual(read_lock("lk1")["session"], sid, "the lock is still held")
 
-        refused = ENV.ab("run", "--agent", "claude", "--project", "lk1", "--no-tty", "--", "-c", "true",
-                         timeout=240)
+        refused = run_shell("lk1", "echo SHOULD_NOT_RUN", timeout=240)
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         self.assertIn("ab session kill lk1", refused.stdout + refused.stderr)
 
-        agent = [c for c in containers_of("lk1") if c.endswith("-agent")]
+        agent = containers_of("lk1", role="agent")
         self.assertTrue(agent, containers_of("lk1"))
         podman("rm", "-f", "-t", "1", *agent)               # the agent exits; the husk remains
-        after = ENV.ab("run", "--agent", "claude", "--project", "lk1", "--no-tty", "--",
-                       "-c", "echo AFTER_REAP", timeout=300)
+        after = run_shell("lk1", "echo AFTER_REAP")
         self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
         said = after.stdout + after.stderr
         self.assertIn(f"reaped session {sid}", said)

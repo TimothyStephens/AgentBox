@@ -25,7 +25,10 @@ from .helpers import SettingsCase
 
 
 def ps_json(project="p1", sess="ab-claude-p1-1", state="running", role="agent"):
-    return json.dumps([{"Names": [f"{sess}-{role}"], "State": state,
+    """One container of a session, as `podman ps --format json` reports it. The AGENT container is named
+    after the session itself; only the sidecars take a suffix (checked against real podman, 29 Oct)."""
+    name = sess if role == "agent" else f"{sess}-{role}"
+    return json.dumps([{"Names": [name], "State": state,
                         "Labels": {"agentbox.project": project, "agentbox.session": sess,
                                    "agentbox.role": role, "agentbox-test": "1"}}])
 

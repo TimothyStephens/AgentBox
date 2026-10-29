@@ -1267,7 +1267,16 @@ a problem rather than a fix (it was `docs/TODO.md`'s "real fix" item). Now a pro
 - **A backstop for a missing lock:** a running session of the project with no lock file at all -- one
   started before this existed, or whose lock was removed by hand -- also refuses, naming the session. Found
   by an existing test that kept passing when it should not have.
-- **An itest for the lock** (`tests/integration/test_lock.py`) covers what the fake podman cannot: a session
+- **Two facts the lock itest established on its first real run** (29 Oct): `ab run` passthrough goes to the
+AGENT unless `--shell` is given, so three of these tests ran `claude -c "echo ..."` and died with a 401 on
+the harness's fake token (one `run_shell` helper now, so the form cannot drift); and the **agent container
+is named after the session itself** (`<session>`), with only the sidecars taking a suffix
+(`<session>-proxy`). A test looking for a `-agent` name found nothing. The unit fixtures said `-agent` too,
+which was harmless -- the code keys off the `agentbox.role` label, not the name -- but it encoded a false
+fact, and `ab attach` does use the name podman reports, so the shared `ps_json` helpers now produce the
+real shape.
+
+**An itest for the lock** (`tests/integration/test_lock.py`) covers what the fake podman cannot: a session
 started **on a pty**, so `ab run` takes its interactive path, then (a) a second run refused, (b) SIGHUP --
 the closed-terminal case, an ssh drop or a killed tmux pane -- leaving no lock and no containers, with the
 logs and scan still kept, and (c) SIGKILL. (c) is two steps, because that is its real shape: while the

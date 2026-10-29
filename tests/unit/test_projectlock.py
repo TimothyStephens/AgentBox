@@ -27,7 +27,13 @@ from .helpers import SettingsCase
 
 
 def ps_json(session_id, project="p1", state="running", role="agent"):
-    return json.dumps([{"Names": [f"{session_id}-{role}"], "State": state,
+    """One container of a session, as `podman ps --format json` reports it.
+
+    The AGENT container is named after the session itself; only the sidecars take a suffix
+    (`<session>-proxy`). Checked against real podman, 29 Oct: an itest that looked for a `-agent` name
+    found nothing."""
+    name = session_id if role == "agent" else f"{session_id}-{role}"
+    return json.dumps([{"Names": [name], "State": state,
                         "Labels": {"agentbox.project": project, "agentbox.session": session_id,
                                    "agentbox.role": role, "agentbox-test": "1"}}])
 
@@ -347,7 +353,8 @@ class Attach(SettingsCase):
         self.running()
         code, out = self.ab("attach", "p1")
         self.assertEqual(code, 0, out)
-        self.assertIn(["attach", "ab-claude-p1-1-agent"], self.podman_calls())
+        self.assertIn(["attach", "ab-claude-p1-1"], self.podman_calls(),
+                      "the agent container carries the session's own name")
         self.assertIn("attaching to p1 (session ab-claude-p1-1)", out)
         self.assertIn("ctrl-p ctrl-q", out, "and says how to detach")
 
