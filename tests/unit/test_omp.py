@@ -474,51 +474,158 @@ class KeysCommand(SettingsCase):
 
 
 class OmpInboxAndProfile(OmpSessionBase):
-    """OMP gets the inbox half of the profile design today; its read-only LOAD paths wait on one unknown.
+    """OMP's profile load paths, wired 29 Oct once the one open question was answered from the public
+    source (oh-my-pi: `packages/coding-agent/src/autolearn/managed-skills.ts`, `discovery/builtin.ts`,
+    `docs/skills.md`): **autolearn writes only to `agent/managed-skills`**, never to `agent/skills`, and
+    both are discovered unconditionally.
 
-    `agent/{skills,rules,prompts,agents,commands}` are left writable because OMP's autolearn writes there
-    (omp.py's own comment, since step 5C). A profile would occupy exactly those paths read-only, so wiring
-    it without knowing whether autolearn's output directory can be pointed at the inbox would break
-    autolearn silently -- and that cannot be determined from inside the sandbox (~/.omp is off limits and
-    OMP is not public). docs/TODO.md carries the question and the options."""
+    That is what makes a read-only profile safe here. The five authored directories carry the host-owned
+    profile, read-only; autolearn keeps its own directory, writable -- but per session, harvested into the
+    project's inbox at teardown, because a skill the agent wrote itself is a proposal, not something later
+    sessions should load unreviewed."""
+
+    def argv(self, s):
+        return s.run_args(s.agent_command())
 
     def test_the_inbox_is_mounted_read_write_at_a_path_omp_does_not_load(self):
         s = self.make()
-        argv = s.run_args(s.agent_command())
+        argv = self.argv(s)
         host = s.settings.inbox_dir("p1", "omp")
         dst = f"{omp.C_OMP}/agent/inbox"
         self.assertIn(f"--mount=type=bind,src={host},dst={dst}", argv)
         self.assertNotIn(f"--mount=type=bind,src={host},dst={dst},ro", argv)
-        self.assertNotIn("inbox", " ".join(omp.CODE_DIRS + omp.CODE_FILES))
+        self.assertNotIn("inbox", " ".join(omp.CODE_DIRS + omp.CODE_FILES + omp.PROFILE_DIRS))
 
     def test_the_inbox_is_mounted_after_the_agent_dir_it_sits_inside(self):
         """`agent/` is itself a bind; a mount inside it has to come later or it would be shadowed."""
         s = self.make()
-        argv = s.run_args(s.agent_command())
+        argv = self.argv(s)
         agent_dir = [i for i, a in enumerate(argv) if a.endswith(f"dst={omp.C_OMP}/agent")]
         inbox = [i for i, a in enumerate(argv) if a.endswith(f"dst={omp.C_OMP}/agent/inbox")]
         self.assertTrue(agent_dir and inbox, argv)
         self.assertLess(agent_dir[0], inbox[0])
 
-    def test_no_profile_load_paths_are_mounted_yet(self):
-        s = self.make()
-        self.assertEqual(omp.ADAPTER.profile_mounts, {})
-        self.assertEqual(s.profile.mounts, [], "nothing is mounted over autolearn's directories")
+    # --- the profile, read-only at OMP's authored paths ---
 
-    def test_the_profile_is_still_snapshotted_and_logged_for_omp(self):
-        """So `ab profile harvest` and the log have something to refer to the moment the paths are wired."""
+    def profile_with(self, *dirs):
         src = self.settings_now().profile_src("omp")
-        os.makedirs(os.path.join(src, "skills", "x"), exist_ok=True)
-        with open(os.path.join(src, "skills", "x", "SKILL.md"), "w") as f:
-            f.write("later\n")
-        s = self.make()
-        self.assertTrue(s.profile.hash)
-        self.assertIn(f"hash={s.profile.hash}", open(s.log_path("profile")).read())
-        self.assertIn("loaded=(nothing)", open(s.log_path("profile")).read())
+        for d in dirs:
+            os.makedirs(os.path.join(src, d), exist_ok=True)
+            with open(os.path.join(src, d, "item.md"), "w") as f:
+                f.write(f"profile {d}\n")
+        return src
 
-    def test_autolearns_own_directories_are_still_writable(self):
+    def test_the_profile_is_mounted_read_only_at_omps_own_load_paths(self):
+        self.profile_with(*omp.PROFILE_DIRS)
         s = self.make()
-        argv = " ".join(s.run_args(s.agent_command()))
-        for d in ("skills", "rules", "prompts", "agents", "commands"):
+        argv = self.argv(s)
+        for d in omp.PROFILE_DIRS:
+            with self.subTest(dir=d):
+                src = os.path.join(s.profile.dir, d)
+                self.assertIn(f"--mount=type=bind,src={src},dst={omp.C_OMP}/agent/{d},ro", argv)
+
+    def test_the_mount_points_are_created_under_the_state_dir(self):
+        """`~/.omp/agent` mirrors `<state>/agent`, so these are ours to make -- the same fix as Claude's,
+        and the reason the end-of-session state scan does not report them as changes."""
+        self.profile_with("skills", "rules")
+        s = self.make()
+        self.addCleanup(s.teardown)
+        agent = os.path.join(s.state_dir, "agent")
+        for d in ("skills", "rules"):
+            self.assertTrue(os.path.isdir(os.path.join(agent, d)), d)
+            self.assertEqual(os.stat(os.path.join(agent, d)).st_uid, os.getuid())
+        self.assertFalse(os.path.exists(os.path.join(agent, "prompts")), "not mounted, so not created")
+
+    def test_a_profile_item_omp_does_not_have_is_not_mounted(self):
+        self.profile_with("skills")
+        s = self.make()
+        argv = " ".join(self.argv(s))
+        self.assertIn(f"dst={omp.C_OMP}/agent/skills,ro", argv)
+        for d in ("rules", "prompts", "agents", "commands"):
             self.assertNotIn(f"dst={omp.C_OMP}/agent/{d},ro", argv, d)
-            self.assertNotIn(f"type=tmpfs,dst={omp.C_OMP}/agent/{d}", argv, d)
+
+    def test_the_log_records_what_was_loaded(self):
+        self.profile_with("skills", "commands")
+        s = self.make()
+        line = open(s.log_path("profile")).read()
+        self.assertIn(f"hash={s.profile.hash}", line)
+        self.assertIn("agent=omp", line)
+        self.assertEqual(sorted(line.split("loaded=")[1].strip().split(",")), ["commands", "skills"])
+
+    # --- autolearn's own directory: writable, per session, harvested ---
+
+    def test_autolearns_directory_is_writable_and_empty_and_per_session(self):
+        s = self.make()
+        argv = self.argv(s)
+        host = os.path.join(self.settings_now().session_run_dir(s.name), "omp-managed-skills")
+        dst = f"{omp.C_OMP}/{omp.AUTOLEARN_DIR}"
+        self.assertIn(f"--mount=type=bind,src={host},dst={dst}", argv, "read-write")
+        self.assertNotIn(f"--mount=type=bind,src={host},dst={dst},ro", argv)
+        self.assertEqual(os.listdir(host), [], "empty at the start of every session")
+        self.assertTrue(host.startswith(self.settings_now().run_dir), "in the session's run dir, not state")
+
+    def test_what_autolearn_writes_ends_up_in_the_inbox_with_provenance(self):
+        from agentbox import profile
+        s = self.make()
+        learned = os.path.join(self.settings_now().session_run_dir(s.name), "omp-managed-skills", "cool-trick")
+        os.makedirs(learned)
+        with open(os.path.join(learned, "SKILL.md"), "w") as f:
+            f.write("something OMP worked out\n")
+        s.teardown()
+        inbox = self.settings_now().inbox_dir("p1", "omp")
+        self.assertEqual(profile.items(inbox), ["learned-cool-trick"])
+        self.assertEqual(open(os.path.join(inbox, "learned-cool-trick", "SKILL.md")).read(),
+                         "something OMP worked out\n")
+        doc = profile.read_sidecar(inbox, "learned-cool-trick")
+        self.assertEqual((doc["project"], doc["agent"], doc["reviewed"]), ("p1", "omp", False))
+        self.assertEqual(doc["session"], s.name)
+
+    def test_a_loose_file_is_harvested_too_not_just_a_directory(self):
+        """Autolearn's output need not be a directory -- a single note is as likely -- so the harvest must
+        move whatever it finds, not only trees."""
+        from agentbox import profile
+        s = self.make()
+        managed = os.path.join(self.settings_now().session_run_dir(s.name), "omp-managed-skills")
+        with open(os.path.join(managed, "one-liner.md"), "w") as f:
+            f.write("remember this\n")
+        s.teardown()
+        inbox = self.settings_now().inbox_dir("p1", "omp")
+        self.assertEqual(profile.items(inbox), ["learned-one-liner.md"])
+        self.assertEqual(open(os.path.join(inbox, "learned-one-liner.md")).read(), "remember this\n")
+        self.assertFalse(os.path.exists(os.path.join(managed, "one-liner.md")), "moved, not copied")
+
+    def test_nothing_in_it_survives_into_the_next_session(self):
+        s = self.make()
+        run_dir = self.settings_now().session_run_dir(s.name)
+        os.makedirs(os.path.join(run_dir, "omp-managed-skills", "gone"))
+        s.teardown()
+        self.assertFalse(os.path.exists(os.path.join(run_dir, "omp-managed-skills")))
+        s2 = self.make()
+        self.addCleanup(s2.teardown)
+        fresh = os.path.join(self.settings_now().session_run_dir(s2.name), "omp-managed-skills")
+        self.assertEqual(os.listdir(fresh), [], "the next session starts with an empty one")
+
+    def test_lockdown_keeps_nothing_it_learned(self):
+        s = self.make(preset="lockdown")
+        self.assertTrue(s.inbox_is_ephemeral)
+        learned = os.path.join(self.settings_now().session_run_dir(s.name), "omp-managed-skills", "x")
+        os.makedirs(learned)
+        with open(os.path.join(learned, "SKILL.md"), "w") as f:
+            f.write("not kept\n")
+        s.teardown()
+        self.assertFalse(os.path.exists(self.settings_now().inbox_dir("p1", "omp")),
+                         "no persistent inbox for a lockdown project")
+        ephemeral = os.path.join(self.settings_now().data_dir, "ephemeral")
+        self.assertEqual(os.listdir(ephemeral) if os.path.isdir(ephemeral) else [], [],
+                         "the session's whole state, inbox and harvest included, is gone")
+
+    def test_the_notes_tell_omp_where_its_learned_skills_go(self):
+        self.profile_with("skills")
+        s = self.make()
+        self.addCleanup(s.teardown)
+        notes = session.sandbox_notes(s.project, s.egress, profile=s.profile, inbox=s.inbox_mount,
+                                      adapter=s.adapter)
+        self.assertIn(omp.AUTOLEARN_DIR, notes)
+        self.assertIn("ab profile harvest", notes)
+        self.assertIn("read-only", notes)
+        self.assertNotIn("`#` note", notes, "that is Claude's shortcut, not OMP's")

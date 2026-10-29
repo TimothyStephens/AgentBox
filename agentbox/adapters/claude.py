@@ -83,6 +83,15 @@ class ClaudeAdapter(Adapter):
         from .. import profile
         profile.copy_into_state(settings, self, state_dir)
 
+    def extra_profile_notes(self, inbox, kept=True):
+        """Claude's memory shortcuts: one of the two targets still works, and the other now fails."""
+        if not kept:
+            return []
+        return ["- Memory shortcuts: a `#` note aimed at the PROJECT's own `CLAUDE.md` works normally (it "
+                "is in the grant, and the end-of-session scan reports it, so say in the commit what you "
+                "changed). One aimed at the user-level `CLAUDE.md` fails: that file is generated per "
+                f"session and read-only. Put such notes in `{inbox}` instead."]
+
     def redundant_state_copy(self, settings, name, path):
         """A state `CLAUDE.md` is a copy of the pre-profile seed if, with the injected sandbox block taken
         out, it is byte-identical to the profile's own CLAUDE.md (where that seed was moved).
@@ -172,6 +181,7 @@ ADAPTER = ClaudeAdapter(
     profile_copies=("settings.json",),
     instructions_name="CLAUDE.md",
     inbox_mount="/run/agentbox/claude/inbox",
+    state_mirrors={"/run/agentbox/claude": ""},     # the config dir IS the per-project state dir
     migrate_to_inbox=MIGRATE_TO_INBOX,
     env={
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",

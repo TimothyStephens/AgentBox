@@ -4,9 +4,9 @@ The unit tests pin the argv and the snapshot logic. These are the cases only the
 read-only bind really does refuse a write, a second project really does get the same bytes, and a host-side
 edit really does not reach a container that is already running.
 
-OMP's cases are present and skipped, deliberately: its profile load paths are not wired yet, because
-autolearn writes into the very directories a profile would occupy read-only (see docs/TODO.md, "OMP profile
-load paths"). A skip that names the reason is better than a gap.
+OMP's load paths are wired too (29 Oct): autolearn writes only to `agent/managed-skills`, never to
+`agent/skills`, so a read-only profile at the authored paths is safe. Its cases run here as well -- and
+`managed-skills` itself is per-session, harvested into the inbox at teardown.
 """
 import json
 import os
@@ -42,7 +42,15 @@ def setUpModule():
     os.makedirs(os.path.join(profile_src, "commands"), mode=0o700, exist_ok=True)
     with open(os.path.join(profile_src, "commands", "abt-ship.md"), "w") as f:
         f.write("ship it\n")
-    print(f"\n[itest run {harness.RUN}: profile at {profile_src}]")
+    # OMP's own profile: the same probe skill, plus a rules/ item, at OMP's authored paths.
+    omp_src = os.path.join(ENV.cfg, "omp", "profile")
+    os.makedirs(os.path.join(omp_src, "skills", SKILL), mode=0o700, exist_ok=True)
+    with open(os.path.join(omp_src, "skills", SKILL, "SKILL.md"), "w") as f:
+        f.write(SKILL_TEXT)
+    os.makedirs(os.path.join(omp_src, "rules"), mode=0o700, exist_ok=True)
+    with open(os.path.join(omp_src, "rules", "abt-house-style.md"), "w") as f:
+        f.write("tests first\n")
+    print(f"\n[itest run {harness.RUN}: profiles at {profile_src} and {omp_src}]")
 
 
 def tearDownModule():
@@ -50,6 +58,7 @@ def tearDownModule():
 
 
 CONFIG = "/run/agentbox/claude"
+OMP_AGENT = "$HOME/.omp/agent"
 
 
 def shell(project, script, timeout=300):
@@ -206,14 +215,49 @@ class Profile(unittest.TestCase):
         self.assertIn("PROMOTED-OK", after.stdout, "every project's next session loads it")
         shutil.rmtree(os.path.join(ENV.cfg, "claude", "profile", "skills", "abt-promoted"))
 
-    @unittest.skip("OMP profile load paths are not wired: autolearn writes into the same directories "
-                   "(docs/TODO.md). The inbox, harvest and snapshot do work for OMP.")
-    def test_omp_reads_a_profile_skill(self):
-        pass
+    def omp_shell(self, script, project="prof1", timeout=600):
+        if harness.podman("image", "exists", "localhost/agentbox-omp:latest").returncode != 0:
+            self.skipTest("no OMP image on this host (make omp-image)")
+        return ENV.ab("run", "--agent", "omp", "--project", project, "--shell", "--no-tty", "--",
+                      "-c", script, timeout=timeout)
 
-    @unittest.skip("OMP profile load paths are not wired (docs/TODO.md)")
+    def test_omp_reads_a_profile_skill(self):
+        p = self.omp_shell(f"cat {OMP_AGENT}/skills/{SKILL}/SKILL.md; echo RC=$?")
+        self.assertIn("an agentbox itest probe", p.stdout, p.stderr[-2000:])
+        self.assertIn("RC=0", p.stdout)
+
     def test_omp_profile_paths_are_read_only(self):
-        pass
+        """The authored directories are the shared profile. Autolearn's own directory is NOT one of them --
+        it stays writable, which is the whole reason this is safe."""
+        p = self.omp_shell(f"""
+            if touch {OMP_AGENT}/skills/evil.md 2>&1; then echo SKILLS_WROTE; else echo SKILLS_REFUSED; fi
+            if touch {OMP_AGENT}/rules/evil.md 2>&1; then echo RULES_WROTE; else echo RULES_REFUSED; fi
+            if touch {OMP_AGENT}/managed-skills/learned.md 2>&1; then echo LEARN_OK; else echo LEARN_BLOCKED; fi
+            test -f {OMP_AGENT}/skills/{SKILL}/SKILL.md && echo SKILL_STILL_THERE
+        """)
+        self.assertIn("SKILLS_REFUSED", p.stdout, p.stdout + p.stderr[-1500:])
+        self.assertIn("RULES_REFUSED", p.stdout)
+        self.assertEqual(p.stdout.count("Read-only file system"), 2, p.stdout)
+        self.assertIn("LEARN_OK", p.stdout, "autolearn's own directory must stay writable")
+        self.assertIn("SKILL_STILL_THERE", p.stdout)
+
+    def test_what_omp_learns_lands_in_the_inbox_and_not_in_the_next_session(self):
+        first = self.omp_shell(f"mkdir -p {OMP_AGENT}/managed-skills/abt-learned && "
+                               f"echo 'worked this out' > {OMP_AGENT}/managed-skills/abt-learned/SKILL.md && "
+                               f"echo WROTE=$?")
+        self.assertIn("WROTE=0", first.stdout, first.stderr[-2000:])
+        inbox = os.path.join(ENV.data, "prof1", "omp", "inbox")
+        self.assertTrue(os.path.isdir(os.path.join(inbox, "learned-abt-learned")), os.listdir(inbox))
+        with open(os.path.join(inbox, "learned-abt-learned.provenance.json")) as f:
+            doc = json.load(f)
+        self.assertEqual((doc["project"], doc["agent"], doc["reviewed"]), ("prof1", "omp", False))
+        second = self.omp_shell(f"ls {OMP_AGENT}/managed-skills | wc -l; "
+                                f"ls {OMP_AGENT}/skills | tr '\\n' ' '")
+        self.assertEqual(second.stdout.strip().splitlines()[0].strip(), "0",
+                         "the next session starts with an empty managed-skills")
+        self.assertNotIn("abt-learned", second.stdout, "and it is not loaded as a profile skill")
+        out = ENV.ab("profile", "harvest", "--agent", "omp", check=True).stdout
+        self.assertIn("learned-abt-learned", out)
 
     def test_omp_gets_an_inbox_and_its_provenance(self):
         """The half of the design that is wired for OMP today."""

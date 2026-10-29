@@ -236,7 +236,7 @@ def dev_notes(podman_live, dev_images=()):
     return lines
 
 
-def profile_notes(profile_loaded, inbox, inbox_kept=True):
+def profile_notes(profile_loaded, inbox, inbox_kept=True, adapter=None):
     """What the agent is told about the host-owned profile and the inbox.
 
     It has to be told, because the shape is unusual: the paths it would normally write a skill to are
@@ -258,15 +258,16 @@ def profile_notes(profile_loaded, inbox, inbox_kept=True):
         out.append(f"- `{inbox}` is writable, but **this session keeps nothing**: its whole state, the "
                    "inbox included, is deleted when the session ends (that is what this preset is for). "
                    "Anything worth keeping has to go in your reply to the user, not on disk.")
-        out.append("- Memory shortcuts: a `#` note aimed at the PROJECT's own `CLAUDE.md` works normally "
-                   "(it is in the grant, and the end-of-session scan reports it, so say in the commit what "
-                   "you changed). One aimed at the user-level `CLAUDE.md` fails: that file is generated "
-                   f"per session and read-only. Put such notes in `{inbox}` instead.")
+    if inbox and adapter:
+        # Whatever is true of THIS agent: Claude's memory shortcuts, OMP's autolearn directory. It used to
+        # be a Claude-specific paragraph here, which an OMP session was told as well, and OMP neither reads
+        # CLAUDE.md nor has a `#` shortcut.
+        out += adapter.extra_profile_notes(inbox, inbox_kept)
     return out
 
 
 def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
-                  inbox_kept=True):
+                  inbox_kept=True, adapter=None):
     logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
@@ -315,7 +316,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
          "other projects' containers).")
     else:
         lines.append("- No podman or docker socket is available in this session.")
-    lines += profile_notes(profile, inbox, inbox_kept)
+    lines += profile_notes(profile, inbox, inbox_kept, adapter)
     lines += [
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
@@ -426,7 +427,7 @@ class Session:
         moved = migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
                               profile=self.profile, inbox=self.inbox_mount,
-                              inbox_kept=not self.inbox_is_ephemeral)
+                              inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter)
         self.adapter.seed_state(self.settings, self.state_dir, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
@@ -511,10 +512,27 @@ class Session:
             check(dst, "generated instructions")
             self._own_mount_point(path, dst)
             self.setup.mounts.append((path, dst, True))
+        for name, dst in self.adapter.per_session_dirs:
+            check(dst, "per-session dir")
+            host = os.path.join(self.settings.session_run_dir(self.name), name)
+            os.makedirs(host, mode=0o700, exist_ok=True)
+            self.setup.mounts.append((host, dst, False))
         if self.inbox_mount:
             check(self.inbox_mount, "inbox mount")
             os.makedirs(self.inbox, mode=0o700, exist_ok=True)
             self.setup.mounts.append((self.inbox, self.inbox_mount, False))
+
+    def host_state_path(self, dst):
+        """The host path under the per-project state dir that a container path mirrors, or None.
+
+        The adapter says which container paths are the state dir or part of it (`state_mirrors`): for Claude
+        the whole config dir is, for OMP it is `~/.omp/agent`. Anything else -- a tmpfs, another adapter
+        mount, a path outside -- is not ours to create or interpret."""
+        for prefix, rel in sorted(self.adapter.state_mirrors.items(), key=lambda kv: -len(kv[0])):
+            if dst == prefix or not _inside(dst, prefix):
+                continue
+            return os.path.join(self.state_dir, rel, os.path.relpath(dst, prefix))
+        return None
 
     def _own_mount_point(self, src, dst):
         """Create the mount point for a profile mount ourselves, if it falls inside the per-project state.
@@ -528,10 +546,9 @@ class Session:
         So the launcher makes them, before the scan baseline is taken: an empty file for a file mount, an
         empty directory for a directory one. OMP has always done this for its own file mounts
         (`omp._prepare_file`); the profile's were the ones that did not."""
-        root = self.adapter.state_mount
-        if not root or not _inside(dst, root) or dst == root:
-            return                     # not in the state dir (e.g. OMP's ~/.omp/agent): not ours to make
-        host = os.path.join(self.state_dir, os.path.relpath(dst, root))
+        host = self.host_state_path(dst)
+        if not host:
+            return                     # not a path that mirrors the state dir: not ours to make
         os.makedirs(os.path.dirname(host), mode=0o700, exist_ok=True)
         if os.path.isdir(src):
             if os.path.islink(host) or (os.path.lexists(host) and not os.path.isdir(host)):
@@ -606,7 +623,10 @@ class Session:
                # What the inbox held at the start: teardown reports (and gives provenance to) the difference.
                "inbox": {"project": p.name, "agent": self.adapter.name, "items": profile.items(self.inbox),
                          "preset": p.preset, "egress": p.value("egress"), "dir": self.inbox,
-                         "ephemeral": self.inbox_is_ephemeral}}
+                         "ephemeral": self.inbox_is_ephemeral,
+                         # Harvested into the inbox at teardown, then gone with the session's run dir.
+                         "harvest": [os.path.join(self.settings.session_run_dir(self.name), n)
+                                     for n, _dst in self.adapter.per_session_dirs]}}
         path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -1286,6 +1306,28 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
     return moved
 
 
+def _harvest_per_session_dirs(box, inbox, warn):
+    """Move what a per-session directory collected into the inbox, before the session's run dir goes.
+
+    OMP's autolearn writes learned skills to `agent/managed-skills`, which agentbox gives it empty every
+    session: a skill the agent wrote itself is a proposal, so it goes to the review queue rather than
+    straight into what later sessions load. Copied, then left to `_inbox_report` to give provenance to --
+    so a harvested skill carries the same record as anything else in the inbox."""
+    for src in box.get("harvest") or []:
+        if not os.path.isdir(src):
+            continue
+        for name in sorted(os.listdir(src)):
+            os.makedirs(inbox, mode=0o700, exist_ok=True)
+            dst = os.path.join(inbox, f"learned-{name}")
+            n = 2
+            while os.path.lexists(dst):
+                dst, n = os.path.join(inbox, f"learned-{name}.{n}"), n + 1
+            try:
+                shutil.move(os.path.join(src, name), dst)
+            except OSError as e:
+                warn(f"agentbox: could not move {name} out of {src} into the inbox: {e}")
+
+
 def _inbox_report(settings, doc, session, warn, now=None):
     """Give every inbox item this session added its provenance sidecar, and say how many there are.
 
@@ -1295,6 +1337,7 @@ def _inbox_report(settings, doc, session, warn, now=None):
     if not box.get("project"):
         return
     inbox = box.get("dir") or settings.inbox_dir(box["project"], box["agent"])
+    _harvest_per_session_dirs(box, inbox, warn)
     if box.get("ephemeral"):
         # Nothing is recorded or promised: this inbox is about to be deleted with the rest of the session's
         # state. Saying how many items are going is still worth it -- silently dropping the agent's work

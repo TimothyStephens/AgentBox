@@ -25,6 +25,13 @@ class Adapter:
     instructions_name: str = ""        # the generated per-session instruction file, under state_mount
     migrate_to_inbox: tuple = ()       # per-project state names moved to the inbox once (now read-only)
     inbox_mount: str = ""              # container path of the project's inbox (read-write, never loaded)
+    # {container path -> path relative to the per-project state dir}, for the container paths that ARE the
+    # state dir or a part of it. The launcher uses this to create its own mount points there, so the
+    # container runtime does not leave files it did not write in the state dir (session._own_mount_point).
+    state_mirrors: dict = field(default_factory=dict)
+    # [(name in the session run dir, container path)] mounted read-write and EMPTY for one session only:
+    # a place the agent writes that is deliberately not kept. Harvested into the inbox at teardown.
+    per_session_dirs: tuple = ()
 
     def agent_argv(self, approvals):
         return list(self.command) + list(self.approvals_off_args if approvals == "off" else self.approvals_on_args)
@@ -36,6 +43,11 @@ class Adapter:
         """Host-side work at session start that depends on the session (generated files, keys). Returns a
         SessionSetup. Default: nothing extra."""
         return SessionSetup()
+
+    def extra_profile_notes(self, inbox, kept=True):
+        """Agent-specific lines for the session notes about the profile and the inbox -- what is true of
+        THIS agent's own writing paths. Default: none."""
+        return []
 
     def redundant_state_copy(self, settings, name, path):
         """Is this per-project state file a copy of what the profile already holds, with nothing of its own?

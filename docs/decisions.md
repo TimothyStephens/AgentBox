@@ -1204,3 +1204,40 @@ the itest carries the OMP load-path cases as skips that name the reason.
 **Not built, on purpose: the curator.** Reviewing an inbox item is still a person reading a skill. An agent
 whose job is that review wants a project of its own (the profile read-write, a reviewed prompt, a record of
 what it rejected); `docs/TODO.md` describes it as the follow-up. Harvest should be lived with first.
+
+## 2026-10-29 (later) — OMP loads the profile; autolearn keeps its own directory
+
+The question that held OMP's profile back is answered, from the public source Tim pointed at
+(`github.com/can1357/oh-my-pi`: `packages/coding-agent/src/autolearn/managed-skills.ts`,
+`discovery/builtin.ts`, `docs/skills.md`): **autolearn writes only to `<agentDir>/managed-skills`**, never
+to `<agentDir>/skills`, and both directories are discovered unconditionally. That is the whole basis for the
+change, so `omp.AUTOLEARN_DIR` names it in one place with the citation beside it.
+
+- **The authored paths carry the profile, read-only:** `agent/{skills,rules,prompts,agents,commands}` from
+  `~/.config/agentbox/omp/profile/`, in every preset including lockdown — the same deal Claude has. Taking
+  `agent/skills` read-only no longer costs autolearn anything, because it was never writing there.
+- **`agent/managed-skills` is per session.** The session gets it empty every time, from its own run dir, and
+  at teardown everything in it is moved into the project's inbox as `learned-<name>` with the usual
+  provenance sidecar. A skill the agent wrote itself is a *proposal*: it goes to the review queue, not into
+  what every later session loads. Nothing it learned survives into the next session unpromoted, and a
+  lockdown session keeps none of it (its inbox is ephemeral too). Autolearn is unaffected — it writes where
+  it always wrote, and the output stops being invisible.
+- **The session notes say so**, per agent rather than generically: OMP is told where its learned skills go
+  and that the authored directories are read-only; Claude is told about its `#` shortcuts. That paragraph
+  used to be Claude-specific text shown to OMP sessions as well, which was simply wrong — OMP reads neither
+  CLAUDE.md nor a `#` shortcut (`Adapter.extra_profile_notes`).
+- **Mount points under `~/.omp/agent`** are created by the launcher, like Claude's: `Adapter.state_mirrors`
+  says which container paths mirror the per-project state dir, so `_own_mount_point` works for both agents
+  and the end-of-session state scan does not report the runtime's own mount points as changes.
+
+**What the builder could not verify.** Whether the *installed* OMP is recent enough to have the split.
+`~/.omp` is off limits to an agentbox session by this project's own rules, and is not visible inside one;
+the attempt was refused, correctly. So the five read-only mounts are wired on the strength of Tim's reading
+of the source, with the check left to him (`grep -rl managed-skills ~/.omp/versions/*/`) and the one-line
+revert named in `docs/TODO.md`. The risk if the installed build is older: autolearn's writes to
+`agent/skills` would be refused — visible, reversible, and on a feature whose output has never appeared in
+that tree (the 30 Sep snapshot in `tests/fixtures/omp/tree.txt` has no skills directory at all).
+
+**Also, the scan learned four more "runs later" directories:** `.agents/`, `.codex/`, `.opencode/` and
+`.github/skills/`. A repo can feed more than one agent, and unlike `.claude`/`.omp` these are not covered
+by lockdown at all, so the report is the only thing that would mention them.

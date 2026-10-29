@@ -42,9 +42,11 @@ RUN_LATER_NAMES = {"Makefile", "makefile", "GNUmakefile", "package.json", "pypro
                    "CLAUDE.md", "AGENTS.md", ".mcp.json", "mcp.json"}
 RUN_LATER_PATHS = (".vscode/tasks.json", ".vscode/launch.json", ".vscode/settings.json")
 # A repo's agent directories, whole: a skill, hook, tool, sub-agent or settings file added under one of them
-# is read by the next session and by the user's own agent outside agentbox. `lockdown` covers these
-# read-only (omp.REPO_CODE); every other preset leaves them writable, which is when the report matters.
-RUN_LATER_DIRS = (".github/workflows/", ".claude/", ".omp/")
+# is read by the next session and by the user's own agent outside agentbox. `lockdown` covers `.claude` and
+# `.omp` read-only (omp.REPO_CODE); every other preset leaves them writable, and the others here are not
+# covered at all, which is when the report matters most.
+RUN_LATER_DIRS = (".github/workflows/", ".github/skills/", ".claude/", ".omp/", ".agents/", ".codex/",
+                  ".opencode/")
 SKIP_DIRS = {".git", "node_modules", "__pycache__"}
 VENV_DIRS = {".venv", "venv"}           # only their .pth files are looked at
 HOOK_VAR = "SECRETS_REGEX"          # the variable in the host hook that holds its pattern

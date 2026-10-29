@@ -76,6 +76,19 @@ class Scan(TempCase):
             self.assertIn(f"  {f}", text, f)
         self.assertTrue(any("run later" in s for s in summary), summary)
 
+    def test_other_agents_directories_run_later_too(self):
+        """A repo can feed more than one agent, and a skill or hook dropped in any of these is read by
+        whatever runs next -- including tools agentbox does not sandbox at all (29 Oct)."""
+        self.write("proj/.agents/reviewer.md", "---\nname: reviewer\n---\n")
+        self.write("proj/.codex/config.toml", "[tools]\n")
+        self.write("proj/.opencode/opencode.json", "{}\n")
+        self.write("proj/.github/skills/deploy/SKILL.md", "deploy it\n")
+        summary, text = self.report()
+        for f in (".agents/reviewer.md", ".codex/config.toml", ".opencode/opencode.json",
+                  ".github/skills/deploy/SKILL.md"):
+            self.assertIn(f"  {f}", text, f)
+        self.assertTrue(any("run later" in s for s in summary), summary)
+
     def test_an_unrelated_dotfile_is_not_flagged(self):
         """The list is specific: a dot-directory that does not feed an agent stays out of the report."""
         self.write("proj/.config/notes.md", "hi\n")

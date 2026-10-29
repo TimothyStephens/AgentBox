@@ -9,22 +9,23 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
 
 ## Needs an answer / a real fix
 
-- **OMP profile load paths** (29 Oct, the one open question in the profile build). The host-owned profile
-  is mounted read-only at each agent's load paths; for OMP those would be
-  `~/.omp/agent/{skills,rules,prompts,agents,commands}`, which is exactly where **autolearn writes**
-  (`omp.py`'s own comment, left writable deliberately since step 5C). Mounting a profile there read-only
-  would break autolearn, so `omp.ADAPTER.profile_mounts` is empty and only the inbox, the snapshot and
-  `ab profile harvest` are wired for OMP. Whether autolearn's output directory can be pointed elsewhere
-  (at the inbox) **could not be determined from inside the sandbox**: `~/.omp` is off limits by the
-  project's own rules and OMP is not public. Options, cheapest first:
-  1. **Autolearn is configurable** → point it at `~/.omp/agent/inbox` and mount the profile read-only at
-     the five paths, exactly as Claude's. One line in the adapter plus the config key.
-  2. **Autolearn is not configurable, but OMP reads a second root** → mount the profile at that root
-     read-only and leave `agent/` writable. Needs to know what OMP's loader searches.
-  3. **Neither** → copy the profile's items *into* the writable dirs at session start (so they load) and
-     accept that a session can edit its copy, with the end-of-session state scan reporting it. Weaker than
-     Claude's guarantee, honest about being weaker.
-  4. Leave OMP as it is today: inbox only, no shared profile.
+- ~~**OMP profile load paths**~~ — **resolved and built, 29 Oct.** The question was whether a read-only
+  profile at `agent/{skills,rules,prompts,agents,commands}` would break autolearn, which writes into that
+  area. Answered from the public source (`github.com/can1357/oh-my-pi`:
+  `packages/coding-agent/src/autolearn/managed-skills.ts`, `discovery/builtin.ts`, `docs/skills.md`):
+  **autolearn writes only to `<agentDir>/managed-skills`**, never to `<agentDir>/skills`, and both are
+  discovered unconditionally. So the authored directories carry the profile read-only, and autolearn keeps
+  its own directory — which agentbox gives it **empty every session** and harvests into the project's inbox
+  at teardown, because a skill the agent wrote itself is a proposal, not something later sessions should
+  load unreviewed. `omp.AUTOLEARN_DIR` names the one directory this rests on.
+
+  **Not verified by the builder:** whether the *installed* OMP is recent enough to have that split.
+  `~/.omp` is off limits to an agentbox session by this project's own rules (and is not visible inside one),
+  so the check is Tim's:
+  `grep -rl managed-skills ~/.omp/versions/*/ | head`. If it comes back empty, the installed build predates
+  the split and `omp.ADAPTER.profile_mounts` must be emptied again (one line, and the two OMP cases in
+  `tests/integration/test_profile.py` go back to skips) until `omp-env` is rebuilt.
+
 - **Two concurrent sessions of one project share its agent state**, with no locking: Claude's
   `.claude.json`/settings and OMP's `agent/` are last-writer-wins, and the inbox is shared too.
   `ab run` now warns and says so, which is a label on the problem, not a fix. The real fix is one of:

@@ -147,6 +147,14 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   autolearn writes exactly there, and whether it can be pointed elsewhere could not be determined from
   inside the sandbox (TODO.md).
 
+- **OMP's profile load paths** (29 Oct, decisions.md): resolved from oh-my-pi's source — autolearn writes
+  only to `agent/managed-skills`, never to `agent/skills` — so OMP now loads the host-owned profile
+  read-only at its five authored paths, in every preset. `managed-skills` is given to each session empty and
+  harvested into the project's inbox at teardown, so autolearn keeps working and what it learns waits for
+  `ab profile harvest`. The scan also picked up `.agents/`, `.codex/`, `.opencode/` and `.github/skills/`.
+  Still unverified by the builder: whether the installed OMP has that split (`~/.omp` is off limits to a
+  session) — the check and the one-line revert are in TODO.md.
+
 ## Next
 
 The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.

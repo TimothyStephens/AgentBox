@@ -34,6 +34,14 @@ USER_FILES = (("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags
 # (empty) so one session cannot plant something every later session of the project runs (review 2026-10-01
 # #2). Prompt-only dirs (skills, rules, prompts, agents, commands) stay writable: OMP's autolearn writes there.
 CODE_DIRS = ("agent/extensions", "agent/hooks", "agent/tools")
+# Autolearn's own output directory. OMP writes learned skills ONLY here; `agent/skills` holds authored
+# skills and autolearn never writes to it, and both are discovered unconditionally
+# (oh-my-pi: packages/coding-agent/src/autolearn/managed-skills.ts, discovery/builtin.ts, docs/skills.md).
+# That is what makes a read-only profile at agent/skills safe: see docs/decisions.md, 29 Oct.
+AUTOLEARN_DIR = "agent/managed-skills"
+# The profile's load paths: host-owned skills, rules, prompts, sub-agents and commands, read-only. Authored
+# content, which is exactly what the profile is -- so `agent/skills` is the right home for it.
+PROFILE_DIRS = ("skills", "rules", "prompts", "agents", "commands")
 CODE_FILES = ("agent/.mcp.json", "agent/mcp.json", "agent/settings.json")
 SECRET_HEADER = re.compile(r"auth|key|token|secret|cookie|session", re.I)
 LOCAL_PROVIDER = "llama-cpp"
@@ -334,6 +342,17 @@ def _prepare_file(path):
 
 
 class OmpAdapter(Adapter):
+    def extra_profile_notes(self, inbox, kept=True):
+        """Autolearn still works; what changes is where its output ends up."""
+        where = (f"at the end of the session everything in it is moved to `{inbox}` for the user to review "
+                 f"with `ab profile harvest` -- so learning something is worth doing, it just does not "
+                 f"become a shared skill until a person promotes it"
+                 if kept else "this session keeps nothing, so anything learned has to go in your reply")
+        return [f"- `{C_OMP}/{AUTOLEARN_DIR}` is where your own learned skills go (autolearn writes there, "
+                f"and only there). It starts empty every session and is not kept: {where}. "
+                f"`{C_OMP}/agent/skills` and the other authored directories are the shared profile, "
+                f"read-only."]
+
     def omp_home(self, settings):
         return os.path.expanduser(settings.omp_home)
 
@@ -440,13 +459,14 @@ ADAPTER = OmpAdapter(
     # reads .omp/ and ~/.omp/agent together), so lockdown drops extension discovery (Tim's plugins too) and
     # the overlay turns off project MCP config (decisions.md, 1 Oct).
     approvals_on_args=["--approval-mode=always-ask", "--no-extensions", f"--config={LOCKDOWN_OVERLAY}"],
-    # profile_mounts is deliberately EMPTY, pending one answer: OMP's autolearn writes into
-    # agent/{skills,rules,prompts,agents,commands}, which are exactly the paths a profile would occupy
-    # read-only. Mounting there would break autolearn, and whether its output directory can be pointed
-    # somewhere else (the inbox) cannot be determined from inside the sandbox -- ~/.omp is off limits and
-    # OMP is not public. The inbox, the harvest commands and the snapshot machinery are live for OMP; only
-    # the read-only load paths wait. See docs/TODO.md ("OMP profile load paths").
-    profile_mounts={},
+    # The host-owned profile, read-only, at OMP's own load paths. Safe because autolearn writes only to
+    # agent/managed-skills (AUTOLEARN_DIR above), never to agent/skills -- the question that held this back
+    # until 29 Oct. If an installed OMP ever predates that split, these five mounts are what to drop.
+    profile_mounts={d: f"{C_OMP}/agent/{d}" for d in PROFILE_DIRS},
+    state_mirrors={f"{C_OMP}/agent": "agent"},      # ~/.omp/agent is a bind of <state>/agent
+    # Autolearn's output: empty at the start of every session, harvested into the project's inbox at
+    # teardown, and kept by nothing. A learned skill is a proposal, not something later sessions load.
+    per_session_dirs=(("omp-managed-skills", f"{C_OMP}/{AUTOLEARN_DIR}"),),
     # The inbox IS wired: a read-write directory at a path OMP does not load from, inside its own agent dir
     # so it is in front of the agent. It is bound after `agent/` itself, so it survives that mount.
     inbox_mount=f"{C_OMP}/agent/inbox",

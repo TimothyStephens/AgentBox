@@ -80,15 +80,21 @@ per-project; the toolchain is a host-shared read-only global.
 | MCP / MAGS (if you create them) | `~/.config/agentbox/omp/mcp.json`, `mags-codedev.yaml` | `~/.omp/agent/.mcp.json`, `~/.omp/agent/mags-codedev.yaml` | **global** | ro |
 | Repo config (`.omp/`, `.mcp.json`) | the project repo | the grant | per-project (committed) | rw (ro in lockdown) |
 | Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
+| Profile (`skills`, `rules`, `prompts`, `agents`, `commands`) | `~/.config/agentbox/omp/profile/` | `~/.omp/agent/<same>` | **global** (every project, every preset) | **ro** |
+| Autolearn's output | `<run>/sessions/<s>/omp-managed-skills` | `~/.omp/agent/managed-skills` | **per session**, harvested into the inbox at teardown | rw |
 
 - The writable `agent/` dir has the read-only files above (`config.yml`, `models.yml`, `.mcp.json`,
   `mags-codedev.yaml`, `AGENTS.md`) mounted on top of it, and `agent/extensions`, `agent/hooks`,
   `agent/tools` are covered empty read-only (so one session cannot plant code the next runs). Prompt dirs
   (`skills`, `rules`, `prompts`, `agents`, `commands`) stay writable for OMP's autolearn.
-- **OMP has the inbox but not yet a read-only profile.** A host-owned profile would be mounted at exactly
-  those five prompt dirs, which is where autolearn writes, so `omp.ADAPTER.profile_mounts` is empty for now;
-  the inbox, the snapshot and `ab profile harvest` all work for OMP today. The open question (is autolearn's
-  output directory configurable?) and the four options are in `docs/TODO.md`.
+- **OMP loads the host profile too** (29 Oct), read-only at `agent/{skills,rules,prompts,agents,commands}`
+  from `~/.config/agentbox/omp/profile/`. Safe because **autolearn writes only to
+  `agent/managed-skills`**, never to `agent/skills` (oh-my-pi: `autolearn/managed-skills.ts`,
+  `discovery/builtin.ts`, `docs/skills.md`), and both are discovered unconditionally.
+- **`agent/managed-skills` is per session.** Empty at the start, and at teardown everything in it moves to
+  the project's inbox as `learned-<name>`, with provenance. So autolearn keeps working, and what it produces
+  waits for `ab profile harvest` instead of becoming something every later session loads. A lockdown
+  session keeps none of it.
 - **Keys never enter via these files.** `models.yml` is regenerated per session from the keyless seed and
   references `AB_KEY_<PROVIDER>` variables; `config.yml` and `plugins/` are mounted read-only and are *not*
   scanned, so never put a secret in them (see the OMP note in `docs/design.md`).

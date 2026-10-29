@@ -583,6 +583,15 @@ sandbox notes followed by the profile's own). Four properties follow:
 `settings.json` is the one exception: Claude Code writes it itself, so it is **copied** from the profile into
 the per-project state at every start rather than mounted read-only.
 
+**OMP loads the profile the same way** (29 Oct), at `~/.omp/agent/{skills,rules,prompts,agents,commands}`.
+This rests on one fact about OMP: **autolearn writes only to `<agentDir>/managed-skills`**, never to
+`<agentDir>/skills`, and both are discovered unconditionally (oh-my-pi:
+`packages/coding-agent/src/autolearn/managed-skills.ts`, `discovery/builtin.ts`, `docs/skills.md`), so a
+read-only profile at the authored paths does not take autolearn's writing surface away. `managed-skills`
+itself is given to the session **empty, every time**, and whatever it holds is moved into the project's
+inbox at teardown: a skill the agent wrote is a proposal, and the queue is where proposals go. Nothing it
+learned survives into the next session unpromoted. `omp.AUTOLEARN_DIR` is the single place that name lives.
+
 **The inbox.** What a session wants to keep goes to `<data>/<project>/<agent>/inbox/`, mounted read-write at
 a path nothing loads from. It is per project and persistent, **except under `lockdown`**, where it
 sits inside the session's ephemeral state and is deleted with it: that preset keeps nothing, and the
@@ -590,7 +599,8 @@ session notes tell the agent which of the two kinds of inbox it has. At teardown
 persistent inbox gets a provenance sidecar
 (project, session, timestamp, preset, egress mode, agent) and the count is printed. `ab profile harvest`
 lists unreviewed items across all projects, registered or not, marks those from an open-egress session,
-groups near-duplicates, and `promote`/`dismiss` act on one. Claude's `#` memory shortcut still works for the
+groups near-duplicates, and `promote`/`dismiss` act on one. An item harvested from OMP's `managed-skills`
+is named `learned-<name>` and carries the same provenance as anything else. Claude's `#` memory shortcut still works for the
 *project's* CLAUDE.md (in the grant, and reported by the end-of-session scan); aimed at the user-level one it
 fails, and the session notes say so and point at the inbox.
 
