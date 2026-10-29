@@ -204,17 +204,10 @@ class RegistryEditsRefuseOnUnknownState(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        err = io.StringIO()
-        # stdin too: `ab run` reads it without a TTY, so a run that gets further than expected would
-        # block on the real stdin instead of failing.
-        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
-             unittest.mock.patch("sys.stdin", io.StringIO("")):
-            code = cli.main(["run", "claude", "p1", "--no-tty"])
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
-        self.assertIn("ab-claude-p1-1", err.getvalue())
-        self.assertIn("ab attach p1", err.getvalue())
+        self.assertIn("ab-claude-p1-1", out)
+        self.assertIn("ab attach p1", out)
         self.assertFalse(hasattr(cli, "_warn_if_live"), "the warning is gone, not just unused")
 
 

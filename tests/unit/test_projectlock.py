@@ -157,20 +157,6 @@ class RunHoldsTheProject(SettingsCase):
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
 
-    def run_ab(self, *argv):
-        """`ab run` reads stdin when it has no TTY, so stdin is replaced here as well as stdout/stderr.
-        Without that, a run that gets further than the test expects BLOCKS on the real stdin instead of
-        failing -- which is how a broken refusal would hang a mutation check rather than show up as red."""
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err), mock.patch("sys.stdin", io.StringIO("")):
-            try:
-                code = cli.main(list(argv))
-            except SystemExit as e:
-                code = e.code
-        return code, out.getvalue() + err.getvalue()
-
     def lock(self):
         return projectlock.read(self.settings, "p1")
 
@@ -199,7 +185,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
-        code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("p1 is running (session ab-claude-p1-1)", out)
         self.assertIn("ab attach p1", out)
@@ -209,7 +195,7 @@ class RunHoldsTheProject(SettingsCase):
     def test_the_refusal_says_why_one_at_a_time(self):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
-        _code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        _code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertIn("agent state and inbox", out)
         self.assertIn("last writer wins", out)
 
@@ -221,7 +207,7 @@ class RunHoldsTheProject(SettingsCase):
         with open(projectlock.path(self.settings, "p1")) as f:
             before = f.read()
         os.environ["FAKE_PODMAN_PSJSON"] = ps_json("ab-claude-p1-1")
-        self.assertEqual(self.run_ab("run", "claude", "p1", "--no-tty")[0], 2)
+        self.assertEqual(self.ab("run", "claude", "p1", "--no-tty")[0], 2)
         with open(projectlock.path(self.settings, "p1")) as f:
             self.assertEqual(f.read(), before, "someone else's lock is untouched")
 
@@ -236,7 +222,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         self.husk()
-        code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("reaped session ab-claude-p1-9", out)
         self.assertIn("container(s)", out, "it reports what it removed")
@@ -250,7 +236,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         self.husk()
-        code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("ab-claude-p1-9", out, "it says what it removed")
         self.assertTrue(any("ab-claude-p1-9-proxy" in " ".join(c) for c in self.removals()))
@@ -258,7 +244,7 @@ class RunHoldsTheProject(SettingsCase):
 
     def test_a_stale_lock_with_no_session_id_is_just_cleared(self):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
-        code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("stale session lock", out)
 
@@ -267,14 +253,14 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         os.environ["FAKE_PODMAN_FAIL"] = "ps"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_FAIL", None)
-        code, _out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, _out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertEqual(self.lock()["session"], "ab-claude-p1-9", "still held")
 
     # --- release on every exit ---
 
     def test_the_lock_is_released_on_a_normal_run(self):
-        code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIsNone(self.lock())
         self.assertEqual(session.sessions(self.settings, Podman(self.settings.podman)), {},
@@ -289,7 +275,7 @@ class RunHoldsTheProject(SettingsCase):
             return real(self_, *a, **kw)
 
         with mock.patch.object(session.NetSession, "run_captured", spy):
-            self.run_ab("run", "claude", "p1", "--no-tty")
+            self.ab("run", "claude", "p1", "--no-tty")
         self.assertTrue(seen["lock"], "held during the run")
         self.assertTrue(seen["lock"]["session"].startswith("abt-unit-claude-p1-"),
                         "and it records which session holds it")
@@ -297,7 +283,7 @@ class RunHoldsTheProject(SettingsCase):
     def test_the_lock_is_released_when_prepare_raises(self):
         with mock.patch.object(session.NetSession, "_prepare_reserved",
                                side_effect=AgentboxError("boom")):
-            code, out = self.run_ab("run", "claude", "p1", "--no-tty")
+            code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("boom", out)
         self.assertIsNone(self.lock(), "a failed start does not block the project")
@@ -305,7 +291,7 @@ class RunHoldsTheProject(SettingsCase):
     def test_the_lock_is_released_when_load_project_raises_before_any_session_exists(self):
         """Nothing has been named yet, so teardown cannot release it -- `ab run`'s own handle does."""
         with mock.patch.object(session, "load_project", side_effect=AgentboxError("bad entry")):
-            code, _out = self.run_ab("run", "claude", "p1", "--no-tty")
+            code, _out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIsNone(self.lock())
 
@@ -313,7 +299,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
         os.environ["FAKE_PODMAN_PSJSON"] = ps_json("ab-claude-p1-1")
-        code, out = self.run_ab("session", "kill", "p1")
+        code, out = self.ab("session", "kill", "p1")
         self.assertEqual(code, 0, out)
         self.assertIn("killed ab-claude-p1-1", out)
         self.assertIsNone(self.lock())
@@ -321,7 +307,7 @@ class RunHoldsTheProject(SettingsCase):
     # --- the unregistered path ---
 
     def test_an_unregistered_project_is_not_registered_implicitly(self):
-        code, out = self.run_ab("run", "claude", "nope", "--no-tty")
+        code, out = self.ab("run", "claude", "nope", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("ab project add nope", out)
         self.assertIn("--preset", out)
@@ -334,11 +320,11 @@ class RunHoldsTheProject(SettingsCase):
         os.makedirs(os.path.join(repos, "fresh"))
         os.environ["AB_REPOS_DIR"] = repos
         self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
-        _code, out = self.run_ab("run", "claude", "fresh", "--no-tty")
+        _code, out = self.ab("run", "claude", "fresh", "--no-tty")
         self.assertIn(f"ab project add fresh {os.path.join(repos, 'fresh')} --preset", out)
 
     def test_a_placeholder_root_when_there_is_nothing_to_guess(self):
-        _code, out = self.run_ab("run", "claude", "nowhere", "--no-tty")
+        _code, out = self.ab("run", "claude", "nowhere", "--no-tty")
         self.assertIn("ab project add nowhere <path to its code> --preset", out)
 
 
@@ -353,27 +339,13 @@ class Attach(SettingsCase):
         super().setUp()
         self.project("p1", preset="script")
 
-    def run_ab(self, *argv):
-        """`ab run` reads stdin when it has no TTY, so stdin is replaced here as well as stdout/stderr.
-        Without that, a run that gets further than the test expects BLOCKS on the real stdin instead of
-        failing -- which is how a broken refusal would hang a mutation check rather than show up as red."""
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err), mock.patch("sys.stdin", io.StringIO("")):
-            try:
-                code = cli.main(list(argv))
-            except SystemExit as e:
-                code = e.code
-        return code, out.getvalue() + err.getvalue()
-
     def running(self, role="agent", state="running"):
         os.environ["FAKE_PODMAN_PSJSON"] = ps_json("ab-claude-p1-1", role=role, state=state)
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
 
     def test_it_attaches_to_the_agent_container(self):
         self.running()
-        code, out = self.run_ab("attach", "p1")
+        code, out = self.ab("attach", "p1")
         self.assertEqual(code, 0, out)
         self.assertIn(["attach", "ab-claude-p1-1-agent"], self.podman_calls())
         self.assertIn("attaching to p1 (session ab-claude-p1-1)", out)
@@ -382,13 +354,13 @@ class Attach(SettingsCase):
     def test_it_is_named_by_project_not_by_session_id(self):
         """The id is in the logs and the provenance; a user names the project."""
         self.running()
-        self.assertEqual(self.run_ab("attach", "p1")[0], 0)
-        self.assertEqual(self.run_ab("attach", "ab-claude-p1-1")[0], 2, "not an id")
+        self.assertEqual(self.ab("attach", "p1")[0], 0)
+        self.assertEqual(self.ab("attach", "ab-claude-p1-1")[0], 2, "not an id")
 
     def test_nothing_running_says_how_to_start_one(self):
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        code, out = self.run_ab("attach", "p1")
+        code, out = self.ab("attach", "p1")
         self.assertEqual(code, 2)
         self.assertIn("no session of p1 is running", out)
         self.assertIn("ab run <agent> p1", out)
@@ -396,7 +368,7 @@ class Attach(SettingsCase):
     def test_an_unregistered_project_gets_the_add_command(self):
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        code, out = self.run_ab("attach", "nope")
+        code, out = self.ab("attach", "nope")
         self.assertEqual(code, 2)
         self.assertIn("ab project add nope", out)
 
@@ -408,7 +380,7 @@ class Attach(SettingsCase):
         with open(os.path.join(d, "session.json"), "w") as f:
             json.dump({"project": "p1", "agent": "claude", "pid": os.getpid(),
                        "pid_start": session._start_time(os.getpid())}, f)
-        code, out = self.run_ab("attach", "p1")
+        code, out = self.ab("attach", "p1")
         self.assertEqual(code, 2)
         self.assertIn("agent container is not running", out)
         self.assertIn("ab session kill p1", out)

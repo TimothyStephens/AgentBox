@@ -46,16 +46,68 @@ class Env:
         os.chmod(tok, 0o600)
         self.env = dict(os.environ, AB_CONFIG_DIR=self.cfg, AB_DATA_DIR=self.data, AB_RUN_DIR=self.run_dir)
 
-    def ab(self, *args, timeout=900, check=False, input=""):
-        p = subprocess.run([sys.executable, "-m", "agentbox", *args], cwd=REPO, env=self.env, input=input,
-                           capture_output=True, text=True, timeout=timeout)
+    def ab(self, *args, timeout=900, check=False, input=None):
+        """`ab <args>` with **stdin closed** unless a test passes `input`.
+
+        `ab run` without a TTY reads stdin, so an inherited one makes a test that goes further than
+        expected block on the terminal instead of failing. A timeout is a FAIL naming the command and what
+        it had printed -- never a bare TimeoutExpired, and never a test that just stops."""
+        kw = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+        try:
+            p = subprocess.run([sys.executable, "-m", "agentbox", *args], cwd=REPO, env=self.env,
+                               capture_output=True, text=True, timeout=timeout, **kw)
+        except subprocess.TimeoutExpired as e:
+            out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            err = (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            raise AssertionError(f"`ab {' '.join(args)}` did not finish in {timeout}s. Output so far:\n"
+                                 f"{out}\n{err}") from None
         if check and p.returncode != 0:
             raise AssertionError(f"ab {' '.join(args)} failed ({p.returncode}):\n{p.stdout}\n{p.stderr}")
         return p
 
     def ab_bg(self, *args):
+        """A background `ab` with pipes and no stdin. For the interactive path, use `ab_pty`."""
         return subprocess.Popen([sys.executable, "-m", "agentbox", *args], cwd=REPO, env=self.env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def ab_pty(self, *args):
+        """A background `ab` on a pty, so `ab run` takes its interactive path (a TTY on stdin).
+
+        Returns (process, master fd). The master is the "terminal" and the slave is the child's stdio, so
+        `ab run` sees a TTY on stdin and takes the interactive path. Read from the master or the child
+        blocks once the pty buffer fills.
+
+        The child gets its own session (`start_new_session`), so signals aimed at the test runner's group
+        do not reach it -- which also means closing the master does NOT make the kernel send SIGHUP (there
+        is no controlling terminal to hang up). A test that wants the closed-terminal case sends SIGHUP
+        itself: same signal, same handler, deterministic."""
+        import pty
+        master, slave = pty.openpty()
+        p = subprocess.Popen([sys.executable, "-m", "agentbox", *args], cwd=REPO, env=self.env,
+                             stdin=slave, stdout=slave, stderr=slave, text=True, start_new_session=True)
+        os.close(slave)
+        return p, master
+
+    @staticmethod
+    def drain(fd, until=None, timeout=60):
+        """Everything readable from a pty master, optionally until a marker appears."""
+        import select
+        out, deadline = "", time.time() + timeout
+        while time.time() < deadline:
+            if not select.select([fd], [], [], 0.5)[0]:
+                if until is None:
+                    break
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk.decode(errors="replace")
+            if until and until in out:
+                break
+        return out
 
     def make_project(self, name, *, preset="python", extra=(), git=True, secrets_files=True):
         root = os.path.join(self.projects, name)

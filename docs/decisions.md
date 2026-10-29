@@ -1267,7 +1267,16 @@ a problem rather than a fix (it was `docs/TODO.md`'s "real fix" item). Now a pro
 - **A backstop for a missing lock:** a running session of the project with no lock file at all -- one
   started before this existed, or whose lock was removed by hand -- also refuses, naming the session. Found
   by an existing test that kept passing when it should not have.
-- **`ab attach <project>`** is the way back in: `podman attach` on the session's agent container, the same
+- **An itest for the lock** (`tests/integration/test_lock.py`) covers what the fake podman cannot: a session
+started **on a pty**, so `ab run` takes its interactive path, then (a) a second run refused, (b) SIGHUP --
+the closed-terminal case, an ssh drop or a killed tmux pane -- leaving no lock and no containers, with the
+logs and scan still kept, and (c) SIGKILL. (c) is two steps, because that is its real shape: while the
+agent is still running the next run is *refused* (SIGKILL cannot stop a container, and a live session is
+never reaped out from under anyone); once the agent is gone, what remains is a husk, which the next run
+reaps and reports. The signal is sent explicitly rather than by closing the pty master -- the launcher runs
+in its own session, so there is no controlling terminal for the kernel to hang up.
+
+**`ab attach <project>`** is the way back in: `podman attach` on the session's agent container, the same
   stdio the launcher has. If the launcher's own terminal is still open, both are attached to the one agent;
   that is what re-attaching to a process means, and the multiplexed version is still `ab ws` (step 7).
 - **Users name projects, not sessions.** `ab attach web`, `ab session kill web` (ids still accepted),
@@ -1277,6 +1286,29 @@ a problem rather than a fix (it was `docs/TODO.md`'s "real fix" item). Now a pro
 - **No implicit registration.** `ab run` on an unregistered name prints the `ab project add` command to run,
   with the root filled in from the repos dir when something is actually there and a placeholder when it is
   not. A project names a grant the agent gets read-write; that is a decision, not a default.
+
+**Harness defaults, so a test cannot end without a verdict** (29 Oct). Two ways a CLI test can fail to
+produce one, both of which happened here:
+
+- **stdin.** `ab run` reads stdin when it has no TTY, so a test whose refusal stops working reads from
+  whatever stdin the runner had -- a terminal, in a developer's shell -- and blocks. Every in-process `ab`
+  now gets an empty, already-at-EOF stdin (`helpers.SettingsCase.ab`, which also replaced seven
+  near-identical per-file helpers), and `tests/integration/harness.py`'s `ab()` passes
+  `stdin=subprocess.DEVNULL` unless a test gives it `input`.
+- **waiting.** A session that gets further than a test intended waits on something real -- `_wait_proxy`
+  polls for `ready_timeout`, 60s -- and several of those is a suite that looks hung. Every in-process `ab`
+  has a deadline (SIGALRM) and passing it is a FAIL naming the command and everything printed up to that
+  point; the integration harness turns `TimeoutExpired` into the same thing instead of a traceback.
+
+`tests/unit/test_harness.py` pins both, including the case the default prevents: with the default opted out
+of and a stdin that never reaches EOF, the run ends as a failure rather than hanging. A harness guarantee
+that nothing checks is one that quietly lapses.
+
+**A correction.** When mutation runs stopped producing verdicts earlier, I put it down to the stdin block.
+That was wrong in this sandbox: stdin here is already at EOF, so `read()` returns at once. The real causes
+were a background job killed for low memory, and `_wait_proxy` waiting 60s per test once a mutated refusal
+let the run proceed. The stdin hazard is real on a terminal and the default is still right -- but it was
+not what I had just observed, and I said it was.
 
 **Two weak tests found while doing this**, both of the same kind as the ones the itest turned up: an
 assertion that matched `podman volume ls` as if it were a removal (so "teardown really ran" was vacuous --

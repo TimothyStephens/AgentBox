@@ -85,12 +85,11 @@ class RunParsing(SettingsCase):
 
         with unittest.mock.patch("agentbox.session.sessions", return_value={}), \
              unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load), \
-             unittest.mock.patch("agentbox.session.make_session", side_effect=fake_make), \
-             unittest.mock.patch("sys.stdin") as stdin:
-            stdin.isatty.return_value = False
-            stdin.read.return_value = ""
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                cap["rc"] = cli.main(argv)
+             unittest.mock.patch("agentbox.session.make_session", side_effect=fake_make):
+            # `ab()` closes stdin (so the no-TTY branch reads "" instead of blocking on the terminal) and
+            # puts a deadline on the call. The lock is real here: taken, noted, and released by the context
+            # manager on the way out, since FakeSess has no teardown to do it.
+            cap["rc"] = self.ab(*argv)[0]
         return cap
 
     def test_shell_flag_after_positionals(self):
@@ -167,14 +166,11 @@ class RunGuardTest(SettingsCase):
               "Labels": {"agentbox.project": "p1", "agentbox.session": "abt-old-1",
                          "agentbox.role": "agent", "agentbox-test": "1"}}])
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        err = io.StringIO()
-        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
-             unittest.mock.patch("sys.stdin", io.StringIO("")):
-            rc = cli.main(["run", "--agent", "claude", "--project", "p1", "--no-tty"])
+        rc, out = self.ab("run", "--agent", "claude", "--project", "p1", "--no-tty")
         self.assertEqual(rc, 2)
-        self.assertIn("abt-old-1", err.getvalue())
-        self.assertIn("holds no session lock", err.getvalue())
-        self.assertIn("ab attach p1", err.getvalue())
+        self.assertIn("abt-old-1", out)
+        self.assertIn("holds no session lock", out)
+        self.assertIn("ab attach p1", out)
         from agentbox import projectlock
         self.assertIsNone(projectlock.read(self.settings, "p1"), "and it did not keep the lock it tried")
 

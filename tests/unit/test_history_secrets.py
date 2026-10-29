@@ -28,8 +28,10 @@ def commit_then_untrack(repo, rel, text="REAL=1\n"):
 
 
 def ab(*argv):
+    """(rc, stdout, stderr) -- this file's tests look at the two streams separately. Stdin is closed here
+    too, like every other in-process `ab` run (helpers.SettingsCase.ab)."""
     out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
+    with redirect_stdout(out), redirect_stderr(err), mock.patch("sys.stdin", io.StringIO("")):
         rc = cli.main(list(argv))
     return rc, out.getvalue(), err.getvalue()
 

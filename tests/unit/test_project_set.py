@@ -33,19 +33,11 @@ class SetBase(SettingsCase):
 
     def rc(self, *argv):
         """Exit code of an `ab` run, whether argparse refused it (SystemExit) or a check did (returns 2)."""
-        try:
-            return cli.main(list(argv))
-        except SystemExit as e:
-            return e.code
+        return self.ab(*argv)[0]
 
     def rc_out(self, *argv):
         """As rc(), plus what the command printed."""
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            code = self.rc(*argv)
-        return code, buf.getvalue()
+        return self.ab(*argv)
 
 
 class SetTest(SetBase):
@@ -282,17 +274,13 @@ class SetTest(SetBase):
     def test_a_read_only_data_grant_warns_but_does_not_block(self):
         """F4: read-only data grants stay allowed -- they are what analysis-offline and operate are for --
         but what they hold is now reported instead of invisible."""
-        import io
-        from contextlib import redirect_stderr
         ro = self.mkdir("rodata")
         with open(os.path.join(ro, "customers.db"), "wb") as f:
             f.write(b"x" * (2 << 20))
-        err = io.StringIO()
-        with redirect_stderr(err):
-            rc = self.rc("project", "set", "p1", "--preset", "analysis-offline", "--data-ro", ro)
+        rc, out = self.ab("project", "set", "p1", "--preset", "analysis-offline", "--data-ro", ro)
         self.assertEqual(rc, 0, "allowed")
-        self.assertIn("customers.db", err.getvalue())
-        self.assertIn("read-only data grant", err.getvalue())
+        self.assertIn("customers.db", out)
+        self.assertIn("read-only data grant", out)
         self.assertEqual(self.entry()["data_ro"], [ro])
         self.assertNotIn("grant_exposure_accepted", self.entry(), "a warning is not an exposure ack")
 
@@ -380,12 +368,8 @@ class AcknowledgementsOnSet(SetBase):
             f.write(b"x" * (2 << 20))
 
     def err(self, *argv):
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        buf, out = io.StringIO(), io.StringIO()
-        with redirect_stderr(buf), redirect_stdout(out):
-            code = self.rc(*argv)
-        return code, buf.getvalue() + out.getvalue()
+        """Everything the command said, whichever stream it used."""
+        return self.ab(*argv)
 
     # --- the acceptance still describes the grant ---
 
@@ -521,12 +505,9 @@ class SwapFromTheCommandLine(SetBase):
         self.assertEqual(self.entry()["swap"], {"server.pem": "dev-cert.txt", "id.key": "dev-id.txt"})
 
     def test_a_mapping_without_an_equals_sign_is_refused_with_the_spelling(self):
-        import io
-        from contextlib import redirect_stderr
-        err = io.StringIO()
-        with redirect_stderr(err):
-            self.assertEqual(self.rc("project", "set", "p1", "--swap", ".env.local"), 2)
-        self.assertIn("TARGET=STANDIN", err.getvalue(), "say how to write it, not just that it is invalid")
+        code, out = self.ab("project", "set", "p1", "--swap", ".env.local")
+        self.assertEqual(code, 2)
+        self.assertIn("TARGET=STANDIN", out, "say how to write it, not just that it is invalid")
         self.assertNotIn("swap", self.entry())
 
     def test_the_flag_cannot_expose_a_secret(self):
@@ -541,13 +522,10 @@ class SwapFromTheCommandLine(SetBase):
         """`ab init` validates the setting flags before writing anything, so a bad one leaves no half-made
         tree behind. That check is the `_check` call in _apply_project_settings -- the registry-level
         validation in _validate_and_save happens far too late for init."""
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
         repos = self.mkdir("repos")
         os.environ["AB_REPOS_DIR"] = repos
         self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            rc = self.rc("init", "python", "--name", "fresh", "--swap", "notes.txt=.env")
+        rc, _out = self.ab("init", "python", "--name", "fresh", "--swap", "notes.txt=.env")
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(repos), [], "nothing was scaffolded")
         self.assertNotIn("fresh", registry.load(self.settings.registry_path))

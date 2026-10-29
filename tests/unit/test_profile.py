@@ -653,21 +653,10 @@ class Harvest(SettingsCase):
         profile.write_sidecar(inbox, name, doc)
         return os.path.join(inbox, name)
 
-    def run_cli(self, *argv):
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            try:
-                code = cli.main(list(argv))
-            except SystemExit as e:
-                code = e.code
-        return code, buf.getvalue()
-
     def test_harvest_is_read_only_and_lists_unreviewed_items(self):
         self.put("p1", "deploy")
         before = profile.tree_hash(self.settings.profile_src("claude"))
-        code, out = self.run_cli("profile", "harvest", "--agent", "claude")
+        code, out = self.ab("profile", "harvest", "--agent", "claude")
         self.assertEqual(code, 0)
         self.assertIn("deploy", out)
         self.assertIn("1 unreviewed", out)
@@ -676,26 +665,26 @@ class Harvest(SettingsCase):
 
     def test_an_item_from_a_removed_project_is_still_listed(self):
         self.put("gone", "orphan")
-        code, out = self.run_cli("profile", "harvest", "--agent", "claude")
+        code, out = self.ab("profile", "harvest", "--agent", "claude")
         self.assertIn("orphan", out)
         self.assertIn("project removed", out)
 
     def test_an_open_egress_item_is_marked(self):
         self.put("p1", "fromweb", egress="open")
-        _code, out = self.run_cli("profile", "harvest", "--agent", "claude")
+        _code, out = self.ab("profile", "harvest", "--agent", "claude")
         self.assertIn("OPEN-EGRESS", out)
 
     def test_identical_items_group_and_same_name_different_content_is_flagged(self):
         self.put("p1", "dup", "same\n")
         self.put("p2", "dup", "same\n")
         self.put("p3", "dup", "DIFFERENT\n")
-        _code, out = self.run_cli("profile", "harvest", "--agent", "claude")
+        _code, out = self.ab("profile", "harvest", "--agent", "claude")
         self.assertIn("identical in 2 projects", out)
         self.assertIn("DIFFERENT content elsewhere", out)
 
     def test_promote_copies_into_the_profile_and_commits_with_provenance(self):
         self.put("p1", "deploy", egress="open")
-        code, out = self.run_cli("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
         self.assertEqual(code, 0, out)
         dst = os.path.join(self.settings.profile_src("claude"), "skills", "deploy", "SKILL.md")
         self.assertEqual(open(dst).read(), "learned\n")
@@ -712,35 +701,35 @@ class Harvest(SettingsCase):
 
     def test_promote_refuses_to_overwrite_or_to_escape(self):
         self.put("p1", "deploy")
-        self.run_cli("profile", "promote", "p1/deploy", "--as", "skills/deploy")
-        self.assertEqual(self.run_cli("profile", "promote", "p1/deploy", "--as", "skills/deploy")[0], 2)
-        self.assertEqual(self.run_cli("profile", "promote", "p1/deploy", "--as", "../escape")[0], 2)
-        self.assertEqual(self.run_cli("profile", "promote", "p1/deploy", "--as", "/etc/x")[0], 2)
+        self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        self.assertEqual(self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")[0], 2)
+        self.assertEqual(self.ab("profile", "promote", "p1/deploy", "--as", "../escape")[0], 2)
+        self.assertEqual(self.ab("profile", "promote", "p1/deploy", "--as", "/etc/x")[0], 2)
 
     def test_promote_without_as_works_only_for_a_plain_skill_directory(self):
         self.put("p1", "deploy")            # holds SKILL.md
-        self.assertEqual(self.run_cli("profile", "promote", "p1/deploy")[0], 0)
+        self.assertEqual(self.ab("profile", "promote", "p1/deploy")[0], 0)
         inbox = self.settings.inbox_dir("p1", "claude")
         with open(os.path.join(inbox, "note.md"), "w") as f:
             f.write("just a note\n")
-        code, out = self.run_cli("profile", "promote", "p1/note.md")
+        code, out = self.ab("profile", "promote", "p1/note.md")
         self.assertEqual(code, 2)
 
     def test_an_ambiguous_name_is_refused(self):
         self.put("p1", "dup", "a\n")
         self.put("p2", "dup", "b\n")
-        code, out = self.run_cli("profile", "promote", "dup", "--as", "skills/dup")
+        code, out = self.ab("profile", "promote", "dup", "--as", "skills/dup")
         self.assertEqual(code, 2)
 
     def test_dismiss_marks_reviewed_and_deletes_nothing(self):
         path = self.put("p1", "nope")
-        code, _out = self.run_cli("profile", "dismiss", "p1/nope")
+        code, _out = self.ab("profile", "dismiss", "p1/nope")
         self.assertEqual(code, 0)
         self.assertTrue(os.path.isdir(path))
         self.assertTrue(profile.read_sidecar(self.settings.inbox_dir("p1", "claude"), "nope")["reviewed"])
-        _c, out = self.run_cli("profile", "harvest", "--agent", "claude")
+        _c, out = self.ab("profile", "harvest", "--agent", "claude")
         self.assertIn("nothing unreviewed", out)
-        _c, out = self.run_cli("profile", "harvest", "--agent", "claude", "--all")
+        _c, out = self.ab("profile", "harvest", "--agent", "claude", "--all")
         self.assertIn("nope", out)
 
 
@@ -753,19 +742,8 @@ class RmAddAndPurge(SettingsCase):
         with open(os.path.join(inbox, "learned.md"), "w") as f:
             f.write("x\n")
 
-    def run_cli(self, *argv):
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            try:
-                code = cli.main(list(argv))
-            except SystemExit as e:
-                code = e.code
-        return code, buf.getvalue()
-
     def test_rm_keeps_the_state_and_says_what_stays(self):
-        code, out = self.run_cli("project", "rm", "p1")
+        code, out = self.ab("project", "rm", "p1")
         self.assertEqual(code, 0, out)
         self.assertIn("untouched", out)
         self.assertIn("unreviewed inbox item", out)
@@ -773,8 +751,8 @@ class RmAddAndPurge(SettingsCase):
         self.assertTrue(os.path.isdir(self.settings.inbox_dir("p1", "claude")))
 
     def test_re_adding_reports_the_state_it_reattaches(self):
-        self.run_cli("project", "rm", "p1")
-        code, out = self.run_cli("project", "add", "p1", self.root, "--preset", "script")
+        self.ab("project", "rm", "p1")
+        code, out = self.ab("project", "add", "p1", self.root, "--preset", "script")
         self.assertEqual(code, 0, out)
         self.assertIn("reattached existing agent state", out)
         self.assertIn("inbox 1 item", out)
@@ -782,16 +760,16 @@ class RmAddAndPurge(SettingsCase):
 
     def test_a_fresh_project_says_nothing_about_state(self):
         root = self.mkdir("fresh")
-        _code, out = self.run_cli("project", "add", "fresh", root, "--preset", "script")
+        _code, out = self.ab("project", "add", "fresh", root, "--preset", "script")
         self.assertNotIn("reattached", out)
 
     def test_purge_counts_unreviewed_items_and_needs_yes(self):
-        code, out = self.run_cli("project", "purge", "p1")
+        code, out = self.ab("project", "purge", "p1")
         self.assertEqual(code, 1)
         self.assertIn("1 unreviewed inbox item", out)
         self.assertIn("nothing was deleted", out)
         self.assertTrue(os.path.isdir(self.settings.inbox_dir("p1", "claude")))
-        code, out = self.run_cli("project", "purge", "p1", "--yes")
+        code, out = self.ab("project", "purge", "p1", "--yes")
         self.assertEqual(code, 0, out)
         self.assertFalse(os.path.exists(os.path.join(self.settings.data_dir, "p1")))
 
@@ -801,11 +779,11 @@ class RmAddAndPurge(SettingsCase):
               "Labels": {"agentbox.project": "p1", "agentbox.session": "ab-claude-p1-1",
                          "agentbox.role": "agent", "agentbox-test": "1"}}])
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        self.assertEqual(self.run_cli("project", "purge", "p1", "--yes")[0], 2)
+        self.assertEqual(self.ab("project", "purge", "p1", "--yes")[0], 2)
         self.assertTrue(os.path.isdir(self.settings.inbox_dir("p1", "claude")))
 
     def test_purge_of_a_project_with_no_state_is_a_no_op(self):
-        code, out = self.run_cli("project", "purge", "nothing-here")
+        code, out = self.ab("project", "purge", "nothing-here")
         self.assertEqual(code, 0)
         self.assertIn("no agent state", out)
 
@@ -829,9 +807,8 @@ class ConcurrentSessionsCannotHappen(SettingsCase):
         import io
         from contextlib import redirect_stderr, redirect_stdout
         err = io.StringIO()
-        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
-             mock.patch("sys.stdin", io.StringIO("")):
-            code = cli.main(["run", "claude", "p1", "--no-tty"])
+        code, text = self.ab("run", "claude", "p1", "--no-tty")
+        err.write(text)
         self.assertEqual(code, 2)
         joined = err.getvalue()
         self.assertIn("agent state and inbox", joined)

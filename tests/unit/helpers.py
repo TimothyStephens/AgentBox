@@ -33,8 +33,54 @@ class TempCase(unittest.TestCase):
         return p
 
 
+class AbTimeout(AssertionError):
+    pass
+
+
 class SettingsCase(TempCase):
     """Settings rooted in a temp dir, with a fake podman that records every call."""
+
+    # Every in-process `ab` run gets a closed stdin and a deadline, because the two ways a CLI test can
+    # fail to produce a verdict are both real: `ab run` READS stdin when it has no TTY, so a test whose
+    # refusal stops working blocks on the terminal instead of failing; and anything that waits turns a red
+    # test into a suite that never finishes. Both now end as a FAIL naming the command and what it printed.
+    AB_TIMEOUT = 30
+
+    def ab(self, *argv, stdin="", timeout=None):
+        """Run `ab <argv>` in this process. Returns (exit code, stdout+stderr).
+
+        stdin is an empty, already-at-EOF stream unless a test passes something (or `stdin=None` to leave
+        the real one alone, which only a test that means to read it should do)."""
+        import io
+        import signal
+        from contextlib import ExitStack, redirect_stderr, redirect_stdout
+        from unittest import mock
+
+        from agentbox import cli
+
+        out, err = io.StringIO(), io.StringIO()
+        shown = lambda: out.getvalue() + err.getvalue()
+        limit = self.AB_TIMEOUT if timeout is None else timeout
+
+        def too_slow(_signum, _frame):
+            raise AbTimeout(f"`ab {' '.join(argv)}` did not finish in {limit}s. Output so far:\n"
+                            f"{shown() or '(nothing)'}")
+
+        with ExitStack() as stack:
+            stack.enter_context(redirect_stdout(out))
+            stack.enter_context(redirect_stderr(err))
+            if stdin is not None:
+                stack.enter_context(mock.patch("sys.stdin", io.StringIO(stdin)))
+            if limit and hasattr(signal, "SIGALRM"):
+                old_handler = signal.signal(signal.SIGALRM, too_slow)
+                stack.callback(signal.signal, signal.SIGALRM, old_handler)
+                stack.callback(signal.alarm, 0)
+                signal.alarm(int(limit))
+            try:
+                code = cli.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        return code, shown()
 
     def setUp(self):
         super().setUp()
