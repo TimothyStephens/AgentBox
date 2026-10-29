@@ -265,6 +265,108 @@ class SessionLoadsTheProfile(SettingsCase):
         self.assertIn("symlink", str(cm.exception))
 
 
+class TheMountPointsAreOurs(SettingsCase):
+    """A bind whose destination does not exist gets its mount point created by the container RUNTIME, in the
+    state dir, while the session runs. That broke two things at once:
+
+      * the end-of-session state scan took its baseline before the mount points existed and found them
+        afterwards, so every Claude session reported "agent memory/instructions/settings changed: CLAUDE.md"
+        when nothing had changed -- noise in the one report that has to stay signal (seen in `make
+        claude-live`, 29 Oct);
+      * whatever owner and mode the runtime gave them, the next session's migration had to judge them.
+
+    So the launcher creates them itself, before the baseline is taken. OMP has always done this for its own
+    file mounts (`omp._prepare_file`); the profile's were the ones that did not."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+        self.root = self.project("p1", preset="script")
+        self.write("config/claude/profile/skills/deploy/SKILL.md", "run make deploy\n")
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")
+        self.state = self.settings.state_dir("p1", "claude")
+
+    def start(self):
+        warnings = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                 warn=warnings.append)
+        s.prepare(do_backup=False)
+        return s, warnings
+
+    def test_every_mount_point_exists_and_is_ours_before_the_session_starts(self):
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        for rel, kind in (("CLAUDE.md", "file"), ("skills", "dir")):
+            path = os.path.join(self.state, rel)
+            with self.subTest(rel=rel):
+                if kind == "file":
+                    self.assertTrue(os.path.isfile(path), path)
+                    self.assertEqual(os.path.getsize(path), 0, "an empty stand-in, not a copy")
+                else:
+                    self.assertTrue(os.path.isdir(path), path)
+                self.assertEqual(os.stat(path).st_uid, os.getuid(), "ours, not the runtime's")
+
+    def test_only_the_paths_actually_mounted_get_one(self):
+        """A profile item that does not exist is not mounted, so there is no mount point to make: the state
+        dir does not fill with empty directories for things nobody has."""
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        for rel in ("commands", "agents", "rules"):
+            self.assertFalse(os.path.exists(os.path.join(self.state, rel)), rel)
+        self.assertEqual(sorted(os.path.basename(d) for _s, d, _r in s.profile.mounts), ["skills"])
+
+    def test_a_destination_outside_the_state_dir_is_not_ours_to_make(self):
+        """OMP's paths live under `~/.omp`, not under a state mount, and its `agent/` dir is itself a bind
+        -- the runtime's own mount point there is correct and nothing of ours belongs in it. This guard will
+        matter the moment OMP's load paths are wired (docs/TODO.md)."""
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+
+        def tree():
+            out = set()
+            for dirpath, dirnames, filenames in os.walk(self.tmp):
+                out |= {os.path.join(dirpath, n) for n in dirnames + filenames}
+            return out
+
+        before = tree()
+        src = os.path.join(self.settings.profile_src("claude"), "skills")
+        s._own_mount_point(src, "/home/someone/.omp/agent/skills")
+        s._own_mount_point(src, "/elsewhere/skills")
+        # Nothing anywhere: a relative path out of the state dir would land somewhere unexpected rather
+        # than fail, which is exactly what the guard is for.
+        self.assertEqual(tree(), before)
+
+    def test_a_profile_item_added_later_gets_its_mount_point(self):
+        self.write("config/claude/profile/commands/ship.md", "ship it\n")
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        self.assertTrue(os.path.isdir(os.path.join(self.state, "commands")))
+
+    def test_the_scan_baseline_includes_them_so_nothing_reads_as_changed(self):
+        from agentbox import scan
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        doc = json.load(open(os.path.join(self.settings.session_run_dir(s.name), session.SCAN_STATE)))
+        self.assertIn("CLAUDE.md", doc["agent_state"]["files"], "in the baseline, so not 'new' at teardown")
+        summary, _text = scan.state_report(doc["agent_state"]["files"], doc["agent_state"]["dir"])
+        self.assertEqual(summary, [], summary)
+
+    def test_a_whole_session_reports_no_state_change_when_nothing_changed(self):
+        """End to end, which is what `make claude-live` was complaining about."""
+        s, warnings = self.start()
+        s.teardown()
+        self.assertFalse([w for w in warnings if "memory/instructions/settings changed" in w], warnings)
+
+    def test_a_real_state_change_is_still_reported(self):
+        """The point of pre-creating is to silence the artefact, not the report."""
+        from agentbox import scan
+        s, warnings = self.start()
+        with open(os.path.join(self.state, "settings.json"), "w") as f:
+            f.write('{"theme": "light", "somethingNew": true}')
+        s.teardown()
+        self.assertTrue([w for w in warnings if "memory/instructions/settings changed" in w], warnings)
+
+
 class StateMigratedToInbox(SettingsCase):
     """Skills and sub-agents that earlier sessions accumulated in the per-project state would now sit under
     a read-only mount, invisible. They are moved to the inbox once -- nothing is deleted."""
@@ -293,7 +395,8 @@ class StateMigratedToInbox(SettingsCase):
         self.assertEqual(sorted(profile.items(inbox)), ["from-state-CLAUDE.md", "from-state-skills"])
         self.assertEqual(open(os.path.join(inbox, "from-state-skills", "mine", "SKILL.md")).read(),
                          "my own skill\n")
-        self.assertFalse(os.path.exists(os.path.join(self.state, "skills")))
+        self.assertEqual(os.listdir(os.path.join(self.state, "skills")), [],
+                         "what is left is the empty mount point, not the old content")
         self.assertTrue(any("moved" in w and "inbox" in w for w in warnings), warnings)
 
     def test_a_state_claude_md_that_only_copies_the_seed_is_removed_not_queued(self):
@@ -307,7 +410,8 @@ class StateMigratedToInbox(SettingsCase):
         _s, warnings = self.start()
         self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [],
                          "nothing to review was queued")
-        self.assertFalse(os.path.exists(os.path.join(self.state, "CLAUDE.md")))
+        self.assertEqual(os.path.getsize(os.path.join(self.state, "CLAUDE.md")), 0,
+                         "the copy is gone; what is left is the empty mount point")
         self.assertTrue(any("removed" in w and "copy of what the profile already holds" in w
                             for w in warnings), warnings)
 
@@ -343,8 +447,8 @@ class StateMigratedToInbox(SettingsCase):
         os.makedirs(os.path.join(self.state, "skills"), exist_ok=True)
         _s, warnings = self.start()
         self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [])
-        self.assertFalse(os.path.exists(os.path.join(self.state, "CLAUDE.md")))
-        self.assertFalse(os.path.exists(os.path.join(self.state, "skills")))
+        self.assertEqual(os.path.getsize(os.path.join(self.state, "CLAUDE.md")), 0)
+        self.assertEqual(os.listdir(os.path.join(self.state, "skills")), [])
         self.assertFalse([w for w in warnings if "inbox" in w and "moved" in w], warnings)
 
     def test_an_unreadable_state_file_is_kept_not_crashed_on(self):
@@ -361,7 +465,10 @@ class StateMigratedToInbox(SettingsCase):
         inbox = self.settings.inbox_dir("p1", "claude")
         self.assertEqual(profile.items(inbox), ["from-state-CLAUDE.md"], "preserved, not deleted")
         self.assertTrue(any("could not be read" in w for w in warnings), warnings)
-        self.assertFalse(os.path.exists(path))
+        self.assertEqual(os.path.getsize(path), 0, "moved out; an empty mount point in its place")
+        moved = os.path.join(inbox, "from-state-CLAUDE.md")
+        self.assertEqual(os.path.getsize(moved), len("something a session wrote\n"),
+                         "preserved byte for byte -- still unreadable to us, which is why it was not judged")
 
     def test_an_unreadable_state_directory_is_left_in_place_and_reported(self):
         """A directory a container created cannot even be MOVED by us: renaming one needs write access to

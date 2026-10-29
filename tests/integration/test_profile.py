@@ -11,6 +11,8 @@ load paths"). A skip that names the reason is better than a gap.
 import json
 import os
 import shutil
+import signal
+import subprocess
 import unittest
 
 from . import harness
@@ -60,19 +62,24 @@ class Profile(unittest.TestCase):
         self.assertIn("RC=0", p.stdout)
 
     def test_the_profile_paths_are_read_only(self):
+        """Each write is tested on its own exit status, not a pipeline's: `cmd | head` reports HEAD's status,
+        which is 0 whatever the command did (that is what made the first version of this test vacuous)."""
         p = shell("prof1", f"""
-            touch {CONFIG}/skills/evil.md 2>&1 | head -1
-            echo TOUCH_RC=$?
-            rm -f {CONFIG}/skills/{SKILL}/SKILL.md 2>&1 | head -1
-            echo RM_RC=$?
-            echo x > {CONFIG}/CLAUDE.md 2>&1 | head -1
-            echo MD_RC=$?
+            if touch {CONFIG}/skills/evil.md 2>&1; then echo TOUCH_WROTE; else echo TOUCH_REFUSED; fi
+            if rm -f {CONFIG}/skills/{SKILL}/SKILL.md 2>&1; then echo RM_WROTE; else echo RM_REFUSED; fi
+            if (echo x > {CONFIG}/CLAUDE.md) 2>&1; then echo MD_WROTE; else echo MD_REFUSED; fi
+            if (echo x > {CONFIG}/commands/evil.md) 2>&1; then echo CMD_WROTE; else echo CMD_REFUSED; fi
             test -f {CONFIG}/skills/{SKILL}/SKILL.md && echo SKILL_STILL_THERE
+            echo "MD_BYTES=$(wc -c < {CONFIG}/CLAUDE.md)"
+            grep -c 'agentbox sandbox' {CONFIG}/CLAUDE.md
         """)
-        self.assertIn("SKILL_STILL_THERE", p.stdout)
+        for what in ("TOUCH", "RM", "MD", "CMD"):
+            self.assertIn(f"{what}_REFUSED", p.stdout, f"{what}: a write to a profile path must fail")
+            self.assertNotIn(f"{what}_WROTE", p.stdout)
         self.assertIn("Read-only file system", p.stdout)
-        for rc in ("TOUCH_RC", "RM_RC", "MD_RC"):
-            self.assertNotIn(f"{rc}=0", p.stdout, f"{rc}: a write to a profile path must fail")
+        self.assertIn("SKILL_STILL_THERE", p.stdout, "and the skill is untouched")
+        self.assertNotIn("MD_BYTES=2", p.stdout, "CLAUDE.md was not replaced by `x`")
+        self.assertIn("1", p.stdout.strip().splitlines()[-1], "it is still the generated file")
 
     def test_the_generated_instructions_lead_with_the_notes_then_the_profile(self):
         p = shell("prof1", f"cat {CONFIG}/CLAUDE.md")
@@ -151,17 +158,28 @@ class Profile(unittest.TestCase):
         finally:
             with open(os.path.join(ENV.cfg, "claude", "profile", "skills", SKILL, "SKILL.md"), "w") as f:
                 f.write(SKILL_TEXT)
+            # SIGTERM, not SIGKILL: the launcher tears the session down on it. Killing it outright leaves
+            # the proxy and the networks behind -- a husk for `ab session gc`, and a leftover here.
             if proc.poll() is None:
-                proc.kill()
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
             proc.communicate()
+            harness.wait_for(lambda: not [x for x in harness.leftovers() if x.startswith("abt-")
+                                          and "prof2" in x] or None, timeout=60)
 
     def test_the_session_log_records_the_hash_and_the_commit(self):
         shell("prof1", "true")
         logs = sorted(os.listdir(os.path.join(ENV.data, "logs")))
-        profile_logs = [n for n in logs if n.endswith("-profile.log") and "prof1" in n]
+        # Name the AGENT too: an OMP session of the same project writes a profile log as well, and it sorts
+        # last -- which is the log the first version of this test read (hash=(none), no OMP load paths yet).
+        profile_logs = [n for n in logs if n.endswith("-profile.log") and "-claude-prof1-" in n]
         self.assertTrue(profile_logs, logs)
         with open(os.path.join(ENV.data, "logs", profile_logs[-1])) as f:
             line = f.read()
+        self.assertIn("agent=claude", line)
         self.assertRegex(line, r"hash=[0-9a-f]{16} commit=[0-9a-f]{7,} dirty=(yes|no)")
         self.assertIn("loaded=skills", line)
 

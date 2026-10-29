@@ -498,6 +498,7 @@ class Session:
         for src, dst, ro in self.profile.mounts:
             _no_commas(src, "profile mount")
             check(dst, "profile mount")
+            self._own_mount_point(src, dst)
             self.setup.mounts.append((src, dst, ro))
         text = self.adapter.session_instructions(self.settings, notes)
         if text is not None and self.adapter.instructions_name:
@@ -508,11 +509,39 @@ class Session:
                 f.write(text)
             dst = f"{self.adapter.state_mount}/{self.adapter.instructions_name}"
             check(dst, "generated instructions")
+            self._own_mount_point(path, dst)
             self.setup.mounts.append((path, dst, True))
         if self.inbox_mount:
             check(self.inbox_mount, "inbox mount")
             os.makedirs(self.inbox, mode=0o700, exist_ok=True)
             self.setup.mounts.append((self.inbox, self.inbox_mount, False))
+
+    def _own_mount_point(self, src, dst):
+        """Create the mount point for a profile mount ourselves, if it falls inside the per-project state.
+
+        A bind whose destination does not exist gets its mount point created by the container RUNTIME, in
+        the middle of the state dir, with whatever owner and mode the runtime chooses. Two things went wrong
+        because of that: the end-of-session state scan took its baseline before those files existed and
+        reported them as changes afterwards (`CLAUDE.md` on every session, found by `make claude-live`), and
+        the next session's migration had to judge a file it had not written and might not be able to read.
+
+        So the launcher makes them, before the scan baseline is taken: an empty file for a file mount, an
+        empty directory for a directory one. OMP has always done this for its own file mounts
+        (`omp._prepare_file`); the profile's were the ones that did not."""
+        root = self.adapter.state_mount
+        if not root or not _inside(dst, root) or dst == root:
+            return                     # not in the state dir (e.g. OMP's ~/.omp/agent): not ours to make
+        host = os.path.join(self.state_dir, os.path.relpath(dst, root))
+        os.makedirs(os.path.dirname(host), mode=0o700, exist_ok=True)
+        if os.path.isdir(src):
+            if os.path.islink(host) or (os.path.lexists(host) and not os.path.isdir(host)):
+                os.unlink(host)
+            os.makedirs(host, mode=0o700, exist_ok=True)
+            return
+        if os.path.islink(host) or (os.path.lexists(host) and not os.path.isfile(host)):
+            os.unlink(host)
+        if not os.path.exists(host):
+            os.close(os.open(host, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
 
     def _check_setup(self):
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
@@ -1199,9 +1228,10 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
         if not os.path.exists(src) or os.path.islink(src):
             continue
         # A bind whose destination does not exist gets its mount point created by the container runtime,
-        # inside the runtime's own user namespace -- so the state dir collects an empty file or directory
-        # owned by a container subuid, which the launcher may not be able to read. Neither holds anything,
-        # so neither is content to rescue: both are simply removed, as an empty directory always was.
+        # so the state dir collects an empty file or directory that the launcher did not write and may not
+        # be able to read (the owner and mode are the runtime's to choose; `_own_mount_point` now creates
+        # these itself, so this handles the ones earlier sessions left). Neither holds anything, so neither
+        # is content to rescue: both are simply removed, as an empty directory always was.
         try:
             empty = (not os.listdir(src)) if os.path.isdir(src) else (os.lstat(src).st_size == 0)
         except OSError:
@@ -1244,14 +1274,15 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
              f"of what the profile already holds, with nothing added, so there was nothing to review. The "
              f"profile's own copy is what sessions load.")
     if unreadable:
-        warn(f"agentbox: {', '.join(unreadable)} in {project}'s {adapter.name} state could not be read (a "
-             f"file a container created belongs to a container uid, not to you), so it was moved to "
-             f"{inbox} unexamined rather than judged.")
+        warn(f"agentbox: {', '.join(unreadable)} in {project}'s {adapter.name} state could not be read, so "
+             f"it was moved to {inbox} unexamined rather than judged (a file a container wrote can carry an "
+             f"owner or mode of its own).")
     if stuck:
-        warn(f"agentbox: left in place, unreadable and unmovable: {'; '.join(stuck)}. A container created "
-             f"it, so it belongs to a container uid rather than to you. The profile's read-only mount "
-             f"covers it, so nothing loads it and the session is unaffected; clearing it needs a tool that "
-             f"can act inside that user namespace.")
+        warn(f"agentbox: left in place, unreadable and unmovable: {'; '.join(stuck)}. Renaming a directory "
+             f"needs write access to the directory itself, which this one does not give us. The profile's "
+             f"read-only mount covers it, so nothing loads it and the session is unaffected; it was most "
+             f"likely written from inside a container, and clearing it needs the same privileges that "
+             f"created it.")
     return moved
 
 

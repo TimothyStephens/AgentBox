@@ -109,8 +109,8 @@ class SessionTest(SettingsCase):
         self.assertLess(md.index("# agentbox sandbox"), md.index("My rules."), "the preamble leads the user's")
         self.assertEqual(md.count(claude.NOTES_BEGIN), 1, "the sandbox block is not stacked")
         self.assertIn("My rules.", md)                    # the user's instructions follow it
-        self.assertFalse(os.path.exists(os.path.join(state, "CLAUDE.md")),
-                         "generated and mounted read-only, not written into the state dir")
+        self.assertEqual(os.path.getsize(os.path.join(state, "CLAUDE.md")), 0,
+                         "the state copy is only the mount point the generated file is bound onto")
         self.assertTrue(os.path.isfile(os.path.join(mounted["/run/agentbox/claude/commands"], "x.md")),
                         "the seed's commands are mounted from the profile snapshot")
         cj = json.loads(_read(os.path.join(state, ".claude.json")))
