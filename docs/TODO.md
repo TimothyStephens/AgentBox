@@ -26,13 +26,12 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   the split and `omp.ADAPTER.profile_mounts` must be emptied again (one line, and the two OMP cases in
   `tests/integration/test_profile.py` go back to skips) until `omp-env` is rebuilt.
 
-- **Two concurrent sessions of one project share its agent state**, with no locking: Claude's
-  `.claude.json`/settings and OMP's `agent/` are last-writer-wins, and the inbox is shared too.
-  `ab run` now warns and says so, which is a label on the problem, not a fix. The real fix is one of:
-  a per-project lock taken for the session's lifetime (refuse the second session, or make it read-only);
-  per-session state dirs merged at teardown (needs a merge policy per agent); or copy-on-write state with
-  the second session's writes landing in its own inbox. Pick one when two-at-once stops being rare —
-  nothing today needs it.
+- ~~**Two concurrent sessions of one project share its agent state**~~ — **fixed 29 Oct.** One live session
+  per project, enforced by a lock file in the project's state dir (`agentbox/projectlock.py`): `ab run`
+  takes it before any work and `ab attach <project>` is the way back to the session that holds it. The
+  sharing is impossible now rather than warned about, so the warning is gone. A stale lock (its launcher
+  gone and nothing of its session running) is reaped, with what was removed reported; a live holder is never
+  overruled, and an unreadable podman stops the operation instead of freeing a lock on a guess.
 
 ## Nice to have — cleanup / future
 - **A curator for the profile** (29 Oct, deliberately not built). `ab profile harvest` lists, groups and

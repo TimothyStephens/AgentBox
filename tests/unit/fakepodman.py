@@ -9,6 +9,7 @@
   FAKE_PODMAN_IMAGES    stdout for `images --format json`
   FAKE_PODMAN_FAIL      substring: any call whose argv contains it exits 1
   FAKE_PODMAN_RUN_OUT   stdout for `run`
+  FAKE_PODMAN_RUN_SLEEP seconds `run` waits before answering, so a test can signal a launcher mid-session
   FAKE_PODMAN_LOGS      stdout for `logs` (default: squid's ready line)
   FAKE_PODMAN_STATE     stdout for `inspect -f {{.State.Status}}`
   FAKE_PODMAN_GATEWAY   stdout for `network inspect`
@@ -71,5 +72,8 @@ elif argv[:1] == ["run"] and "-d" in argv:
     sys.stdout.write("0123456789ab\n")
 elif argv[:1] == ["run"]:
     sys.stdin.read()
+    if os.environ.get("FAKE_PODMAN_RUN_SLEEP"):
+        import time
+        time.sleep(float(os.environ["FAKE_PODMAN_RUN_SLEEP"]))
     sys.stdout.write(os.environ.get("FAKE_PODMAN_RUN_OUT", ""))
 sys.exit(0)

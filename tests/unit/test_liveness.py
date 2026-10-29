@@ -194,16 +194,28 @@ class RegistryEditsRefuseOnUnknownState(SettingsCase):
         self.assertEqual(cli.main(["project", "rm", "p1"]), 2)
         self.assertIn("p1", self.names())
 
-    def test_the_warning_on_ab_run_uses_the_same_predicate(self):
+    def test_ab_run_refuses_a_second_session_rather_than_warning(self):
+        """`ab run` used to warn and start anyway. One live session per project is enforced now
+        (projectlock.py, 29 Oct): the same liveness signals, but a refusal -- there is nothing left to
+        warn about. The lock's own cases are in test_projectlock.py; this pins that `run` goes through it."""
+        from agentbox import projectlock
         os.environ["FAKE_PODMAN_PSJSON"] = ps_json()
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        warned = []
-        cli._warn_if_live(self.settings, "p1", warn=warned.append)
-        self.assertTrue(any("ab-claude-p1-1" in w for w in warned), warned)
-        os.environ["FAKE_PODMAN_PSJSON"] = "[]"
-        warned.clear()
-        cli._warn_if_live(self.settings, "p1", warn=warned.append)
-        self.assertEqual(warned, [])
+        projectlock.acquire(self.settings, "p1", pid=os.getpid(),
+                            pid_start=session._start_time(os.getpid()))
+        projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        err = io.StringIO()
+        # stdin too: `ab run` reads it without a TTY, so a run that gets further than expected would
+        # block on the real stdin instead of failing.
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
+             unittest.mock.patch("sys.stdin", io.StringIO("")):
+            code = cli.main(["run", "claude", "p1", "--no-tty"])
+        self.assertEqual(code, 2)
+        self.assertIn("ab-claude-p1-1", err.getvalue())
+        self.assertIn("ab attach p1", err.getvalue())
+        self.assertFalse(hasattr(cli, "_warn_if_live"), "the warning is gone, not just unused")
 
 
 if __name__ == "__main__":
@@ -251,19 +263,31 @@ class GcAsksADifferentQuestion(SettingsCase):
         return Podman(self.settings.podman)
 
     def husk(self):
-        """A crashed session: launcher dead, run dir gone, agent removed, infrastructure still up."""
+        """A crashed session: launcher dead, run dir gone, agent removed, infrastructure still up.
+
+        Both podman knobs: liveness is read from `ps --format json`, while teardown removes what
+        `ps --format {{.Names}}` lists -- so an assertion about removals is vacuous with only the first."""
         self.ps(infra_ps(self.name))
+        os.environ["FAKE_PODMAN_PS"] = f"{self.name}-proxy\n{self.name}-sockguard\n"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PS", None)
+        os.environ["FAKE_PODMAN_NETLS"] = f"{self.name}-int\n{self.name}-egr\n"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_NETLS", None)
         self.assertFalse(os.path.isdir(self.settings.session_run_dir(self.name)))
 
     def removals(self):
-        return [c for c in self.podman_calls() if c[:1] in (["rm"], ["pod"], ["volume"], ["network"])]
+        """Only real removals: `ids()` itself runs `volume ls` and `network ls`, so matching on the first
+        word alone counted a listing as a removal (it did, until 29 Oct)."""
+        kinds = (["rm"], ["pod", "rm"], ["volume", "rm"], ["network", "rm"])
+        return [c for c in self.podman_calls() if any(c[:len(k)] == k for k in kinds)]
 
     # --- the reaping question ---
 
     def test_a_husk_is_reaped(self):
         self.husk()
         self.assertEqual(session.gc(self.settings, self.podman()), [self.name])
-        self.assertTrue(self.removals(), "teardown actually removed what the husk left")
+        removed = [" ".join(c) for c in self.removals()]
+        self.assertTrue(any(f"{self.name}-proxy" in r for r in removed), removed)
+        self.assertTrue(any(f"{self.name}-int" in r for r in removed), removed)
 
     def test_infrastructure_alone_is_not_alive(self):
         self.husk()

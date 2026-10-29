@@ -1241,3 +1241,44 @@ that tree (the 30 Sep snapshot in `tests/fixtures/omp/tree.txt` has no skills di
 **Also, the scan learned four more "runs later" directories:** `.agents/`, `.codex/`, `.opencode/` and
 `.github/skills/`. A repo can feed more than one agent, and unlike `.claude`/`.omp` these are not covered
 by lockdown at all, so the report is the only thing that would mention them.
+
+## 2026-10-29 (later still) — One live session per project
+
+Two sessions of one project shared its agent state with no locking: Claude's `.claude.json` and settings,
+OMP's `agent/`, and the inbox, all last-writer-wins. `ab run` warned and started anyway, which is a label on
+a problem rather than a fix (it was `docs/TODO.md`'s "real fix" item). Now a project has one session slot.
+
+- **The lock** is a file in the project's state dir (`<data>/<project>/session.lock`), created with
+  `O_EXCL` so two `ab run`s racing cannot both win, holding the launcher's pid (with its start time, so a
+  recycled pid cannot impersonate it) and the session id once there is one. `agentbox/projectlock.py` is
+  file mechanics only; judging a holder needs podman, and that judgement lives in `session`.
+- **Released on every exit that can run code**: `teardown()` releases by session id, and teardown is on
+  every path -- normal exit, an exception in `prepare()`, SIGINT/SIGTERM/SIGHUP (`_guarded` handles all
+  three), `ab session kill`, `ab session gc`. `ab run` also holds its own handle, for the window before the
+  session has a name. SIGKILL cannot release anything, which is what the stale check is for.
+- **Stale means its launcher is gone AND nothing of its session is running or starting.** A live launcher is
+  never overruled, even with no containers left: a session in `prepare()` looks exactly like that, and this
+  is the question three audits got wrong by guessing (F3, F2, F-1). So a *hung* launcher holds its project
+  until `ab session kill` ends it -- the one action that can actually stop it; tearing down containers it
+  does not have would free nothing. That is a deliberate departure from the brief, which said "pid dead or
+  session containers gone".
+- **An unreadable podman frees nothing.** `sessions()` raises, and the run stops with that error rather
+  than stealing a lock it cannot justify.
+- **A backstop for a missing lock:** a running session of the project with no lock file at all -- one
+  started before this existed, or whose lock was removed by hand -- also refuses, naming the session. Found
+  by an existing test that kept passing when it should not have.
+- **`ab attach <project>`** is the way back in: `podman attach` on the session's agent container, the same
+  stdio the launcher has. If the launcher's own terminal is still open, both are attached to the one agent;
+  that is what re-attaching to a process means, and the multiplexed version is still `ab ws` (step 7).
+- **Users name projects, not sessions.** `ab attach web`, `ab session kill web` (ids still accepted),
+  `ab session ls` leads with the project and shows `id <session>` at the end, and the idle warning names the
+  project. The session id keeps its `-N` suffix and stays in logs, container labels and inbox provenance,
+  where it identifies one run among several over time.
+- **No implicit registration.** `ab run` on an unregistered name prints the `ab project add` command to run,
+  with the root filled in from the repos dir when something is actually there and a placeholder when it is
+  not. A project names a grant the agent gets read-write; that is a decision, not a default.
+
+**Two weak tests found while doing this**, both of the same kind as the ones the itest turned up: an
+assertion that matched `podman volume ls` as if it were a removal (so "teardown really ran" was vacuous --
+`ids()` issues those listings itself), and the `ab run` warning test, which passed because `gc` happened to
+reap the session first. Both now assert on the specific containers and networks removed.

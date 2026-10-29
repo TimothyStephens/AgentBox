@@ -550,7 +550,8 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab profile dismiss <project>/<item>` | Mark an inbox item reviewed; deletes nothing |
 | `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
 | `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
-| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
+| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [-- …]` | Start an agent session (no workspace). **One per project**: it takes the project's session lock, and refuses if another session holds it |
+| `ab attach <name>` | Re-attach a terminal to the session already running for a project (`podman attach` on its agent container) |
 | `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
 | `ab session kill <session>` | Tear down everything the session created |
@@ -558,6 +559,10 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
 | `ab keys rotate claude` | Replace the Claude subscription token |
+
+**One live session per project.** `ab run` takes a lock file in the project's state dir (`session.lock`, created with `O_EXCL`, holding the launcher's pid with its start time and the session id) before it does any work, and `teardown` releases it on every path that can run code — normal exit, an exception in `prepare()`, SIGINT/SIGTERM/SIGHUP, `ab session kill`, `ab session gc`. A second `ab run` is refused and pointed at `ab attach <project>`. A **stale** lock — its launcher gone *and* nothing of its session running or starting — is reaped first, and what was removed is reported; a live launcher is never overruled even with no containers left (that is what a session in `prepare()` looks like), so a hung launcher holds its project until `ab session kill` ends it. An unreadable podman frees nothing. A running session with no lock file at all (started before this existed, or its lock removed) is refused too. Two sessions would otherwise share the project's agent state and inbox, last writer wins.
+
+Users name **projects**: `ab attach web`, `ab session kill web` (a session id is still accepted), and `ab session ls` leads with the project. The session id keeps its `-N` suffix and stays in the logs, the container labels and the inbox provenance, where it identifies one run among several over time.
 
 **"Is this project live?"** — one predicate (`session.project_is_live`), used by every command that refuses a registry edit (`project set`, `rm`, `reset-state`, both `accept-*`) and by `ab run`'s already-running warning. A project is live if **any** signal says so: a running container labelled with the project, or a session whose `session.json` names it with its launcher still alive (which covers a session still in `prepare()`, before any container exists). It is **also** live when a signal cannot be read — `podman ps` failing, unparseable output, no podman binary, a session directory with no readable metadata — and the refusal names what it could not determine. Unknown state must never read as "nothing is running": three audits in a row found that question answered wrongly, each time by trusting one signal or by treating an error as an empty list. There is deliberately no `--force`: ending live work is `ab session kill`'s job.
 
@@ -615,14 +620,13 @@ many unreviewed inbox items would be lost first.
 | Command | What it would do |
 | --- | --- |
 | `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
-| `ab attach <name>` | Return to a running session |
 | `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
 
-The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab attach`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab session preview` takes a **session** name, not a project.
+The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab session preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
 

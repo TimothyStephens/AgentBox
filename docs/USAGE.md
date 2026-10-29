@@ -13,6 +13,7 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 - [Top level](#top-level)
 - [ab init](#ab-init)
 - [ab run](#ab-run)
+- [ab attach](#ab-attach)
 - [ab selftest](#ab-selftest)
 - [ab project](#ab-project)
 - [ab profile](#ab-profile)
@@ -26,17 +27,20 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 The launcher. `ab project` manages saved configuration; `ab session` manages live runs; `ab run` and `ab init` create them.
 
 ```text
-usage: ab [-h] {init,project,run,profile,session,selftest,keys} ...
+usage: ab [-h] {init,project,run,attach,profile,session,selftest,keys} ...
 
 agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session.
 
 positional arguments:
-  {init,project,run,profile,session,selftest,keys}
+  {init,project,run,attach,profile,session,selftest,keys}
     init                scaffold a new project with a grantcheck-clean layout
                         (secrets masked, live data in a named volume), then
                         register it
     project             manage registered projects (the saved configuration)
-    run                 start an agent session in the foreground
+    run                 start an agent session in the foreground (one per
+                        project)
+    attach              re-attach a terminal to the session already running
+                        for a project
     profile             the host-owned agent profile: what every session
                         loads, and the inbox it feeds
     session             manage running sessions (the live instances)
@@ -166,7 +170,7 @@ usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--shell] [--no-tty]
               [--timeout SECONDS]
               [[AGENT [PROJECT]] ...]
 
-start an agent session in the foreground
+start an agent session in the foreground (one per project)
 
 positional arguments:
   [AGENT [PROJECT]]  positional AGENT and PROJECT (an alternative to
@@ -189,6 +193,26 @@ examples:
   ab run claude web                 positional form of --agent/--project
   ab run claude web --shell         a bash shell in the sandbox instead of the agent
   ab run claude web -- --resume     pass everything after -- to the agent
+  ab attach web                     re-attach to the session already running
+```
+
+## ab attach
+
+### `ab attach`
+
+```text
+usage: ab attach [-h] project
+
+re-attach a terminal to the session already running for a project
+
+positional arguments:
+  project     the project whose running session to attach to (one per project)
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab attach web
 ```
 
 ## ab selftest
@@ -795,13 +819,15 @@ usage: ab session kill [-h] session
 tear down a session and everything it created (keeps its logs and end-of-session scan)
 
 positional arguments:
-  session     the session name to tear down (from `ab session ls`)
+  session     the project whose session to tear down, or the session id itself
+              (`ab session ls` shows both)
 
 options:
   -h, --help  show this help message and exit
 
 examples:
-  ab session kill ab-claude-web-1
+  ab session kill web
+  ab session kill ab-claude-web-1   by session id
 ```
 
 ### `ab session gc`

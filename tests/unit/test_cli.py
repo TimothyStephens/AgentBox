@@ -48,6 +48,12 @@ class IdleTest(SettingsCase):
 
 
 class RunParsing(SettingsCase):
+    def setUp(self):
+        super().setUp()
+        # `ab run` refuses an unregistered project outright now (no implicit registration), and takes the
+        # project's session lock before anything else -- so a parsing test needs a real project to parse at.
+        self.project("p1")
+
     def reaches(self, argv):
         """Run `ab run ...` far enough to capture what parsing resolved (agent, project, shell, passthrough)."""
         import types
@@ -136,7 +142,8 @@ class LsTest(SettingsCase):
         self.assertIn("age 1d6h", out)                 # 30h since start
         self.assertIn("idle", out)
         self.assertIn("<-- idle", out, "a 20h-idle session is flagged in the listing")
-        self.assertIn("ab session kill abt-s-1", err, "and warned about, with how to end it")
+        self.assertIn("ab session kill p1", err,
+                      "and warned about, naming the project (one per project) rather than the session id")
 
     def test_ls_does_not_flag_a_busy_session(self):
         with unittest.mock.patch("agentbox.session.sessions", return_value=self.rows(idle_hours=0)):
@@ -150,23 +157,26 @@ class RunGuardTest(SettingsCase):
         super().setUp()
         self.project("p1")
 
-    def test_run_warns_when_a_session_for_the_project_is_already_running(self):
-        """The warning goes through session.project_is_live now (third audit, F-1), so it is driven by a real
-        running container rather than by mocking our own session table -- and it fires on a session still in
-        prepare(), which the container-only check missed."""
+    def test_run_is_refused_when_a_session_is_running_without_a_lock(self):
+        """A running session that holds no lock file: one started before agentbox enforced the lock, or one
+        whose lock was removed by hand. The lock is the mechanism; this is the backstop that stops it being
+        handed out while that session is still writing the project's state."""
         import json
         os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
             [{"Names": ["abt-old-1-agent"], "State": "running",
               "Labels": {"agentbox.project": "p1", "agentbox.session": "abt-old-1",
-                         "agentbox-test": "1"}}])
+                         "agentbox.role": "agent", "agentbox-test": "1"}}])
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
         err = io.StringIO()
-        with unittest.mock.patch("agentbox.session.load_project", side_effect=AgentboxError("stop here")):
-            with redirect_stderr(err):
-                rc = cli.main(["run", "--agent", "claude", "--project", "p1"])
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
+             unittest.mock.patch("sys.stdin", io.StringIO("")):
+            rc = cli.main(["run", "--agent", "claude", "--project", "p1", "--no-tty"])
         self.assertEqual(rc, 2)
         self.assertIn("abt-old-1", err.getvalue())
-        self.assertIn("may already be running", err.getvalue())
+        self.assertIn("holds no session lock", err.getvalue())
+        self.assertIn("ab attach p1", err.getvalue())
+        from agentbox import projectlock
+        self.assertIsNone(projectlock.read(self.settings, "p1"), "and it did not keep the lock it tried")
 
     def test_run_takes_positional_agent_and_project(self):
         seen = {}

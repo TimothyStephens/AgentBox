@@ -530,18 +530,6 @@ def _refuse_if_live(s, names, what):
                           "are kept.")
 
 
-def _warn_if_live(s, name, warn=warn):
-    """`ab run` warns (never blocks) when a session for the same project is already up, through the same
-    predicate the refusals use."""
-    live, why = session.project_is_live(s, Podman(s.podman), name)
-    if live:
-        warn(f"ab: a session for project {name} may already be running ({why}); starting another means two "
-             f"at once. They SHARE this project's agent state and inbox, with no locking: the last writer "
-             f"wins, so one session's memory or settings can quietly overwrite the other's (TODO.md has the "
-             f"real fix). `ab session ls` shows them; `ab session kill <session>` ends one (keeping its logs "
-             f"and scan).")
-
-
 def cmd_project_reset_state(s, a):
     session.load_project(s, a.name)
     _refuse_if_live(s, [a.name], f"reset the agent state of {a.name}")
@@ -795,18 +783,67 @@ def cmd_run(s, a):
     if not agent or not project_name:
         raise AgentboxError("give an agent and a project: `ab run --agent <a> --project <p>` "
                             "or `ab run <a> <p>`")
-    _warn_if_live(s, project_name)
-    project = session.load_project(s, project_name)
-    sess = session.make_session(s, agent, project, warn=warn)
-    sess.prepare()
-    command = sess.agent_command(shell=a.shell, extra=list(getattr(a, "passthrough", []) or []))
-    if sys.stdin.isatty() and not a.no_tty:
-        return sess.run_interactive(command, tty=True)
-    p = sess.run_captured(command, stdin=sys.stdin.read() if not sys.stdin.isatty() else "",
-                          timeout=a.timeout)
-    sys.stdout.write(p.stdout or "")
-    sys.stderr.write(p.stderr or "")
-    return p.returncode
+    _require_registered(s, project_name)
+    podman = Podman(s.podman)
+    # One live session per project: the lock is taken before any work, so two `ab run`s racing cannot both
+    # get past here, and it is released by teardown however this session ends.
+    with session.take_project_lock(s, podman, project_name, warn=warn) as lock:
+        project = session.load_project(s, project_name)
+        sess = session.make_session(s, agent, project, warn=warn)
+        sess.prepare()
+        lock.note(sess.name)
+        command = sess.agent_command(shell=a.shell, extra=list(getattr(a, "passthrough", []) or []))
+        if sys.stdin.isatty() and not a.no_tty:
+            return sess.run_interactive(command, tty=True)
+        p = sess.run_captured(command, stdin=sys.stdin.read() if not sys.stdin.isatty() else "",
+                              timeout=a.timeout)
+        sys.stdout.write(p.stdout or "")
+        sys.stderr.write(p.stderr or "")
+        return p.returncode
+
+
+def _require_registered(s, project_name):
+    """A project is a grant, so registering one is a decision -- never a side effect of `ab run`.
+
+    The message is the command to run, filled in: the root guessed from the repos dir when something is
+    actually there, and left as a placeholder when it is not."""
+    reg = registry.load(s.registry_path)
+    if project_name in reg:
+        return
+    registry.check_name(project_name)
+    guess = os.path.join(os.path.expanduser(s.repos_dir), project_name)
+    root = guess if os.path.isdir(guess) else "<path to its code>"
+    known = ", ".join(sorted(reg)) or "none yet"
+    raise AgentboxError(
+        f"no project named {project_name!r}. agentbox does not register one for you -- a project names a "
+        f"grant the agent gets read-write, which is a decision, not a default. Register it, then run:"
+        f"\n  ab project add {project_name} {root} --preset <preset>"
+        f"\n  ab run {project_name}"
+        f"\n`ab project add --help` lists the presets. Registered now: {known}.")
+
+
+def cmd_attach(s, a):
+    """Re-attach a terminal to the project's running session.
+
+    The agent is a container the launcher started, so this is `podman attach` on it: the same stdio the
+    launcher has. If the launcher's own terminal is still open, both are attached to the one agent -- which
+    is the honest shape of re-attaching to a process rather than to a multiplexer. Detach with ctrl-p ctrl-q
+    (`ab ws`, the tmux workspace, is the planned version of this; design.md)."""
+    podman = Podman(s.podman)
+    sid = session.live_session_of(s, podman, a.project)
+    if not sid:
+        _require_registered(s, a.project)
+        raise AgentboxError(f"no session of {a.project} is running; start one with "
+                            f"`ab run <agent> {a.project}`")
+    info = session.sessions(s, podman).get(sid) or {}
+    agents = [c["name"] for c in info.get("containers") or []
+              if c.get("role") == "agent" and c.get("state") == "running"]
+    if not agents:
+        raise AgentboxError(f"session {sid} of {a.project} is alive but its agent container is not running "
+                            f"(it may be starting, or it may have exited). `ab session ls` shows it; "
+                            f"`ab session kill {a.project}` ends it.")
+    print(f"attaching to {a.project} (session {sid}); detach with ctrl-p ctrl-q", file=sys.stderr)
+    return podman.interactive(["attach", agents[0]])
 
 
 def cmd_ls(s, a):
@@ -827,12 +864,15 @@ def cmd_ls(s, a):
         if idle is not None and idle > idle_warn:
             mark = "  <-- idle"
             flagged.append((name, idle))
-        print(f"{name:<36} {meta.get('project', '?'):<14} {state:<7} "
+        # The PROJECT is what a user names (`ab attach web`, `ab session kill web`); the session id is kept
+        # because it is what the logs, the container labels and the inbox provenance carry.
+        print(f"{meta.get('project', '?'):<16} {state:<7} {meta.get('agent', '?'):<7} "
               f"start {start_str}  age {age:<6} idle {_dur(idle):<6} "
-              f"{len(info['containers'])}c/{len(info['networks'])}n{mark}")
+              f"{len(info['containers'])}c/{len(info['networks'])}n  id {name}{mark}")
     for name, idle in flagged:
-        warn(f"ab: session {name} has been idle {_dur(idle)} — if it is forgotten, end it with "
-             f"`ab session kill {name}` (its logs and end-of-session scan are kept).")
+        project = (rows[name]["meta"] or {}).get("project") or name
+        warn(f"ab: {project} has been idle {_dur(idle)} — if it is forgotten, end it with "
+             f"`ab session kill {project}` (its logs and end-of-session scan are kept).")
 
 
 def cmd_preview(s, a):
@@ -851,13 +891,31 @@ def cmd_preview(s, a):
     return 0
 
 
+def _resolve_session(s, podman, name):
+    """A session id or a project name. One session per project, so a project name is unambiguous -- and it
+    is what the user sees everywhere else."""
+    known = session.sessions(s, podman)
+    if name in known:
+        return name
+    sid = session.live_session_of(s, podman, name)
+    if sid:
+        return sid
+    of_project = sorted(k for k, info in known.items()
+                        if (info.get("meta") or {}).get("project") == name
+                        or any(c.get("project") == name for c in info.get("containers") or []))
+    if len(of_project) == 1:
+        return of_project[0]
+    if of_project:
+        raise AgentboxError(f"{name} has more than one session on disk ({', '.join(of_project)}); name the "
+                            f"one you mean")
+    raise AgentboxError(f"no session of {name} (and no session named {name}); `ab session ls` lists them")
+
+
 def cmd_kill(s, a):
     podman = Podman(s.podman)
-    known = session.sessions(s, podman)
-    if a.session not in known:
-        raise AgentboxError(f"no session named {a.session}")
-    session.teardown(s, podman, a.session, warn=warn)
-    print(f"killed {a.session}")
+    sid = _resolve_session(s, podman, a.session)
+    session.teardown(s, podman, sid, warn=warn)
+    print(f"killed {sid}")
 
 
 def cmd_gc(s, a):
@@ -1087,11 +1145,12 @@ def parser(settings=None):
                                            "removes none)")
     x.set_defaults(fn=cmd_project_rm)
 
-    x = add(sub, "run", "start an agent session in the foreground",
+    x = add(sub, "run", "start an agent session in the foreground (one per project)",
             ex("ab run --agent claude --project web",
                "ab run claude web                 positional form of --agent/--project",
                "ab run claude web --shell         a bash shell in the sandbox instead of the agent",
-               "ab run claude web -- --resume     pass everything after -- to the agent"))
+               "ab run claude web -- --resume     pass everything after -- to the agent",
+               "ab attach web                     re-attach to the session already running"))
     x.add_argument("--agent", metavar="AGENT",
                    help="agent to run: `claude` or `omp` (or give it positionally: `ab run <agent> <project>`)")
     x.add_argument("--project", metavar="PROJECT",
@@ -1105,6 +1164,11 @@ def parser(settings=None):
                    help="positional AGENT and PROJECT (an alternative to --agent/--project); anything after a "
                         "`--` is passed through to the agent or shell")
     x.set_defaults(fn=cmd_run)
+
+    x = add(sub, "attach", "re-attach a terminal to the session already running for a project",
+            ex("ab attach web"))
+    x.add_argument("project", help="the project whose running session to attach to (one per project)")
+    x.set_defaults(fn=cmd_attach)
 
     # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
     # verb that starts one.
@@ -1159,8 +1223,9 @@ def parser(settings=None):
     x.add_argument("--stop", action="store_true", help="remove this session's previews instead of opening one")
     x.set_defaults(fn=cmd_preview)
     x = add(sess, "kill", "tear down a session and everything it created (keeps its logs and end-of-session scan)",
-            ex("ab session kill ab-claude-web-1"))
-    x.add_argument("session", help="the session name to tear down (from `ab session ls`)")
+            ex("ab session kill web", "ab session kill ab-claude-web-1   by session id"))
+    x.add_argument("session", help="the project whose session to tear down, or the session id itself "
+                                   "(`ab session ls` shows both)")
     x.set_defaults(fn=cmd_kill)
     add(sess, "gc", "remove containers, networks and sockets left by dead sessions (runs automatically after boot)",
         ex("ab session gc")).set_defaults(fn=cmd_gc)

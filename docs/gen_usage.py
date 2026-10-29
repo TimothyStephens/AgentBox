@@ -14,6 +14,7 @@ GROUPS = [
     ("Top level", [("ab", [])]),
     ("ab init", [("ab init", ["init"])]),
     ("ab run", [("ab run", ["run"])]),
+    ("ab attach", [("ab attach", ["attach"])]),
     ("ab selftest", [("ab selftest", ["selftest"])]),
     ("ab project", [
         ("ab project", ["project"]),

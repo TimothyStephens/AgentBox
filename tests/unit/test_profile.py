@@ -810,18 +810,31 @@ class RmAddAndPurge(SettingsCase):
         self.assertIn("no agent state", out)
 
 
-class ConcurrentSessionsShareState(SettingsCase):
-    def test_the_run_warning_says_the_state_is_shared(self):
+class ConcurrentSessionsCannotHappen(SettingsCase):
+    """The inbox and the agent state were shared by two concurrent sessions, last writer wins, and `ab run`
+    only warned. One session per project is enforced now (projectlock.py, 29 Oct), so the sharing is
+    impossible rather than described."""
+
+    def test_a_second_session_is_refused_and_the_reason_names_the_shared_state(self):
+        from agentbox import projectlock
         self.project("p1", preset="script")
         os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
             [{"Names": ["ab-claude-p1-1-agent"], "State": "running",
               "Labels": {"agentbox.project": "p1", "agentbox.session": "ab-claude-p1-1",
                          "agentbox.role": "agent", "agentbox-test": "1"}}])
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        said = []
-        cli._warn_if_live(self.settings, "p1", warn=said.append)
-        joined = " ".join(said)
-        self.assertIn("SHARE", joined)
+        projectlock.acquire(self.settings, "p1", pid=os.getpid(),
+                            pid_start=session._start_time(os.getpid()))
+        projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err), \
+             mock.patch("sys.stdin", io.StringIO("")):
+            code = cli.main(["run", "claude", "p1", "--no-tty"])
+        self.assertEqual(code, 2)
+        joined = err.getvalue()
+        self.assertIn("agent state and inbox", joined)
         self.assertIn("last writer wins", joined)
 
 

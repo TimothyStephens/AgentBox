@@ -155,6 +155,13 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   Still unverified by the builder: whether the installed OMP has that split (`~/.omp` is off limits to a
   session) — the check and the one-line revert are in TODO.md.
 
+- **One live session per project** (29 Oct, decisions.md): a lock file in the project's state dir, taken by
+  `ab run` before any work and released by teardown on every path that can run code; a stale holder is
+  reaped and reported, a live one is never overruled, and an unreadable podman frees nothing. `ab attach
+  <project>` is the way back to a running session. Users name projects now (`ab attach web`,
+  `ab session kill web`); session ids keep their suffix in logs, labels and inbox provenance. `ab run` on an
+  unregistered name prints the `ab project add` command instead of registering anything.
+
 ## Next
 
 The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.
