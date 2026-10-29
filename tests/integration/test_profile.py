@@ -10,6 +10,7 @@ load paths"). A skip that names the reason is better than a gap.
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -35,6 +36,12 @@ def setUpModule():
         f.write(SKILL_TEXT)
     with open(os.path.join(profile_src, "CLAUDE.md"), "w") as f:
         f.write("PROFILE-INSTRUCTIONS-OK\n")
+    # A second mounted directory: without one, the "write to commands/" case below failed with "No such
+    # file or directory" (nothing is mounted for a profile item that does not exist) and so passed for the
+    # wrong reason -- a missing path is not a refused write.
+    os.makedirs(os.path.join(profile_src, "commands"), mode=0o700, exist_ok=True)
+    with open(os.path.join(profile_src, "commands", "abt-ship.md"), "w") as f:
+        f.write("ship it\n")
     print(f"\n[itest run {harness.RUN}: profile at {profile_src}]")
 
 
@@ -71,15 +78,20 @@ class Profile(unittest.TestCase):
             if (echo x > {CONFIG}/commands/evil.md) 2>&1; then echo CMD_WROTE; else echo CMD_REFUSED; fi
             test -f {CONFIG}/skills/{SKILL}/SKILL.md && echo SKILL_STILL_THERE
             echo "MD_BYTES=$(wc -c < {CONFIG}/CLAUDE.md)"
-            grep -c 'agentbox sandbox' {CONFIG}/CLAUDE.md
+            echo "MD_NOTES=$(grep -c 'agentbox sandbox' {CONFIG}/CLAUDE.md)"
         """)
         for what in ("TOUCH", "RM", "MD", "CMD"):
             self.assertIn(f"{what}_REFUSED", p.stdout, f"{what}: a write to a profile path must fail")
             self.assertNotIn(f"{what}_WROTE", p.stdout)
-        self.assertIn("Read-only file system", p.stdout)
+        # Four refusals, each because the filesystem is read-only -- not because a path was missing, which
+        # is how the `commands/` case passed before the profile had one.
+        self.assertEqual(p.stdout.count("Read-only file system"), 4, p.stdout)
         self.assertIn("SKILL_STILL_THERE", p.stdout, "and the skill is untouched")
-        self.assertNotIn("MD_BYTES=2", p.stdout, "CLAUDE.md was not replaced by `x`")
-        self.assertIn("1", p.stdout.strip().splitlines()[-1], "it is still the generated file")
+        size = int(re.search(r"MD_BYTES=(\d+)", p.stdout).group(1))
+        self.assertGreater(size, len("x\n"), "CLAUDE.md was not replaced by `x`")
+        # Still the generated file: the sandbox notes are in it. (The phrase occurs more than once, so
+        # count it rather than matching a literal -- the previous version asserted exactly "1".)
+        self.assertGreaterEqual(int(re.search(r"MD_NOTES=(\d+)", p.stdout).group(1)), 1, p.stdout)
 
     def test_the_generated_instructions_lead_with_the_notes_then_the_profile(self):
         p = shell("prof1", f"cat {CONFIG}/CLAUDE.md")
@@ -181,7 +193,8 @@ class Profile(unittest.TestCase):
             line = f.read()
         self.assertIn("agent=claude", line)
         self.assertRegex(line, r"hash=[0-9a-f]{16} commit=[0-9a-f]{7,} dirty=(yes|no)")
-        self.assertIn("loaded=skills", line)
+        loaded = re.search(r"loaded=(\S+)", line).group(1).split(",")
+        self.assertEqual(sorted(loaded), ["commands", "skills"], line)
 
     def test_promote_puts_an_inbox_item_in_front_of_the_next_session(self):
         shell("prof2", f"mkdir -p {CONFIG}/inbox/abt-promoted && "
