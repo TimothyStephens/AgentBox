@@ -83,6 +83,20 @@ class ClaudeAdapter(Adapter):
         from .. import profile
         profile.copy_into_state(settings, self, state_dir)
 
+    def redundant_state_copy(self, settings, name, path):
+        """A state `CLAUDE.md` is a copy of the pre-profile seed if, with the injected sandbox block taken
+        out, it is byte-identical to the profile's own CLAUDE.md (where that seed was moved).
+
+        `seed_state` used to write exactly that file -- the block plus the seed -- so on most projects it
+        holds nothing a session or the user added, and queueing it for review would be asking someone to
+        read back their own seed. Anything else, including an empty profile CLAUDE.md against a non-empty
+        state one, is content and goes to the inbox."""
+        if name != "CLAUDE.md":
+            return False
+        own = _NOTES_BLOCK.sub("", _read_text(path)).strip()
+        seed = _read_text(os.path.join(settings.profile_src(self.name), "CLAUDE.md")).strip()
+        return own == seed
+
     def session_instructions(self, settings, sandbox_notes):
         """The CLAUDE.md the session gets: the sandbox description first, then the profile's own CLAUDE.md.
 

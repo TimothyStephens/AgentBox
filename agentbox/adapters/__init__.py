@@ -37,6 +37,14 @@ class Adapter:
         SessionSetup. Default: nothing extra."""
         return SessionSetup()
 
+    def redundant_state_copy(self, settings, name, path):
+        """Is this per-project state file a copy of what the profile already holds, with nothing of its own?
+
+        Such a file is deleted by the migration instead of being queued in the inbox: an inbox full of
+        copies of the seed is noise, and noise is what stops a review queue being read. Default: no -- only
+        an adapter that knows how it wrote the file can say. (`session.migrate_state_to_inbox`.)"""
+        return False
+
     def session_instructions(self, settings, sandbox_notes):
         """The instruction file to generate for this session and mount read-only, or None for an agent that
         builds its own (OMP generates AGENTS.md in prepare_session). Default: none."""

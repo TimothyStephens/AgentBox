@@ -4,7 +4,10 @@ How to install the `ab` launcher on this host, and exactly where everything it u
 
 ## Prerequisites
 
-- **ubuntu-dev** (Ubuntu), rootless **podman 5.7.0** with netavark, `python3` and `git`. `vmuser` has no root.
+- **ubuntu-dev** (Ubuntu), rootless **podman 5.7.0** with netavark, `python3`, `git` and **`rsync`**.
+  `vmuser` has no root. rsync is a hard requirement, not an optional extra: every session takes an
+  `rsync --link-dest` snapshot of its read-write grants before starting (the session's only undo), so
+  without it `ab run` refuses. It is also needed to run agentbox's own test suite.
 - The two **base agent images must already exist** — agentbox layers on them, it does not build them:
   - `localhost/claudecode:latest` (ships the `claude` CLI),
   - `localhost/omp-env:latest` (ships the `omp` CLI; Tim's `~/repos/omp-env`).

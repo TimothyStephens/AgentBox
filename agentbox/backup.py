@@ -78,9 +78,17 @@ def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: ()
             cand = os.path.join(project_dir, prev[-1], g.lstrip("/"))
             if os.path.isdir(cand):
                 link = cand
-        p = subprocess.run(rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g),
-                                      exclude_rel=exclude_rel_for(g)),
-                           capture_output=True, text=True)
+        try:
+            p = subprocess.run(rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g),
+                                          exclude_rel=exclude_rel_for(g)),
+                               capture_output=True, text=True)
+        except OSError as e:
+            # The pre-session snapshot is the session's only undo, so a missing rsync has to stop the
+            # session -- but as a condition with a fix in it, not a traceback (the same shape as a missing
+            # podman binary, audit F-2).
+            shutil.rmtree(work, ignore_errors=True)
+            raise AgentboxError(f"cannot run rsync ({e}); agentbox needs it for the pre-session snapshot of "
+                                f"{g}. Install it (`apt-get install rsync`) -- see docs/INSTALL.md.")
         # 24 = some files vanished during the copy; the snapshot is still usable.
         if p.returncode not in (0, 24):
             shutil.rmtree(work, ignore_errors=True)

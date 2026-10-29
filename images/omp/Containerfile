@@ -19,8 +19,10 @@ ARG BASE=localhost/omp-env:latest
 FROM ${BASE}
 ARG AB_HOME=/home/vmuser
 
+# rsync: agentbox's own test suite shells out to it (the pre-session grant snapshot), so `make test` run
+# inside a session needs it -- see images/claude/Containerfile.
 RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium python3-venv curl \
-    && apt-get clean
+    rsync && apt-get clean
 COPY requirements.txt /tmp/agentbox-requirements.txt
 RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/agentbox-requirements.txt
 # /root is about to become readable by the session user: refuse to build if it holds credentials.

@@ -35,7 +35,7 @@ persists across sessions of that project. The host `~/.claude` is never used.
 | `skills/`, `agents/`, `commands/` | `~/.config/agentbox/claude/profile/` (the **profile**) | `/run/agentbox/claude/{skills,agents,commands}` | **global** (every project, every preset) | **ro** |
 | `CLAUDE.md` | the profile's own, with the sandbox notes prepended | `/run/agentbox/claude/CLAUDE.md`, generated per session | **global** | **ro** |
 | `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start | **global** | rw copy |
-| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/<agent>/inbox/` | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** | rw |
+| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/<agent>/inbox/` (under `ephemeral/<session>/` in lockdown) | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** (lockdown: deleted at teardown) | rw |
 | Managed policy (lockdown / approvals on) | generated in `<run>/sessions/<s>/claude-managed-settings.json` | `/etc/claude-code/managed-settings.json` | per-session | ro |
 | Repo config (`CLAUDE.md`, `.mcp.json`, `.claude/`) | the project repo (its real path) | same real path (the grant) | per-project (committed) | rw (ro where covered) |
 

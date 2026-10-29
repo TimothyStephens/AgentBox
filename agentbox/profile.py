@@ -140,19 +140,25 @@ def ensure_repo(src, out=None):
     return True
 
 
-def commit_id(src):
-    """The profile's current commit, with `-dirty` when the working tree differs from it. "" without a repo.
+def commit_state(src):
+    """(commit, dirty) for the profile's git repo: ("", False) without one.
 
-    Recorded beside the content hash: the hash says what a session loaded, the commit says which reviewed
-    state it came from -- and `-dirty` says the two have drifted, which is worth seeing in a session log."""
+    Recorded beside the content hash, and separately from it, because they answer different questions. The
+    hash says what a session loaded. The commit says which reviewed state that came from. `dirty` says the
+    two have drifted -- the session loaded something that is in nobody's history, which is exactly what you
+    want to know when a skill turns out to have misbehaved."""
     if not os.path.isdir(os.path.join(src, ".git")):
-        return ""
+        return "", False
     p = _git(src, "rev-parse", "--short", "HEAD", check=False)
     if p.returncode != 0:
-        return ""
-    head = p.stdout.strip()
-    dirty = _git(src, "status", "--porcelain", check=False).stdout.strip()
-    return head + ("-dirty" if dirty else "")
+        return "", bool(_walk(src))          # a repo with no commit yet: everything in it is uncommitted
+    return p.stdout.strip(), bool(_git(src, "status", "--porcelain", check=False).stdout.strip())
+
+
+def commit_id(src):
+    """The commit with a `-dirty` suffix, for a one-line display."""
+    commit, dirty = commit_state(src)
+    return commit + ("-dirty" if commit and dirty else "")
 
 
 # --- the inbox ---------------------------------------------------------------------------------------
@@ -247,8 +253,9 @@ def content_id(path):
 class Loaded:
     """One session's profile: the snapshot it mounts, and the identity of what it loaded."""
 
-    def __init__(self, agent, src, dir=None, hash="", commit="", mounts=(), notes=()):
+    def __init__(self, agent, src, dir=None, hash="", commit="", dirty=False, mounts=(), notes=()):
         self.agent, self.src, self.dir, self.hash, self.commit = agent, src, dir, hash, commit
+        self.dirty = dirty                          # the profile tree differs from its own last commit
         self.mounts = list(mounts)                  # (host src, container dst, read_only)
         self.notes = list(notes)
 
@@ -258,7 +265,14 @@ class Loaded:
 
     def log_line(self):
         return (f"profile agent={self.agent} hash={self.hash or '(none)'} commit={self.commit or '(no repo)'} "
-                f"snapshot={self.dir or '(none)'} loaded={','.join(self.names) or '(nothing)'}\n")
+                f"dirty={'yes' if self.dirty else 'no'} snapshot={self.dir or '(none)'} "
+                f"loaded={','.join(self.names) or '(nothing)'}\n")
+
+    @property
+    def display(self):
+        return (f"{self.hash or '(none)'}"
+                + (f" (commit {self.commit}{', uncommitted changes' if self.dirty else ''})"
+                   if self.commit else " (not committed)" if self.hash else ""))
 
 
 def migrate_legacy_seed(settings, agent, out=None):
@@ -304,7 +318,8 @@ def load_for_session(settings, adapter, *, out=None):
     migrate_legacy_seed(settings, adapter.name, out=out)
     ensure_repo(src, out=out)
     dir, digest = snapshot(settings, adapter.name)
-    loaded = Loaded(adapter.name, src, dir=dir, hash=digest, commit=commit_id(src))
+    commit, dirty = commit_state(src)
+    loaded = Loaded(adapter.name, src, dir=dir, hash=digest, commit=commit, dirty=dirty)
     if not dir:
         return loaded
     for item, dst in sorted((adapter.profile_mounts or {}).items()):

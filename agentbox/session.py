@@ -236,7 +236,7 @@ def dev_notes(podman_live, dev_images=()):
     return lines
 
 
-def profile_notes(profile_loaded, inbox):
+def profile_notes(profile_loaded, inbox, inbox_kept=True):
     """What the agent is told about the host-owned profile and the inbox.
 
     It has to be told, because the shape is unusual: the paths it would normally write a skill to are
@@ -248,12 +248,16 @@ def profile_notes(profile_loaded, inbox):
         out.append(f"- Shared, host-owned {', '.join(names)} are mounted **read-only** (profile "
                    f"{profile_loaded.hash}): they come from outside the sandbox, the same set in every "
                    "project, and you cannot change them. Writing there fails; that is not a bug.")
-    if inbox:
+    if inbox and inbox_kept:
         out.append(f"- To keep a skill, sub-agent or note for later, write it under `{inbox}` (read-write, "
                    "per project). Nothing there is loaded by you or by any later session: it is a review "
                    "queue the user harvests with `ab profile harvest`, which is how something gets into the "
                    "shared profile. Put anything you want remembered there, with a sentence on why it is "
                    "worth keeping.")
+    elif inbox:
+        out.append(f"- `{inbox}` is writable, but **this session keeps nothing**: its whole state, the "
+                   "inbox included, is deleted when the session ends (that is what this preset is for). "
+                   "Anything worth keeping has to go in your reply to the user, not on disk.")
         out.append("- Memory shortcuts: a `#` note aimed at the PROJECT's own `CLAUDE.md` works normally "
                    "(it is in the grant, and the end-of-session scan reports it, so say in the commit what "
                    "you changed). One aimed at the user-level `CLAUDE.md` fails: that file is generated "
@@ -261,7 +265,8 @@ def profile_notes(profile_loaded, inbox):
     return out
 
 
-def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox=""):
+def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
+                  inbox_kept=True):
     logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
@@ -310,7 +315,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
          "other projects' containers).")
     else:
         lines.append("- No podman or docker socket is available in this session.")
-    lines += profile_notes(profile, inbox)
+    lines += profile_notes(profile, inbox, inbox_kept)
     lines += [
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
@@ -420,14 +425,14 @@ class Session:
         self.profile = profile.load_for_session(self.settings, self.adapter, out=self.warn)
         moved = migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
-                              profile=self.profile, inbox=self.inbox_mount)
+                              profile=self.profile, inbox=self.inbox_mount,
+                              inbox_kept=not self.inbox_is_ephemeral)
         self.adapter.seed_state(self.settings, self.state_dir, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
         self._add_profile_mounts(notes)
         _keep(self.log_path("profile"), self.profile.log_line().encode())
-        self.warn(f"agentbox: profile {self.adapter.name} {self.profile.hash or '(none)'}"
-                  + (f" (commit {self.profile.commit})" if self.profile.commit else "")
+        self.warn(f"agentbox: profile {self.adapter.name} {self.profile.display}"
                   + (f", loaded: {', '.join(self.profile.names)}" if self.profile.names else
                      " -- nothing to load; put skills in "
                      f"{self.settings.profile_src(self.adapter.name)}")
@@ -457,8 +462,19 @@ class Session:
 
     @property
     def inbox(self):
-        """Where this session puts what it wants to keep: read-write, per project, never loaded."""
+        """Where this session puts what it wants to keep: read-write, never loaded.
+
+        Per project and persistent -- except under `lockdown`, where it sits inside the session's own
+        ephemeral state and goes with it at teardown. Lockdown keeps nothing by design (decisions.md,
+        2 Oct), and a review queue that outlived the session would be the single exception to that; the
+        agent is told, so it does not write a skill believing it will be kept."""
+        if self.inbox_is_ephemeral:
+            return os.path.join(self.state_dir, "inbox")
         return self.settings.inbox_dir(self.project.name, self.adapter.name)
+
+    @property
+    def inbox_is_ephemeral(self):
+        return self.project.preset == "lockdown" and bool(self.name)
 
     @property
     def inbox_mount(self):
@@ -560,7 +576,8 @@ class Session:
                "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)},
                # What the inbox held at the start: teardown reports (and gives provenance to) the difference.
                "inbox": {"project": p.name, "agent": self.adapter.name, "items": profile.items(self.inbox),
-                         "preset": p.preset, "egress": p.value("egress")}}
+                         "preset": p.preset, "egress": p.value("egress"), "dir": self.inbox,
+                         "ephemeral": self.inbox_is_ephemeral}}
         path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -583,10 +600,6 @@ class Session:
         if self.profile and self.profile.dir:
             out.append(os.path.realpath(self.profile.dir))
         if self.adapter.state_mount:
-            # The inbox is per PROJECT, not per state dir: a lockdown session's own state is ephemeral, but
-            # an item it puts in the inbox has to survive to be reviewed. That does not weaken lockdown --
-            # nothing in the inbox is ever loaded, by this session or any later one; only a person
-            # promoting it with `ab profile harvest` can make it part of what an agent reads.
             out.append(os.path.realpath(self.inbox))
         if self.token_file:
             out.append(os.path.realpath(self.token_file))
@@ -1178,13 +1191,17 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
     Returns the names moved."""
     src_dir = settings.state_dir(project, adapter.name)
     inbox = settings.inbox_dir(project, adapter.name)
-    moved = []
+    moved, removed = [], []
     for name in adapter.migrate_to_inbox:
         src = os.path.join(src_dir, name)
         if not os.path.exists(src) or os.path.islink(src):
             continue
         if os.path.isdir(src) and not os.listdir(src):
             os.rmdir(src)                     # an empty dir an earlier session left: nothing to keep
+            continue
+        if os.path.isfile(src) and adapter.redundant_state_copy(settings, name, src):
+            os.unlink(src)
+            removed.append(name)
             continue
         os.makedirs(inbox, mode=0o700, exist_ok=True)
         dst = os.path.join(inbox, f"from-state-{name}")
@@ -1197,6 +1214,10 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
         warn(f"agentbox: moved {', '.join(moved)} out of {project}'s {adapter.name} state into {inbox} "
              f"(those paths are read-only profile mounts now; nothing was deleted). "
              f"`ab profile harvest` reviews them.")
+    if removed:
+        warn(f"agentbox: removed {', '.join(removed)} from {project}'s {adapter.name} state: it was a copy "
+             f"of what the profile already holds, with nothing added, so there was nothing to review. The "
+             f"profile's own copy is what sessions load.")
     return moved
 
 
@@ -1208,6 +1229,18 @@ def _inbox_report(settings, doc, session, warn, now=None):
     box = doc.get("inbox") or {}
     if not box.get("project"):
         return
+    inbox = box.get("dir") or settings.inbox_dir(box["project"], box["agent"])
+    if box.get("ephemeral"):
+        # Nothing is recorded or promised: this inbox is about to be deleted with the rest of the session's
+        # state. Saying how many items are going is still worth it -- silently dropping the agent's work
+        # would be the surprise.
+        going = [n for n in profile.items(inbox) if n not in set(box.get("items") or ())]
+        if going:
+            warn(f"agentbox: {len(going)} item(s) were written to this lockdown session's inbox "
+                 f"({', '.join(going[:10])}) and are being DELETED with the rest of its state, as this "
+                 f"preset keeps nothing. Copy anything worth keeping out of {inbox} now if the session is "
+                 f"still up.")
+        return
     try:
         new = profile.record_new_items(settings, box["project"], box["agent"], box.get("items") or [],
                                        session=session, preset=box.get("preset", ""),
@@ -1216,7 +1249,6 @@ def _inbox_report(settings, doc, session, warn, now=None):
         warn(f"agentbox: could not record the inbox's provenance: {e}")
         return
     if new:
-        inbox = settings.inbox_dir(box["project"], box["agent"])
         warn(f"agentbox: {len(new)} new item(s) in {inbox}: {', '.join(new[:10])}"
              + (" ..." if len(new) > 10 else "")
              + ". Nothing there is loaded; `ab profile harvest` reviews it.")

@@ -134,3 +134,35 @@ class BackupExcludeEscaping(TempCase):
 
     def test_literal_helper_escapes_metacharacters(self):
         self.assertEqual(backup._rsync_literal(r"a[1]*?\b"), r"a\[1\]\*\?\\b")
+
+
+class MissingRsync(TempCase):
+    """rsync is a hard host requirement: the pre-session snapshot is a session's only undo. Its absence has
+    to stop the session with a condition that names the fix, not a FileNotFoundError traceback -- the same
+    shape as a missing podman binary (audit F-2). It is missing in the agentbox sandbox itself, which is how
+    this was noticed."""
+
+    def test_a_missing_rsync_is_an_ab_error_naming_the_fix(self):
+        from unittest import mock
+        grant = self.mkdir("proj")
+        self.write("proj/app.py", "code\n")
+        with mock.patch("agentbox.backup.subprocess.run",
+                        side_effect=FileNotFoundError(2, "No such file or directory: 'rsync'")):
+            with self.assertRaises(AgentboxError) as cm:
+                backup.snapshot(self.mkdir("backups"), "p1", "sess-1", [grant])
+        msg = str(cm.exception)
+        self.assertIn("rsync", msg)
+        self.assertIn("install", msg.lower())
+        self.assertIn(grant, msg)
+
+    def test_no_half_written_snapshot_is_left(self):
+        from unittest import mock
+        grant = self.mkdir("proj")
+        self.write("proj/app.py", "code\n")
+        backups = self.mkdir("backups")
+        with mock.patch("agentbox.backup.subprocess.run", side_effect=OSError(2, "nope")):
+            with self.assertRaises(AgentboxError):
+                backup.snapshot(backups, "p1", "sess-1", [grant])
+        left = [n for n in os.listdir(os.path.join(backups, "p1"))] if os.path.isdir(
+            os.path.join(backups, "p1")) else []
+        self.assertEqual(left, [], "the work directory is removed")

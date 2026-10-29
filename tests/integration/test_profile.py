@@ -93,6 +93,23 @@ class Profile(unittest.TestCase):
         p = shell("proflock", f"cat {CONFIG}/skills/{SKILL}/SKILL.md")
         self.assertIn("an agentbox itest probe", p.stdout)
 
+    def test_a_lockdown_inbox_write_does_not_survive_the_session(self):
+        """Lockdown keeps nothing, the inbox included: it lives in the session's ephemeral state."""
+        p = shell("proflock", f"""
+            mkdir -p {CONFIG}/inbox/gone && echo 'not kept' > {CONFIG}/inbox/gone/SKILL.md
+            echo WROTE=$?
+            grep -c 'keeps nothing' {CONFIG}/CLAUDE.md
+        """)
+        self.assertIn("WROTE=0", p.stdout, p.stderr[-1500:])
+        self.assertIn("1", p.stdout.strip().splitlines()[-1], "the agent was told")
+        self.assertFalse(os.path.exists(os.path.join(ENV.data, "proflock", "claude", "inbox", "gone")))
+        self.assertFalse([n for n in os.listdir(os.path.join(ENV.data, "ephemeral"))
+                          if os.path.isdir(os.path.join(ENV.data, "ephemeral", n))]
+                         if os.path.isdir(os.path.join(ENV.data, "ephemeral")) else [],
+                         "the ephemeral state is gone with the session")
+        out = ENV.ab("profile", "harvest", "--agent", "claude", check=True).stdout
+        self.assertNotIn("gone", out, "nothing was queued for review")
+
     def test_an_inbox_write_persists_and_is_not_a_load_path(self):
         first = shell("prof1", f"""
             mkdir -p {CONFIG}/inbox/learned && echo 'kept across sessions' > {CONFIG}/inbox/learned/SKILL.md
@@ -145,7 +162,7 @@ class Profile(unittest.TestCase):
         self.assertTrue(profile_logs, logs)
         with open(os.path.join(ENV.data, "logs", profile_logs[-1])) as f:
             line = f.read()
-        self.assertRegex(line, r"hash=[0-9a-f]{16} commit=[0-9a-f]{7,}")
+        self.assertRegex(line, r"hash=[0-9a-f]{16} commit=[0-9a-f]{7,} dirty=(yes|no)")
         self.assertIn("loaded=skills", line)
 
     def test_promote_puts_an_inbox_item_in_front_of_the_next_session(self):

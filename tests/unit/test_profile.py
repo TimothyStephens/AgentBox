@@ -205,13 +205,35 @@ class SessionLoadsTheProfile(SettingsCase):
         self.assertIn("/run/agentbox/claude/inbox", text)
         self.assertIn("ab profile harvest", text)
 
-    def test_the_hash_and_commit_are_in_the_session_log(self):
+    def test_the_hash_commit_and_dirty_state_are_in_the_session_log(self):
+        """Three different questions: what the session loaded (hash), which reviewed state it came from
+        (commit), and whether the two had drifted (dirty) -- the last being how you learn that a session
+        loaded something in nobody's history."""
         s, _w = self.start()
         log = open(s.log_path("profile")).read()
         self.assertIn(f"hash={s.profile.hash}", log)
-        self.assertIn("commit=", log)
-        self.assertRegex(log, r"commit=[0-9a-f]{7,}")
+        self.assertRegex(log, r"commit=[0-9a-f]{7,} dirty=no")
         self.assertIn("loaded=skills", log)
+
+    def test_an_uncommitted_profile_edit_is_recorded_as_dirty(self):
+        self.start()                                     # the first session commits the profile repo
+        self.write("config/claude/profile/skills/deploy/SKILL.md", "edited but not committed\n")
+        s, warnings = self.start()
+        log = open(s.log_path("profile")).read()
+        self.assertIn("dirty=yes", log)
+        self.assertTrue(s.profile.dirty)
+        self.assertNotEqual(s.profile.hash, "", "and the hash moved with the edit")
+        self.assertTrue(any("uncommitted changes" in w for w in warnings), warnings)
+
+    def test_a_profile_with_no_commit_yet_is_dirty_not_crashed(self):
+        """`ensure_repo` commits what it finds, so this is the odd case of a hand-made empty repo."""
+        import shutil
+        src = self.settings.profile_src("claude")
+        shutil.rmtree(os.path.join(src, ".git"), ignore_errors=True)
+        subprocess.run(["git", "-C", src, "init", "-q"], check=True)
+        commit, dirty = profile.commit_state(src)
+        self.assertEqual(commit, "")
+        self.assertTrue(dirty)
 
     def test_a_second_project_loads_the_same_profile(self):
         self.project("p2", preset="script")
@@ -273,6 +295,37 @@ class StateMigratedToInbox(SettingsCase):
         self.assertFalse(os.path.exists(os.path.join(self.state, "skills")))
         self.assertTrue(any("moved" in w and "inbox" in w for w in warnings), warnings)
 
+    def test_a_state_claude_md_that_only_copies_the_seed_is_removed_not_queued(self):
+        """An inbox full of copies of the seed is noise, and noise is what stops a queue being read. The
+        state file `seed_state` used to write is the block plus the seed, so on most projects it holds
+        nothing of its own."""
+        from agentbox.adapters import claude
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")
+        block = f"{claude.NOTES_BEGIN}\nold notes\n{claude.NOTES_END}\n"
+        self.write("data/p1/claude/CLAUDE.md", block + "\nhouse style\n")
+        _s, warnings = self.start()
+        self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [],
+                         "nothing to review was queued")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "CLAUDE.md")))
+        self.assertTrue(any("removed" in w and "copy of what the profile already holds" in w
+                            for w in warnings), warnings)
+
+    def test_a_state_claude_md_with_anything_of_its_own_is_queued(self):
+        from agentbox.adapters import claude
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")
+        block = f"{claude.NOTES_BEGIN}\nold notes\n{claude.NOTES_END}\n"
+        self.write("data/p1/claude/CLAUDE.md", block + "\nhouse style\nand one more rule\n")
+        _s, warnings = self.start()
+        inbox = self.settings.inbox_dir("p1", "claude")
+        self.assertEqual(profile.items(inbox), ["from-state-CLAUDE.md"])
+        self.assertIn("one more rule", open(os.path.join(inbox, "from-state-CLAUDE.md")).read())
+
+    def test_a_state_claude_md_against_no_profile_one_is_queued(self):
+        """Nothing in the profile to be a copy OF, so the content is the user's and goes to review."""
+        self.write("data/p1/claude/CLAUDE.md", "notes with no profile counterpart\n")
+        self.start()
+        self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), ["from-state-CLAUDE.md"])
+
     def test_an_empty_state_dir_is_not_moved(self):
         os.makedirs(os.path.join(self.state, "skills"), exist_ok=True)
         self.start()
@@ -281,6 +334,81 @@ class StateMigratedToInbox(SettingsCase):
     def test_nothing_to_migrate_is_silent(self):
         _s, warnings = self.start()
         self.assertFalse([w for w in warnings if "moved" in w], warnings)
+
+
+class LockdownKeepsNothing(SettingsCase):
+    """Lockdown's contract is that the session leaves nothing behind (decisions.md, 2 Oct). Its inbox lives
+    inside the ephemeral state and goes with it, and the agent is told so -- otherwise it would write a
+    skill believing someone would read it."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+        self.root = self.project("locked", preset="lockdown")
+        self.write("config/claude/profile/skills/deploy/SKILL.md", "run make deploy\n")
+
+    def start(self):
+        warnings = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "locked"),
+                                 warn=warnings.append)
+        s.prepare(do_backup=False)
+        return s, warnings
+
+    def test_the_inbox_is_inside_the_ephemeral_state(self):
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        self.assertTrue(s.inbox_is_ephemeral)
+        self.assertIn(os.path.join("ephemeral", s.name), s.inbox)
+        self.assertEqual(s.inbox, os.path.join(s.state_dir, "inbox"))
+        self.assertFalse(os.path.exists(self.settings.inbox_dir("locked", "claude")),
+                         "no persistent inbox is created for a lockdown project")
+
+    def test_it_is_deleted_with_the_rest_of_the_state(self):
+        s, _w = self.start()
+        os.makedirs(os.path.join(s.inbox, "learned"), exist_ok=True)
+        with open(os.path.join(s.inbox, "learned", "SKILL.md"), "w") as f:
+            f.write("will not survive\n")
+        inbox = s.inbox
+        s.teardown()
+        self.assertFalse(os.path.exists(inbox), inbox)
+        self.assertFalse(os.path.exists(os.path.join(self.settings.data_dir, "ephemeral", s.name)))
+
+    def test_the_agent_is_told_the_session_keeps_nothing(self):
+        s, _w = self.start()
+        self.addCleanup(s.teardown)
+        path = [m for m in s.run_args(["true"]) if "CLAUDE.md" in m][0].split("src=")[1].split(",")[0]
+        text = open(path).read()
+        self.assertIn("keeps nothing", text)
+        self.assertNotIn("per project). Nothing there is loaded", text, "not the persistent wording")
+
+    def test_teardown_says_what_is_being_deleted(self):
+        s, warnings = self.start()
+        os.makedirs(os.path.join(s.inbox, "learned"), exist_ok=True)
+        with open(os.path.join(s.inbox, "learned", "SKILL.md"), "w") as f:
+            f.write("x\n")
+        s.teardown()
+        self.assertTrue(any("DELETED" in w and "learned" in w for w in warnings), warnings)
+        self.assertFalse(any("ab profile harvest" in w for w in warnings),
+                         "nothing is queued, so nothing is promised")
+
+    def test_no_provenance_sidecar_is_written(self):
+        s, _w = self.start()
+        os.makedirs(os.path.join(s.inbox, "learned"), exist_ok=True)
+        with open(os.path.join(s.inbox, "learned", "SKILL.md"), "w") as f:
+            f.write("x\n")
+        kept = os.path.join(self.settings.data_dir, "ephemeral")
+        s.teardown()
+        self.assertFalse(os.path.exists(kept) and os.listdir(kept), "nothing is left to carry provenance")
+
+    def test_a_normal_preset_still_has_a_persistent_inbox(self):
+        self.project("p1", preset="script")
+        warnings = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
+                                 warn=warnings.append)
+        s.prepare(do_backup=False)
+        self.addCleanup(s.teardown)
+        self.assertFalse(s.inbox_is_ephemeral)
+        self.assertEqual(s.inbox, self.settings.inbox_dir("p1", "claude"))
 
 
 class InboxProvenance(SettingsCase):

@@ -1143,10 +1143,12 @@ immutable. This was the one "test whether it tolerates read-only" question, and 
 our own code.
 
 **The inbox: `<data>/<project>/<agent>/inbox/`, read-write, never loaded.** Mounted inside the agent's own
-config dir so it is in front of the agent, at a path no loader reads. It is per project and persists even
-for `lockdown`, whose own state is ephemeral — which does not weaken lockdown, because nothing in the inbox
-is ever loaded by any session: only a person promoting it can make it part of what an agent reads. At
-teardown each new item gets a provenance sidecar (project, session, timestamp, preset, egress, agent) and
+config dir so it is in front of the agent, at a path no loader reads. It is per project and persistent — except under
+`lockdown`, where it lives inside the session's own ephemeral state and is deleted with it (29 Oct
+follow-up; the first version kept it, on the argument that an unloaded queue cannot weaken lockdown, and
+Tim's call was that "the session keeps nothing" should hold without exceptions). The agent is told which of
+the two it has, so it does not write a skill believing someone will read it, and teardown says how many
+items are going. At teardown each new item in a *persistent* inbox gets a provenance sidecar (project, session, timestamp, preset, egress, agent) and
 the count is printed; teardown is the only moment the host knows which items are new, since nothing hooks
 the agent's writes. Provenance matters because an item is read later, out of context, and `egress open` in
 particular deserves a closer look.
@@ -1178,6 +1180,26 @@ autolearn's output directory can be pointed at the inbox could not be determined
 for OMP: breaking autolearn silently was the one outcome to avoid. The inbox, the snapshot, the provenance
 and the harvest commands all work for OMP today. The question and four options are in `docs/TODO.md`, and
 the itest carries the OMP load-path cases as skips that name the reason.
+
+**Follow-ups the same day (29 Oct).** Four small ones, from reading the result:
+
+- **`rsync` is in the agent images now.** agentbox's own test suite shells out to it (the pre-session grant
+  snapshot is `rsync --link-dest`), so `make test` run *inside* a session could not exercise any code path
+  that prepares a session: 111 of its tests errored on the missing binary. `profile.py` itself does **not**
+  use rsync (it copies with `shutil`), so the profile needed no install-doc or preflight change — but the
+  check turned up that rsync has always been a hard *host* requirement of `ab run`, undocumented, and that
+  its absence was a `FileNotFoundError` traceback. `docs/INSTALL.md` now lists it, and `backup.py` reports
+  it as a condition with the fix in it.
+- **A lockdown inbox is ephemeral** (see above).
+- **A redundant state `CLAUDE.md` is deleted, not queued.** If the injected block is taken out and what
+  remains is byte-identical to the profile's own CLAUDE.md, the file holds nothing anyone added and
+  queueing it would be asking the user to review their own seed. An inbox full of copies is how a review
+  queue stops being read. The adapter decides (`redundant_state_copy`), because only the code that wrote
+  the file knows what a copy of it looks like.
+- **The session log records `dirty`** beside the hash and the commit: three different questions -- what the
+  session loaded, which reviewed state that came from, and whether the two had drifted. A session that
+  loaded something in nobody's history is exactly what you want to see when a skill turns out to have
+  misbehaved.
 
 **Not built, on purpose: the curator.** Reviewing an inbox item is still a person reading a skill. An agent
 whose job is that review wants a project of its own (the profile read-write, a reviewed prompt, a record of

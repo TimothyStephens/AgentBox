@@ -584,9 +584,10 @@ sandbox notes followed by the profile's own). Four properties follow:
 the per-project state at every start rather than mounted read-only.
 
 **The inbox.** What a session wants to keep goes to `<data>/<project>/<agent>/inbox/`, mounted read-write at
-a path nothing loads from. It is per project and survives even a `lockdown` session (whose own state is
-ephemeral) — which does not weaken lockdown, because nothing in the inbox is ever loaded: only a person
-promoting it makes it part of what an agent reads. At teardown every new item gets a provenance sidecar
+a path nothing loads from. It is per project and persistent, **except under `lockdown`**, where it
+sits inside the session's ephemeral state and is deleted with it: that preset keeps nothing, and the
+session notes tell the agent which of the two kinds of inbox it has. At teardown every new item in a
+persistent inbox gets a provenance sidecar
 (project, session, timestamp, preset, egress mode, agent) and the count is printed. `ab profile harvest`
 lists unreviewed items across all projects, registered or not, marks those from an open-egress session,
 groups near-duplicates, and `promote`/`dismiss` act on one. Claude's `#` memory shortcut still works for the
