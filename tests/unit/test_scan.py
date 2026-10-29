@@ -56,6 +56,34 @@ class Scan(TempCase):
             self.assertIn(f"  {f}", text, f)
         self.assertTrue(any("run later" in s for s in summary))
 
+    def test_agent_instruction_and_skill_files_run_later_too(self):
+        """A repo's `.claude/` and `.omp/` are the clearest "runs later" files there are: a skill, a hook, an
+        MCP server or a CLAUDE.md the agent adds is read by the NEXT session (and by the user's own editor),
+        and until now the scan said nothing about them. Lockdown covers them read-only; every other preset
+        does not, which is exactly when the report matters."""
+        self.write("proj/.claude/skills/deploy/SKILL.md", "---\nname: deploy\n---\nrun make deploy\n")
+        self.write("proj/.claude/hooks/pre-tool.sh", "#!/bin/sh\necho hi\n")
+        self.write("proj/.claude/settings.json", '{"hooks": {}}\n')
+        self.write("proj/.claude/agents/reviewer.md", "---\nname: reviewer\n---\n")
+        self.write("proj/.omp/skills/x/SKILL.md", "do a thing\n")
+        self.write("proj/CLAUDE.md", "project rules\n")
+        self.write("proj/AGENTS.md", "project rules\n")
+        self.write("proj/.mcp.json", '{"mcpServers": {}}\n')
+        summary, text = self.report()
+        for f in (".claude/skills/deploy/SKILL.md", ".claude/hooks/pre-tool.sh", ".claude/settings.json",
+                  ".claude/agents/reviewer.md", ".omp/skills/x/SKILL.md", "CLAUDE.md", "AGENTS.md",
+                  ".mcp.json"):
+            self.assertIn(f"  {f}", text, f)
+        self.assertTrue(any("run later" in s for s in summary), summary)
+
+    def test_an_unrelated_dotfile_is_not_flagged(self):
+        """The list is specific: a dot-directory that does not feed an agent stays out of the report."""
+        self.write("proj/.config/notes.md", "hi\n")
+        self.write("proj/.claudeish/x.md", "hi\n")
+        summary, text = self.report()
+        self.assertNotIn("notes.md", text)
+        self.assertNotIn(".claudeish", text)
+
     def test_new_executables_but_not_old_ones(self):
         self.write("proj/new.sh", "#!/bin/sh\n", mode=0o755)
         summary, text = self.report()

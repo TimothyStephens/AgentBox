@@ -35,9 +35,16 @@ import subprocess
 RUN_LATER_NAMES = {"Makefile", "makefile", "GNUmakefile", "package.json", "pyproject.toml", "setup.py",
                    "setup.cfg", ".pre-commit-config.yaml", ".envrc", "conftest.py", "tox.ini", "noxfile.py",
                    "justfile", "Justfile", "Taskfile.yml", "docker-compose.yml", "docker-compose.yaml",
-                   "compose.yml", "compose.yaml", "Containerfile", "Dockerfile", ".gitattributes", ".gitmodules"}
+                   "compose.yml", "compose.yaml", "Containerfile", "Dockerfile", ".gitattributes",
+                   ".gitmodules",
+                   # What an AGENT reads next session, which is the same kind of "runs later" as a Makefile:
+                   # instructions it will follow, and (for Claude) the file its hooks and permissions live in.
+                   "CLAUDE.md", "AGENTS.md", ".mcp.json", "mcp.json"}
 RUN_LATER_PATHS = (".vscode/tasks.json", ".vscode/launch.json", ".vscode/settings.json")
-RUN_LATER_DIRS = (".github/workflows/",)
+# A repo's agent directories, whole: a skill, hook, tool, sub-agent or settings file added under one of them
+# is read by the next session and by the user's own agent outside agentbox. `lockdown` covers these
+# read-only (omp.REPO_CODE); every other preset leaves them writable, which is when the report matters.
+RUN_LATER_DIRS = (".github/workflows/", ".claude/", ".omp/")
 SKIP_DIRS = {".git", "node_modules", "__pycache__"}
 VENV_DIRS = {".venv", "venv"}           # only their .pth files are looked at
 HOOK_VAR = "SECRETS_REGEX"          # the variable in the host hook that holds its pattern
