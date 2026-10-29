@@ -135,6 +135,18 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   project's swap merges with the default `.env`→`.env.dev`, the ceiling refusal names the right limit, and
   three dead parameters plus one dead branch are gone (decisions.md, 28 Oct later).
 
+- **The host-owned agent profile and the inbox** (29 Oct, decisions.md): what an agent LOADS now comes from
+  `~/.config/agentbox/<agent>/profile/`, content-hashed, snapshotted per hash and mounted **read-only** at
+  the agent's load paths under every preset — lockdown included, since host-owned is a different trust class
+  from repo-shipped code. A session cannot change what later sessions load; what it wants to keep goes to
+  the per-project `inbox/`, which nothing loads, gets a provenance sidecar at teardown, and is reviewed with
+  `ab profile harvest` / `promote` / `dismiss` (the profile is a git repo, so a promotion is a commit). The
+  end-of-session scan also learned that a repo's `.claude/`, `.omp/`, `CLAUDE.md`, `AGENTS.md` and
+  `.mcp.json` are files that run later. `ab project rm`/`add` now say what state they keep and reattach, and
+  `ab project purge` is the one command that deletes it. OMP has the inbox but not the read-only load paths:
+  autolearn writes exactly there, and whether it can be pointed elsewhere could not be determined from
+  inside the sandbox (TODO.md).
+
 ## Next
 
 The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.

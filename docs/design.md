@@ -544,6 +544,10 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab project ls` | List registered projects |
 | `ab project rm <name>…` | Remove one or more projects from the registry (files, state and backups untouched) |
 | `ab project reset-state <name>` | Wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy |
+| `ab project purge <name> --yes` | Delete a project's agent state and inbox outright; prints how many unreviewed inbox items would be lost first |
+| `ab profile harvest [--agent A] [--all]` | Read-only: what sessions have put in their inboxes, across all projects, with provenance, open-egress items marked and near-duplicates grouped |
+| `ab profile promote <project>/<item> --as skills/<name>` | Copy an inbox item into the host-owned profile and commit it, with its provenance in the commit message |
+| `ab profile dismiss <project>/<item>` | Mark an inbox item reviewed; deletes nothing |
 | `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
 | `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
 | `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [-- …]` | Start an agent session (no workspace); warns if a session for that project is already running |
@@ -556,6 +560,44 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab keys rotate claude` | Replace the Claude subscription token |
 
 **"Is this project live?"** — one predicate (`session.project_is_live`), used by every command that refuses a registry edit (`project set`, `rm`, `reset-state`, both `accept-*`) and by `ab run`'s already-running warning. A project is live if **any** signal says so: a running container labelled with the project, or a session whose `session.json` names it with its launcher still alive (which covers a session still in `prepare()`, before any container exists). It is **also** live when a signal cannot be read — `podman ps` failing, unparseable output, no podman binary, a session directory with no readable metadata — and the refusal names what it could not determine. Unknown state must never read as "nothing is running": three audits in a row found that question answered wrongly, each time by trusting one signal or by treating an error as an empty list. There is deliberately no `--force`: ending live work is `ab session kill`'s job.
+
+**The host-owned agent profile** (`profile.py`, 29 Oct). `~/.config/agentbox/<agent>/profile/` holds what
+every session LOADS — `skills/`, `agents/`, `commands/`, `rules/`, and the agent's instruction file — and
+only the host writes it. At session start the tree is hashed, snapshotted to
+`<data>/profiles/<agent>/<hash>/`, and mounted **read-only** at the agent's own load paths (for Claude,
+under `CLAUDE_CONFIG_DIR`: `skills/`, `agents/`, `commands/`, and a `CLAUDE.md` generated per session as the
+sandbox notes followed by the profile's own). Four properties follow:
+
+- **Host-owned is trusted**, so it loads under *every* preset including `lockdown`, where a repo's own
+  `.claude`/`.omp` are covered empty. The threat model separates what the user writes on the host from code
+  a repository ships; this is the channel for the first kind.
+- **A session cannot change what later sessions load.** Those paths are read-only; a write fails.
+- **What a session loaded is pinned.** The snapshot is taken at start, so editing the host profile
+  mid-session cannot reach a running session, and the hash plus the profile's git commit go in a `profile`
+  session log. The profile is a git repository (initialised on first use), so a promotion is a commit whose
+  message carries the item's provenance.
+- **No symlinks in the profile.** A link would be followed when the snapshot is copied, and so mounted into
+  every session — the way a host secret outside the profile would reach a sandbox. Any link refuses the
+  session, by name.
+
+`settings.json` is the one exception: Claude Code writes it itself, so it is **copied** from the profile into
+the per-project state at every start rather than mounted read-only.
+
+**The inbox.** What a session wants to keep goes to `<data>/<project>/<agent>/inbox/`, mounted read-write at
+a path nothing loads from. It is per project and survives even a `lockdown` session (whose own state is
+ephemeral) — which does not weaken lockdown, because nothing in the inbox is ever loaded: only a person
+promoting it makes it part of what an agent reads. At teardown every new item gets a provenance sidecar
+(project, session, timestamp, preset, egress mode, agent) and the count is printed. `ab profile harvest`
+lists unreviewed items across all projects, registered or not, marks those from an open-egress session,
+groups near-duplicates, and `promote`/`dismiss` act on one. Claude's `#` memory shortcut still works for the
+*project's* CLAUDE.md (in the grant, and reported by the end-of-session scan); aimed at the user-level one it
+fails, and the session notes say so and point at the inbox.
+
+**What survives removing a project.** `ab project rm` takes the registry entry only: the code, the agent
+state, the inbox and the backups all stay, so re-adding the name reattaches them — which `ab project add`
+now reports rather than doing silently. `ab project reset-state` keeps a copy in the backups dir;
+`ab project purge <name> --yes` is the only command that deletes the state and the inbox, and it prints how
+many unreviewed inbox items would be lost first.
 
 **Planned / not built** (see the Planned section and progress.md's Status table)
 

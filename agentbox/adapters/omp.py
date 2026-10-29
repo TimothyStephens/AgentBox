@@ -440,5 +440,15 @@ ADAPTER = OmpAdapter(
     # reads .omp/ and ~/.omp/agent together), so lockdown drops extension discovery (Tim's plugins too) and
     # the overlay turns off project MCP config (decisions.md, 1 Oct).
     approvals_on_args=["--approval-mode=always-ask", "--no-extensions", f"--config={LOCKDOWN_OVERLAY}"],
+    # profile_mounts is deliberately EMPTY, pending one answer: OMP's autolearn writes into
+    # agent/{skills,rules,prompts,agents,commands}, which are exactly the paths a profile would occupy
+    # read-only. Mounting there would break autolearn, and whether its output directory can be pointed
+    # somewhere else (the inbox) cannot be determined from inside the sandbox -- ~/.omp is off limits and
+    # OMP is not public. The inbox, the harvest commands and the snapshot machinery are live for OMP; only
+    # the read-only load paths wait. See docs/TODO.md ("OMP profile load paths").
+    profile_mounts={},
+    # The inbox IS wired: a read-write directory at a path OMP does not load from, inside its own agent dir
+    # so it is in front of the agent. It is bound after `agent/` itself, so it survives that mount.
+    inbox_mount=f"{C_OMP}/agent/inbox",
     proxy_url_env=["PUPPETEER_PROXY"],      # OMP passes only this to Chromium as --proxy-server
 )

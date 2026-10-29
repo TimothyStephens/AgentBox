@@ -270,6 +270,17 @@ def cmd_project_add(s, a):
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
+    # `ab project rm` keeps the agent state and the inbox, so adding the same name back picks them up.
+    # That is usually what you want and occasionally a surprise (a different root, the same memory), so it
+    # is reported rather than silent.
+    lines, unreviewed = _state_summary(s, a.name)
+    if lines:
+        print(f"  reattached existing agent state under {os.path.join(s.data_dir, a.name)}:")
+        for line in lines:
+            print(line)
+        print(f"  this session will start with that memory. `ab project reset-state {a.name}` keeps a copy "
+              f"and clears it; `ab project purge {a.name}` deletes it outright"
+              + (f"; `ab profile harvest` shows the {unreviewed} unreviewed inbox item(s)" if unreviewed else ""))
     _print_cleared(cleared, a.name, entry, presets_map)
     _print_effective(s, a.name)
 
@@ -525,7 +536,9 @@ def _warn_if_live(s, name, warn=warn):
     live, why = session.project_is_live(s, Podman(s.podman), name)
     if live:
         warn(f"ab: a session for project {name} may already be running ({why}); starting another means two "
-             f"at once. `ab session ls` shows them; `ab session kill <session>` ends one (keeping its logs "
+             f"at once. They SHARE this project's agent state and inbox, with no locking: the last writer "
+             f"wins, so one session's memory or settings can quietly overwrite the other's (TODO.md has the "
+             f"real fix). `ab session ls` shows them; `ab session kill <session>` ends one (keeping its logs "
              f"and scan).")
 
 
@@ -552,6 +565,182 @@ def cmd_project_ls(s, a):
         print(f"{name:<20} {q.get('preset', '?'):<10} {q.get('root', '?')}")
 
 
+# --- the host-owned profile and the inbox ------------------------------------------------------------
+
+def _inbox_rows(s, agent):
+    """Every inbox item of one agent, across all projects, newest first, with its provenance."""
+    from . import profile
+    reg = registry.load(s.registry_path)
+    rows = []
+    for project, inbox in profile.all_inboxes(s, agent):
+        for name in profile.items(inbox):
+            doc = profile.read_sidecar(inbox, name)
+            rows.append({"project": project, "name": name, "path": os.path.join(inbox, name),
+                         "registered": project in reg, "reviewed": bool(doc.get("reviewed")),
+                         "added": doc.get("added", ""), "egress": doc.get("egress", ""),
+                         "preset": doc.get("preset", ""), "session": doc.get("session", ""),
+                         "content": profile.content_id(os.path.join(inbox, name))})
+    return sorted(rows, key=lambda r: (r["added"], r["project"], r["name"]), reverse=True)
+
+
+def cmd_profile_harvest(s, a):
+    """Read-only: what sessions have put in their inboxes, and nothing else.
+
+    An inbox item is reviewed out of context, often days later, so each line carries where it came from --
+    and `egress open` is marked, because an item written by a session that could reach the whole internet
+    deserves a closer read before it becomes something every later session loads."""
+    from . import profile
+    agents = [a.agent] if a.agent else ["claude", "omp"]
+    total = 0
+    for agent in agents:
+        rows = [r for r in _inbox_rows(s, agent) if a.all or not r["reviewed"]]
+        src = s.profile_src(agent)
+        print(f"profile {agent}: {src}" + (f"  (commit {profile.commit_id(src)})"
+                                           if profile.commit_id(src) else "  (no git repo yet)"))
+        if not rows:
+            print("  inbox: nothing unreviewed\n")
+            continue
+        total += len(rows)
+        groups = {}
+        for r in rows:
+            groups.setdefault((r["name"], r["content"]), []).append(r)
+        by_name = {}
+        for r in rows:
+            by_name.setdefault(r["name"], set()).add(r["content"])
+        print(f"  {len(rows)} unreviewed item(s) in {len({r['project'] for r in rows})} project(s):")
+        for (name, content), same in sorted(groups.items()):
+            where = ", ".join(f"{r['project']}{'' if r['registered'] else ' (project removed)'}"
+                              for r in same)
+            flags = []
+            if any(r["egress"] == "open" for r in same):
+                flags.append("FROM AN OPEN-EGRESS SESSION")
+            if len(same) > 1:
+                flags.append(f"identical in {len(same)} projects")
+            if len(by_name.get(name, ())) > 1:
+                flags.append("same name, DIFFERENT content elsewhere")
+            if any(r["reviewed"] for r in same):
+                flags.append("reviewed")
+            print(f"    {name}  [{content}]  {where}")
+            print(f"      added {same[0]['added'] or '?'}  preset {same[0]['preset'] or '?'}  "
+                  f"egress {same[0]['egress'] or '?'}  session {same[0]['session'] or '?'}")
+            if flags:
+                print(f"      ** {'; '.join(flags)}")
+            print(f"      promote: ab profile promote {same[0]['project']}/{name} --as skills/{name}")
+        print()
+    if total:
+        print("Nothing above is loaded by any session. `promote` copies an item into the profile and commits "
+              "it; `dismiss` marks it reviewed and leaves it where it is.")
+    return 0
+
+
+def _find_item(s, agent, spec):
+    rows = [r for r in _inbox_rows(s, agent)
+            if spec in (f"{r['project']}/{r['name']}", r["name"])]
+    if not rows:
+        raise AgentboxError(f"no inbox item {spec!r} for {agent}; `ab profile harvest` lists them")
+    if len({(r["project"], r["name"]) for r in rows}) > 1:
+        where = ", ".join(f"{r['project']}/{r['name']}" for r in rows)
+        raise AgentboxError(f"{spec!r} is ambiguous: {where}. Name it as <project>/<item>.")
+    return rows[0]
+
+
+def cmd_profile_promote(s, a):
+    """Copy an inbox item into the host-owned profile and commit it, with where it came from in the message.
+
+    The destination is explicit (`--as`) unless the item is plainly a skill directory: promoting writes into
+    the one thing every session loads, in every project, so guessing where it belongs is not good enough."""
+    import shutil
+    from . import profile
+    row = _find_item(s, a.agent, a.item)
+    src, prof = row["path"], s.profile_src(a.agent)
+    dest = a.as_path
+    if not dest:
+        if os.path.isdir(src) and os.path.isfile(os.path.join(src, "SKILL.md")):
+            dest = f"skills/{row['name']}"
+        else:
+            raise AgentboxError(f"say where it goes in the profile: --as skills/<name> (one of "
+                                f"{', '.join(profile.ITEMS)}). {src} is not plainly a skill directory.")
+    if dest.startswith("/") or ".." in dest.split("/"):
+        raise AgentboxError(f"--as {dest!r} must be a relative path inside the profile")
+    dst = os.path.join(prof, dest)
+    if os.path.lexists(dst):
+        raise AgentboxError(f"{dst} already exists; remove it or choose another --as")
+    profile.ensure_repo(prof, out=print)
+    os.makedirs(os.path.dirname(dst) or prof, mode=0o700, exist_ok=True)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=False,
+                        ignore=shutil.ignore_patterns("*" + profile.SIDECAR))
+    else:
+        shutil.copyfile(src, dst)
+    doc = profile.read_sidecar(s.inbox_dir(row["project"], a.agent), row["name"])
+    msg = (f"profile: add {dest} (promoted from {row['project']}/{row['name']})\n\n"
+           f"project: {row['project']}\nagent: {a.agent}\nsession: {doc.get('session', '?')}\n"
+           f"added: {doc.get('added', '?')}\npreset: {doc.get('preset', '?')}\n"
+           f"egress: {doc.get('egress', '?')}\n")
+    profile._git(prof, "add", "-A")
+    profile._git(prof, "-c", "user.name=agentbox", "-c", "user.email=agentbox@localhost",
+                 "commit", "-qm", msg)
+    doc.update({"reviewed": True, "promoted_to": dest, "promoted_commit": profile.commit_id(prof)})
+    profile.write_sidecar(s.inbox_dir(row["project"], a.agent), row["name"], doc)
+    print(f"promoted {row['project']}/{row['name']} -> {dst}")
+    print(f"  profile commit {profile.commit_id(prof)}; the next session of every project loads it")
+    print(f"  the inbox copy is kept and marked reviewed ({row['path']})")
+    return 0
+
+
+def cmd_profile_dismiss(s, a):
+    from . import profile
+    row = _find_item(s, a.agent, a.item)
+    inbox = s.inbox_dir(row["project"], a.agent)
+    doc = profile.read_sidecar(inbox, row["name"])
+    doc.update({"reviewed": True, "dismissed": True})
+    profile.write_sidecar(inbox, row["name"], doc)
+    print(f"dismissed {row['project']}/{row['name']} (kept at {row['path']}; nothing was deleted)")
+    return 0
+
+
+def _state_summary(s, project):
+    """(lines, unreviewed count) describing what is on disk for a project outside the registry."""
+    from . import profile
+    base = os.path.join(s.data_dir, project)
+    lines, unreviewed = [], 0
+    if not os.path.isdir(base):
+        return lines, 0
+    for agent in sorted(os.listdir(base)):
+        state = os.path.join(base, agent)
+        if not os.path.isdir(state):
+            continue
+        inbox = s.inbox_dir(project, agent)
+        names = profile.items(inbox)
+        new = [n for n in names if not profile.read_sidecar(inbox, n).get("reviewed")]
+        unreviewed += len(new)
+        lines.append(f"  {agent}: state {state}" + (f", inbox {len(names)} item(s)"
+                                                    f" ({len(new)} unreviewed)" if names else ", inbox empty"))
+    return lines, unreviewed
+
+
+def cmd_project_purge(s, a):
+    """Delete a project's agent state, inbox included. The one command that does."""
+    import shutil
+    base = os.path.join(s.data_dir, a.name)
+    if not os.path.isdir(base):
+        print(f"{a.name} has no agent state at {base}")
+        return 0
+    _refuse_if_live(s, [a.name], f"purge the agent state of {a.name}")
+    lines, unreviewed = _state_summary(s, a.name)
+    print(f"purge would delete {base}:")
+    for line in lines:
+        print(line)
+    print(f"{unreviewed} unreviewed inbox item(s) would be lost"
+          + ("" if not unreviewed else " -- `ab profile harvest` reviews them first"))
+    if not a.yes:
+        print("nothing was deleted. Add --yes to go ahead.")
+        return 1
+    shutil.rmtree(base)
+    print(f"deleted {base}")
+    return 0
+
+
 def cmd_project_rm(s, a):
     reg = registry.load(s.registry_path)
     names = list(dict.fromkeys(a.name))          # de-duplicate (a repeated name would del twice -> KeyError)
@@ -563,6 +752,15 @@ def cmd_project_rm(s, a):
         del reg[n]
     registry.save(s.registry_path, reg)
     print(f"removed project {', '.join(names)} from the registry (files, state and backups are untouched)")
+    for n in names:
+        lines, unreviewed = _state_summary(s, n)
+        for line in lines:
+            print(line)
+        if unreviewed:
+            print(f"  {unreviewed} unreviewed inbox item(s) remain -- `ab profile harvest` still shows them, "
+                  f"project removed or not")
+        if lines:
+            print(f"  `ab project purge {n}` deletes that state; re-adding {n} reattaches it")
 
 
 def _dur(seconds):
@@ -877,6 +1075,12 @@ def parser(settings=None):
     x.add_argument("name", help="the registered project whose agent state to wipe")
     x.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     x.set_defaults(fn=cmd_project_reset_state)
+    x = add(proj, "purge", "delete a project's agent state and inbox outright (asks for --yes; the only "
+                           "command that deletes them)",
+            ex("ab project purge web", "ab project purge web --yes"))
+    x.add_argument("name", help="the project whose agent state to delete (registered or not)")
+    x.add_argument("--yes", action="store_true", help="go ahead and delete")
+    x.set_defaults(fn=cmd_project_purge)
     x = add(proj, "rm", "remove one or more projects from the registry (files, state and backups are untouched)",
             ex("ab project rm web", "ab project rm web old-thing"))
     x.add_argument("name", nargs="+", help="one or more registered project names (all-or-nothing: a bad name "
@@ -904,6 +1108,36 @@ def parser(settings=None):
 
     # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
     # verb that starts one.
+    prof_p = sub.add_parser(
+        "profile", help="the host-owned agent profile: what every session loads, and the inbox it feeds",
+        formatter_class=raw,
+        description="The host-owned profile (~/.config/agentbox/<agent>/profile/) holds the skills, "
+                    "sub-agents, commands and instructions every session loads, read-only, in every "
+                    "project and under every preset. Sessions cannot write it; what they want to keep goes "
+                    "to the project's inbox, which nothing loads. These commands review that queue.",
+        epilog=ex("ab profile harvest", "ab profile harvest --agent claude --all",
+                  "ab profile promote web/skills-deploy --as skills/deploy",
+                  "ab profile dismiss web/notes.md")).add_subparsers(dest="sub", required=True)
+    x = add(prof_p, "harvest", "list what sessions have put in their inboxes, unreviewed first (read-only)",
+            ex("ab profile harvest", "ab profile harvest --agent claude --all"))
+    x.add_argument("--agent", choices=("claude", "omp"), help="only this agent's profile (default: both)")
+    x.add_argument("--all", action="store_true", help="include items already reviewed")
+    x.set_defaults(fn=cmd_profile_harvest)
+    x = add(prof_p, "promote", "copy an inbox item into the profile and commit it, with its provenance in "
+                               "the commit message",
+            ex("ab profile promote web/skills-deploy --as skills/deploy"))
+    x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")
+    x.add_argument("--agent", default="claude", choices=("claude", "omp"), help="whose profile (default: claude)")
+    x.add_argument("--as", dest="as_path", metavar="PATH",
+                   help="where it goes inside the profile, e.g. skills/deploy (required unless the item is "
+                        "plainly a skill directory)")
+    x.set_defaults(fn=cmd_profile_promote)
+    x = add(prof_p, "dismiss", "mark an inbox item reviewed and leave it where it is (deletes nothing)",
+            ex("ab profile dismiss web/notes.md"))
+    x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")
+    x.add_argument("--agent", default="claude", choices=("claude", "omp"), help="whose profile (default: claude)")
+    x.set_defaults(fn=cmd_profile_dismiss)
+
     sess = sub.add_parser(
         "session", help="manage running sessions (the live instances)", formatter_class=raw,
         description="manage running sessions (the live instances). Start one with `ab run`.",

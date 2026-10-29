@@ -7,7 +7,44 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
 `podman network ls` fix). `make test` is green; `make itest` and `make claude-live` are Tim's to re-run (both
 `session.py` and `podman.py` changed, so the recorded live pass reads as stale until he does).
 
+## Needs an answer / a real fix
+
+- **OMP profile load paths** (29 Oct, the one open question in the profile build). The host-owned profile
+  is mounted read-only at each agent's load paths; for OMP those would be
+  `~/.omp/agent/{skills,rules,prompts,agents,commands}`, which is exactly where **autolearn writes**
+  (`omp.py`'s own comment, left writable deliberately since step 5C). Mounting a profile there read-only
+  would break autolearn, so `omp.ADAPTER.profile_mounts` is empty and only the inbox, the snapshot and
+  `ab profile harvest` are wired for OMP. Whether autolearn's output directory can be pointed elsewhere
+  (at the inbox) **could not be determined from inside the sandbox**: `~/.omp` is off limits by the
+  project's own rules and OMP is not public. Options, cheapest first:
+  1. **Autolearn is configurable** → point it at `~/.omp/agent/inbox` and mount the profile read-only at
+     the five paths, exactly as Claude's. One line in the adapter plus the config key.
+  2. **Autolearn is not configurable, but OMP reads a second root** → mount the profile at that root
+     read-only and leave `agent/` writable. Needs to know what OMP's loader searches.
+  3. **Neither** → copy the profile's items *into* the writable dirs at session start (so they load) and
+     accept that a session can edit its copy, with the end-of-session state scan reporting it. Weaker than
+     Claude's guarantee, honest about being weaker.
+  4. Leave OMP as it is today: inbox only, no shared profile.
+- **Two concurrent sessions of one project share its agent state**, with no locking: Claude's
+  `.claude.json`/settings and OMP's `agent/` are last-writer-wins, and the inbox is shared too.
+  `ab run` now warns and says so, which is a label on the problem, not a fix. The real fix is one of:
+  a per-project lock taken for the session's lifetime (refuse the second session, or make it read-only);
+  per-session state dirs merged at teardown (needs a merge policy per agent); or copy-on-write state with
+  the second session's writes landing in its own inbox. Pick one when two-at-once stops being rare —
+  nothing today needs it.
+
 ## Nice to have — cleanup / future
+- **A curator for the profile** (29 Oct, deliberately not built). `ab profile harvest` lists, groups and
+  marks; promoting is still a human reading a skill and deciding. The follow-up would be a small project of
+  its own: an agent session whose *job* is to review the inbox — read each item with its provenance, judge
+  whether it generalises beyond the project that produced it, rewrite it to house style, flag overlaps with
+  what the profile already has, and propose the promotion as a diff for a human to approve. It wants a
+  project of its own because it needs the profile read-write (which no normal session gets), a prompt that
+  is itself reviewed, and a record of what it rejected and why. Not started: harvest has to be lived with
+  first, to see what the review actually involves.
+- **Profile snapshots are never garbage-collected.** `<data>/profiles/<agent>/<hash>/` gains a directory per
+  distinct profile content, and old ones are kept so a running session's mount stays valid. They are small
+  (text), and `ab session gc` would be the place to drop any hash no live session mounts.
 - **A read-only project-root mount mode, for a planner preset** (the agent reads the code and writes a plan, but cannot edit the code). **Not built, and deliberately not bundled into the preset redesign** (26 Oct): the root is an unconditional read-write bind under every preset (`mounts.plan`: `rw_grants = [root] + data_rw`), so this needs a **new mount mode** *and* **another pass over the gate/covers logic** — the gate's read-only-grant handling (forcing `ro` on binds and grant-volume SubPaths), the after-start mountinfo check, and the cover pins all assume a writable root, and that area is security-reviewed (decisions.md, 5–6 Oct). It would also want a decision on one writable sub-directory inside a read-only root (notes/plans), which the grant validator does not model today. Raised because `research` reads as if the project were read-only and is not; design.md's preset table and the `--preset` description now say so explicitly. **Today's mitigation:** commit before a research session, plus the per-session rsync snapshot — a *within-session undo* that restores the grant to how it was at session start (explicitly not a data backup, decisions.md 6 Oct) — so unwanted edits are a `git diff` / `git checkout` away.
 - **`--format` templates are only checked by hand.** `tests/manual/podman_formats.sh` is the one check
   against real podman (a unit test keeps it in step with the code, and the fake podman refuses the one

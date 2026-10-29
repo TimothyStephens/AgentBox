@@ -1,18 +1,28 @@
 """Claude Code adapter.
 
-State: the whole CLAUDE_CONFIG_DIR is per project and persistent. settings.json, CLAUDE.md and
-commands/ are copied in from ~/.config/agentbox/claude/ at every start; nothing else is touched.
-The host's ~/.claude is never used.
+State: the whole CLAUDE_CONFIG_DIR is per project and persistent. The host's ~/.claude is never used.
+
+What the agent LOADS comes from the host-owned profile (`profile.py`): `skills/`, `agents/` and
+`commands/` are mounted read-only from a snapshot of `~/.config/agentbox/claude/profile/`, and CLAUDE.md is
+generated per session (the sandbox notes, then the profile's CLAUDE.md) and mounted read-only too. So a
+session cannot change what later sessions load, and the same profile loads under every preset -- lockdown
+included, where a repo's own `.claude` is covered.
+
+settings.json is the exception: Claude Code writes it itself (it records
+`skipDangerousModePermissionPrompt` on first start with approvals off), so a read-only one would fail at
+every launch. It is copied from the profile into the state dir at every start instead, which keeps the host
+profile authoritative without pretending the file is immutable.
 """
 import json
 import os
 import re
-import shutil
 
 from . import Adapter, SessionSetup
 
-SEEDED = ("settings.json", "CLAUDE.md", "commands")
 MANAGED_DIR = "/etc/claude-code"
+# Per-project state directories that used to be where skills and sub-agents accumulated: whatever a session
+# wrote there is moved to the project's inbox once, since those paths are read-only mounts now (profile.py).
+MIGRATE_TO_INBOX = ("skills", "agents", "CLAUDE.md")
 # The injected sandbox description is wrapped in these markers and the old block is stripped before the new
 # one is written, so it is refreshed each session instead of stacking up (audit 2026-10-15 #2).
 NOTES_BEGIN = "<!-- agentbox:sandbox-notes — regenerated each session, do not edit -->"
@@ -67,26 +77,22 @@ MANAGED_APPROVALS_ON = {
 
 class ClaudeAdapter(Adapter):
     def seed_state(self, settings, state_dir, sandbox_notes):
+        """Prepare the per-project state dir. Nothing is loaded from here any more except settings.json:
+        skills, sub-agents, commands and CLAUDE.md come from the profile as read-only mounts."""
         os.makedirs(state_dir, mode=0o700, exist_ok=True)
-        seed = settings.seed_dir(self.name)
-        for item in SEEDED:
-            src, dst = os.path.join(seed, item), os.path.join(state_dir, item)
-            if not os.path.lexists(src):
-                continue            # no seed for this item: keep the agent's persisted file, do not wipe it
-            if os.path.isdir(dst) and not os.path.islink(dst):
-                shutil.rmtree(dst)
-            elif os.path.lexists(dst):
-                os.unlink(dst)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst, symlinks=False)
-            elif os.path.isfile(src):
-                shutil.copyfile(src, dst)
-        # The sandbox description leads, so the agent reads its environment before the user's own CLAUDE.md
-        # (PERSONALIZATION.md §4). Strip any previous injected block first so it is refreshed, not stacked.
-        md = os.path.join(state_dir, "CLAUDE.md")
-        user_md = _NOTES_BLOCK.sub("", _read_text(md)).lstrip()
+        from .. import profile
+        profile.copy_into_state(settings, self, state_dir)
+
+    def session_instructions(self, settings, sandbox_notes):
+        """The CLAUDE.md the session gets: the sandbox description first, then the profile's own CLAUDE.md.
+
+        The notes lead so the agent reads its environment before anything else (PERSONALIZATION.md §4), and
+        the whole file is generated per session rather than edited in place, so there is no stale copy and
+        nothing to strip: the marker block is kept only to say out loud that the text is regenerated."""
+        md = os.path.join(settings.profile_src(self.name), "CLAUDE.md")
+        own = _NOTES_BLOCK.sub("", _read_text(md)).lstrip()
         block = f"{NOTES_BEGIN}\n{sandbox_notes.rstrip()}\n{NOTES_END}\n"
-        _write_atomic(md, block + ("\n" + user_md if user_md.strip() else ""))
+        return block + ("\n" + own if own.strip() else "")
 
     def prepare_session(self, sess, sandbox_notes):
         approvals_off = sess.project.value("approvals") == "off"
@@ -142,6 +148,17 @@ ADAPTER = ClaudeAdapter(
     image="localhost/agentbox-claude:latest",   # derived from localhost/claudecode (make claude-image)
     command=["claude"],
     model_domains=["api.anthropic.com"],
+    # The profile's load paths. They are under CLAUDE_CONFIG_DIR, not ~/.claude: the adapter points
+    # CLAUDE_CONFIG_DIR at the state mount, and `commands/` seeded there has been the working mechanism
+    # since step 1, so this is where Claude Code reads a user-level skill, sub-agent and command from in an
+    # agentbox session. CLAUDE.md is generated per session (notes + the profile's own) and mounted here too.
+    profile_mounts={"skills": "/run/agentbox/claude/skills",
+                    "agents": "/run/agentbox/claude/agents",
+                    "commands": "/run/agentbox/claude/commands"},
+    profile_copies=("settings.json",),
+    instructions_name="CLAUDE.md",
+    inbox_mount="/run/agentbox/claude/inbox",
+    migrate_to_inbox=MIGRATE_TO_INBOX,
     env={
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "DISABLE_AUTOUPDATER": "1",

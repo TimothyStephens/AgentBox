@@ -18,6 +18,13 @@ class Adapter:
     approvals_off_args: list = field(default_factory=list)
     approvals_on_args: list = field(default_factory=list)
     proxy_url_env: list = field(default_factory=list)  # extra variables set to the session proxy's URL
+    # The host-owned profile (profile.py): {profile item -> container path it is mounted READ-ONLY at}, and
+    # the items that cannot be read-only and are copied into the per-project state instead.
+    profile_mounts: dict = field(default_factory=dict)
+    profile_copies: tuple = ()
+    instructions_name: str = ""        # the generated per-session instruction file, under state_mount
+    migrate_to_inbox: tuple = ()       # per-project state names moved to the inbox once (now read-only)
+    inbox_mount: str = ""              # container path of the project's inbox (read-write, never loaded)
 
     def agent_argv(self, approvals):
         return list(self.command) + list(self.approvals_off_args if approvals == "off" else self.approvals_on_args)
@@ -29,6 +36,11 @@ class Adapter:
         """Host-side work at session start that depends on the session (generated files, keys). Returns a
         SessionSetup. Default: nothing extra."""
         return SessionSetup()
+
+    def session_instructions(self, settings, sandbox_notes):
+        """The instruction file to generate for this session and mount read-only, or None for an agent that
+        builds its own (OMP generates AGENTS.md in prepare_session). Default: none."""
+        return None
 
 
 @dataclass

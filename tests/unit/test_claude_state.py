@@ -3,6 +3,7 @@
 be able to make the next start follow a symlink left there to a host file the user owns."""
 import json
 import os
+from unittest import mock
 
 from agentbox.adapters import claude
 
@@ -26,16 +27,22 @@ class ClaudeStateSymlinks(SettingsCase):
         self.assertTrue(os.path.isfile(path), f"{path} missing")
         self.assertFalse(os.path.islink(path), f"{path} is still a symlink")
 
-    def test_claude_md_symlink_is_not_followed(self):
+    def test_a_claude_md_symlink_in_the_state_dir_is_left_alone(self):
+        """CLAUDE.md is generated per session and mounted read-only from the profile now, so nothing writes
+        the state copy. A link an earlier session left there must still not be followed -- the migration
+        that empties these paths into the inbox skips it rather than moving its target."""
+        from agentbox import session
         md = os.path.join(self.state, "CLAUDE.md")
         os.symlink(self.secret, md)                       # a link the previous session left
         claude.ADAPTER.seed_state(self.settings, self.state, NOTES)
-        self.assert_secret_intact()                       # not truncated or overwritten
-        self.assert_real_file(md)
-        with open(md) as f:
-            body = f.read()
-        self.assertNotIn("TOPSECRET", body)               # host content not pulled in
-        self.assertIn("SANDBOX-NOTES-SENTINEL", body)
+        self.assert_secret_intact()                       # not truncated, moved or overwritten
+        self.assertTrue(os.path.islink(md), "left exactly as it was found")
+        said = []
+        with mock.patch.object(self.settings, "state_dir", lambda *a: self.state), \
+             mock.patch.object(self.settings, "inbox_dir", lambda *a: self.mkdir("inbox")):
+            moved = session.migrate_state_to_inbox(self.settings, "p1", claude.ADAPTER, said.append)
+        self.assertEqual(moved, [], "a symlink is not migrated")
+        self.assert_secret_intact()
 
     def test_settings_tmp_symlink_is_not_followed(self):
         path = os.path.join(self.state, "settings.json")
@@ -64,29 +71,38 @@ class ClaudeStateSymlinks(SettingsCase):
 
 
 class ClaudeSandboxBlock(SettingsCase):
-    def setUp(self):
-        super().setUp()
-        self.state = self.mkdir("state")
+    """The same two properties as before the profile existed -- the sandbox block appears once and leads,
+    the user's own instructions follow and are not mangled -- now against the generated file, which is built
+    fresh each session from the profile's CLAUDE.md instead of being edited in place."""
 
     def md(self):
-        with open(os.path.join(self.state, "CLAUDE.md")) as f:
-            return f.read()
+        return claude.ADAPTER.session_instructions(self.settings, NOTES)
 
-    def test_block_does_not_stack_across_sessions(self):
+    def profile_md(self, text):
+        self.write("config/claude/profile/CLAUDE.md", text)
+
+    def test_the_block_appears_once_however_often_it_is_generated(self):
         for _ in range(3):
-            claude.ADAPTER.seed_state(self.settings, self.state, NOTES)
-        body = self.md()
-        self.assertEqual(body.count("SANDBOX-NOTES-SENTINEL"), 1)
-        self.assertEqual(body.count(claude.NOTES_BEGIN), 1)
-        self.assertEqual(body.count(claude.NOTES_END), 1)
+            body = self.md()
+            self.assertEqual(body.count("SANDBOX-NOTES-SENTINEL"), 1)
+            self.assertEqual(body.count(claude.NOTES_BEGIN), 1)
+            self.assertEqual(body.count(claude.NOTES_END), 1)
 
-    def test_user_content_survives_and_appears_once(self):
-        md = os.path.join(self.state, "CLAUDE.md")
-        with open(md, "w") as f:
-            f.write("# My project rules\nUSER-RULE-SENTINEL\n")
-        claude.ADAPTER.seed_state(self.settings, self.state, NOTES)
-        claude.ADAPTER.seed_state(self.settings, self.state, NOTES)
+    def test_a_stale_block_in_the_profile_is_stripped_not_stacked(self):
+        """Someone could paste a session's CLAUDE.md into the profile, block and all."""
+        self.profile_md(f"{claude.NOTES_BEGIN}\nOLD NOTES\n{claude.NOTES_END}\n\nUSER-RULE-SENTINEL\n")
+        body = self.md()
+        self.assertEqual(body.count(claude.NOTES_BEGIN), 1)
+        self.assertNotIn("OLD NOTES", body)
+        self.assertEqual(body.count("USER-RULE-SENTINEL"), 1)
+
+    def test_profile_instructions_survive_and_follow_the_notes(self):
+        self.profile_md("# My project rules\nUSER-RULE-SENTINEL\n")
         body = self.md()
         self.assertEqual(body.count("USER-RULE-SENTINEL"), 1)
         self.assertEqual(body.count("SANDBOX-NOTES-SENTINEL"), 1)
-        self.assertTrue(body.index("SANDBOX-NOTES-SENTINEL") < body.index("USER-RULE-SENTINEL"))
+        self.assertLess(body.index("SANDBOX-NOTES-SENTINEL"), body.index("USER-RULE-SENTINEL"))
+
+    def test_no_profile_instructions_is_just_the_notes(self):
+        self.assertEqual(self.md().count("SANDBOX-NOTES-SENTINEL"), 1)
+        self.assertNotIn("USER-RULE", self.md())

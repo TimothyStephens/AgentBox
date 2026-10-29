@@ -252,7 +252,9 @@ class OmpMounts(TempCase):
         self.assertFalse(any("/versions/" in d for _s, d in mounts))
 
 
-class OmpSession(SettingsCase):
+class OmpSessionBase(SettingsCase):
+    """Fixture and helpers only, so another class can reuse them without inheriting the cases."""
+
     KEY = "fake-openai-key-for-unit-tests-0123456789"
 
     def setUp(self):
@@ -277,10 +279,12 @@ class OmpSession(SettingsCase):
         self.project("p1", preset=preset, **extra)
         s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                  warn=lambda m: None)
-        s.prepare()
+        s.prepare(do_backup=False)       # the pre-session backup needs rsync and is not what these test
         self.addCleanup(s.teardown)
         return s
 
+
+class OmpSession(OmpSessionBase):
     def test_key_reaches_the_agent_only_through_the_wrapper(self):
         s = self.make()
         s.start_infra()
@@ -335,7 +339,7 @@ class OmpSession(SettingsCase):
         self.project("p1")
         s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                  warn=warnings.append)
-        s.prepare()
+        s.prepare(do_backup=False)
         self.addCleanup(s.teardown)
         self.assertEqual([w for w in warnings if "mcp.json" in w],
                          [w for w in warnings if "mcp.json or mags-codedev.yaml" in w])
@@ -351,7 +355,7 @@ class OmpSession(SettingsCase):
             f.write('{"mcpServers": {}}\n')
         s2 = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                   warn=warnings.append)
-        s2.prepare()
+        s2.prepare(do_backup=False)
         self.addCleanup(s2.teardown)
         m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
@@ -382,7 +386,7 @@ class OmpSession(SettingsCase):
             self.write(os.path.relpath(os.path.join(root, rel), self.tmp), "x")
         s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                  warn=lambda m: None)
-        s.prepare()
+        s.prepare(do_backup=False)
         self.addCleanup(s.teardown)
         s.start_infra()
         argv = s.run_args(s.agent_command())
@@ -400,7 +404,7 @@ class OmpSession(SettingsCase):
         self.write(os.path.relpath(os.path.join(root, ".omp/tools/t.ts"), self.tmp), "x")
         s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                  warn=lambda m: None)
-        s.prepare()
+        s.prepare(do_backup=False)
         self.addCleanup(s.teardown)
         self.assertEqual(s.setup.project_covers, [])
 
@@ -423,7 +427,7 @@ class OmpSession(SettingsCase):
         os.symlink(target, link)
         s2 = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                   warn=lambda m: None)
-        s2.prepare()
+        s2.prepare(do_backup=False)
         self.addCleanup(s2.teardown)
         self.assertFalse(os.path.islink(link))
         with open(target) as f:
@@ -435,7 +439,7 @@ class OmpSession(SettingsCase):
         s = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
                                  warn=lambda m: None)
         with self.assertRaises(AgentboxError):
-            s.prepare()
+            s.prepare(do_backup=False)
         sessions_dir = os.path.join(self.settings.run_dir, "sessions")
         self.assertEqual(os.listdir(sessions_dir) if os.path.isdir(sessions_dir) else [], [])
 
@@ -467,3 +471,54 @@ class KeysCommand(SettingsCase):
         self.assertIn("gemini", out.getvalue())
         self.assertIn("AB_KEY_GEMINI", out.getvalue())
         self.assertNotIn("AIzaFAKEVALUE", out.getvalue())
+
+
+class OmpInboxAndProfile(OmpSessionBase):
+    """OMP gets the inbox half of the profile design today; its read-only LOAD paths wait on one unknown.
+
+    `agent/{skills,rules,prompts,agents,commands}` are left writable because OMP's autolearn writes there
+    (omp.py's own comment, since step 5C). A profile would occupy exactly those paths read-only, so wiring
+    it without knowing whether autolearn's output directory can be pointed at the inbox would break
+    autolearn silently -- and that cannot be determined from inside the sandbox (~/.omp is off limits and
+    OMP is not public). docs/TODO.md carries the question and the options."""
+
+    def test_the_inbox_is_mounted_read_write_at_a_path_omp_does_not_load(self):
+        s = self.make()
+        argv = s.run_args(s.agent_command())
+        host = s.settings.inbox_dir("p1", "omp")
+        dst = f"{omp.C_OMP}/agent/inbox"
+        self.assertIn(f"--mount=type=bind,src={host},dst={dst}", argv)
+        self.assertNotIn(f"--mount=type=bind,src={host},dst={dst},ro", argv)
+        self.assertNotIn("inbox", " ".join(omp.CODE_DIRS + omp.CODE_FILES))
+
+    def test_the_inbox_is_mounted_after_the_agent_dir_it_sits_inside(self):
+        """`agent/` is itself a bind; a mount inside it has to come later or it would be shadowed."""
+        s = self.make()
+        argv = s.run_args(s.agent_command())
+        agent_dir = [i for i, a in enumerate(argv) if a.endswith(f"dst={omp.C_OMP}/agent")]
+        inbox = [i for i, a in enumerate(argv) if a.endswith(f"dst={omp.C_OMP}/agent/inbox")]
+        self.assertTrue(agent_dir and inbox, argv)
+        self.assertLess(agent_dir[0], inbox[0])
+
+    def test_no_profile_load_paths_are_mounted_yet(self):
+        s = self.make()
+        self.assertEqual(omp.ADAPTER.profile_mounts, {})
+        self.assertEqual(s.profile.mounts, [], "nothing is mounted over autolearn's directories")
+
+    def test_the_profile_is_still_snapshotted_and_logged_for_omp(self):
+        """So `ab profile harvest` and the log have something to refer to the moment the paths are wired."""
+        src = self.settings_now().profile_src("omp")
+        os.makedirs(os.path.join(src, "skills", "x"), exist_ok=True)
+        with open(os.path.join(src, "skills", "x", "SKILL.md"), "w") as f:
+            f.write("later\n")
+        s = self.make()
+        self.assertTrue(s.profile.hash)
+        self.assertIn(f"hash={s.profile.hash}", open(s.log_path("profile")).read())
+        self.assertIn("loaded=(nothing)", open(s.log_path("profile")).read())
+
+    def test_autolearns_own_directories_are_still_writable(self):
+        s = self.make()
+        argv = " ".join(s.run_args(s.agent_command()))
+        for d in ("skills", "rules", "prompts", "agents", "commands"):
+            self.assertNotIn(f"dst={omp.C_OMP}/agent/{d},ro", argv, d)
+            self.assertNotIn(f"type=tmpfs,dst={omp.C_OMP}/agent/{d}", argv, d)

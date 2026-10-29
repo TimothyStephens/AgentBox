@@ -75,6 +75,21 @@ class Settings:
     def backups_dir(self):
         return os.path.join(self.data_dir, "backups")
 
+    @property
+    def profiles_dir(self):
+        """Snapshots of the host-owned agent profiles, one directory per content hash (profile.py)."""
+        return os.path.join(self.data_dir, "profiles")
+
+    def profile_src(self, agent):
+        """The host-owned profile for one agent: skills, sub-agents, commands, instructions. Only the host
+        writes here; sessions get a read-only snapshot of it."""
+        return os.path.join(self.config_dir, agent, "profile")
+
+    def inbox_dir(self, project, agent):
+        """Where a session puts what it wants to keep (a skill it wrote, a note). Read-write, never loaded
+        by the agent, reviewed with `ab profile harvest`."""
+        return os.path.join(self.data_dir, project, agent, "inbox")
+
     def token_file(self, agent):
         base = os.path.expanduser(self.values.get("token_dir") or "") or self.config_dir
         return os.path.join(base, f"{agent}-oauth-token")

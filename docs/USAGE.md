@@ -15,6 +15,7 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 - [ab run](#ab-run)
 - [ab selftest](#ab-selftest)
 - [ab project](#ab-project)
+- [ab profile](#ab-profile)
 - [ab session](#ab-session)
 - [ab keys](#ab-keys)
 
@@ -25,17 +26,19 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 The launcher. `ab project` manages saved configuration; `ab session` manages live runs; `ab run` and `ab init` create them.
 
 ```text
-usage: ab [-h] {init,project,run,session,selftest,keys} ...
+usage: ab [-h] {init,project,run,profile,session,selftest,keys} ...
 
 agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session.
 
 positional arguments:
-  {init,project,run,session,selftest,keys}
+  {init,project,run,profile,session,selftest,keys}
     init                scaffold a new project with a grantcheck-clean layout
                         (secrets masked, live data in a named volume), then
                         register it
     project             manage registered projects (the saved configuration)
     run                 start an agent session in the foreground
+    profile             the host-owned agent profile: what every session
+                        loads, and the inbox it feeds
     session             manage running sessions (the live instances)
     selftest            prove the sandbox boundaries hold (posture, egress,
                         mounts, podman scoping)
@@ -218,13 +221,13 @@ Manage the durable registry entries — a project names a code grant, a preset a
 
 ```text
 usage: ab project [-h]
-                  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+                  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm}
                   ...
 
 manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
 
 positional arguments:
-  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,rm}
+  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm}
     add                 register a project with a preset (validated against
                         overlap and grant exposure)
     set                 change a registered project's settings in place (re-
@@ -243,6 +246,8 @@ positional arguments:
     reset-state         wipe a project's agent state (memory, settings,
                         transcripts); asks first, keeps a copy in the backups
                         dir
+    purge               delete a project's agent state and inbox outright
+                        (asks for --yes; the only command that deletes them)
     rm                  remove one or more projects from the registry (files,
                         state and backups are untouched)
 
@@ -563,6 +568,25 @@ examples:
   ab project reset-state web --yes
 ```
 
+### `ab project purge`
+
+```text
+usage: ab project purge [-h] [--yes] name
+
+delete a project's agent state and inbox outright (asks for --yes; the only command that deletes them)
+
+positional arguments:
+  name        the project whose agent state to delete (registered or not)
+
+options:
+  -h, --help  show this help message and exit
+  --yes       go ahead and delete
+
+examples:
+  ab project purge web
+  ab project purge web --yes
+```
+
 ### `ab project accept-grant-exposure`
 
 Record that you accept the secrets/live data grantcheck found in a project's grant.
@@ -599,6 +623,92 @@ options:
 
 examples:
   ab project accept-history-secrets web
+```
+
+## ab profile
+
+### `ab profile`
+
+```text
+usage: ab profile [-h] {harvest,promote,dismiss} ...
+
+The host-owned profile (~/.config/agentbox/<agent>/profile/) holds the skills, sub-agents, commands and instructions every session loads, read-only, in every project and under every preset. Sessions cannot write it; what they want to keep goes to the project's inbox, which nothing loads. These commands review that queue.
+
+positional arguments:
+  {harvest,promote,dismiss}
+    harvest             list what sessions have put in their inboxes,
+                        unreviewed first (read-only)
+    promote             copy an inbox item into the profile and commit it,
+                        with its provenance in the commit message
+    dismiss             mark an inbox item reviewed and leave it where it is
+                        (deletes nothing)
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  ab profile harvest
+  ab profile harvest --agent claude --all
+  ab profile promote web/skills-deploy --as skills/deploy
+  ab profile dismiss web/notes.md
+```
+
+### `ab profile harvest`
+
+```text
+usage: ab profile harvest [-h] [--agent {claude,omp}] [--all]
+
+list what sessions have put in their inboxes, unreviewed first (read-only)
+
+options:
+  -h, --help            show this help message and exit
+  --agent {claude,omp}  only this agent's profile (default: both)
+  --all                 include items already reviewed
+
+examples:
+  ab profile harvest
+  ab profile harvest --agent claude --all
+```
+
+### `ab profile promote`
+
+```text
+usage: ab profile promote [-h] [--agent {claude,omp}] [--as PATH] item
+
+copy an inbox item into the profile and commit it, with its provenance in the commit message
+
+positional arguments:
+  item                  the item, as <project>/<name> (or just <name> when
+                        unambiguous)
+
+options:
+  -h, --help            show this help message and exit
+  --agent {claude,omp}  whose profile (default: claude)
+  --as PATH             where it goes inside the profile, e.g. skills/deploy
+                        (required unless the item is plainly a skill
+                        directory)
+
+examples:
+  ab profile promote web/skills-deploy --as skills/deploy
+```
+
+### `ab profile dismiss`
+
+```text
+usage: ab profile dismiss [-h] [--agent {claude,omp}] item
+
+mark an inbox item reviewed and leave it where it is (deletes nothing)
+
+positional arguments:
+  item                  the item, as <project>/<name> (or just <name> when
+                        unambiguous)
+
+options:
+  -h, --help            show this help message and exit
+  --agent {claude,omp}  whose profile (default: claude)
+
+examples:
+  ab profile dismiss web/notes.md
 ```
 
 ## ab session

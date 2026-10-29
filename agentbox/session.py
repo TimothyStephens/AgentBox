@@ -2,6 +2,7 @@
 import errno
 import json
 import os
+import shutil
 import re
 import signal
 import subprocess
@@ -9,7 +10,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, projectkeys, registry, tokens
+from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, profile, projectkeys, registry, tokens
 from . import keys as keysmod
 from . import buildcap, builtrec, scan, sockguard
 from .config import HOME
@@ -235,7 +236,32 @@ def dev_notes(podman_live, dev_images=()):
     return lines
 
 
-def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
+def profile_notes(profile_loaded, inbox):
+    """What the agent is told about the host-owned profile and the inbox.
+
+    It has to be told, because the shape is unusual: the paths it would normally write a skill to are
+    read-only, and the place that does accept one is not loaded. Saying so turns a puzzling permission
+    error into a known rule, and names the one path worth writing to."""
+    out = []
+    names = profile_loaded.names if profile_loaded else []
+    if names:
+        out.append(f"- Shared, host-owned {', '.join(names)} are mounted **read-only** (profile "
+                   f"{profile_loaded.hash}): they come from outside the sandbox, the same set in every "
+                   "project, and you cannot change them. Writing there fails; that is not a bug.")
+    if inbox:
+        out.append(f"- To keep a skill, sub-agent or note for later, write it under `{inbox}` (read-write, "
+                   "per project). Nothing there is loaded by you or by any later session: it is a review "
+                   "queue the user harvests with `ab profile harvest`, which is how something gets into the "
+                   "shared profile. Put anything you want remembered there, with a sentence on why it is "
+                   "worth keeping.")
+        out.append("- Memory shortcuts: a `#` note aimed at the PROJECT's own `CLAUDE.md` works normally "
+                   "(it is in the grant, and the end-of-session scan reports it, so say in the commit what "
+                   "you changed). One aimed at the user-level `CLAUDE.md` fails: that file is generated "
+                   f"per session and read-only. Put such notes in `{inbox}` instead.")
+    return out
+
+
+def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox=""):
     logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
@@ -284,6 +310,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False):
          "other projects' containers).")
     else:
         lines.append("- No podman or docker socket is available in this session.")
+    lines += profile_notes(profile, inbox)
     lines += [
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",
         "",
@@ -361,6 +388,8 @@ class Session:
             self.teardown()                  # nothing is running yet; remove the run dir it reserved
             raise
 
+    profile = None                       # set by _prepare_reserved (profile.Loaded)
+
     @property
     def mask_file(self):
         return os.path.join(self.settings.session_run_dir(self.name), "mask-empty") if self.name else None
@@ -388,10 +417,21 @@ class Session:
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()
-        notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev)
+        self.profile = profile.load_for_session(self.settings, self.adapter, out=self.warn)
+        moved = migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
+        notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
+                              profile=self.profile, inbox=self.inbox_mount)
         self.adapter.seed_state(self.settings, self.state_dir, notes)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
+        self._add_profile_mounts(notes)
+        _keep(self.log_path("profile"), self.profile.log_line().encode())
+        self.warn(f"agentbox: profile {self.adapter.name} {self.profile.hash or '(none)'}"
+                  + (f" (commit {self.profile.commit})" if self.profile.commit else "")
+                  + (f", loaded: {', '.join(self.profile.names)}" if self.profile.names else
+                     " -- nothing to load; put skills in "
+                     f"{self.settings.profile_src(self.adapter.name)}")
+                  + (f". Moved to the inbox: {', '.join(moved)}" if moved else ""))
         if do_backup:
             self._backup_grants()
         self._write_scan_state()             # after the agent state is seeded: its changes are the session's
@@ -414,6 +454,49 @@ class Session:
                         warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
         backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
                       daily_days=int(self.settings.backup_daily_days))
+
+    @property
+    def inbox(self):
+        """Where this session puts what it wants to keep: read-write, per project, never loaded."""
+        return self.settings.inbox_dir(self.project.name, self.adapter.name)
+
+    @property
+    def inbox_mount(self):
+        return self.adapter.inbox_mount
+
+    def _add_profile_mounts(self, notes):
+        """The profile's read-only mounts, the generated instruction file, and the inbox.
+
+        Appended after `_check_setup`, with their own equivalent check: these destinations are the agent's
+        own config dir (`state_mount`) or the adapter's root, which is exactly the pair `_check_setup`
+        allows -- but the adapter does not ask for them, the launcher does, so they are checked here rather
+        than pretending an adapter requested them. The inbox goes LAST so that a deeper mount (OMP's inbox
+        inside its `agent/` bind) lands on top of the one it sits in."""
+        roots = [r for r in (self.adapter.state_mount, self.setup.mount_root) if r]
+
+        def check(dst, what):
+            _no_commas(dst, what)
+            if not any(_inside(dst, r) and dst != r for r in roots):
+                raise AgentboxError(f"{what} {dst} is not under the agent's own root ({', '.join(roots) or 'none'})")
+
+        for src, dst, ro in self.profile.mounts:
+            _no_commas(src, "profile mount")
+            check(dst, "profile mount")
+            self.setup.mounts.append((src, dst, ro))
+        text = self.adapter.session_instructions(self.settings, notes)
+        if text is not None and self.adapter.instructions_name:
+            path = os.path.join(self.settings.session_run_dir(self.name),
+                                f"{self.adapter.name}-instructions.md")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            dst = f"{self.adapter.state_mount}/{self.adapter.instructions_name}"
+            check(dst, "generated instructions")
+            self.setup.mounts.append((path, dst, True))
+        if self.inbox_mount:
+            check(self.inbox_mount, "inbox mount")
+            os.makedirs(self.inbox, mode=0o700, exist_ok=True)
+            self.setup.mounts.append((self.inbox, self.inbox_mount, False))
 
     def _check_setup(self):
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
@@ -474,7 +557,10 @@ class Session:
         grants = [p.root] + list(p.data_rw)
         skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
         doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
-               "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)}}
+               "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)},
+               # What the inbox held at the start: teardown reports (and gives provenance to) the difference.
+               "inbox": {"project": p.name, "agent": self.adapter.name, "items": profile.items(self.inbox),
+                         "preset": p.preset, "egress": p.value("egress")}}
         path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -494,6 +580,14 @@ class Session:
     def allowed_mount_srcs(self, extra=()):
         p = self.project
         out = [p.root] + p.data_ro + p.data_rw + [self.state_dir, self.settings.session_run_dir(self.name)]
+        if self.profile and self.profile.dir:
+            out.append(os.path.realpath(self.profile.dir))
+        if self.adapter.state_mount:
+            # The inbox is per PROJECT, not per state dir: a lockdown session's own state is ephemeral, but
+            # an item it puts in the inbox has to survive to be reviewed. That does not weaken lockdown --
+            # nothing in the inbox is ever loaded, by this session or any later one; only a person
+            # promoting it with `ab profile harvest` can make it part of what an agent reads.
+            out.append(os.path.realpath(self.inbox))
         if self.token_file:
             out.append(os.path.realpath(self.token_file))
         out += [os.path.realpath(src) for src, _dst, _ro in self.setup.mounts]
@@ -1075,6 +1169,59 @@ def _keep_logs(settings, podman, session, started, warn):
             warn(f"agentbox: could not keep the {kind} log: {e}")
 
 
+def migrate_state_to_inbox(settings, project, adapter, warn):
+    """Move what earlier sessions accumulated in the per-project state into the project's inbox, once.
+
+    Those paths (`skills/`, `agents/`, and Claude's state `CLAUDE.md`) are read-only mounts now, so
+    whatever is under them would be shadowed and invisible rather than loaded. Nothing is deleted: it is
+    moved to the inbox, where `ab profile harvest` can promote it into the shared profile or dismiss it.
+    Returns the names moved."""
+    src_dir = settings.state_dir(project, adapter.name)
+    inbox = settings.inbox_dir(project, adapter.name)
+    moved = []
+    for name in adapter.migrate_to_inbox:
+        src = os.path.join(src_dir, name)
+        if not os.path.exists(src) or os.path.islink(src):
+            continue
+        if os.path.isdir(src) and not os.listdir(src):
+            os.rmdir(src)                     # an empty dir an earlier session left: nothing to keep
+            continue
+        os.makedirs(inbox, mode=0o700, exist_ok=True)
+        dst = os.path.join(inbox, f"from-state-{name}")
+        n = 2
+        while os.path.lexists(dst):
+            dst, n = os.path.join(inbox, f"from-state-{name}.{n}"), n + 1
+        shutil.move(src, dst)
+        moved.append(os.path.basename(dst))
+    if moved:
+        warn(f"agentbox: moved {', '.join(moved)} out of {project}'s {adapter.name} state into {inbox} "
+             f"(those paths are read-only profile mounts now; nothing was deleted). "
+             f"`ab profile harvest` reviews them.")
+    return moved
+
+
+def _inbox_report(settings, doc, session, warn, now=None):
+    """Give every inbox item this session added its provenance sidecar, and say how many there are.
+
+    Teardown is the only place the host knows which items are new -- nothing hooks the agent's writes -- so
+    it is also where provenance is recorded, from the before/after difference."""
+    box = doc.get("inbox") or {}
+    if not box.get("project"):
+        return
+    try:
+        new = profile.record_new_items(settings, box["project"], box["agent"], box.get("items") or [],
+                                       session=session, preset=box.get("preset", ""),
+                                       egress=box.get("egress", ""), now=now)
+    except OSError as e:
+        warn(f"agentbox: could not record the inbox's provenance: {e}")
+        return
+    if new:
+        inbox = settings.inbox_dir(box["project"], box["agent"])
+        warn(f"agentbox: {len(new)} new item(s) in {inbox}: {', '.join(new[:10])}"
+             + (" ..." if len(new) > 10 else "")
+             + ". Nothing there is loaded; `ab profile harvest` reviews it.")
+
+
 def _scan(settings, session, started, warn):
     """The end-of-session scan, from the state recorded at start (scan.py). Never raises."""
     path = os.path.join(settings.session_run_dir(session), SCAN_STATE)
@@ -1086,6 +1233,7 @@ def _scan(settings, session, started, warn):
     except (OSError, ValueError) as e:
         warn(f"agentbox: end-of-session scan skipped: its start state is unreadable ({e})")
         return
+    _inbox_report(settings, doc, session, warn)
     try:
         summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"))
         st = doc.get("agent_state") or {}
@@ -1114,7 +1262,6 @@ def teardown(settings, podman, session, warn=None):
     """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all come here, so
     each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
     created), the scan runs last, and no failure of either skips the removal."""
-    import shutil
     warn = warn or (lambda m: print(m, file=sys.stderr))
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)

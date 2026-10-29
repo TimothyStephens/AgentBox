@@ -24,8 +24,15 @@ GROUPS = [
         ("ab project ls", ["project", "ls"]),
         ("ab project rm", ["project", "rm"]),
         ("ab project reset-state", ["project", "reset-state"]),
+        ("ab project purge", ["project", "purge"]),
         ("ab project accept-grant-exposure", ["project", "accept-grant-exposure"]),
         ("ab project accept-history-secrets", ["project", "accept-history-secrets"]),
+    ]),
+    ("ab profile", [
+        ("ab profile", ["profile"]),
+        ("ab profile harvest", ["profile", "harvest"]),
+        ("ab profile promote", ["profile", "promote"]),
+        ("ab profile dismiss", ["profile", "dismiss"]),
     ]),
     ("ab session", [
         ("ab session", ["session"]),

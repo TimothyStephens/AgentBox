@@ -32,16 +32,30 @@ persists across sessions of that project. The host `~/.claude` is never used.
 | What | Host source | In-session path | Scope | Mode |
 |---|---|---|---|---|
 | Config dir (`CLAUDE_CONFIG_DIR`) | `~/.local/share/agentbox/<project>/claude/` | `/run/agentbox/claude/` | per-project, persistent | rw |
-| `settings.json`, `CLAUDE.md`, `commands/` | `~/.config/agentbox/claude/` (the **seed**) | copied into the config dir at every start | **global** (every project) | rw copy |
+| `skills/`, `agents/`, `commands/` | `~/.config/agentbox/claude/profile/` (the **profile**) | `/run/agentbox/claude/{skills,agents,commands}` | **global** (every project, every preset) | **ro** |
+| `CLAUDE.md` | the profile's own, with the sandbox notes prepended | `/run/agentbox/claude/CLAUDE.md`, generated per session | **global** | **ro** |
+| `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start | **global** | rw copy |
+| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/<agent>/inbox/` | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** | rw |
 | Managed policy (lockdown / approvals on) | generated in `<run>/sessions/<s>/claude-managed-settings.json` | `/etc/claude-code/managed-settings.json` | per-session | ro |
 | Repo config (`CLAUDE.md`, `.mcp.json`, `.claude/`) | the project repo (its real path) | same real path (the grant) | per-project (committed) | rw (ro where covered) |
 
-- `settings.json`, `CLAUDE.md` and `commands/` are **copied from the global seed** `~/.config/agentbox/claude/`
-  into the per-project config dir at every start (`seed_state`, `SEEDED`). A file the seed does not ship is
-  left as the project left it last session (it is not wiped). The generated sandbox description is
-  **prepended** to `CLAUDE.md` each start, so the environment is the first thing the agent reads (see §4).
+- **The profile is host-owned and read-only in the session** (29 Oct). `skills/`, `agents/` and `commands/`
+  are mounted from a content-hashed snapshot of `~/.config/agentbox/claude/profile/`, and `CLAUDE.md` is
+  generated per session as the sandbox description followed by the profile's own text, so the environment is
+  the first thing the agent reads (see §4). A session cannot change any of it: what it wants to keep goes to
+  the project's `inbox/`, which nothing loads, and `ab profile harvest` reviews that queue. The hash and the
+  profile's git commit are recorded in a `profile` session log, so what a session loaded is answerable
+  afterwards. The pre-profile seed (`~/.config/agentbox/claude/{settings.json,CLAUDE.md,commands/}`) is
+  **moved** into `profile/` on first use, with a message saying so — nothing reads the old location.
+- `settings.json` is the exception: Claude Code writes it itself, so it is copied from the profile into the
+  config dir at every start instead of being mounted read-only.
+- **Skills and sub-agents a session writes** no longer accumulate in the per-project config dir (those paths
+  are read-only mounts now). Anything already there is moved to the project's inbox once, with a message.
 - **Plugins / slash commands:** Claude has no plugin tree like OMP; its reusable pieces are slash commands in
-  `commands/`. Put them in the seed (global) or in the project's `.claude/commands/`.
+  `commands/`. Put them in the profile (global, read-only) or in the project's `.claude/commands/`.
+- **Memory shortcuts:** a `#` note aimed at the *project's* `CLAUDE.md` works as usual (it is in the grant,
+  and the end-of-session scan now reports it); aimed at the *user-level* `CLAUDE.md` it fails, because that
+  file is generated and read-only. The session notes say so and point at the inbox.
 - **MCP servers:** per-project via the committed repo `.mcp.json`, read by Claude from the project root. There
   is no dedicated *global* Claude-MCP seed slot today (the seed ships `settings.json`/`CLAUDE.md`/`commands/`
   only); a global MCP server would have to be declared in the seed `settings.json` the Claude build reads.
@@ -65,19 +79,25 @@ per-project; the toolchain is a host-shared read-only global.
 | `AGENTS.md` | generated (see §4) | `~/.omp/agent/AGENTS.md` | per-session | ro |
 | MCP / MAGS (if you create them) | `~/.config/agentbox/omp/mcp.json`, `mags-codedev.yaml` | `~/.omp/agent/.mcp.json`, `~/.omp/agent/mags-codedev.yaml` | **global** | ro |
 | Repo config (`.omp/`, `.mcp.json`) | the project repo | the grant | per-project (committed) | rw (ro in lockdown) |
+| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
 
 - The writable `agent/` dir has the read-only files above (`config.yml`, `models.yml`, `.mcp.json`,
   `mags-codedev.yaml`, `AGENTS.md`) mounted on top of it, and `agent/extensions`, `agent/hooks`,
   `agent/tools` are covered empty read-only (so one session cannot plant code the next runs). Prompt dirs
   (`skills`, `rules`, `prompts`, `agents`, `commands`) stay writable for OMP's autolearn.
+- **OMP has the inbox but not yet a read-only profile.** A host-owned profile would be mounted at exactly
+  those five prompt dirs, which is where autolearn writes, so `omp.ADAPTER.profile_mounts` is empty for now;
+  the inbox, the snapshot and `ab profile harvest` all work for OMP today. The open question (is autolearn's
+  output directory configurable?) and the four options are in `docs/TODO.md`.
 - **Keys never enter via these files.** `models.yml` is regenerated per session from the keyless seed and
   references `AB_KEY_<PROVIDER>` variables; `config.yml` and `plugins/` are mounted read-only and are *not*
   scanned, so never put a secret in them (see the OMP note in `docs/design.md`).
 
 ### The asymmetry in one line
 
-Claude: edit **per-project** by default (the config dir is per-project); the only global lever is the seed
-`~/.config/agentbox/claude/`. OMP: plugins and `config.yml` are a **global, read-only** toolchain shared by
+Claude: the config dir is per-project, but what the agent *loads* is **global and read-only** — the host
+profile `~/.config/agentbox/claude/profile/`; a session's own additions go to the per-project inbox, which
+nothing loads until you promote it. OMP: plugins and `config.yml` are a **global, read-only** toolchain shared by
 every project; only `agent/` (per-project working state) and your `~/.config/agentbox/omp/` seed are yours to
 change, and a per-project OMP tweak lives in the repo.
 

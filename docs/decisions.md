@@ -1105,3 +1105,80 @@ a non-zero exit (the call sites that legitimately tolerate failure, such as `ima
   masked name, so the pattern test that followed already answered True. Removed with a test proving the
   deadness first (CLAUDE.md's rule), which is a property of the validator rather than a coverage claim:
   every swap the validator accepts has only masked names as targets.
+
+## 2026-10-29 — The host-owned agent profile, and the inbox
+
+Two commits. The research behind them is in this session's report; the shape it argued for is what was
+built.
+
+**The scan learned about agent files.** `.claude/` and `.omp/` (whole), plus `CLAUDE.md`, `AGENTS.md`,
+`.mcp.json` and `mcp.json` by name, are "files that run later" now. A skill, hook, sub-agent or MCP server
+a session adds to a repo is read by the next session and by the user's own agent outside agentbox — the
+same class as a Makefile and arguably sharper, being instructions something will follow. `lockdown` already
+covers those paths read-only, so this reports what every other preset leaves writable.
+
+**The profile: `~/.config/agentbox/<agent>/profile/`, snapshotted and mounted read-only.** Modelled on OMP's
+`versions/<v>/` snapshot, and the reasoning is the same: pin what a session got, so it cannot change under
+it and can be named afterwards. The tree is hashed by content (paths, executable bits, bytes — no mtimes,
+`.git` excluded), copied once per hash to `<data>/profiles/<agent>/<hash>/`, and mounted read-only at the
+agent's load paths. Four consequences, each deliberate:
+
+- **It loads under every preset, lockdown included.** Host-owned is a different trust class from
+  repo-shipped: the threat model is about a repository (or a prompt-injected agent) planting something a
+  later session runs, and the profile is neither. This is the first thing in the design that lockdown
+  deliberately *does* load.
+- **A session cannot teach itself.** The load paths are read-only, so Claude's user-level skill/CLAUDE.md
+  writes fail. That is the point: what used to accumulate silently in a per-project config dir now has to
+  go through a person.
+- **No project override layer in agentbox.** Project-level customisation is the repo's own `.claude`/`.omp`,
+  which already exists, is committed, is reviewed in the normal way and is now reported by the scan. A
+  third layer would have meant precedence rules with nothing to decide them.
+- **No symlinks in a profile.** A link would be followed when the snapshot is copied, so a file outside the
+  profile would end up mounted in every session. Any link refuses the session, by name.
+
+**`settings.json` stays a copy, not a mount.** Claude Code writes it itself — the adapter has recorded
+`skipDangerousModePermissionPrompt` there since 7 Oct — so a read-only one would fail at every launch. It is
+copied from the profile at each start: the host profile stays authoritative, without pretending the file is
+immutable. This was the one "test whether it tolerates read-only" question, and the answer was already in
+our own code.
+
+**The inbox: `<data>/<project>/<agent>/inbox/`, read-write, never loaded.** Mounted inside the agent's own
+config dir so it is in front of the agent, at a path no loader reads. It is per project and persists even
+for `lockdown`, whose own state is ephemeral — which does not weaken lockdown, because nothing in the inbox
+is ever loaded by any session: only a person promoting it can make it part of what an agent reads. At
+teardown each new item gets a provenance sidecar (project, session, timestamp, preset, egress, agent) and
+the count is printed; teardown is the only moment the host knows which items are new, since nothing hooks
+the agent's writes. Provenance matters because an item is read later, out of context, and `egress open` in
+particular deserves a closer look.
+
+**Claude's memory shortcuts, measured against the new shape.** `#` aimed at the *project's* `CLAUDE.md`
+still works (the repo is in the grant, and the scan now reports the change). `#` aimed at the *user-level*
+`CLAUDE.md` fails, because that file is generated per session and read-only. It cannot be redirected —
+nothing intercepts the write — so the session notes state both halves and name the inbox. Routing it
+automatically would need Claude Code to support a configurable memory path.
+
+**`ab profile harvest` / `promote` / `dismiss`**, read-only by default. Lists unreviewed items across every
+project that has an inbox, registered or not (an item outliving its project is exactly what must still be
+reviewable), marks open-egress provenance, and groups by name and content hash so near-duplicates show up
+as one line. `promote` copies into the profile and commits with the provenance in the message; the
+destination is explicit (`--as`) unless the item is plainly a skill directory, because promoting writes into
+the one thing every session loads. The profile is a git repo (initialised on first use), so `git log` is the
+history of what the agent has been taught, and the session log records the commit beside the hash.
+
+**Project removal, made explicit.** `ab project rm` keeps the code, the agent state, the inbox and the
+backups — it only drops the registry entry — so re-adding the name silently reattached a project's memory.
+Both ends now say so: `rm` prints what stays and how to delete it, `add` prints the state it reattached.
+`ab project purge <name> --yes` is the only command that deletes state and inbox, and it prints the number
+of unreviewed inbox items first.
+
+**OMP's load paths are not wired, and that is reported rather than guessed.** A profile for OMP would occupy
+`agent/{skills,rules,prompts,agents,commands}` read-only, which is where autolearn writes. Whether
+autolearn's output directory can be pointed at the inbox could not be determined from inside the sandbox
+(`~/.omp` is off limits by this project's own rules, and OMP is not public), so `profile_mounts` is empty
+for OMP: breaking autolearn silently was the one outcome to avoid. The inbox, the snapshot, the provenance
+and the harvest commands all work for OMP today. The question and four options are in `docs/TODO.md`, and
+the itest carries the OMP load-path cases as skips that name the reason.
+
+**Not built, on purpose: the curator.** Reviewing an inbox item is still a person reading a skill. An agent
+whose job is that review wants a project of its own (the profile read-write, a reviewed prompt, a record of
+what it rejected); `docs/TODO.md` describes it as the follow-up. Harvest should be lived with first.
