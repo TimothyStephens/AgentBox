@@ -1,33 +1,51 @@
-# agentbox Claude image: localhost/claudecode plus the podman clients the session's podman access needs.
+# agentbox Claude image: agentbox-base plus the Claude Code CLI, at a pin.
 #
-# Build with `make claude-image` (tags localhost/agentbox-claude:latest and :<date>). The base image is
-# unchanged. The podman-remote version and checksum come from the Makefile, shared with images/omp, so both
-# agent images carry the same client (matching the host's podman service major version; tests check it).
+# Build with `make claude-image` (tags localhost/agentbox-claude:latest and :<date>). It no longer comes
+# FROM localhost/claudecode -- the CLI is installed here, so the version in the image is the version this
+# file names, and `ab selftest` can hold it to that.
 #
-#   * podman-remote, static, pinned, verified by ADD --checksum before it is used, at /usr/local/bin/podman
-#     (first on PATH);
-#   * python3 and the compose tool at the host's version (1.5.0), which needs python; it and its
-#     dependencies are pinned with hashes in requirements.txt (pip --require-hashes);
-#   * python3-venv and curl: the trial (2 Oct) found agents need a venv and an HTTP client in the session;
-#   * rsync: agentbox's own test suite shells out to it (the pre-session grant snapshot is rsync
-#     --link-dest), so without it `make test` run INSIDE a session cannot exercise any code path that
-#     prepares a session -- 111 of its tests errored on the missing binary (29 Oct).
-ARG BASE=localhost/claudecode:latest
+# How the pin is enforced, which is the point of installing it ourselves:
+#   * `npm install` of an EXACT version verifies the tarball against the registry's integrity metadata
+#     before unpacking it -- that is npm's own check, and `--no-audit --no-fund` keeps it to that;
+#   * the build then asserts the installed binary reports the pinned version, so this file cannot claim a
+#     version the image does not have;
+#   * the pin goes on the `agentbox.cli-version` label, which `ab selftest` reports and `ab image build`
+#     compares a personal layer against.
+# The published integrity for the pinned version is recorded below so a change of pin is a deliberate edit
+# with a value to look up, not a bump.
+#
+# Auto-update is off IN THE IMAGE, not only in the session environment: a session's Claude Code must be the
+# one this file pinned, and an updater that replaced it would make the label a lie and the selftest wrong.
+ARG BASE=localhost/agentbox-base:latest
 FROM ${BASE}
-ARG PODMAN_REMOTE_VERSION
-ARG PODMAN_REMOTE_SHA256
 
-ADD --checksum=sha256:${PODMAN_REMOTE_SHA256} \
-    https://github.com/podman-container-tools/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz \
-    /tmp/podman-remote.tar.gz
-RUN tar -xzf /tmp/podman-remote.tar.gz -C /tmp \
-    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
-    && rm -f /tmp/podman-remote.tar.gz /tmp/bin/podman-remote-static-linux_amd64
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv curl rsync \
-    && apt-get clean
-COPY requirements.txt /tmp/agentbox-requirements.txt
-RUN pip3 install --no-cache-dir --break-system-packages --require-hashes -r /tmp/agentbox-requirements.txt
+# After the FROM, so it is in scope where it is used (see images/base/Containerfile on why that matters).
+# @anthropic-ai/claude-code@2.1.318, npm 4 Nov 2026, integrity
+# sha512-OTJgLxcvWefv8IdTsq5n90Z2IxEhLwKqHUBhwZYE4odXzKA/Tb6p2Zb5Iy9Vq7JIVcNZzn9cPxW5sb42wLF95Q==
+ARG CLAUDE_VERSION=2.1.318
+ENV DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+RUN set -eux; \
+    npm install -g --no-audit --no-fund --fetch-retries 5 \
+        "@anthropic-ai/claude-code@${CLAUDE_VERSION}"; \
+    npm cache clean --force; \
+    command -v claude; \
+    claude --version; \
+    claude --version | grep -F "${CLAUDE_VERSION}"
+
+# A credential-like file in the image would be readable by the session user. The base is a public image and
+# npm runs as root here, so this is a cheap assertion rather than a suspicion.
+RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o -name .netrc \
+        -o -name .pypirc -o -name credentials -o -name '*.pem' -o -name 'id_*' \
+        -o -path '/root/.ssh/*' -o -path '/root/.config/gh/*' -o -path '/root/.aws/*' \
+        -o -path '/root/.claude/*' \) -print); \
+    if [ -n "$found" ]; then echo "credential-like files in /root: $found" >&2; exit 1; fi
 
 LABEL agentbox=1 \
+      agentbox.cli-version="${CLAUDE_VERSION}" \
       org.opencontainers.image.title="agentbox-claude" \
-      org.opencontainers.image.description="claudecode for agentbox sessions (podman-remote, compose tool)"
+      org.opencontainers.image.description="Claude Code ${CLAUDE_VERSION} on agentbox-base"
+WORKDIR /
+ENTRYPOINT []
+CMD ["claude"]

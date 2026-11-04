@@ -41,24 +41,21 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   branch) or an agent-config value belonging to the adapter that wants it. Until then the parameter is
   exercised by unit tests only (`tests/unit/test_scan.py:RefMovement`).
 
-- **The agent image layers are not restructured yet** (4 Nov). `agentbox-base` is built and both agent
-  images still build `FROM localhost/{claudecode,omp-env}`. Finishing it needs two facts this session could
-  not obtain:
-  1. **node ≥ 22 with a checksum.** Claude Code 2.1.318 declares `engines.node >= 22.0.0` and the npm
-     `oh-my-pi` package declares `>= 22.19.0`; no Debian stable suite ships it (bookworm 18.20.4, trixie
-     20.19.2), so node has to be a pinned download. `nodejs.org` and `deb.nodesource.com` are both refused
-     by this sandbox's proxy, and nodejs' GitHub releases carry no binaries — so the version and SHA256 have
-     to come from the host:
-     `curl -s https://nodejs.org/dist/index.json | jq -r '[.[]|select(.lts!=false)][0].version'` then the
-     matching line of `https://nodejs.org/dist/<v>/SHASUMS256.txt` for `node-<v>-linux-x64.tar.xz`.
-     They would live in the Makefile beside `PODMAN_REMOTE_VERSION`/`_SHA256` and be passed as build args.
-  2. **How omp-env installs OMP, Bun and Chromium.** `~/repos/omp-env` is not mounted in a session, and npm
-     `oh-my-pi` is at 0.2.0 — nothing like the 18.x line the pin names — so the channel is something else
-     and guessing it would produce a broken OMP image. The `omp-env/Containerfile` settles it.
-  The Claude layer's own pin is ready: `@anthropic-ai/claude-code@2.1.318`, integrity
-  `sha512-OTJgLxcvWefv8IdTsq5n90Z2IxEhLwKqHUBhwZYE4odXzKA/Tb6p2Zb5Iy9Vq7JIVcNZzn9cPxW5sb42wLF95Q==`
-  (npm, 4 Nov), with the auto-updater off in the image and the version on the `agentbox.cli-version` label
-  that `ab selftest` already compares against.
+- ~~**The agent image layers are not restructured yet**~~ — **done, 4 Nov.** The chain is
+  `node:22-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optionally a personal layer, and
+  each agent image installs its own CLI at a Makefile pin that the build asserts. The two facts that
+  blocked it are settled: node comes from the official image (so no node tarball checksum of ours), and
+  OMP is `@oh-my-pi/pi-coding-agent@18.13.3` with Bun 1.4.4, both checksum- or integrity-verified. See
+  decisions.md. Unbuilt here (`make` is not in a sandbox): `make base-image`, `make claude-image omp-image`,
+  then `make itest` and both live targets are the gate.
+
+- **`omp-env` is now only a host tool** (4 Nov). agentbox no longer builds on `localhost/omp-env`, but
+  `omp-env install` is still what provisions `~/.omp/{plugins,repos,pylibs}`, which sessions mount
+  read-only. So the image and the plugins can drift apart: the plugins are installed against whatever OMP
+  the host's omp-env has, while the session now runs the OMP pinned in `images/omp/Containerfile`. The
+  known symptom is a plugin that fails to load (`pi-statusline`'s `stripTerminalSequences`). Closing this
+  properly is the `ab profile install` work below — a profile-owned `plugins.toml` installed in a gated
+  session against the image's own OMP. Until then, keep `OMP_VERSION` near what omp-env installs with.
 
 - **Old user image layers are never pruned** (4 Nov). Each harness image rebuild or Containerfile edit
   gives a new `localhost/agentbox-<agent>-user:<key>` tag and leaves the previous one in podman storage.

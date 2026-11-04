@@ -1520,3 +1520,59 @@ drives `omp -p` to an exact-match answer, and the variable in omp-live is the re
 answered in 67s and 80s, took two turns for a one-line prompt, and gave three different outcomes in three
 attempts. The known-broken `pi-statusline` extension is not it either: decisions.md has it broken upstream
 since 15 Oct, and omp-live passed on 16 Oct with it already broken.
+
+
+## 4 November 2026 -- the agent images build their own CLI, on agentbox-base
+
+The restructure is finished: `node:22-bookworm-slim` -> `agentbox-base` -> `agentbox-{claude,omp}` ->
+optionally a personal layer. Both agent images used to be `FROM localhost/{claudecode,omp-env}`, built
+outside this repo, which meant a session ran whatever CLI those images happened to hold -- 56 and 59 days
+old at the last check, and in OMP's case a version its own Containerfile did not ask for.
+
+**The OS base is `node:22-bookworm-slim`, and node lives in the base rather than per agent.** Both agents
+need node: Claude Code 2.1.x declares `engines.node >= 22`, and OMP is installed with npm. A pinned node
+tarball in two layers is exactly the duplication the base exists to remove, and the official node image is
+debian bookworm-slim with node already on it, maintained and checksummed by the node team -- so there is no
+node checksum of ours to keep current. It is also the node major omp-env used, so OMP runs on the node it
+has always run on. (Node 22 and not the newest LTS, which the query returned as 26.13.0: changing OMP's
+node major is a separate decision with its own testing, and nothing here needed it.)
+
+**Every pinned download is decided in the Makefile**, so "what version does a session run" is one file:
+`OS_BASE_DIGEST`, `PODMAN_REMOTE_VERSION`/`_SHA256`, `BUN_VERSION`/`_SHA256`, `CLAUDE_VERSION`,
+`OMP_VERSION`.
+
+**A pin is asserted, not written down.** Each agent build runs the installed binary and greps its output
+for the version it pinned, and only then puts that version on the `agentbox.cli-version` label. `make`
+checks the built image against its own label afterwards too. This is the direct answer to omp-env's bug:
+it declared `ARG OMP_VERSION=18.1.3` *above* its `FROM`, so the ARG was out of scope by the time
+`npm install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}` ran -- it asked for 18.1.3, installed npm's
+latest, and nothing said a word. A pin that is only written down is not a pin.
+
+**Bun is pinned and checksum-verified.** OMP cannot load extensions without it
+(`@oh-my-pi/pi-coding-agent@18.13.3` declares `engines.bun >= 1.4.4` and no node engine at all), so it is
+a runtime dependency. omp-env piped `https://bun.sh/install` into bash, which installs whatever that script
+serves and verifies nothing; this takes the same binary from the release with `ADD --checksum`, which podman
+checks before it is unpacked. The published `oh-my-pi` package on npm is at 0.2.0 and is **not** OMP -- the
+package is `@oh-my-pi/pi-coding-agent`, which is why the earlier lookup was so confusing.
+
+**What omp-env had that is deliberately left out:** `podman` and `docker.io` (no agentbox path invokes
+either, and the base's pinned podman-remote 5.x must shadow Debian's 4.3); `nano`, `vim`, neovim, the
+pi-bridge lua config and `EDITOR`/`VISUAL`/`PI_NVIM_APPNAME` -- an editor is a personal choice and belongs
+in a personal layer, which is where Tim's already is; `gnupg`; omp-env's `.bashrc` and global git identity
+(agentbox passes a git identity through the environment). Kept: Chromium with its full runtime library set,
+`python-is-python3` and debugpy, the `/root` credential guard before `/root` is opened to the session user,
+and the `/root/.omp` symlink the absolute plugin links need.
+
+**Two new invariants in `tests/unit/test_images.py`**, both for failure modes with no symptom:
+
+- **an ARG with no default must be passed by the build.** Unsupplied, it is silently empty -- the same
+  shape as declaring one above the FROM. The test reads every post-FROM defaultless ARG out of the
+  Containerfiles and requires a matching `--build-arg` in the Makefile.
+- **neither layer may carry a container client of its own**, checked against the apt install step.
+
+The pin comparison in `ab image build` moved from equality to containment, because the label holds the
+version (`2.1.318`) while the binary prints its own banner (`2.1.318 (Claude Code)`, `omp/18.13.3`).
+Equality there would have failed every build; the build-time grep inside the Containerfile is the real gate.
+
+**Not verified here:** `make` is not installed in a sandbox, so the Makefile and the three Containerfiles
+are unexecuted. The tests check their text; the builds are Tim's.

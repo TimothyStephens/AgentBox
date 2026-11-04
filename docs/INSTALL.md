@@ -8,11 +8,10 @@ How to install the `ab` launcher on this host, and exactly where everything it u
   `vmuser` has no root. rsync is a hard requirement, not an optional extra: every session takes an
   `rsync --link-dest` snapshot of its read-write grants before starting (the session's only undo), so
   without it `ab run` refuses. It is also needed to run agentbox's own test suite.
-- The two **base agent images must already exist** — agentbox layers on them, it does not build them:
-  - `localhost/claudecode:latest` (ships the `claude` CLI),
-  - `localhost/omp-env:latest` (ships the `omp` CLI; Tim's `~/repos/omp-env`).
-
-  See `docs/RUNTIME.md` for what each image contains and how the agent CLI is versioned.
+- **No other image is needed.** agentbox builds its own chain — `agentbox-base` →
+  `agentbox-{claude,omp}` → optionally your own layer — from `node:22-bookworm-slim` upward, and installs
+  each agent CLI at a pin named in the Makefile. It no longer layers on `localhost/claudecode` or
+  `localhost/omp-env`; see `docs/RUNTIME.md` for what each image contains and how the pin is enforced.
 
 ## Steps
 
@@ -25,28 +24,32 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    ```
    Installs `deploy/agentbox.slice` to `~/.config/systemd/user/agentbox.slice` and reloads the user daemon.
 
-2. **The base image** — the toolchain every session shares, whichever agent runs (git, curl, jq, unzip,
-   rsync, python3 + venv, ripgrep, fd, a C/C++ toolchain, the checksum-pinned podman client and the compose
-   tool). Build it before the agent images; theirs are `--pull=never` and will say so if it is missing.
+2. **The base image** — the toolchain every session shares, whichever agent runs: node 22, git, curl, jq,
+   unzip, rsync, python3 + venv, ripgrep, fd, a C/C++ toolchain, the checksum-pinned podman client and the
+   compose tool. Build it before the agent images; theirs are `--pull=never` and will say so if it is
+   missing.
    ```bash
-   make base-image                                  # unpinned debian base: warns
-   make base-image BOOKWORM_DIGEST=sha256:<digest>  # reproducible
+   podman pull docker.io/library/node:22-bookworm-slim
+   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'
+   make base-image OS_BASE_DIGEST=sha256:<the digest that printed>
    ```
-   Produces `localhost/agentbox-base:latest` (and `:<date>`). Pin the digest once and keep it in the
-   Makefile — a tag moves, and the agent builds would not see it move. Get it with:
-   ```bash
-   podman pull docker.io/library/debian:bookworm-slim
-   podman image inspect docker.io/library/debian:bookworm-slim --format '{{index .RepoDigests 0}}'
-   ```
-   The image records what it was built from: `podman image inspect localhost/agentbox-base:latest
-   --format '{{index .Config.Labels "agentbox.base"}}'`.
+   `make base-image` on its own works too, and warns that the OS base is not pinned: a working build, not a
+   reproducible one. Pin the digest once and keep it in the Makefile — a tag moves, and the agent builds
+   are `--pull=never`, so they would not see it move. The image records what it was built from:
+   `podman image inspect localhost/agentbox-base:latest --format '{{index .Config.Labels "agentbox.base"}}'`.
 
-3. **The agent images**, derived from the base image above (see `docs/RUNTIME.md`):
+3. **The agent images**, which install each agent CLI at the pin the Makefile names (`CLAUDE_VERSION`,
+   `OMP_VERSION`, plus `BUN_VERSION` for OMP's extension runtime):
    ```bash
    make claude-image omp-image
    ```
    Produces `localhost/agentbox-claude:latest` and `localhost/agentbox-omp:latest` (each also tagged
-   `:<date>`). Fails loudly if a base image is missing, and warns if a base is stale.
+   `:<date>`). Each build **asserts** that the installed binary reports its pin, and the version goes on the
+   `agentbox.cli-version` label that `ab selftest` reports — so an image cannot ship a version its label
+   denies. Fails loudly if `agentbox-base` is missing, and warns if it is older than `BASE_WARN_DAYS`.
+
+   To move a pin, edit the Makefile variable and rebuild. Personal layers built on the old image go stale
+   and say so (`ab run` prints `personal layer out of date`); `ab image build <agent>` again.
 
 4. **The launcher on PATH:**
    ```bash

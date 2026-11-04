@@ -1,53 +1,99 @@
-# agentbox OMP image: localhost/omp-env plus what the sandbox needs.
+# agentbox OMP image: agentbox-base plus Bun, the OMP CLI at a pin, and Chromium.
 #
-# Build with `make omp-image` (tags localhost/agentbox-omp:latest and :<date>). The base image is Tim's
-# omp-env (~/repos/omp-env); nothing here changes it.
+# Build with `make omp-image` (tags localhost/agentbox-omp:latest and :<date>). It no longer comes FROM
+# localhost/omp-env; what omp-env provided is reproduced here, and what it provided that agentbox does not
+# use is left out. Each departure from omp-env's own Containerfile, deliberately:
 #
-# Why each change:
-#   * /root is 0700 in the base, and bun lives in /root/.bun. The sandbox runs as the host user
-#     (--userns=keep-id), so /root is opened to 0755, after a build step that fails if /root holds
-#     credential-like files (review 2026-10-01 #8).
-#   * /root/.omp -> $AB_HOME/.omp: plugin links written by `omp-env install` (which runs as root) are
-#     absolute /root/.omp/... paths; inside a session ~/.omp is under the host user's home.
-#   * python-is-python3, debugpy: the debugger probe needed both (design: OMP adapter).
-#   * chromium: OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is not mounted.
-#   * python3-venv and curl: the trial (2 Oct) found agents need a venv and an HTTP client in the session.
-#   * the compose tool (dev tier) and debugpy, from requirements.txt: every package and dependency pinned
-#     with hashes (pip --require-hashes);
-#   * podman-remote 5.7.0 (below), replacing Debian's 4.3 client on PATH.
-ARG BASE=localhost/omp-env:latest
+#   * **the OMP pin applies.** omp-env declares `ARG OMP_VERSION` ABOVE its FROM, so the ARG is out of
+#     scope by the time `npm install -g @oh-my-pi/pi-coding-agent@${OMP_VERSION}` runs: it asks for 18.1.3
+#     and installs whatever npm's latest was (18.1.11, in the image agentbox used until now). Declared
+#     below the FROM here, and the build asserts the installed binary reports it.
+#   * **Bun is pinned and checksum-verified.** omp-env runs `curl https://bun.sh/install | bash`, which
+#     installs whatever that script serves and verifies nothing. OMP needs Bun to load extensions at all
+#     (`@oh-my-pi/pi-coding-agent@18.13.3` declares `engines.bun >= 1.4.4`), so it is a runtime dependency
+#     and gets the same treatment as every other download here.
+#   * **node comes from agentbox-base**, which is `node:22-bookworm-slim` -- the same node major omp-env
+#     used, so OMP runs on the node it has always run on.
+#   * **left out, and why:** `podman` and `docker.io` (the base carries the pinned podman-remote 5.x
+#     client, which must shadow Debian's 4.3 -- no agentbox path invokes either of omp-env's); `nano`,
+#     `vim` and neovim, the pi-bridge lua config and `EDITOR`/`VISUAL`/`PI_NVIM_APPNAME` (an editor is a
+#     personal choice, and belongs in a personal layer -- `ab image build omp`); `gnupg` (nothing in a
+#     session verifies a signature); omp-env's `.bashrc` and its global git identity (agentbox passes a git
+#     identity through the environment, see `session.git_identity`). git, curl, jq, ripgrep, fd, the
+#     C/C++ toolchain, python3 and pip are all in agentbox-base already.
+#
+# Why each thing that IS here:
+#   * chromium plus the Playwright/Chromium runtime libraries: OMP's browser tool uses
+#     PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is never mounted and the browser must be the image's;
+#   * python-is-python3 and debugpy: the debugger probe needs both (design: OMP adapter);
+#   * /root is 0700 in the base and Bun lives in /root/.bun. The sandbox runs as the host user
+#     (--userns=keep-id), so /root is opened to 0755 -- after a step that fails the build if /root holds
+#     anything credential-like (review 2026-10-01 #8);
+#   * /root/.omp -> $AB_HOME/.omp: the plugin links `omp-env install` writes on the host are absolute
+#     /root/.omp/... paths, and inside a session ~/.omp is under the host user's home.
+ARG BASE=localhost/agentbox-base:latest
 FROM ${BASE}
 ARG AB_HOME=/home/vmuser
 
-# rsync: agentbox's own test suite shells out to it (the pre-session grant snapshot), so `make test` run
-# inside a session needs it -- see images/claude/Containerfile.
-RUN apt-get update && apt-get install -y --no-install-recommends python-is-python3 chromium python3-venv curl \
-    rsync && apt-get clean
+# Chromium and the shared libraries it needs. Kept as one apt step so the layer cache is one unit.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium python-is-python3 \
+        libnspr4 libnss3 \
+        libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+        libdbus-1-3 libx11-6 libx11-xcb1 libxcomposite1 libxcursor1 \
+        libxdamage1 libxext6 libxfixes3 libxrandr2 libxrender1 \
+        libxss1 libxtst6 libgbm1 libxcb1 libxkbcommon0 \
+        libasound2 libpulse0 libcups2 \
+        libpango-1.0-0 libcairo2 libdrm2 libwayland-client0 \
+        libxshmfence1 fonts-liberation \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Bun, pinned and verified before it is unpacked. The version and checksum come from the Makefile, beside
+# the podman client's, so every pinned download in these images is decided in one file.
+ARG BUN_VERSION
+ARG BUN_SHA256
+ADD --checksum=sha256:${BUN_SHA256} \
+    https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip \
+    /tmp/bun.zip
+RUN set -eux; \
+    mkdir -p /root/.bun/bin; \
+    unzip -j -o /tmp/bun.zip 'bun-linux-x64/bun' -d /root/.bun/bin; \
+    chmod 0755 /root/.bun/bin/bun; \
+    rm -f /tmp/bun.zip; \
+    /root/.bun/bin/bun --version | grep -Fx "${BUN_VERSION}"
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# OMP, at the pin this file names -- asserted, not assumed (see the note on omp-env's ARG above).
+ARG OMP_VERSION=18.13.3
+RUN set -eux; \
+    npm install -g --no-audit --no-fund --fetch-retries 5 \
+        "@oh-my-pi/pi-coding-agent@${OMP_VERSION}"; \
+    npm cache clean --force; \
+    command -v omp; \
+    omp --version; \
+    omp --version | grep -F "${OMP_VERSION}"
+
 COPY requirements.txt /tmp/agentbox-requirements.txt
-RUN pip install --no-cache-dir --break-system-packages --require-hashes -r /tmp/agentbox-requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --require-hashes \
+        -r /tmp/agentbox-requirements.txt \
+    && rm -f /tmp/agentbox-requirements.txt
+
 # /root is about to become readable by the session user: refuse to build if it holds credentials.
-RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o -name .netrc -o -name .pypirc \
-        -o -name credentials -o -name '*.pem' -o -name 'id_*' -o -path '/root/.ssh/*' -o -path '/root/.config/gh/*' \
-        -o -path /root/.docker/config.json -o -path '/root/.aws/*' -o -path '/root/.claude/*' \) -print); \
+RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o -name .netrc \
+        -o -name .pypirc -o -name credentials -o -name '*.pem' -o -name 'id_*' \
+        -o -path '/root/.ssh/*' -o -path '/root/.config/gh/*' -o -path '/root/.aws/*' \
+        -o -path '/root/.claude/*' \) -print); \
     if [ -n "$found" ]; then echo "credential-like files in /root: $found" >&2; exit 1; fi
 RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
 
-# podman-remote 5.x, pinned and checksum-verified (version and checksum from the Makefile, shared with
-# images/claude), at /usr/local/bin/podman, ahead of Debian's podman 4.3 in /usr/bin on PATH.
-ARG PODMAN_REMOTE_VERSION
-ARG PODMAN_REMOTE_SHA256
-ADD --checksum=sha256:${PODMAN_REMOTE_SHA256} \
-    https://github.com/podman-container-tools/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz \
-    /tmp/podman-remote.tar.gz
-RUN tar -xzf /tmp/podman-remote.tar.gz -C /tmp \
-    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
-    && rm -f /tmp/podman-remote.tar.gz /tmp/bin/podman-remote-static-linux_amd64
-
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PLAYWRIGHT_BROWSERS_PATH=/root/.omp/.cache/ms-playwright \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_CACHE_DIR=/tmp/pip-cache
 LABEL agentbox=1 \
+      agentbox.cli-version="${OMP_VERSION}" \
       org.opencontainers.image.title="agentbox-omp" \
-      org.opencontainers.image.description="omp-env for agentbox sessions (keep-id user, chromium, debugpy)"
+      org.opencontainers.image.description="OMP ${OMP_VERSION} with Bun and Chromium, on agentbox-base"
 WORKDIR /
 ENTRYPOINT []
 CMD ["omp"]

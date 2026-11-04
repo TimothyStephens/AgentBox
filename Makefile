@@ -65,29 +65,23 @@ verify-sockguard:
 	done; echo "NOT VERIFIED: no digest of $$repo carries a signature from the release workflow"; exit 1
 
 # ---- images -------------------------------------------------------------------------------------------
-# The chain is agentbox-base -> agentbox-<agent> -> (optional) a user's own layer. Build the base first;
-# the agent builds are --pull=never and will say so if it is missing.
+# The chain is agentbox-base -> agentbox-<agent> -> (optional) a user's own layer (`ab image build`).
+# Build the base first; the agent builds are --pull=never and say so if it is missing.
 #
-# The base's own base. PIN IT BY DIGEST: a tag moves, and --pull=never on the agent layers means a moved
-# tag would be invisible until something broke. Resolve the digest with
-#   podman pull docker.io/library/debian:bookworm-slim
-#   podman image inspect docker.io/library/debian:bookworm-slim --format '{{index .RepoDigests 0}}'
-# and put the sha256:... part in BOOKWORM_DIGEST (here, or on the command line). Left unset the build uses
-# the plain tag and prints a warning: that is a working build, not a reproducible one.
-BOOKWORM_DIGEST ?=
-DEBIAN_BASE := docker.io/library/debian:bookworm-slim$(if $(BOOKWORM_DIGEST),@$(BOOKWORM_DIGEST))
-
-base-image:
-	@if [ -z "$(BOOKWORM_DIGEST)" ]; then \
-	  echo ">> WARNING: debian base is not pinned by digest. To pin it, run these two and rerun with" >&2; \
-	  echo ">>   BOOKWORM_DIGEST=<the sha256:... they print>:" >&2; \
-	  echo ">>   podman pull docker.io/library/debian:bookworm-slim" >&2; \
-	  echo ">>   podman image inspect docker.io/library/debian:bookworm-slim --format '{{index .RepoDigests 0}}'" >&2; \
-	fi
-	podman build --build-arg DEBIAN_BASE=$(DEBIAN_BASE) $(PODMAN_REMOTE_ARGS) \
-	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base
-	@podman image inspect localhost/agentbox-base:latest \
-	  --format '>> agentbox-base {{.Id}} built from {{index .Config.Labels "agentbox.base"}}'
+# EVERY pinned download in these images is decided here, so "what version does a session run" is one file.
+#
+# The base's own base is `node:22-bookworm-slim` -- debian bookworm-slim with node on it, maintained by the
+# node team. Both agents need node (Claude Code declares engines.node >= 22, OMP installs with npm), and it
+# is the node major Tim's omp-env used, so OMP runs on the node it always has.
+#
+# PIN IT BY DIGEST: a tag moves, and --pull=never on the agent layers means a moved tag would be invisible
+# until something broke. Resolve it with
+#   podman pull docker.io/library/node:22-bookworm-slim
+#   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'
+# and put the sha256:... part in OS_BASE_DIGEST (here, or on the command line). Left unset the build uses
+# the plain tag and prints a warning: a working build, not a reproducible one.
+OS_BASE_DIGEST ?=
+OS_BASE := docker.io/library/node:22-bookworm-slim$(if $(OS_BASE_DIGEST),@$(OS_BASE_DIGEST))
 
 # The podman client in every agent image: podman-remote, static, matching the host's podman service (5.7.0).
 # The checksum is the release's own `shasums` entry, checked against the download on 30 Sep; the build's
@@ -97,39 +91,75 @@ PODMAN_REMOTE_SHA256 := 0d1759e3fc42b0e3a4496176dabc7b65f0f334a0ab2b22eaed7c36af
 PODMAN_REMOTE_ARGS := --build-arg PODMAN_REMOTE_VERSION=$(PODMAN_REMOTE_VERSION) \
 	--build-arg PODMAN_REMOTE_SHA256=$(PODMAN_REMOTE_SHA256)
 
-# The agent CLI lives in the base image, built outside this repo, and these builds are --pull=never, so a
-# stale base would silently ship a stale CLI. Before building we fail loudly if the base is missing, print
-# its CLI version and age, warn if it is older than BASE_WARN_DAYS, and record the version as a label on the
-# built image (surfaced by `ab selftest`). This is visibility only; a tampered binary is out of scope.
+# Bun, which OMP needs to load extensions at all (@oh-my-pi/pi-coding-agent@18.13.3 declares
+# engines.bun >= 1.4.4). sha256 from the release's own SHASUMS256.txt, 4 Nov 2026. omp-env piped
+# https://bun.sh/install into bash; this is the same binary with the checksum checked before it is unpacked.
+BUN_VERSION := 1.4.4
+BUN_SHA256 := bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+
+# The agent CLIs, installed BY these images (they used to come from a base built outside this repo, which
+# meant the image shipped whatever that base had -- 56 and 59 days old at the last check). Each
+# Containerfile asserts the installed binary reports its pin, so a pin here cannot be a claim the image
+# does not meet; the version also goes on the agentbox.cli-version label that `ab selftest` reports.
+CLAUDE_VERSION := 2.1.318
+OMP_VERSION := 18.13.3
+
 BASE_WARN_DAYS ?= 14
 
-# $(1) base image  $(2) CLI version command (run with no entrypoint)  $(3) adapter image name
-# $(4) build context dir  $(5) extra build args
+base-image:
+	@if [ -z "$(OS_BASE_DIGEST)" ]; then \
+	  echo ">> WARNING: the OS base is not pinned by digest. To pin it, run these two and rerun with" >&2; \
+	  echo ">>   OS_BASE_DIGEST=<the sha256:... they print>:" >&2; \
+	  echo ">>   podman pull docker.io/library/node:22-bookworm-slim" >&2; \
+	  echo ">>   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'" >&2; \
+	fi
+	podman build --build-arg OS_BASE=$(OS_BASE) $(PODMAN_REMOTE_ARGS) \
+	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base
+	@podman image inspect localhost/agentbox-base:latest \
+	  --format '>> agentbox-base {{.Id}} built from {{index .Config.Labels "agentbox.base"}}'
+
+# $(1) agent name  $(2) the command that prints its CLI version  $(3) extra build args
+#
+# The base is ours now, so the CLI version is read from the BUILT image rather than from the base, and the
+# build fails if the image does not report the pin its own label carries. The Containerfile already asserts
+# that during the build; this catches a label set from a different ARG than the install used.
 define build_agent_image
-	@base="$(1)"; \
-	if ! podman image exists "$$base"; then \
-	  echo "FATAL: base image $$base is missing. Build it first (it is built outside this repo); then rerun." >&2; \
+	@if ! podman image exists localhost/agentbox-base:latest; then \
+	  echo "FATAL: localhost/agentbox-base:latest is missing. Run \`make base-image\` first." >&2; \
 	  exit 1; \
 	fi; \
-	ver=$$(podman run --rm --entrypoint "" "$$base" $(2) 2>/dev/null | head -1 | tr -d '\r'); \
-	[ -n "$$ver" ] || ver="unknown"; \
-	created=$$(podman image inspect "$$base" --format '{{.Created}}'); \
+	created=$$(podman image inspect localhost/agentbox-base:latest --format '{{.Created}}'); \
 	age=$$(( ( $$(date +%s) - $$(date -d "$$created" +%s) ) / 86400 )); \
-	echo ">> base $$base: CLI '$$ver', image $$age day(s) old (created $$created)"; \
+	echo ">> agentbox-base: $$age day(s) old (created $$created)"; \
 	if [ "$$age" -gt "$(BASE_WARN_DAYS)" ]; then \
-	  echo ">> WARNING: base $$base is $$age days old (> $(BASE_WARN_DAYS)); rebuild it for a current CLI." >&2; \
-	fi; \
-	podman build --pull=never $(5) $(PODMAN_REMOTE_ARGS) --label "agentbox.cli-version=$$ver" \
-	  -t $(3):latest -t $(3):$$(date +%Y%m%d) $(4)
+	  echo ">> WARNING: agentbox-base is $$age days old (> $(BASE_WARN_DAYS)); \`make base-image\` for current packages." >&2; \
+	fi
+	podman build --pull=never $(3) \
+	  -t localhost/agentbox-$(1):latest -t localhost/agentbox-$(1):$$(date +%Y%m%d) images/$(1)
+	@ver=$$(podman run --rm --entrypoint "" localhost/agentbox-$(1):latest $(2) 2>/dev/null | head -1 | tr -d '\r'); \
+	label=$$(podman image inspect localhost/agentbox-$(1):latest \
+	  --format '{{index .Config.Labels "agentbox.cli-version"}}'); \
+	echo ">> agentbox-$(1): reports '$$ver', labelled '$$label'"; \
+	case "$$ver" in *"$$label"*) ;; \
+	  *) echo ">> FATAL: the image does not report its own pin; the label would be a lie." >&2; exit 1;; \
+	esac
+
 endef
 
-# The OMP session image, derived from localhost/omp-env (images/omp/Containerfile explains each change).
-omp-image:
-	$(call build_agent_image,localhost/omp-env:latest,omp --version,localhost/agentbox-omp,images/omp,--build-arg AB_HOME=$(HOME))
+# Collected into variables rather than written inline: a line continuation inside a $(call ...) is a
+# needless thing to get wrong, and every ARG an image declares without a default has to be passed here
+# (tests/unit/test_images.py checks that, because an unsupplied ARG is silently empty).
+OMP_BUILD_ARGS := --build-arg OMP_VERSION=$(OMP_VERSION) --build-arg BUN_VERSION=$(BUN_VERSION) \
+	--build-arg BUN_SHA256=$(BUN_SHA256) --build-arg AB_HOME=$(HOME) $(PODMAN_REMOTE_ARGS)
+CLAUDE_BUILD_ARGS := --build-arg CLAUDE_VERSION=$(CLAUDE_VERSION)
 
-# The Claude session image, derived from localhost/claudecode (images/claude/Containerfile).
+# The OMP session image (images/omp/Containerfile explains every departure from omp-env).
+omp-image:
+	$(call build_agent_image,omp,omp --version,$(OMP_BUILD_ARGS))
+
+# The Claude session image (images/claude/Containerfile).
 claude-image:
-	$(call build_agent_image,localhost/claudecode:latest,claude --version,localhost/agentbox-claude,images/claude,)
+	$(call build_agent_image,claude,claude --version,$(CLAUDE_BUILD_ARGS))
 
 # Run by Tim, not by the builder: puts `agentbox` and an `ab` alias in ~/.local/bin (BINDIR=... to change).
 # Refuses to overwrite an `ab` or `agentbox` that is not ours (ApacheBench installs `ab`).

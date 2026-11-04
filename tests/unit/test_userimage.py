@@ -29,7 +29,19 @@ BASE_DOC = {"Id": "sha256:harness1",
             "Config": {"User": "", "Entrypoint": None, "Cmd": ["claude"],
                        "Env": ["PATH=/usr/local/bin:/usr/bin"],
                        "Labels": {"agentbox.cli-version": "2.1.318"}}}
-CHECK_OK = "VERSION=2.1.318\nDONE\n"
+# What the binary actually prints: its own banner around the version, not the bare pin. The label holds
+# the pin, so the two are compared by containment.
+BANNER = "2.1.318 (Claude Code)"
+
+
+def check(version=BANNER, *missing, done=True):
+    """The probe script's output, built rather than written out, so a change of shape is one edit."""
+    lines = ([f"VERSION={version}"] if version is not None else [])
+    lines += [f"MISSING={t}" for t in missing]
+    return "\n".join(lines + (["DONE"] if done else [])) + "\n"
+
+
+CHECK_OK = check()
 
 
 class TheKey(unittest.TestCase):
@@ -131,27 +143,31 @@ class Verifying(SettingsCase):
         self.assertTrue([b for b in self.run_verify(doc) if b.startswith("PATH differs")])
 
     def test_a_tool_the_layer_LOST_is_refused(self):
-        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="VERSION=2.1.318\nMISSING=rg\nDONE\n")
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=check(BANNER, "rg"))
         self.assertEqual(bad, [f"rg present in {HARNESS} but not in this layer"])
 
     def test_a_tool_missing_from_BOTH_is_not_the_layers_fault(self):
         """The first real `ab image build claude` was rejected for "missing from the image: rg" when `rg`
         is not in that harness image either -- ripgrep arrives with agentbox-base. A layer can only be
         asked not to have broken anything (4 Nov)."""
-        bad = self.run_verify(dict(BASE_DOC, Id="x"),
-                              check_out="VERSION=2.1.318\nMISSING=rg\nDONE\n",
-                              base_out="VERSION=2.1.318\nMISSING=rg\nDONE\n")
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=check(BANNER, "rg"),
+                              base_out=check(BANNER, "rg"))
         self.assertEqual(bad, [])
 
+    def test_the_binarys_banner_around_the_pin_is_not_a_mismatch(self):
+        """`claude --version` prints `2.1.318 (Claude Code)` and `omp --version` prints `omp/18.13.3`,
+        while the label holds `2.1.318`. Comparing those for equality would fail every single build."""
+        self.assertEqual(self.run_verify(dict(BASE_DOC, Id="x")), [])
+
     def test_a_layer_that_changes_the_agent_version_is_refused(self):
-        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="VERSION=2.0.1\nDONE\n")
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=check("2.0.1 (Claude Code)"))
         self.assertTrue([b for b in bad if "may not change the agent" in b], bad)
-        self.assertTrue([b for b in bad if "'2.0.1'" in b and "'2.1.318'" in b], bad)
+        self.assertTrue([b for b in bad if "'2.0.1 (Claude Code)'" in b and f"'{BANNER}'" in b], bad)
 
     def test_a_harness_image_off_its_own_label_is_reported_as_the_harness_problem(self):
         """Both images agree, and both differ from the label the harness carries: that is a
         `make <agent>-image` problem, and blaming the layer would send the reader to the wrong file."""
-        both = "VERSION=2.0.9\nDONE\n"
+        both = check("2.0.9 (Claude Code)")
         bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=both, base_out=both)
         self.assertEqual(len(bad), 1, bad)
         self.assertIn("off its own pin", bad[0])
@@ -166,12 +182,12 @@ class Verifying(SettingsCase):
     def test_no_version_at_all_is_refused(self):
         """Reported separately from a mismatch: "it does not run" and "it is the wrong one" are different
         things to go and look at."""
-        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="DONE\n")
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=check(None))
         self.assertEqual(bad, ["claude did not report a version in it"])
 
     def test_a_check_that_did_not_finish_is_refused(self):
         """No DONE line: the script died part-way, so the absence of MISSING lines means nothing."""
-        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="VERSION=2.1.318\n")
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=check(done=False))
         self.assertTrue([b for b in bad if "did not run in it" in b], bad)
 
     def test_the_check_runs_offline(self):
@@ -282,7 +298,7 @@ class Building(SettingsCase):
 
     def test_a_rejected_build_is_discarded_and_nothing_is_tagged(self):
         recipe = self.write_recipe()
-        want = self.good_build(recipe, check_out="VERSION=2.1.318\nMISSING=git\nDONE\n")
+        want = self.good_build(recipe, check_out=check(BANNER, "git"))
         with self.assertRaises(AgentboxError) as cm:
             self.build()
         said = str(cm.exception)
@@ -300,7 +316,7 @@ class Building(SettingsCase):
         self.assertIn(want, self.tags())
         # now the layer's agent is the wrong version, while the harness image's is unchanged
         self.probe_answers({HARNESS: CHECK_OK,
-                            want + userimage.CANDIDATE_SUFFIX: "VERSION=1.0.0\nDONE\n"})
+                            want + userimage.CANDIDATE_SUFFIX: check("1.0.0 (Claude Code)")})
         with self.assertRaises(AgentboxError) as cm:
             self.build(force=True)
         self.assertIn("untouched", str(cm.exception))

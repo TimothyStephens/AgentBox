@@ -601,7 +601,7 @@ start (for OMP, `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright 
 see decisions.md.
 
 **A personal image layer** (`userimage.py`, 4 Nov). The image chain is
-`agentbox-base -> agentbox-<agent> -> (optional) localhost/agentbox-<agent>-user`. A `Containerfile` in the
+`node:22-bookworm-slim -> agentbox-base -> agentbox-<agent> -> (optional) localhost/agentbox-<agent>-user`; every agent CLI is installed by agentbox at a Makefile pin the build asserts (docs/RUNTIME.md). A `Containerfile` in the
 profile is built by `ab image build <agent>` on top of the agent's harness image, for what only this user
 wants in every session without it entering agentbox's own images. Four things bound it:
 

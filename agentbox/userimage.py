@@ -154,9 +154,14 @@ def verify(podman, harness, candidate, agent_bin, pinned_version, *, run_check=T
     elif version != base_version:
         bad.append(f"{agent_bin} reports {version!r}, but {harness} reports {base_version!r}: a layer may "
                    f"not change the agent")
-    elif pinned_version and version != pinned_version:
-        # Both agree, and both differ from the label: the harness image is off its own pin, which is a
-        # `make <agent>-image` problem. Reported here because this is where it becomes visible.
+    elif pinned_version and pinned_version not in version:
+        # Both agree, and neither carries the pin the label names: the harness image is off its own pin,
+        # which is a `make <agent>-image` problem. Reported here because this is where it becomes visible.
+        #
+        # Containment, not equality: the label holds the pinned VERSION (`2.1.318`) while the binary
+        # reports its own banner (`2.1.318 (Claude Code)`, `omp/18.13.3`). The image build already greps
+        # the binary's output for the pin, so this is the backstop for a harness image that has gone stale
+        # since, not the primary gate.
         bad.append(f"{agent_bin} reports {version!r} in both this layer and {harness}, but {harness} is "
                    f"labelled {pinned_version!r} -- the harness image is off its own pin; rebuild it")
     return bad
