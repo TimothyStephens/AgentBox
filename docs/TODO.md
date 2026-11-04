@@ -2,10 +2,10 @@
 
 Nothing here blocks use. These are the optional / deferred items left — pick them up when a real change touches the area, or when they become worth doing. (Active work and the build state live in `progress.md`.)
 
-Last reviewed 2026-10-28, after the third preset/settings audit (F-1 … F-12, decisions.md 28 Oct): every
-finding is closed, F-12 included (its text arrived after the round and landed with the
-`podman network ls` fix). `make test` is green; `make itest` and `make claude-live` are Tim's to re-run (both
-`session.py` and `podman.py` changed, so the recorded live pass reads as stale until he does).
+Last reviewed 2026-11-04, after the image restructure. `make test` (1035), `make itest` (186),
+`make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s are green on the host at
+that point; the unit suite also runs with zero ResourceWarnings. The third preset/settings audit
+(F-1 … F-12, decisions.md 28 Oct) is fully closed.
 
 ## Needs an answer / a real fix
 
@@ -19,12 +19,12 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   at teardown, because a skill the agent wrote itself is a proposal, not something later sessions should
   load unreviewed. `omp.AUTOLEARN_DIR` names the one directory this rests on.
 
-  **Not verified by the builder:** whether the *installed* OMP is recent enough to have that split.
-  `~/.omp` is off limits to an agentbox session by this project's own rules (and is not visible inside one),
-  so the check is Tim's:
-  `grep -rl managed-skills ~/.omp/versions/*/ | head`. If it comes back empty, the installed build predates
-  the split and `omp.ADAPTER.profile_mounts` must be emptied again (one line, and the two OMP cases in
-  `tests/integration/test_profile.py` go back to skips) until `omp-env` is rebuilt.
+  **The version caveat is closed, 4 Nov.** It used to depend on whichever OMP the host's `omp-env` image
+  happened to carry, which nobody could check from inside a sandbox. agentbox installs its own OMP now
+  (`OMP_VERSION := 18.13.3` in the Makefile, asserted at build time), and `make itest` exercises the whole
+  arrangement against the real binary: `test_omp_profile_paths_are_read_only`,
+  `test_omp_reads_a_profile_skill`, and the round trip that writes to `managed-skills`, finds it in the
+  inbox after teardown, and finds the directory empty again next session. All green on the host (186 itests).
 
 - ~~**Two concurrent sessions of one project share its agent state**~~ — **fixed 29 Oct.** One live session
   per project, enforced by a lock file in the project's state dir (`agentbox/projectlock.py`): `ab run`
@@ -57,6 +57,28 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   properly is the `ab profile install` work below — a profile-owned `plugins.toml` installed in a gated
   session against the image's own OMP. Until then, keep `OMP_VERSION` near what omp-env installs with.
 
+- **The MAGS adapter is parked** (4 Nov), waiting on a complete spec: MAGS changes that are not pushed yet,
+  and one design change since the plan was approved — its generated test containers get a **sealed network
+  (no proxy)** rather than the session's internal network. That matters because the session network carries
+  the squid proxy and the gate injects `HTTP(S)_PROXY` into every container it creates, so "reaches nothing"
+  needed the proxy taken away, not just the LAN. Built from the approved plan already: the gate's
+  network-pinning test (`tests/unit/test_gate.py`, a create naming no network at all), and the scan's
+  HEAD/ref movement plus `base_branch` reporting. Nothing to do until the spec arrives.
+
+- **Node is pinned to 22, and the current LTS is newer** (4 Nov). `agentbox-base` is
+  `node:22-bookworm-slim` because that is the major Tim's omp-env used, so OMP runs on the node it always
+  has; Claude Code needs `>= 22`, so both are satisfied. At the time of writing `nodejs.org`'s newest LTS
+  was 26.13.0. Moving is a one-line change (`OS_BASE` in the Makefile) plus a rebuild of all three images
+  and both personal layers, but it changes OMP's node major, which wants `make itest` and `make omp-live`
+  behind it rather than a bump.
+
+- **`make omp-live` passes but the local model is slow** (4 Nov): one turn took 257s, and the check used to
+  fail intermittently for that reason alone (a 900s timeout, then an empty answer, then a pass). The report
+  now names the case and the latency rather than just failing, so a repeat is diagnosable. Open question for
+  Tim, not a defect: whether the live check should prove "OMP works against the real local model" (keep it,
+  accept the minutes) or "OMP works against a model" (`AB_LIVE_MODEL=<provider/model>` with a keyed
+  provider, faster and steadier, but no longer exercising the LAN endpoint).
+
 - **Old user image layers are never pruned** (4 Nov). Each harness image rebuild or Containerfile edit
   gives a new `localhost/agentbox-<agent>-user:<key>` tag and leaves the previous one in podman storage.
   `ab session gc` prunes agentbox's own images by age (`image_keep_days`); the user layers are not in that
@@ -80,7 +102,7 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   template we know 5.7 rejects). Running it inside `make itest` would make it automatic; it is manual today
   because it reads whatever objects happen to exist on the host rather than creating its own.
 - **Unify the duplicated git-identity lookup** (`initproj.py` / `session.py`) — review finding 10; detail under *Support refactors* below.
-- **Deferred-by-design features** (intentionally not built — see the `progress.md` Status table): `ab ws`/`attach`/`deploy`/`outbox`, the podman `exec` tier, the model-key gateway, `masked_paths`, `--data-bind`, Pi/Codex adapters.
+- **Deferred-by-design features** (intentionally not built — see the `progress.md` Status table): `ab ws`/`deploy`/`outbox`/`allow`/`reload`/`resume`, the podman `exec` tier, the model-key gateway, `masked_paths`, `--data-bind`, Pi/Codex adapters. (`ab attach` **is** built — 29 Oct, with the per-project lock. `ab ws` as a subcommand is not, but `contrib/ab-ws` is a tmux workspace launcher that does the job from outside, starting agents only through `ab run`.)
 - **Audit finding F9** (second preset/settings audit, 27 Oct) — **left as-is, benign.** A project's own root subdirectory is accepted as its own `data_rw` at add time, because the project is not yet in the registry and so is absent from the overlap comparison. Harmless: both mounts are read-write, and `mounts.plan` keeps the more specific one. (Cross-*project* overlap is enforced in both directions — decisions.md, 27 Oct, F3.)
 - The **Maintainability backlog** below: dead-code removal (each with a test proving deadness), the `gate.py`/`session.py` refactors, and the untested error paths E5–E12.
 
