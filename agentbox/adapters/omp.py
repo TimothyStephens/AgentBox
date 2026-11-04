@@ -177,15 +177,20 @@ def referenced_versions(omp_home, plugins_dir):
     return found
 
 
-def omp_mounts(omp_home, warn):
+def omp_mounts(omp_home, warn, plugins=True):
     """[(host src, container dst)] from the host's ~/.omp, all read-only, and a check that the provisioned
     links still point where they did (run again just before the container starts).
 
     Each of plugins/repos/pylibs is mounted from its actual target, and every version directory those
-    targets live in, or that the plugins' own links point into, is mounted whole at ~/.omp/versions/<v>."""
+    targets live in, or that the plugins' own links point into, is mounted whole at ~/.omp/versions/<v>.
+
+    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) drops that whole half: no plugins, repos,
+    pylibs or version directories, and nothing to re-check, since nothing from them is mounted. What stays
+    is what is not an extension -- `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright cache --
+    because without those OMP does not start."""
     omp_home = os.path.realpath(omp_home)
     versions_dir = os.path.join(omp_home, "versions")
-    targets = provisioned_targets(omp_home)
+    targets = provisioned_targets(omp_home) if plugins else {}
     out, versions = [], set()
     for name, real in targets.items():
         v = _version_of(real, omp_home)
@@ -205,7 +210,7 @@ def omp_mounts(omp_home, warn):
         mounted_versions.append(vdir)
         out.insert(0, (vdir, os.path.join(C_OMP, "versions", v)))
     check_no_credentials(omp_home, mounted_versions)
-    if not targets:
+    if not targets and plugins:
         warn(f"agentbox: {omp_home} has no provisioned plugins/repos/pylibs; OMP runs without extensions "
              "(run omp-env install)")
     for rel in READONLY_FILES:
@@ -221,6 +226,8 @@ def omp_mounts(omp_home, warn):
             out.append((_plain(p, omp_home, "OMP directory"), os.path.join(C_OMP, rel)))
 
     def unchanged():
+        if not plugins:
+            return                 # none of them is mounted, so there is nothing for a change to affect
         now = provisioned_targets(omp_home)
         for vdir in mounted_versions:
             _version_dir(omp_home, os.path.basename(vdir))
@@ -387,7 +394,8 @@ class OmpAdapter(Adapter):
         # pieces mounted on top; without it the runtime creates it root-owned and OMP cannot write there.
         setup = SessionSetup(mount_root=C_OMP, tmpfs=[C_OMP], model_domains=domains, keys=used)
         setup.env.update({"PATH": PATH, "PIP_CACHE_DIR": "/tmp/pip-cache"})
-        mounts, unchanged = omp_mounts(self.omp_home(s), sess.warn)
+        mounts, unchanged = omp_mounts(self.omp_home(s), sess.warn,
+                                       plugins=not sess.profile_off[0])
         setup.verify.append(unchanged)
         if any(dst == os.path.join(C_OMP, "pylibs") for _src, dst in mounts):
             setup.env["PYTHONPATH"] = os.path.join(C_OMP, "pylibs")

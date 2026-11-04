@@ -42,6 +42,7 @@ class Project:
     preset: str = ""
     dev_images: list = field(default_factory=list)   # extra image name patterns the dev tier may run/build from
     compose_project_explicit: bool = False
+    profile: str = "on"           # "off": this project's sessions load no host profile and no plugins
 
     def value(self, key):
         return self.eff[key][0]
@@ -89,6 +90,7 @@ def load_project(settings, name):
                    observe_logs=_check(name, "observe_logs", p.get("observe_logs", False)),
                    preset=str(p.get("preset") or ""),
                    dev_images=_check(name, "dev_images", p.get("dev_images", [])),
+                   profile=_check(name, "profile", p.get("profile", "on")),
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
                    # project would have had anyway waived the ownership check while changing nothing.
                    compose_project_explicit=bool(p.get("compose_project")
@@ -325,12 +327,13 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
 
 
 class Session:
-    def __init__(self, settings, agent, project, *, podman=None, warn=None):
+    def __init__(self, settings, agent, project, *, podman=None, warn=None, no_profile=False):
         self.settings = settings
         self.adapter = adapters.get(agent)
         self.project = project
         self.podman = podman or Podman(settings.podman)
         self.warn = warn or (lambda m: print(m, file=sys.stderr))
+        self.no_profile = bool(no_profile)      # `ab run --no-profile`, for this run only
         self.name = None
         self.plan = None
         self.networks = []
@@ -358,6 +361,31 @@ class Session:
             self.name = cand
             return cand
         raise AgentboxError("no free session number")
+
+    @property
+    def profile_off(self):
+        """(off?, why): whether this session loads the host-owned profile, and which switch decided.
+
+        Two switches, because they answer different questions: `--no-profile` is "not this run" (debugging a
+        skill, reproducing something without the user's instructions) and `profile = "off"` on the project is
+        "not this project, ever". The flag is reported when both say off -- it is the one just typed."""
+        if self.no_profile:
+            return True, "flag"
+        if self.project.profile == "off":
+            return True, "project"
+        return False, ""
+
+    @property
+    def image(self):
+        """The container image to run: the harness image, or the user's own layer when the profile is on.
+
+        A user image layer is built on top of the harness image and is profile content like a skill or an
+        instruction file, so `--no-profile` selects the harness image -- otherwise "no profile" would still
+        be running the user's own build of the agent. Nothing builds a user layer yet (profile.user_image)."""
+        off, _why = self.profile_off
+        if off:
+            return self.adapter.image
+        return profile.user_image(self.settings, self.adapter.name) or self.adapter.image
 
     @property
     def state_dir(self):
@@ -423,21 +451,28 @@ class Session:
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()
-        self.profile = profile.load_for_session(self.settings, self.adapter, out=self.warn)
-        moved = migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
+        off, why = self.profile_off
+        self.profile = profile.load_for_session(self.settings, self.adapter, out=self.warn,
+                                                off_reason=why)
+        moved = [] if off else migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
                               profile=self.profile, inbox=self.inbox_mount,
                               inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter)
-        self.adapter.seed_state(self.settings, self.state_dir, notes)
+        self.adapter.seed_state(self.settings, self.state_dir, notes, profile_on=not off)
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
         self._add_profile_mounts(notes)
         _keep(self.log_path("profile"), self.profile.log_line().encode())
-        self.warn(f"agentbox: profile {self.adapter.name} {self.profile.display}"
-                  + (f", loaded: {', '.join(self.profile.names)}" if self.profile.names else
-                     " -- nothing to load; put skills in "
-                     f"{self.settings.profile_src(self.adapter.name)}")
-                  + (f". Moved to the inbox: {', '.join(moved)}" if moved else ""))
+        if off:
+            self.warn(f"agentbox: profile {self.adapter.name}=off (reason={why}): no profile skills, "
+                      "instructions or plugins are loaded, and the harness image is used. agentbox's own "
+                      "session notes still apply.")
+        else:
+            self.warn(f"agentbox: profile {self.adapter.name} {self.profile.display}"
+                      + (f", loaded: {', '.join(self.profile.names)}" if self.profile.names else
+                         " -- nothing to load; put skills in "
+                         f"{self.settings.profile_src(self.adapter.name)}")
+                      + (f". Moved to the inbox: {', '.join(moved)}" if moved else ""))
         if do_backup:
             self._backup_grants()
         self._write_scan_state()             # after the agent state is seeded: its changes are the session's
@@ -501,7 +536,8 @@ class Session:
             check(dst, "profile mount")
             self._own_mount_point(src, dst)
             self.setup.mounts.append((src, dst, ro))
-        text = self.adapter.session_instructions(self.settings, notes)
+        text = self.adapter.session_instructions(self.settings, notes,
+                                                 profile_on=not self.profile_off[0])
         if text is not None and self.adapter.instructions_name:
             path = os.path.join(self.settings.session_run_dir(self.name),
                                 f"{self.adapter.name}-instructions.md")
@@ -705,12 +741,12 @@ class Session:
             opts.append(f"--mount=type=bind,src={src},dst={dst},ro")
             extra_srcs.append(src)
         opts.append("--entrypoint=/bin/sh")
-        hardening.audit(opts + [a.image], allowed_mount_srcs=self.allowed_mount_srcs(extra_srcs),
+        hardening.audit(opts + [self.image], allowed_mount_srcs=self.allowed_mount_srcs(extra_srcs),
                         allowed_mount_dsts=[p.root] + p.data_ro + p.data_rw + ["/run/agentbox"]
                         + ([self.setup.mount_root] if self.setup.mount_root else []),
                         networks=self.networks, tmpfs_dirs=("/tmp", HOME),
                         allowed_sockets=[src for src, _dst in self.agent_sockets()], mask_file=self.mask_file)
-        return args + opts + [a.image, "-c", self.wrapper(), "agentbox"] + list(command)
+        return args + opts + [self.image, "-c", self.wrapper(), "agentbox"] + list(command)
 
     def agent_sockets(self):
         """[(host socket, container path)] the agent gets: the gate for the dev tier, sockguard for observe."""
@@ -756,7 +792,7 @@ class Session:
     def agent_cli_version(self):
         """The agent CLI version baked into the adapter image, read from the `agentbox.cli-version` label that
         `make <agent>-image` records. None if the image predates the label (rebuild to get it)."""
-        r = self.podman.run(["image", "inspect", self.adapter.image, "--format",
+        r = self.podman.run(["image", "inspect", self.image, "--format",
                              '{{index .Labels "agentbox.cli-version"}}'], check=False)
         v = (r.stdout or "").strip()
         return v if v and v not in ("<no value>", "unknown") else None

@@ -36,8 +36,11 @@ class Adapter:
     def agent_argv(self, approvals):
         return list(self.command) + list(self.approvals_off_args if approvals == "off" else self.approvals_on_args)
 
-    def seed_state(self, settings, state_dir, sandbox_notes):
-        """Prepare the per-project state dir at session start. Default: nothing."""
+    def seed_state(self, settings, state_dir, sandbox_notes, profile_on=True):
+        """Prepare the per-project state dir at session start. Default: nothing.
+
+        `profile_on` is false under `ab run --no-profile` or `profile = "off"`: nothing may be taken from the
+        host-owned profile, including the items it would normally COPY here rather than mount."""
 
     def prepare_session(self, sess, sandbox_notes):
         """Host-side work at session start that depends on the session (generated files, keys). Returns a
@@ -57,9 +60,13 @@ class Adapter:
         an adapter that knows how it wrote the file can say. (`session.migrate_state_to_inbox`.)"""
         return False
 
-    def session_instructions(self, settings, sandbox_notes):
+    def session_instructions(self, settings, sandbox_notes, profile_on=True):
         """The instruction file to generate for this session and mount read-only, or None for an agent that
-        builds its own (OMP generates AGENTS.md in prepare_session). Default: none."""
+        builds its own (OMP generates AGENTS.md in prepare_session). Default: none.
+
+        With `profile_on` false the file still exists and still carries agentbox's own session notes -- those
+        describe the sandbox the agent is in and are not the user's profile -- but nothing from the profile
+        goes into it."""
         return None
 
 

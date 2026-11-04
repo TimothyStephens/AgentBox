@@ -20,7 +20,14 @@ from .errors import AgentboxError
 SETTINGS = projectkeys.PRESET_SETTINGS
 # Ordered keys that are NOT preset settings, so the ceiling must check them against the project entry
 # itself (observe_logs). Derived, so a future ordered key is covered without touching the ceiling.
-ORDERED_NON_SETTINGS = tuple(k.name for k in projectkeys.KEYS if k.values and k.kind != "preset")
+#
+# Security-relevant ones only. A ceiling bounds a project's security POSTURE, and a key that grants no
+# capability has no posture to bound: `profile` has an order (off is less than on) but turning the
+# host-owned profile on grants nothing, and a ceiling that refused it would refuse `profile = "on"` under
+# lockdown while an unstored project got "on" anyway -- a rule that means two different things depending on
+# whether the default happens to be written down.
+ORDERED_NON_SETTINGS = tuple(k.name for k in projectkeys.KEYS
+                             if k.values and k.kind != "preset" and k.security)
 ALLOWED = projectkeys.ALLOWED
 LOOSENESS = projectkeys.LOOSENESS
 EGRESS = projectkeys.BY_NAME["egress"].values

@@ -69,8 +69,9 @@ Scaffold a new project with a safe-by-construction layout (secrets masked, live 
 ```text
 usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
                [--data-ro DIR] [--data-rw DIR] [--egress MODE]
-               [--extra-domain DOMAIN] [--build-memory SIZE] [--mask-skip DIR]
-               [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
+               [--extra-domain DOMAIN] [--build-memory SIZE]
+               [--profile on|off] [--mask-skip DIR] [--podman TIER]
+               [--compose-project NAME] [--dev-image PATTERN]
                [--swap TARGET=STANDIN] [--observe-logs | --no-observe-logs]
                [--accept-history-secrets] [--i-understand-grant-exposure]
                {pod,python}
@@ -119,6 +120,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --profile on|off      whether this project's sessions load the host-owned
+                        profile (skills, sub-agents, commands, instructions,
+                        settings) and the agent's plugins (default: on). `off`
+                        also means the harness image rather than any user
+                        image layer; agentbox's own session notes still apply.
+                        `ab run --no-profile` does the same for one run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -167,7 +174,7 @@ Start an agent session against a project in the foreground — build the sandbox
 
 ```text
 usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--shell] [--no-tty]
-              [--timeout SECONDS]
+              [--no-profile] [--timeout SECONDS]
               [[AGENT [PROJECT]] ...]
 
 start an agent session in the foreground (one per project)
@@ -185,6 +192,11 @@ options:
                      positionally)
   --shell            run a bash shell in the sandbox instead of the agent
   --no-tty           do not allocate a TTY (for non-interactive or piped runs)
+  --no-profile       for this run only: load no host-owned profile (skills,
+                     sub-agents, commands, instructions, settings) and no
+                     plugins, and use the harness image. agentbox's own
+                     session notes still apply. `ab project set <p> --profile
+                     off` makes it permanent
   --timeout SECONDS  time limit for a non-interactive run (default 3600;
                      ignored for interactive sessions)
 
@@ -293,7 +305,8 @@ Register a project with a preset, validating it against overlap and grant exposu
 ```text
 usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
-                      [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
+                      [--build-memory SIZE] [--profile on|off]
+                      [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
                       [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
@@ -342,6 +355,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --profile on|off      whether this project's sessions load the host-owned
+                        profile (skills, sub-agents, commands, instructions,
+                        settings) and the agent's plugins (default: on). `off`
+                        also means the harness image rather than any user
+                        image layer; agentbox's own session notes still apply.
+                        `ab run --no-profile` does the same for one run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -391,7 +410,8 @@ Change a registered project's settings in place, re-validated, with the same fla
 ```text
 usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
-                      [--build-memory SIZE] [--mask-skip DIR] [--podman TIER]
+                      [--build-memory SIZE] [--profile on|off]
+                      [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
                       [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
@@ -441,6 +461,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --profile on|off      whether this project's sessions load the host-owned
+                        profile (skills, sub-agents, commands, instructions,
+                        settings) and the agent's plugins (default: on). `off`
+                        also means the harness image rather than any user
+                        image layer; agentbox's own session notes still apply.
+                        `ab run --no-profile` does the same for one run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -479,7 +505,7 @@ options:
                         again (repeatable); one of: compose, egress, podman,
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
-                        dev_images, mask_skip, swap, build_memory
+                        dev_images, mask_skip, swap, build_memory, profile
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains

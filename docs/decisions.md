@@ -1358,3 +1358,54 @@ subject check, so the two cannot drift into different regex dialects.
 **Not wired yet:** nothing sets `base_branch`. `report` takes it, and teardown reads it from the scan state
 written at session start (so `ab session kill` and `ab session gc` name the same branch the launcher would),
 but where the value comes from belongs to the agent-config work that needs it -- one line when that lands.
+
+## 4 November 2026 -- running without the profile: `ab run --no-profile` and `profile = "off"`
+
+Two switches, because they answer different questions. `--no-profile` is "not this run" -- reproducing
+something without the user's instructions in the way, or telling an agent's own behaviour apart from a
+skill's. `profile = "off"` on the project is "not this project, ever". When both say off the log records the
+flag, since that is the one just typed.
+
+**Off means off at every door.** The profile reaches a session through five of them, and skipping four would
+have been worse than skipping none, because the result would have looked bare without being bare:
+
+| door | with the profile off |
+|---|---|
+| the read-only profile mounts (`skills`, `agents`, `commands`, ...) | not mounted |
+| items COPIED into state instead of mounted (Claude's `settings.json`, which Claude writes to) | not copied |
+| the profile's own `CLAUDE.md`, folded into the generated per-session instruction file | not read |
+| OMP's `~/.omp` `plugins`/`repos`/`pylibs` snapshot and the `versions/<v>/` dirs serving them | not mounted |
+| the container image | the harness image, never a user layer |
+
+Nothing is read either: no snapshot is taken, no profile git repo is created, no legacy seed is migrated and
+the state-to-inbox migration is skipped. A run that does not load the profile must not be deciding what the
+profile looks like for the next run that does.
+
+**What stays.** agentbox's own session notes -- they describe the sandbox the agent is in, which is not the
+user's profile and is not optional. For OMP, `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright
+cache stay too: those are not extensions, and OMP does not start without them. The inbox stays (it is
+agentbox's, and nothing loads it anyway) and so does autolearn's own `managed-skills` directory.
+
+**The image.** `profile.user_image(settings, agent)` is the hook point for the planned
+`agentbox-base -> agentbox-<agent> -> user layer` chain, and it returns "" today. The launcher asks it in
+`session.Session.image`, and `--no-profile` returns the harness image without asking: a user layer is built
+FROM the harness image and is profile content like a skill is, so "no profile" that still ran the user's own
+build of the agent would be a lie. The hook exists now so the guarantee holds the moment something builds
+one, rather than being remembered later.
+
+**`profile` is not security-relevant, and that is load-bearing.** The key has an order (off is less than on)
+but turning the host-owned profile on grants no capability -- it is host-owned and trusted by design, which
+is why it has always loaded under lockdown. A ceiling preset checks every ordered non-preset key, so marking
+it security-relevant would have made `ab project set lk --profile on` an error while an *unstored* lockdown
+project resolved to "on" anyway: a rule meaning two different things depending on whether the default
+happened to be written down. So `presets.ORDERED_NON_SETTINGS` now takes ordered keys that are
+**security-relevant**, with the rule stated -- a ceiling bounds a project's security posture, and a key that
+grants nothing has no posture to bound.
+
+**The old omp-env base image's own container clients are not used by anything** (asked alongside this work).
+`omp.PATH` puts `/usr/local/bin` ahead of `/usr/bin`, and `images/omp/Containerfile` installs the pinned,
+checksummed podman-remote 5.7.0 there precisely to shadow the base image's Debian client, whose major
+version does not match the host service. `required_tools` -- the list `ab selftest` checks inside a real
+session -- is `bash, git, omp, bun, python, chromium, podman, podman-compose`, and the compose tool comes
+from `images/requirements.txt` via pip, not from the base. So no agentbox path invokes a container client
+that the base image provides, and the image restructure can drop them.

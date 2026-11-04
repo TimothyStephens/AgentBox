@@ -103,6 +103,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["extra_domains"] = _check(a.name, "extra_domains", list(a.extra_domain))
     if a.build_memory:
         entry["build_memory"] = a.build_memory
+    if a.profile:
+        entry["profile"] = _check(a.name, "profile", a.profile)
     if a.mask_skip:
         entry["mask_skip"] = list(a.mask_skip)
     if a.podman:
@@ -461,6 +463,7 @@ def _print_effective(s, name):
                 "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
                 "compose_project": p.compose_project, "observe_logs": p.observe_logs,
                 "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
+                "profile": p.profile,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
@@ -789,7 +792,7 @@ def cmd_run(s, a):
     # get past here, and it is released by teardown however this session ends.
     with session.take_project_lock(s, podman, project_name, warn=warn) as lock:
         project = session.load_project(s, project_name)
-        sess = session.make_session(s, agent, project, warn=warn)
+        sess = session.make_session(s, agent, project, warn=warn, no_profile=a.no_profile)
         sess.prepare()
         lock.note(sess.name)
         command = sess.agent_command(shell=a.shell, extra=list(getattr(a, "passthrough", []) or []))
@@ -988,6 +991,11 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="add a domain to the egress allowlist (repeatable)")
     x.add_argument("--build-memory", metavar="SIZE",
                    help="memory limit for each build in the dev tier (default: 2g, e.g. 4g)")
+    x.add_argument("--profile", choices=projectkeys.BY_NAME["profile"].values, metavar="on|off",
+                   help="whether this project's sessions load the host-owned profile (skills, sub-agents, "
+                        "commands, instructions, settings) and the agent's plugins (default: on). `off` also "
+                        "means the harness image rather than any user image layer; agentbox's own session "
+                        "notes still apply. `ab run --no-profile` does the same for one run")
     x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
                    help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
                         "an exemption — grantcheck still scans it (repeatable)")
@@ -1158,6 +1166,10 @@ def parser(settings=None):
     x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
     x.add_argument("--no-tty", action="store_true",
                    help="do not allocate a TTY (for non-interactive or piped runs)")
+    x.add_argument("--no-profile", action="store_true",
+                   help="for this run only: load no host-owned profile (skills, sub-agents, commands, "
+                        "instructions, settings) and no plugins, and use the harness image. agentbox's own "
+                        "session notes still apply. `ab project set <p> --profile off` makes it permanent")
     x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
                    help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
     x.add_argument("names", nargs="*", metavar="[AGENT [PROJECT]]",

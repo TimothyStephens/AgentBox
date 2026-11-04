@@ -588,6 +588,18 @@ sandbox notes followed by the profile's own). Four properties follow:
 `settings.json` is the one exception: Claude Code writes it itself, so it is **copied** from the profile into
 the per-project state at every start rather than mounted read-only.
 
+**Turning it off** (4 Nov): `ab run --no-profile` for one run, or `profile = "off"` on the project for good
+(`ab project set <p> --profile off`; the session log records `profile <agent>=off reason=flag|project`). Off
+means off at every door the profile reaches a session through — the read-only mounts, the items copied into
+state instead (`settings.json`), the profile text folded into the generated instruction file, OMP's
+`plugins`/`repos`/`pylibs` snapshot, and the image, which is the harness image and never a user layer
+(`profile.user_image`, the hook point for the planned user layer, consulted only when the profile is on).
+Nothing is read at all, so no snapshot is taken and no run with the profile off can decide what the next run
+with it on will load. agentbox's own session notes still apply, as does whatever the agent needs in order to
+start (for OMP, `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright cache — not extensions).
+`profile` is deliberately *not* security-relevant, so a ceiling preset does not refuse `profile = "on"`:
+see decisions.md.
+
 **OMP loads the profile the same way** (29 Oct), at `~/.omp/agent/{skills,rules,prompts,agents,commands}`.
 This rests on one fact about OMP: **autolearn writes only to `<agentDir>/managed-skills`**, never to
 `<agentDir>/skills`, and both are discovered unconditionally (oh-my-pi:

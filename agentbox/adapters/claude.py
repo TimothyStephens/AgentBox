@@ -76,10 +76,15 @@ MANAGED_APPROVALS_ON = {
 
 
 class ClaudeAdapter(Adapter):
-    def seed_state(self, settings, state_dir, sandbox_notes):
+    def seed_state(self, settings, state_dir, sandbox_notes, profile_on=True):
         """Prepare the per-project state dir. Nothing is loaded from here any more except settings.json:
-        skills, sub-agents, commands and CLAUDE.md come from the profile as read-only mounts."""
+        skills, sub-agents, commands and CLAUDE.md come from the profile as read-only mounts.
+
+        settings.json is a profile item too -- copied rather than mounted only because Claude Code writes to
+        it -- so with the profile off it is not copied either, and Claude starts on its own defaults."""
         os.makedirs(state_dir, mode=0o700, exist_ok=True)
+        if not profile_on:
+            return
         from .. import profile
         profile.copy_into_state(settings, self, state_dir)
 
@@ -106,15 +111,20 @@ class ClaudeAdapter(Adapter):
         seed = _read_text(os.path.join(settings.profile_src(self.name), "CLAUDE.md")).strip()
         return own == seed
 
-    def session_instructions(self, settings, sandbox_notes):
+    def session_instructions(self, settings, sandbox_notes, profile_on=True):
         """The CLAUDE.md the session gets: the sandbox description first, then the profile's own CLAUDE.md.
 
         The notes lead so the agent reads its environment before anything else (PERSONALIZATION.md §4), and
         the whole file is generated per session rather than edited in place, so there is no stale copy and
-        nothing to strip: the marker block is kept only to say out loud that the text is regenerated."""
+        nothing to strip: the marker block is kept only to say out loud that the text is regenerated.
+
+        With the profile off the notes block is the whole file: the agent still has to be told what sandbox
+        it is in, which is agentbox's own text, not the user's."""
+        block = f"{NOTES_BEGIN}\n{sandbox_notes.rstrip()}\n{NOTES_END}\n"
+        if not profile_on:
+            return block
         md = os.path.join(settings.profile_src(self.name), "CLAUDE.md")
         own = _NOTES_BLOCK.sub("", _read_text(md)).lstrip()
-        block = f"{NOTES_BEGIN}\n{sandbox_notes.rstrip()}\n{NOTES_END}\n"
         return block + ("\n" + own if own.strip() else "")
 
     def prepare_session(self, sess, sandbox_notes):

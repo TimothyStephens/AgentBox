@@ -134,6 +134,14 @@ KEYS = (
     _key("build_memory", kind="project", arity="scalar", flags=("--build-memory",), dest="build_memory",
          validate="size", values=(), security=False, clears=False, unsettable=True, display="always",
          inert="not_dev_tier", inert_reason="only the dev tier builds"),
+    # Whether the host-owned profile is loaded at all (`ab run --no-profile` turns it off for one run).
+    # NOT security-relevant: the profile is host-owned and trusted by design, and "off" loads strictly less
+    # -- so the ceiling must not refuse `profile = "on"` under lockdown, where the profile has always
+    # loaded. `values` is spelled out for the enum check; `security=False` is what keeps it out of the
+    # ceiling comparison (presets.ORDERED_NON_SETTINGS).
+    _key("profile", kind="project", arity="scalar", flags=("--profile",), dest="profile", validate="enum",
+         values=("off", "on"), security=False, clears=False, unsettable=True, display="always", inert="",
+         inert_reason=""),
 
     # --- acknowledgements: written by their own commands, never cleared by a preset change ---
     _key("history_secrets_accepted", kind="ack", arity="list", flags=(), dest="", validate="name_list",

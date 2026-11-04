@@ -253,23 +253,35 @@ def content_id(path):
 class Loaded:
     """One session's profile: the snapshot it mounts, and the identity of what it loaded."""
 
-    def __init__(self, agent, src, dir=None, hash="", commit="", dirty=False, mounts=(), notes=()):
+    def __init__(self, agent, src, dir=None, hash="", commit="", dirty=False, mounts=(), notes=(),
+                 off_reason=""):
         self.agent, self.src, self.dir, self.hash, self.commit = agent, src, dir, hash, commit
         self.dirty = dirty                          # the profile tree differs from its own last commit
         self.mounts = list(mounts)                  # (host src, container dst, read_only)
         self.notes = list(notes)
+        self.off_reason = off_reason                # "flag" | "project" when the profile is not loaded
 
     @property
     def names(self):
         return [os.path.basename(dst) for _src, dst, _ro in self.mounts]
 
+    @property
+    def off(self):
+        return bool(self.off_reason)
+
     def log_line(self):
+        if self.off:
+            # Nothing was read, so there is no hash, commit or snapshot to record -- only that it was off
+            # and which of the two switches did it.
+            return f"profile {self.agent}=off reason={self.off_reason}\n"
         return (f"profile agent={self.agent} hash={self.hash or '(none)'} commit={self.commit or '(no repo)'} "
                 f"dirty={'yes' if self.dirty else 'no'} snapshot={self.dir or '(none)'} "
                 f"loaded={','.join(self.names) or '(nothing)'}\n")
 
     @property
     def display(self):
+        if self.off:
+            return f"off ({self.off_reason})"
         return (f"{self.hash or '(none)'}"
                 + (f" (commit {self.commit}{', uncommitted changes' if self.dirty else ''})"
                    if self.commit else " (not committed)" if self.hash else ""))
@@ -308,12 +320,29 @@ def migrate_legacy_seed(settings, agent, out=None):
     return moved
 
 
-def load_for_session(settings, adapter, *, out=None):
+def user_image(settings, agent):
+    """The user's own image layer for this agent, or "" when there is none.
+
+    The hook point for the planned `agentbox-base -> agentbox-<agent> -> user layer` chain: a user layer is
+    built FROM the harness image and is profile content like a skill is, so `--no-profile` must not select
+    it. Nothing builds one yet, so this is always "" -- but the launcher asks HERE (`session.Session.image`),
+    which is what makes the `--no-profile` guarantee hold the moment something does."""
+    return ""
+
+
+def load_for_session(settings, adapter, *, out=None, off_reason=""):
     """Snapshot the agent's profile and work out what to mount read-only where.
 
     `adapter.profile_mounts` maps a profile item to the container path the agent loads it from; an item the
     profile does not have is simply not mounted. `adapter.profile_copies` are the exceptions that cannot be
-    read-only (Claude Code writes its own settings.json), copied into the per-project state instead."""
+    read-only (Claude Code writes its own settings.json), copied into the per-project state instead.
+
+    With `off_reason` set (`ab run --no-profile`, or `profile = "off"` on the project) nothing is read at
+    all: no snapshot is taken, no repo is created, no legacy seed is migrated. A session that does not load
+    the profile must not reach into it either, or "off" would still be deciding what the host profile looks
+    like for the next run that is on."""
+    if off_reason:
+        return Loaded(adapter.name, settings.profile_src(adapter.name), off_reason=off_reason)
     src = settings.profile_src(adapter.name)
     migrate_legacy_seed(settings, adapter.name, out=out)
     ensure_repo(src, out=out)
