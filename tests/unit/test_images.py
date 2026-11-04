@@ -265,24 +265,81 @@ class TheAgentLayers(unittest.TestCase):
                 self.assertNotIn("docker.io", packages)
 
 
-class EveryArgIsSupplied(unittest.TestCase):
-    """An ARG declared without a default and not passed by the build is silently EMPTY -- no error, no
-    warning, just a step that did something other than what the file says. Same shape as declaring one
-    above the FROM."""
+def make_vars():
+    """{name: value} for the Makefile's `NAME := value` assignments, continuations joined."""
+    out, buf = {}, ""
+    for raw in makefile().splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        buf += raw[:-1].rstrip() + " " if raw.rstrip().endswith("\\") else raw
+        if not raw.rstrip().endswith("\\"):
+            m = re.match(r"^([A-Z][A-Z0-9_]*)\s*[:?]?=\s*(.*)$", buf.strip())
+            if m:
+                out[m.group(1)] = m.group(2)
+            buf = ""
+    return out
+
+
+def build_args_for(image):
+    """The --build-arg names the Makefile passes when building this image, with $(VAR) expanded."""
+    mv, mk = make_vars(), makefile()
+    if image == "base":
+        line = [l for l in mk.splitlines() if "-t localhost/agentbox-base:latest" in l
+                or ("podman build" in l and "OS_BASE" in l)]
+        text = " ".join(line)
+    else:
+        text = mv.get(f"{image.upper()}_BUILD_ARGS", "")
+    for _ in range(5):                                  # expand $(VAR), a couple of levels is plenty
+        new = re.sub(r"\$\(([A-Z][A-Z0-9_]*)\)", lambda m: mv.get(m.group(1), ""), text)
+        if new == text:
+            break
+        text = new
+    return set(re.findall(r"--build-arg\s+([A-Za-z_][A-Za-z0-9_]*)=", text))
+
+
+def declared_args(text, after_from_only=False):
+    lines = logical_lines(text)
+    froms = [i for i, l in enumerate(lines) if l.upper().startswith("FROM ")]
+    pick = lines[froms[-1] + 1:] if (after_from_only and froms) else lines
+    return {m.group(1): l for l in pick for m in [ARG_DECL.match(l)] if m}
+
+
+class ArgsAndBuildArgsMatch(unittest.TestCase):
+    """Both directions, because each failure mode is silent.
+
+    An ARG the build does not pass is EMPTY -- no error, just a step that did something other than what the
+    file says (the same shape as declaring one above the FROM). And a --build-arg nothing consumes is a
+    no-op podman only mentions in passing: `make omp-image` printed "one or more build args were not
+    consumed: [PODMAN_REMOTE_SHA256 PODMAN_REMOTE_VERSION]" after the client moved to the base (4 Nov).
+    Harmless there, but indistinguishable from a pin that is not being applied where you think it is."""
+
+    IMAGES = ("base", "claude", "omp")
 
     def test_the_makefile_passes_every_defaultless_arg(self):
-        mk = makefile()
         for name, text in containerfiles():
-            lines = logical_lines(text)
-            froms = [i for i, l in enumerate(lines) if l.upper().startswith("FROM ")]
-            after = lines[froms[-1] + 1:] if froms else lines
-            for line in after:
-                m = ARG_DECL.match(line)
-                if not m or "=" in line.partition(m.group(1))[2]:
-                    continue
-                with self.subTest(image=name, arg=m.group(1)):
-                    self.assertIn(f"--build-arg {m.group(1)}=", mk,
-                                  f"{name}: ARG {m.group(1)} has no default, so the build must pass it")
+            passed = build_args_for(name)
+            for arg, line in declared_args(text, after_from_only=True).items():
+                if "=" in line.partition(arg)[2]:
+                    continue                            # has a default of its own
+                with self.subTest(image=name, arg=arg):
+                    self.assertIn(arg, passed,
+                                  f"{name}: ARG {arg} has no default, so the build must pass it")
+
+    def test_every_build_arg_is_consumed_by_the_image_it_is_passed_to(self):
+        for image in self.IMAGES:
+            with open(os.path.join(IMAGES, image, "Containerfile")) as f:
+                declared = declared_args(f.read())
+            for arg in build_args_for(image):
+                with self.subTest(image=image, arg=arg):
+                    self.assertIn(arg, declared,
+                                  f"{image}: --build-arg {arg} is passed but the Containerfile declares no "
+                                  f"such ARG, so podman ignores it")
+
+    def test_the_collector_actually_finds_something(self):
+        """Both tests above pass vacuously if the Makefile parse returns nothing."""
+        for image in self.IMAGES:
+            with self.subTest(image=image):
+                self.assertTrue(build_args_for(image), f"no --build-arg found for {image}")
 
 
 if __name__ == "__main__":

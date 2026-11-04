@@ -21,7 +21,7 @@ from unittest import mock
 from agentbox import profile, session
 from agentbox.adapters import omp
 
-from .helpers import SettingsCase
+from .helpers import SettingsCase, read_file
 from .test_omp import OmpSessionBase
 
 C_CLAUDE = "/run/agentbox/claude"
@@ -82,16 +82,16 @@ class ClaudeWithoutTheProfile(SettingsCase):
         be there is anything the user's profile said."""
         s, _w = self.start(no_profile=True)
         settings_json = os.path.join(s.state_dir, "settings.json")
-        self.assertNotIn("theme", open(settings_json).read() if os.path.exists(settings_json) else "")
+        self.assertNotIn("theme", read_file(settings_json) if os.path.exists(settings_json) else "")
         s2, _w2 = self.start("p2")
-        self.assertIn("dark", open(os.path.join(s2.state_dir, "settings.json")).read(),
+        self.assertIn("dark", read_file(os.path.join(s2.state_dir, "settings.json")),
                       "and with the profile on, the profile's own settings are there")
 
     def test_the_generated_instructions_keep_the_sandbox_notes_and_drop_the_profile_text(self):
         s, _w = self.start(no_profile=True)
         md = [m for d, m in self.mounts(s).items() if d == f"{C_CLAUDE}/CLAUDE.md"]
         self.assertTrue(md, self.mounts(s))
-        text = open(md[0].split("src=")[1].split(",")[0]).read()
+        text = read_file(md[0].split("src=")[1].split(",")[0])
         self.assertNotIn("PROFILE_HOUSE_STYLE", text)
         self.assertIn("agentbox", text, "agentbox's own session notes still load")
 
@@ -130,7 +130,8 @@ class ClaudeWithoutTheProfile(SettingsCase):
         import json as _json
         harness = "localhost/agentbox-claude:latest"
         self.write("config/claude/profile/Containerfile", "ARG BASE\nFROM ${BASE}\nRUN true\n")
-        recipe = open(os.path.join(self.settings.profile_src("claude"), "Containerfile"), "rb").read()
+        with open(os.path.join(self.settings.profile_src("claude"), "Containerfile"), "rb") as f:
+            recipe = f.read()
         ref = profile.user_image_ref("claude", "sha256:harness1", recipe)
         os.environ["FAKE_PODMAN_IMAGE_JSON"] = _json.dumps({harness: {"Id": "sha256:harness1"},
                                                             ref: {"Id": "sha256:layer1"}})

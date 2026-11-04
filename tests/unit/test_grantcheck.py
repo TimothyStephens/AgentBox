@@ -5,7 +5,7 @@ import os
 from agentbox import cli, grantcheck, registry, session
 from agentbox.errors import AgentboxError
 
-from .helpers import SettingsCase, TempCase
+from .helpers import SettingsCase, TempCase, read_file
 
 
 def texts(findings):
@@ -206,13 +206,13 @@ class CheckCommand(SettingsCase):
         import io
         from contextlib import redirect_stdout
         buf = io.StringIO()
-        before = open(self.settings.registry_path, "rb").read()
+        before = read_file(self.settings.registry_path, "rb")
         with redirect_stdout(buf):
             try:
                 code = cli.main(["project", "check", name])
             except SystemExit as e:
                 code = e.code
-        self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+        self.assertEqual(read_file(self.settings.registry_path, "rb"), before,
                          "check is read-only: the registry must be untouched")
         return code, buf.getvalue()
 

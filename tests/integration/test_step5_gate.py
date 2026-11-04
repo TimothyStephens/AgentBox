@@ -29,6 +29,7 @@ from agentbox import config, session, sockguard
 from tests import ompfake
 
 from . import harness
+from .harness import read_file
 
 ENV = None
 COMPOSE = f"abt-{harness.RUN}-dv"
@@ -146,7 +147,7 @@ class Step5(unittest.TestCase):
             out = []
             for d in docs:
                 pid = d["State"]["Pid"]
-                cg = open(f"/proc/{pid}/cgroup").read().strip() if pid else ""
+                cg = read_file(f"/proc/{pid}/cgroup").strip() if pid else ""
                 out.append({"name": d["Name"], "labels": d["Config"]["Labels"],
                             "nets": sorted((d["NetworkSettings"].get("Networks") or {}).keys()),
                             "oom": d["HostConfig"].get("OomScoreAdj"), "mem": d["HostConfig"].get("Memory"),

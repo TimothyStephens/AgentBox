@@ -149,8 +149,12 @@ endef
 # Collected into variables rather than written inline: a line continuation inside a $(call ...) is a
 # needless thing to get wrong, and every ARG an image declares without a default has to be passed here
 # (tests/unit/test_images.py checks that, because an unsupplied ARG is silently empty).
+# No PODMAN_REMOTE_ARGS here: the podman client moved to the base, so the OMP layer declares no such ARG
+# and podman warned "one or more build args were not consumed" (host, 4 Nov). A build arg nothing consumes
+# is a silent no-op -- harmless here, but the same shape as a pin that is not being applied where you think
+# it is, so tests/unit/test_images.py now checks both directions.
 OMP_BUILD_ARGS := --build-arg OMP_VERSION=$(OMP_VERSION) --build-arg BUN_VERSION=$(BUN_VERSION) \
-	--build-arg BUN_SHA256=$(BUN_SHA256) --build-arg AB_HOME=$(HOME) $(PODMAN_REMOTE_ARGS)
+	--build-arg BUN_SHA256=$(BUN_SHA256) --build-arg AB_HOME=$(HOME)
 CLAUDE_BUILD_ARGS := --build-arg CLAUDE_VERSION=$(CLAUDE_VERSION)
 
 # The OMP session image (images/omp/Containerfile explains every departure from omp-env).

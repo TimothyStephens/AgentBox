@@ -9,7 +9,7 @@ import os
 from agentbox import cli, registry, session
 from agentbox.errors import AgentboxError
 
-from .helpers import SettingsCase
+from .helpers import SettingsCase, read_file
 
 # What `podman ps --format json` reports for a running container of p1. The liveness guard reads the
 # project from the container label, so no session.json is needed to make a session "live" (audit F2).
@@ -224,10 +224,10 @@ class SetTest(SetBase):
         reg = registry.load(self.settings.registry_path)
         reg["p1"]["egres"] = "open"                       # typo
         registry.save(self.settings.registry_path, reg)
-        before = open(self.settings.registry_path, "rb").read()
+        before = read_file(self.settings.registry_path, "rb")
         code = self.rc("project", "set", "p1", "--build-memory", "4g")
         self.assertEqual(code, 2)
-        self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+        self.assertEqual(read_file(self.settings.registry_path, "rb"), before,
                          "refused BEFORE saving, not after the entry was already written")
         with self.assertRaises(AgentboxError) as cm:
             session.load_project(self.settings, "p1")     # load is just as strict
@@ -239,17 +239,17 @@ class SetTest(SetBase):
                     {"observe_logs": "yes"}):
             with self.subTest(bad=bad):
                 self.project("p1", preset="build", **bad)
-                before = open(self.settings.registry_path, "rb").read()
+                before = read_file(self.settings.registry_path, "rb")
                 self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 2)
-                self.assertEqual(open(self.settings.registry_path, "rb").read(), before,
+                self.assertEqual(read_file(self.settings.registry_path, "rb"), before,
                                  "refused before saving")
                 with self.assertRaises(AgentboxError):
                     session.load_project(self.settings, "p1")
 
     def test_a_failed_set_writes_nothing(self):
-        before = open(self.settings.registry_path, "rb").read()
+        before = read_file(self.settings.registry_path, "rb")
         self.assertEqual(self.rc("project", "set", "p1", "--preset", "lockdown", "--observe-logs"), 2)
-        self.assertEqual(open(self.settings.registry_path, "rb").read(), before, "registry untouched")
+        self.assertEqual(read_file(self.settings.registry_path, "rb"), before, "registry untouched")
 
     def test_a_stored_grant_is_rechecked_on_every_set(self):
         """A hand-written data_ro pointing at a protected path is caught by the next `set`, not just at

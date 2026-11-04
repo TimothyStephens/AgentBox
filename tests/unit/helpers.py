@@ -132,3 +132,19 @@ def _restore(old):
 
 os.chmod(FAKE_PODMAN, os.stat(FAKE_PODMAN).st_mode | stat.S_IXUSR)
 assert sys.version_info >= (3, 11)
+
+
+def read_file(path, *args, **kw):
+    """A file's contents, with the handle closed. Arguments are forwarded to `open`, so a mode works.
+
+    `open(p).read()` leaves the handle to the garbage collector, which is why `make test` printed dozens of
+    `ResourceWarning: unclosed file` lines. Harmless in itself -- but a test log nobody can skim is how a
+    real finding gets missed, and two have been found by reading these logs.
+    """
+    with open(path, *args, **kw) as f:
+        return f.read()
+
+
+def read_json(path):
+    import json as _json
+    return _json.loads(read_file(path))

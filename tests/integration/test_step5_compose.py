@@ -16,6 +16,7 @@ import unittest
 from agentbox import config, session
 
 from . import harness
+from .harness import read_file
 
 ENV = None
 COMPOSE = f"abt-{harness.RUN}-cw"
@@ -162,7 +163,7 @@ class ComposeWorkflow(unittest.TestCase):
         self.assertIn("PY_DNS_PODMAN=compose-web-ok", out, "Python's urllib reaches web.dns.podman directly")
         for fn in os.listdir(os.path.join(ENV.data, "logs")):
             if fn.endswith("-proxy.log"):
-                self.assertNotIn("dns.podman", open(os.path.join(ENV.data, "logs", fn), errors="replace").read(),
+                self.assertNotIn("dns.podman", read_file(os.path.join(ENV.data, "logs", fn), errors="replace"),
                                  "requests to <name>.dns.podman never reach the proxy")
         self.assertRegex(out, r"ENV_UPPER=db,web,localhost\n")
         self.assertRegex(out, r"ENV_LOWER=db,web,localhost\n")

@@ -1576,3 +1576,42 @@ Equality there would have failed every build; the build-time grep inside the Con
 
 **Not verified here:** `make` is not installed in a sandbox, so the Makefile and the three Containerfiles
 are unexecuted. The tests check their text; the builds are Tim's.
+
+
+## 4 November 2026 -- the restructure's first real build, and what it reported
+
+`make base-image`, `make claude-image omp-image`, `ab image build` for both agents, both selftests
+(71 pass / 0 fail / 1 skip each), `make test`, `make itest`, `make claude-live` and **`make omp-live`** all
+pass on the host. omp-live is the one worth noting: it had been failing, and its browser and debugpy probes
+both worked this time where both had failed before. The cause was the drift the restructure removes -- the
+session was running OMP 18.1.11 out of a 59-day-old base while the host's plugins had moved on. Nothing in
+agentbox needed fixing for it; the pinned image did it.
+
+**One real finding from the build:** podman printed `one or more build args were not consumed:
+[PODMAN_REMOTE_SHA256 PODMAN_REMOTE_VERSION]` on `make omp-image`. `OMP_BUILD_ARGS` still carried
+`$(PODMAN_REMOTE_ARGS)` after the podman client moved into the base, so the OMP layer declares no such ARG.
+Harmless in itself -- but a build arg nothing consumes is indistinguishable from a pin that is not being
+applied where you think it is, which is the omp-env bug wearing different clothes. So `test_images.py`
+checks **both directions** now: every defaultless ARG must be passed by the Makefile, and every
+`--build-arg` the Makefile passes must be an ARG the Containerfile declares. The test resolves the
+Makefile's `$(VAR)` indirection itself, with a third test asserting the collector finds something so the
+other two cannot pass vacuously.
+
+(A note on mutation testing: the first attempt at mutating these two checks weakened the assertion rather
+than introducing a violation -- `assertIn(arg, passed | {arg})` -- which passes on a clean tree no matter
+what, because there is nothing for the check to catch. The mutations that count introduce the violation:
+put `$(PODMAN_REMOTE_ARGS)` back, or rename a declared ARG. Both reddened.)
+
+**The warnings in the test log, triaged.** `make test` and `make itest` printed about ninety lines of
+`ResourceWarning: unclosed file` plus tracemalloc notes, and two `MCP server "m"/"m2" failed to connect`.
+
+- The MCP ones are a test's own design: `test_review_1001` plants `.omp/mcp.json` and `.mcp.json` declaring
+  servers whose command is `sh -c "touch MARK_...; sleep 20"`, and asserts on whether the marker file
+  appears -- it is measuring whether repo-shipped MCP config *executes*. OMP correctly reports the stub is
+  not a real server. Expected, and the message is OMP's.
+- The ResourceWarnings were **all in test code**; product code has no leak (the two `open()` calls outside a
+  `with` in `sockguard.py` hand a log to `Popen` and close it, which an AST sweep of `agentbox/` confirmed).
+  Cosmetic, then -- but a test log nobody can skim is how a real finding gets missed, and two have now been
+  found by reading these logs. So the 36 leaking sites became `read_file`/`read_json` helpers in
+  `tests/unit/helpers.py` and `tests/integration/harness.py`, and the affected modules run clean under
+  `python3 -W error::ResourceWarning`. The `open(f, "w").close()` sites are left alone: they close.

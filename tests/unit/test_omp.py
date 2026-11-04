@@ -11,7 +11,7 @@ from agentbox.config import HOME
 from agentbox.errors import AgentboxError
 from tests import ompfake
 
-from .helpers import SettingsCase, TempCase
+from .helpers import SettingsCase, TempCase, read_file
 
 FIXTURE_MODELS = os.path.join(ompfake.FIXTURE, "models.redacted.yml")
 
@@ -576,7 +576,7 @@ class OmpInboxAndProfile(OmpSessionBase):
         s.teardown()
         inbox = self.settings_now().inbox_dir("p1", "omp")
         self.assertEqual(profile.items(inbox), ["learned-cool-trick"])
-        self.assertEqual(open(os.path.join(inbox, "learned-cool-trick", "SKILL.md")).read(),
+        self.assertEqual(read_file(os.path.join(inbox, "learned-cool-trick", "SKILL.md")),
                          "something OMP worked out\n")
         doc = profile.read_sidecar(inbox, "learned-cool-trick")
         self.assertEqual((doc["project"], doc["agent"], doc["reviewed"]), ("p1", "omp", False))
@@ -593,7 +593,7 @@ class OmpInboxAndProfile(OmpSessionBase):
         s.teardown()
         inbox = self.settings_now().inbox_dir("p1", "omp")
         self.assertEqual(profile.items(inbox), ["learned-one-liner.md"])
-        self.assertEqual(open(os.path.join(inbox, "learned-one-liner.md")).read(), "remember this\n")
+        self.assertEqual(read_file(os.path.join(inbox, "learned-one-liner.md")), "remember this\n")
         self.assertFalse(os.path.exists(os.path.join(managed, "one-liner.md")), "moved, not copied")
 
     def test_nothing_in_it_survives_into_the_next_session(self):

@@ -19,7 +19,7 @@ from unittest import mock
 from agentbox import cli, profile, registry, session
 from agentbox.errors import AgentboxError
 
-from .helpers import SettingsCase, TempCase
+from .helpers import SettingsCase, TempCase, read_json, read_file
 
 
 class TreeHash(TempCase):
@@ -85,7 +85,7 @@ class Snapshot(SettingsCase):
     def test_the_snapshot_is_the_hash_and_holds_the_content(self):
         dir, digest = profile.snapshot(self.settings, "claude")
         self.assertEqual(os.path.basename(dir), digest)
-        self.assertEqual(open(os.path.join(dir, "skills", "deploy", "SKILL.md")).read(),
+        self.assertEqual(read_file(os.path.join(dir, "skills", "deploy", "SKILL.md")),
                          "run make deploy\n")
 
     def test_an_unchanged_profile_reuses_the_snapshot(self):
@@ -219,8 +219,8 @@ class LegacySeedMigration(SettingsCase):
         moved = profile.migrate_legacy_seed(self.settings, "claude", out=said.append)
         self.assertEqual(sorted(moved), ["CLAUDE.md", "commands", "settings.json"])
         src = self.settings.profile_src("claude")
-        self.assertEqual(open(os.path.join(src, "CLAUDE.md")).read(), "house style\n")
-        self.assertEqual(open(os.path.join(src, "commands", "ship.md")).read(), "ship it\n")
+        self.assertEqual(read_file(os.path.join(src, "CLAUDE.md")), "house style\n")
+        self.assertEqual(read_file(os.path.join(src, "commands", "ship.md")), "ship it\n")
         self.assertFalse(os.path.exists(os.path.join(self.settings.config_dir, "claude", "CLAUDE.md")),
                          "moved, not copied: there is one place, not two")
         self.assertTrue(any("profile" in m for m in said), said)
@@ -230,7 +230,7 @@ class LegacySeedMigration(SettingsCase):
         self.write("config/claude/profile/CLAUDE.md", "new\n")
         said = []
         self.assertEqual(profile.migrate_legacy_seed(self.settings, "claude", out=said.append), [])
-        self.assertEqual(open(os.path.join(self.settings.profile_src("claude"), "CLAUDE.md")).read(), "new\n")
+        self.assertEqual(read_file(os.path.join(self.settings.profile_src("claude"), "CLAUDE.md")), "new\n")
         self.assertTrue(any("BOTH" in m for m in said), said)
 
     def test_omps_own_seeds_are_left_alone(self):
@@ -271,7 +271,7 @@ class SessionLoadsTheProfile(SettingsCase):
         s, _w = self.start()
         arg = self.mounts(s)["/run/agentbox/claude/CLAUDE.md"]
         self.assertTrue(arg.endswith(",ro"), arg)
-        text = open(arg.split("src=")[1].split(",")[0]).read()
+        text = read_file(arg.split("src=")[1].split(",")[0])
         self.assertLess(text.index("agentbox sandbox"), text.index("Write tests first."))
 
     def test_the_inbox_is_mounted_read_write_and_is_not_a_load_path(self):
@@ -285,11 +285,11 @@ class SessionLoadsTheProfile(SettingsCase):
         s, _w = self.start()
         self.assertNotIn("/run/agentbox/claude/settings.json", self.mounts(s))
         state = os.path.join(self.settings.state_dir("p1", "claude"), "settings.json")
-        self.assertEqual(json.load(open(state))["theme"], "dark")
+        self.assertEqual(read_json(state)["theme"], "dark")
 
     def test_the_notes_tell_the_agent_the_paths_are_read_only_and_where_to_write(self):
         s, _w = self.start()
-        text = open(self.mounts(s)["/run/agentbox/claude/CLAUDE.md"].split("src=")[1].split(",")[0]).read()
+        text = read_file(self.mounts(s)["/run/agentbox/claude/CLAUDE.md"].split("src=")[1].split(",")[0])
         self.assertIn("read-only", text)
         self.assertIn("/run/agentbox/claude/inbox", text)
         self.assertIn("ab profile harvest", text)
@@ -299,7 +299,7 @@ class SessionLoadsTheProfile(SettingsCase):
         (commit), and whether the two had drifted (dirty) -- the last being how you learn that a session
         loaded something in nobody's history."""
         s, _w = self.start()
-        log = open(s.log_path("profile")).read()
+        log = read_file(s.log_path("profile"))
         self.assertIn(f"hash={s.profile.hash}", log)
         self.assertRegex(log, r"commit=[0-9a-f]{7,} dirty=no")
         self.assertIn("loaded=skills", log)
@@ -308,7 +308,7 @@ class SessionLoadsTheProfile(SettingsCase):
         self.start()                                     # the first session commits the profile repo
         self.write("config/claude/profile/skills/deploy/SKILL.md", "edited but not committed\n")
         s, warnings = self.start()
-        log = open(s.log_path("profile")).read()
+        log = read_file(s.log_path("profile"))
         self.assertIn("dirty=yes", log)
         self.assertTrue(s.profile.dirty)
         self.assertNotEqual(s.profile.hash, "", "and the hash moved with the edit")
@@ -343,7 +343,7 @@ class SessionLoadsTheProfile(SettingsCase):
         s, _w = self.start()
         mounted = self.mounts(s)["/run/agentbox/claude/skills"].split("src=")[1].split(",")[0]
         self.write("config/claude/profile/skills/deploy/SKILL.md", "rm -rf /\n")
-        self.assertEqual(open(os.path.join(mounted, "deploy", "SKILL.md")).read(), "run make deploy\n")
+        self.assertEqual(read_file(os.path.join(mounted, "deploy", "SKILL.md")), "run make deploy\n")
 
     def test_a_symlinked_profile_refuses_the_session(self):
         os.symlink(self.write("outside.key", "PRIVATE\n"),
@@ -434,7 +434,7 @@ class TheMountPointsAreOurs(SettingsCase):
         from agentbox import scan
         s, _w = self.start()
         self.addCleanup(s.teardown)
-        doc = json.load(open(os.path.join(self.settings.session_run_dir(s.name), session.SCAN_STATE)))
+        doc = read_json(os.path.join(self.settings.session_run_dir(s.name), session.SCAN_STATE))
         self.assertIn("CLAUDE.md", doc["agent_state"]["files"], "in the baseline, so not 'new' at teardown")
         summary, _text = scan.state_report(doc["agent_state"]["files"], doc["agent_state"]["dir"])
         self.assertEqual(summary, [], summary)
@@ -481,7 +481,7 @@ class StateMigratedToInbox(SettingsCase):
         _s, warnings = self.start()
         inbox = self.settings.inbox_dir("p1", "claude")
         self.assertEqual(sorted(profile.items(inbox)), ["from-state-CLAUDE.md", "from-state-skills"])
-        self.assertEqual(open(os.path.join(inbox, "from-state-skills", "mine", "SKILL.md")).read(),
+        self.assertEqual(read_file(os.path.join(inbox, "from-state-skills", "mine", "SKILL.md")),
                          "my own skill\n")
         self.assertEqual(os.listdir(os.path.join(self.state, "skills")), [],
                          "what is left is the empty mount point, not the old content")
@@ -511,7 +511,7 @@ class StateMigratedToInbox(SettingsCase):
         _s, warnings = self.start()
         inbox = self.settings.inbox_dir("p1", "claude")
         self.assertEqual(profile.items(inbox), ["from-state-CLAUDE.md"])
-        self.assertIn("one more rule", open(os.path.join(inbox, "from-state-CLAUDE.md")).read())
+        self.assertIn("one more rule", read_file(os.path.join(inbox, "from-state-CLAUDE.md")))
 
     def test_a_state_claude_md_against_no_profile_one_is_queued(self):
         """Nothing in the profile to be a copy OF, so the content is the user's and goes to review."""
@@ -644,7 +644,7 @@ class LockdownKeepsNothing(SettingsCase):
         s, _w = self.start()
         self.addCleanup(s.teardown)
         path = [m for m in s.run_args(["true"]) if "CLAUDE.md" in m][0].split("src=")[1].split(",")[0]
-        text = open(path).read()
+        text = read_file(path)
         self.assertIn("keeps nothing", text)
         self.assertNotIn("per project). Nothing there is loaded", text, "not the persistent wording")
 
@@ -775,7 +775,7 @@ class Harvest(SettingsCase):
         code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
         self.assertEqual(code, 0, out)
         dst = os.path.join(self.settings.profile_src("claude"), "skills", "deploy", "SKILL.md")
-        self.assertEqual(open(dst).read(), "learned\n")
+        self.assertEqual(read_file(dst), "learned\n")
         log = subprocess.run(["git", "-C", self.settings.profile_src("claude"), "log", "-1", "--format=%B"],
                              capture_output=True, text=True).stdout
         self.assertIn("promoted from p1/deploy", log)

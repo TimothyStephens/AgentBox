@@ -519,6 +519,8 @@ class Framing(unittest.TestCase):
     def test_pipelined_request_refused_by_the_handler(self):
         import socket as so
         a, b = so.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
         g = Fake()
         h = gate.make_handler(g)
         smuggled = b"POST /v5/libpod/containers/create HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"
@@ -1259,6 +1261,7 @@ class TrialFindings(unittest.TestCase):
             a.shutdown(so.SHUT_WR)
             h(b, None, None)
             a.close()
+            b.close()          # the handler may or may not; closing twice is a no-op, leaking is not
         raw = " ".join(got.get("raw", []))
         up = " ".join(got.get("upstream", []))
         for p in ("DELETE /v5/libpod/pods/pid", "POST /v5/libpod/pods/pid/stop", "POST /v5/libpod/pods/pid/start"):
