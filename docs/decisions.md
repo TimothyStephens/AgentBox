@@ -1666,6 +1666,27 @@ have left the real guard as untested as it was.
 
 **Not touched, and why.** `D-E9` (the network-less `Session` path) is eight interlocked sites across
 `session.py`, `runner.py` and `hardening.py`, and removing it forecloses a network-less session for good --
-a design decision, not a cleanup. `D-E1`/`D-E5`/`D-E6`/`D-E8` are the same shape as the five above but each
-is currently reached by a test that would have to be rewritten onto the live path first. `D-E11`
-(`SYSCTL_ALLOWED = ()`) stays: it is a deliberate knob that makes two checks always refuse, not dead code.
+a design decision, not a cleanup. `D-E11` (`SYSCTL_ALLOWED = ()`) stays: it is a deliberate knob that makes
+two checks always refuse, not dead code.
+
+### The second four, the same day: D-E1, D-E5, D-E6, D-E8
+
+These were deferred because each was *reached by a test*, which is not the same as being used. Moving each
+test onto the live path first is what made them deletable, and in two cases that was the real work.
+
+| removed | why it was dead | what moved first |
+|---|---|---|
+| `gate.after_start` | `decide`/the handler use `prepare_start` + `after_start_checked` | nothing: its tests had already moved to the live start path (`test_review_step5`, E3/T2) |
+| `gate.check_limits(compat=)` | declared, never read | **`check_limits` had no test at all.** `test_gate.Limits` covers all three caps, including podman's `-1`-means-unlimited, which is exactly what a cap exists to stop |
+| `gate.pipe_back(watch=)` | never passed: `pipe_build_reply` feeds its own watcher and hands the remainder on | nothing |
+| `gate.read_chunked`'s `sock is None` | one caller, always a real socket | nothing: the live path is covered by the `spool_body` chunked tests |
+| `gate.rewrite_network(compat=None)` auto-detect | `decide` always passes `compat` | the two test lines that relied on the auto-detect now pass it explicitly |
+| `hardening`'s `/dev/null` mask branch | production has used `mask_file` since step 5 | the two tests that reached it drive the real mask file -- which also puts the mask source under the grant check, where `/dev/null` had returned early |
+
+**The two that were worth more than the deletion.** `check_limits` guards the session's memory and pids
+caps and had *no test of any kind*; removing an unused parameter is what surfaced that. And `hardening`'s
+`/dev/null` branch `return`ed before the "is this source inside a grant?" check, so the tests that used it
+were skipping that check without anyone intending to; on the real mask file they do not.
+
+Nine of the eleven dead-enforcement items are now gone.
+

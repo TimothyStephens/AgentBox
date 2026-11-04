@@ -101,11 +101,12 @@ def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=(), mask_file=None
     if kind != "bind":
         raise AgentboxError(f"audit: mount type {kind!r} not allowed")
     src = fields.get("src") or fields.get("source") or ""
-    if src == "/dev/null" or (mask_file and os.path.realpath(src) == os.path.realpath(mask_file)):
+    # A mask is a read-only bind of the session's one empty file. `/dev/null` used to be accepted here
+    # too, from before step 5: a character device in the project tree broke rootless builds, so production
+    # has used `mask_file` since (mounts.py) and `session.py` never emits /dev/null.
+    if mask_file and os.path.realpath(src) == os.path.realpath(mask_file):
         if "ro" not in fields:
             raise AgentboxError("audit: masks must be read-only")
-        if src == "/dev/null":
-            return
     real = os.path.realpath(src)
     if not any(_inside(real, a) for a in allowed):
         raise AgentboxError(f"audit: bind source {src} is outside the session's grants")

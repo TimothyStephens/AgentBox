@@ -180,8 +180,10 @@ class Containers(unittest.TestCase):
             FakeGate(labels={("pods", "p"): {"agentbox.role": "dev"}}).rewrite_libpod_container({"image": "x", "pod": "p"})
 
     def test_networks_and_volumes(self):
-        self.assertTrue(FakeGate().rewrite_network({"name": "n"})["internal"])
-        self.assertTrue(FakeGate().rewrite_network({"Name": "n"})["Internal"])
+        # `compat` is passed explicitly, as `decide` always does: it used to be optional here and
+        # auto-detected from the spec's key casing, a branch only these two lines reached (D-E6).
+        self.assertTrue(FakeGate().rewrite_network({"name": "n"}, compat=False)["internal"])
+        self.assertTrue(FakeGate().rewrite_network({"Name": "n"}, compat=True)["Internal"])
         # podman's libpod volume API reads "Label", the Docker API "Labels" (found 1 Oct: the old stamp under
         # "Labels" was ignored by the libpod API)
         self.assertEqual(FakeGate().rewrite_volume({"Name": "v"})["Label"][gate.DEV_OWNER], "abt-s-1")
@@ -355,6 +357,43 @@ class SpellingAndVerification(unittest.TestCase):
         doc = self.good_doc()
         doc["Mounts"] = [{"Type": "bind", "Source": "/home/vmuser"}]
         self.assertTrue(g.container_violations(doc))
+
+
+class Limits(unittest.TestCase):
+    """The session's memory and pids caps, which a client may lower but not raise.
+
+    `check_limits` had no test of any kind -- all three refusals were uncovered -- which came out while
+    removing its unused `compat` parameter. The parameter went; this is what should have been here first."""
+
+    def setUp(self):
+        self.g = FakeGate()           # memory_max 4 GiB, pids_max 4096 (CFG)
+
+    def ok(self, **kw):
+        self.g.check_limits(kw.get("memory"), kw.get("swap"), kw.get("pids"))
+
+    def test_nothing_asked_for_is_allowed(self):
+        self.ok()                                             # unset: the gate's own defaults apply
+        self.ok(memory=0, swap=0, pids=0)                     # 0 is podman's "unset"
+
+    def test_a_limit_under_the_cap_is_allowed(self):
+        self.ok(memory=1 << 30, swap=1 << 30, pids=256)
+        self.ok(memory=4 << 30, pids=4096)                    # exactly the cap
+
+    def test_memory_over_the_cap_is_refused(self):
+        with self.assertRaises(gate.Deny) as cm:
+            self.ok(memory=(4 << 30) + 1)
+        self.assertIn("memory limit", str(cm.exception))
+
+    def test_pids_over_the_cap_is_refused(self):
+        with self.assertRaises(gate.Deny) as cm:
+            self.ok(pids=4097)
+        self.assertIn("pids limit", str(cm.exception))
+
+    def test_a_negative_or_non_integer_limit_is_refused(self):
+        """podman reads -1 as "unlimited", which is exactly what the cap exists to prevent."""
+        for kw in ({"memory": -1}, {"swap": -1}, {"pids": -1}, {"memory": "1g"}, {"pids": 1.5}):
+            with self.subTest(kw=kw), self.assertRaises(gate.Deny):
+                self.ok(**kw)
 
 
 class RemovalProtection(unittest.TestCase):

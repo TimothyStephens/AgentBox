@@ -10,10 +10,17 @@ def base(extra=()):
     return hardening.fixed_flags(S, cgroup_parent="agentbox.slice") + list(extra) + ["img"]
 
 
+# The session's one empty mask file, as `session.py` emits it. `/dev/null` used to be accepted here too,
+# from before step 5 -- a character device in the project tree broke rootless builds -- and these tests were
+# the only thing that reached that branch, so they drive the live path now (D-E8).
+MASK = "/r/sessions/s/mask-empty"
+
+
 def audit(argv, **kw):
-    kw.setdefault("allowed_mount_srcs", ["/proj"])
+    kw.setdefault("allowed_mount_srcs", ["/proj", "/r/sessions/s"])
     kw.setdefault("allowed_mount_dsts", ["/proj"])
     kw.setdefault("networks", ["sess-int"])
+    kw.setdefault("mask_file", MASK)
     return hardening.audit(argv, **kw)
 
 
@@ -28,7 +35,7 @@ class HardeningTest(unittest.TestCase):
 
     def test_clean_argv_passes(self):
         self.assertTrue(audit(base(["--mount=type=bind,src=/proj,dst=/proj", "--network=none",
-                                    "--mount=type=bind,src=/dev/null,dst=/proj/.env,ro",
+                                    f"--mount=type=bind,src={MASK},dst=/proj/.env,ro",
                                     "--mount=type=tmpfs,dst=/proj/secrets,notmpcopyup"])))
 
     def test_forbidden(self):
@@ -39,7 +46,7 @@ class HardeningTest(unittest.TestCase):
                     "--publish=8080:80", "-p", "-P", "--pod=live", "--volumes-from=x", "--userns=host",
                     "--env-host", "--env-file=/x", "--group-add=keep-groups",
                     "--mount=type=bind,src=/home,dst=/h", "--mount=type=volume,src=v,dst=/v",
-                    "--mount=type=bind,src=/dev/null,dst=/proj/.env",
+                    f"--mount=type=bind,src={MASK},dst=/proj/.env",     # a mask must be read-only
                     "--mount=type=bind,src=/proj,dst=/p,bind-propagation=shared",
                     "--tmpfs=/etc:rw,notmpcopyup", "--mount=type=tmpfs,dst=/proj/secrets", "--tmpfs=/tmp:rw", "--mount=type=bind,src=/proj/../etc,dst=/e"):
             with self.assertRaises(AgentboxError, msg=bad):

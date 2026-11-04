@@ -998,20 +998,6 @@ class Gate:
             self.prepare_start(cid, restart=(op == "restart"), seen=seen)
         return ids
 
-    def after_start(self, ids):
-        """NOT CALLED IN PRODUCTION. `decide`/the handler use `prepare_start` (mountinfo before the
-        entrypoint) and `after_start_checked` (the PID recheck under the lock). Kept only because some unit
-        tests call it directly; see docs/reviews/2026-10-06-cleanup.md (D-E1). Read what the runtime
-        mounted; a bind from outside the grants (a path swapped between the check and the mount) gets the
-        container removed."""
-        for cid in ids:
-            doc = self.inspect("containers", cid)
-            bad = self.mount_violations(doc) if doc else []
-            if bad:
-                self.remove("containers", cid, "; ".join(bad))
-                raise Deny(f"container {cid[:12]} mounted something outside the project ({'; '.join(bad)}); "
-                           "removed it")
-
     def read_mountinfo(self, pid):
         with open(f"/proc/{pid}/mountinfo") as f:
             return f.read()
@@ -1381,7 +1367,7 @@ class Gate:
         if value not in (None, "", "image", "none"):
             raise Deny("a hosts file from the host is not allowed")
 
-    def check_limits(self, memory, swap, pids, *, compat):
+    def check_limits(self, memory, swap, pids):
         """Explicit limits: positive and within the session's caps (an unset value gets the default)."""
         if memory not in (None, 0) and not (isinstance(memory, int) and 0 < memory <= self.memory_max):
             raise Deny(f"memory limit {memory} is not allowed (1 byte to {self.memory_max})")
@@ -1440,7 +1426,7 @@ class Gate:
             self.check_image_volume(cget(iv, "Source"))
         rl = spec.get("resource_limits") or {}
         mem = cget(rl, "memory") or {}
-        self.check_limits(cget(mem, "limit"), cget(mem, "swap"), cget(cget(rl, "pids") or {}, "limit"), compat=False)
+        self.check_limits(cget(mem, "limit"), cget(mem, "swap"), cget(cget(rl, "pids") or {}, "limit"))
         if cget(mem, "disableOOMKiller"):
             raise Deny("disabling the OOM killer is not allowed")
         if cget(rl, "unified"):
@@ -1563,7 +1549,7 @@ class Gate:
         if "keep-groups" in (hc.get("GroupAdd") or []):
             raise Deny("keep-groups is not allowed")
         self.check_limits(hc.get("Memory"), hc.get("MemorySwap") if hc.get("MemorySwap") != -1 else None,
-                          hc.get("PidsLimit"), compat=True)
+                          hc.get("PidsLimit"))
         if hc.get("MemorySwap") == -1 or (hc.get("PidsLimit") or 0) < 0:
             raise Deny("unlimited swap or pids are not allowed")
         mode = hc.get("NetworkMode") or ""
@@ -1651,12 +1637,10 @@ class Gate:
         spec["cgroup_parent"] = self.cfg["cgroup_parent"]
         return spec
 
-    def rewrite_network(self, spec, compat=None):
+    def rewrite_network(self, spec, *, compat):
         """Bridge, internal, isolate=strict, no IPv6, and nothing that picks addresses, interfaces or routes.
         Nothing attaches to it (containers are pinned to the session network); if anything did, it would have
         no route out."""
-        if compat is None:
-            compat = any(k in spec for k in ("Name", "Internal", "Driver", "Labels"))
         if compat:
             spec = canonical(spec, COMPAT_NETWORK_KEYS, "network")
             if spec.get("Driver") not in (None, "", "bridge"):
@@ -2218,7 +2202,7 @@ def read_chunked(sock, data):
     def fill(pred):
         nonlocal data
         while not pred():
-            chunk = sock.recv(65536) if sock is not None else b""
+            chunk = sock.recv(65536)
             if not chunk:
                 raise ValueError("connection closed mid-chunk")
             data += chunk
@@ -2382,14 +2366,14 @@ def image_created(doc):
     return None
 
 
-def pipe_back(upstream, client, watch=None):
+def pipe_back(upstream, client):
+    """Relay the rest of a reply. A build's reply is watched by `pipe_build_reply`, which feeds its own
+    watcher and then hands the remainder here -- so this never needed a watcher of its own."""
     try:
         while True:
             data = upstream.recv(65536)
             if not data:
                 break
-            if watch is not None:
-                watch.feed(data)
             client.sendall(data)
     except OSError:
         pass
