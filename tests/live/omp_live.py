@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sys
+import time
 
 from tests.integration import harness
 from tests.live.parse import empty_proxy_logs
@@ -45,6 +46,63 @@ def real_keys():
 def section(title, text):
     print(f"\n--- {title} ---")
     print(text.strip() if text and text.strip() else "(none)")
+
+
+class Run:
+    """One `omp -p`: what came back, how long it took, and whether it came back at all.
+
+    A timeout used to raise straight out of `main`, so the first host run died on step 1 and never reached
+    the leak scan or the teardown check -- a slow model cost the whole report instead of one line. It is
+    still a FAIL naming the command (the harness guarantee), just one the rest of the run survives."""
+
+    def __init__(self, proc, seconds, timed_out=""):
+        self.proc, self.seconds, self.timed_out = proc, seconds, timed_out
+
+    @property
+    def stdout(self):
+        return self.proc.stdout if self.proc else ""
+
+    @property
+    def stderr(self):
+        return self.proc.stderr if self.proc else ""
+
+    @property
+    def returncode(self):
+        return self.proc.returncode if self.proc else None
+
+    def why(self, pattern):
+        """Why this run did not produce what was asked for -- empty, wrong, or never finished.
+
+        "FAIL 1. OMP answered AB_OK" said nothing about which of those happened, and the three have
+        completely different causes (a slow model, a changed model, a broken session)."""
+        if self.timed_out:
+            return f"did not finish in time ({self.seconds:.0f}s)"
+        if not self.stdout.strip():
+            return f"stdout was empty (exit {self.returncode}, {self.seconds:.0f}s)"
+        return (f"stdout had no {pattern} line (exit {self.returncode}, {self.seconds:.0f}s, "
+                f"{len(self.stdout.splitlines())} line(s))")
+
+
+def run_omp(env, prompt_args, timeout):
+    started = time.time()
+    try:
+        p = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--", *prompt_args,
+                   timeout=timeout)
+        return Run(p, time.time() - started)
+    except AssertionError as e:
+        return Run(None, time.time() - started, str(e))
+
+
+def model_calls(access):
+    """(number of model requests, their total bytes) from a squid access log -- so "the model is slow" or
+    "the model was never reached" is visible in the report rather than inferred from a wall-clock gap."""
+    n, size = 0, 0
+    for line in access.splitlines():
+        f = line.split()
+        if len(f) > 7 and f[2] in ("POST", "GET") and f[4] == "200":
+            n += 1
+            size += int(f[7]) if f[7].isdigit() else 0
+    return n, size
 
 
 def main():
@@ -80,14 +138,16 @@ def main():
 
     seen = set()
     model = ["--model", MODEL] if MODEL else []
-    p1 = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--",
-                "-p", "--no-title", *model, "Reply with exactly: AB_OK", timeout=900)
+    p1 = run_omp(env, ["-p", "--no-title", *model, "Reply with exactly: AB_OK"], 900)
     section("1. omp -p output", redact(p1.stdout + p1.stderr)[-3000:])
+    if p1.timed_out:
+        section("1. timed out", redact(p1.timed_out)[-2000:])
     access1 = new_proxy_logs(seen)
     section("1. proxy access log", access1[-3000:])
-    p2 = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--",
-                "-p", "--no-title", *model, TOOLS_PROMPT, timeout=1200)
+    p2 = run_omp(env, ["-p", "--no-title", *model, TOOLS_PROMPT], 1200)
     section("2. omp tools output", redact(p2.stdout + p2.stderr)[-4000:])
+    if p2.timed_out:
+        section("2. timed out", redact(p2.timed_out)[-2000:])
     access2 = new_proxy_logs(seen)
     section("2. proxy access log", access2[-4000:])
     access = access1 + access2
@@ -114,8 +174,16 @@ def main():
     # the capture is broken.
     empty = empty_proxy_logs([("1", ok1, access1), ("2", p2.returncode == 0 and bool(p2.stdout.strip()), access2)])
     left = harness.leftovers()
+    calls1, bytes1 = model_calls(access1)
     print("\n--- result ---")
-    print(f"{'PASS' if ok1 else 'FAIL'}  1. OMP answered AB_OK through the proxy (egress {MODE})")
+    print(f"{'PASS' if ok1 else 'FAIL'}  1. OMP answered AB_OK through the proxy (egress {MODE})"
+          + (f": {p1.why('AB_OK')}" if not ok1 else f" ({p1.seconds:.0f}s)"))
+    print(f"INFO  1. {calls1} model request(s) through the proxy, {bytes1} byte(s) in "
+          f"{p1.seconds:.0f}s"
+          + ("  -- the model was never reached: check it is up and that its host is allowed"
+             if not calls1 else "")
+          + ("  -- slow; `AB_LIVE_MODEL=<provider/model>` tries another"
+             if calls1 and p1.seconds > 120 else ""))
     print(f"INFO  2. browser: {'worked' if re.search(r'BROWSER (?!fail)', p2.stdout) else 'failed or unclear'}; "
           f"debugpy: {'worked' if 'DEBUGPY ok' in p2.stdout or 'AB_DEBUGPY_OK' in p2.stdout else 'failed or unclear'}")
     print(f"{'PASS' if not empty else 'FAIL'}  every session that answered has a proxy access log"

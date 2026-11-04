@@ -1462,3 +1462,31 @@ because a fake that answers every filter with the same list cannot tell "no laye
 agent's layer" -- the same defect class as the `network ls` template. And the image-gc test's fixture
 images carried none of the labels agentbox's own query filters on, so they only matched because the fake
 ignored the filter; the fixture is now what podman would really return for that query.
+
+## 4 November 2026 -- `make omp-live` has to say why it failed
+
+The same host run had `make omp-live` fail with one line: `FAIL 1. OMP answered AB_OK through the proxy`.
+Three completely different things produce that line -- the model was never reached, the model answered
+slowly and the run was cut off, or OMP answered something other than what was asked -- and the verdict
+distinguished none of them. We learned the truth (stdout was empty; two model calls took 67s and 80s) by
+reading the raw sections by eye. A live check that cannot say why it failed makes the next person re-run it
+to learn what the last run already knew.
+
+So the verdict now names the case (`stdout was empty (exit 0, 147s)` / `no AB_OK line (…, 3 line(s))` /
+`did not finish in time (900s)`), and an INFO line reports how many model requests went through the proxy
+and how many bytes, with a pointer when none did (the model is down, or its host is not allowed) or when
+it was slow enough to be the suspect.
+
+**And a timeout no longer costs the whole report.** It used to raise out of `main`, so the first attempt
+died on step 1 and never ran the key-leak scan or the teardown check -- the two checks you most want after
+a run that left something behind. It is still a FAIL naming the command (the harness guarantee from 29
+Oct), but one the rest of the run survives.
+
+**What this was diagnosing, for the record.** `make itest` at the same commit runs the *real* `omp -p
+--no-title 'Reply with exactly: STUB_OK'` against a stub model and asserts the exact answer, `OMP_EXIT=0`,
+the model POST carrying the session key, and the session history on the host
+(`test_step3_omp.test_omp_answers_through_its_model_config_with_the_key`). It passed. So agentbox at HEAD
+drives `omp -p` to an exact-match answer, and the variable in omp-live is the real model server -- which
+answered in 67s and 80s, took two turns for a one-line prompt, and gave three different outcomes in three
+attempts. The known-broken `pi-statusline` extension is not it either: decisions.md has it broken upstream
+since 15 Oct, and omp-live passed on 16 Oct with it already broken.
