@@ -574,6 +574,13 @@ def _inbox_rows(s, agent):
     return sorted(rows, key=lambda r: (r["added"], r["project"], r["name"]), reverse=True)
 
 
+def cmd_image_build(s, a):
+    from . import userimage
+    from .podman import Podman
+    userimage.build(s, Podman(s.podman), a.agent, force=a.force)
+    return 0
+
+
 def cmd_profile_harvest(s, a):
     """Read-only: what sessions have put in their inboxes, and nothing else.
 
@@ -1213,6 +1220,30 @@ def parser(settings=None):
     x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")
     x.add_argument("--agent", default="claude", choices=("claude", "omp"), help="whose profile (default: claude)")
     x.set_defaults(fn=cmd_profile_dismiss)
+
+    img_p = sub.add_parser(
+        "image", help="your own image layer on top of an agent's harness image", formatter_class=raw,
+        description="A personal layer for what you want in every session -- a language toolchain, a "
+                    "linter, a private CLI -- without it going into agentbox's own images, and without a "
+                    "session being able to put it there. Write a Containerfile in your profile "
+                    "(~/.config/agentbox/<agent>/profile/Containerfile); it must begin `ARG BASE` then "
+                    "`FROM ${BASE}`, and `ab image build` supplies BASE as the current harness image.\n\n"
+                    "The built image is checked before it is tagged: USER, ENTRYPOINT, CMD and PATH must "
+                    "match the harness image, and the image must still report the pinned agent version and "
+                    "have git, rg, python3 and the podman client. A build that fails any of those is "
+                    "discarded, so what you were using stays in place.\n\n"
+                    "The tag covers the harness image ID and the Containerfile. When the harness image is "
+                    "rebuilt your layer no longer matches it, and `ab run` says `personal layer out of "
+                    "date` and runs the plain harness image -- it never runs a layer built on an older "
+                    "harness. Build it again and the next session picks it up.",
+        epilog=ex("ab image build claude", "ab image build omp --force")).add_subparsers(dest="sub",
+                                                                                        required=True)
+    x = add(img_p, "build", "build your profile's Containerfile on top of the agent's harness image",
+            ex("ab image build claude", "ab image build omp --force"))
+    x.add_argument("agent", choices=("claude", "omp"), help="whose harness image to build on")
+    x.add_argument("--force", action="store_true",
+                   help="rebuild even when an image for this harness and Containerfile already exists")
+    x.set_defaults(fn=cmd_image_build)
 
     sess = sub.add_parser(
         "session", help="manage running sessions (the live instances)", formatter_class=raw,

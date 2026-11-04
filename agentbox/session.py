@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, profile, projectkeys, projectlock, registry, tokens
 from . import keys as keysmod
-from . import buildcap, builtrec, scan, sockguard
+from . import buildcap, builtrec, scan, sockguard, userimage
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -377,17 +377,43 @@ class Session:
             return True, "project"
         return False, ""
 
+    _image = None                      # set by _prepare_reserved, which also reports a stale layer
+
     @property
     def image(self):
-        """The container image to run: the harness image, or the user's own layer when the profile is on.
+        """The container image to run: the harness image, or the user's own layer when one is current.
 
-        A user image layer is built on top of the harness image and is profile content like a skill or an
-        instruction file, so `--no-profile` selects the harness image -- otherwise "no profile" would still
-        be running the user's own build of the agent. Nothing builds a user layer yet (profile.user_image)."""
+        Resolved once during `prepare` (it asks podman), so reading this is free and every reader -- the
+        hardening audit, the argv, the CLI-version check -- sees the same answer."""
+        return self._image or self.adapter.image
+
+    def _resolve_image(self):
+        """(image to run, note to report or "").
+
+        A user image layer is built on top of the harness image and is profile content like a skill is, so
+        `--no-profile` selects the harness image: "no profile" that still ran the user's own build of the
+        agent would be a lie.
+
+        With the profile on, the layer is used only when one is built on EXACTLY this harness image from
+        exactly this Containerfile (`profile.user_image_ref` keys the tag on both). When the harness image
+        has moved on, nothing is tagged under the new key, and the session runs the plain harness image and
+        says so -- it never runs a layer built on an older harness, which is the one thing a layer cannot be
+        trusted to still fit."""
         off, _why = self.profile_off
         if off:
-            return self.adapter.image
-        return profile.user_image(self.settings, self.adapter.name) or self.adapter.image
+            return self.adapter.image, ""
+        src = self.profile.dir or self.settings.profile_src(self.adapter.name)
+        recipe = profile.containerfile(src)
+        if recipe is None:
+            return self.adapter.image, ""           # no recipe: no layer is expected, nothing to report
+        harness_id, _pin = userimage.harness_pin(self.podman, self.adapter.image)
+        ref = profile.user_image_ref(self.adapter.name, harness_id, recipe)
+        if self.podman.image_exists(ref):
+            return ref, ""
+        return (self.adapter.image,
+                f"personal layer out of date: `ab image build {self.adapter.name}`. "
+                f"This session runs {self.adapter.image} instead -- a layer built on an older harness "
+                f"image is never run.")
 
     @property
     def state_dir(self):
@@ -464,7 +490,11 @@ class Session:
         self.setup = self.adapter.prepare_session(self, notes)
         self._check_setup()
         self._add_profile_mounts(notes)
-        _keep(self.log_path("profile"), self.profile.log_line().encode())
+        self._image, image_note = self._resolve_image()
+        _keep(self.log_path("profile"),
+              self.profile.log_line().encode() + f"image {self.adapter.name}={self._image}\n".encode())
+        if image_note:
+            self.warn(f"agentbox: {image_note}")
         if off:
             self.warn(f"agentbox: profile {self.adapter.name}=off (reason={why}): no profile skills, "
                       "instructions or plugins are loaded, and the harness image is used. agentbox's own "
@@ -798,11 +828,18 @@ class Session:
         return self.adapter.agent_argv(self.project.value("approvals")) + list(extra)
 
     def agent_cli_version(self):
-        """The agent CLI version baked into the adapter image, read from the `agentbox.cli-version` label that
-        `make <agent>-image` records. None if the image predates the label (rebuild to get it)."""
-        r = self.podman.run(["image", "inspect", self.image, "--format",
-                             '{{index .Labels "agentbox.cli-version"}}'], check=False)
-        v = (r.stdout or "").strip()
+        """The agent CLI version baked into the image this session runs, from the `agentbox.cli-version`
+        label that `make <agent>-image` records. None if the image predates the label (rebuild to get it),
+        or cannot be read at all -- this reports, it does not decide anything.
+
+        Read as JSON, the same way `ab image build` reads the same label, so the two cannot come to
+        disagree about where the pin lives. It was a Go template, which is the habit `podman network ls`
+        taught this project to drop."""
+        try:
+            doc = self.podman.image_json(self.image)
+        except AgentboxError:
+            return None
+        v = (userimage.image_labels(doc).get("agentbox.cli-version") or "").strip()
         return v if v and v not in ("<no value>", "unknown") else None
 
     # ---- lifecycle ----------------------------------------------------------------------

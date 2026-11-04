@@ -87,6 +87,7 @@ real config.
 | cgroup slice | `~/.config/systemd/user/agentbox.slice` | — | the memory/swap/task cap unit |
 | Base image | `localhost/agentbox-base:latest` (+`:<date>`) | — | the shared toolchain the agent images build on |
 | Agent images | `localhost/agentbox-{claude,omp}:latest` (+`:<date>`) | — | the session images (podman storage) |
+| Your own layer | `localhost/agentbox-<agent>-user:<key>` | — | optional, built by `ab image build <agent>` from a `Containerfile` in your profile; the key covers the harness image and that file |
 | Config | `~/.config/agentbox` | `AB_CONFIG_DIR` | `projects.toml`, `agentbox.toml`, `presets/`, `keys/`, `<agent>-oauth-token`, per-agent seeds (`claude/`, `omp/`) |
 | Data | `~/.local/share/agentbox` | `AB_DATA_DIR` | per-project agent state `<project>/<agent>/`, `backups/`, `logs/` |
 | Run (tmpfs) | `$XDG_RUNTIME_DIR/agentbox` | `AB_RUN_DIR` | live session metadata and generated configs under `sessions/`, podman sockets under `services/` — gone on reboot |

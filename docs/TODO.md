@@ -41,6 +41,30 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   branch) or an agent-config value belonging to the adapter that wants it. Until then the parameter is
   exercised by unit tests only (`tests/unit/test_scan.py:RefMovement`).
 
+- **The agent image layers are not restructured yet** (4 Nov). `agentbox-base` is built and both agent
+  images still build `FROM localhost/{claudecode,omp-env}`. Finishing it needs two facts this session could
+  not obtain:
+  1. **node ≥ 22 with a checksum.** Claude Code 2.1.318 declares `engines.node >= 22.0.0` and the npm
+     `oh-my-pi` package declares `>= 22.19.0`; no Debian stable suite ships it (bookworm 18.20.4, trixie
+     20.19.2), so node has to be a pinned download. `nodejs.org` and `deb.nodesource.com` are both refused
+     by this sandbox's proxy, and nodejs' GitHub releases carry no binaries — so the version and SHA256 have
+     to come from the host:
+     `curl -s https://nodejs.org/dist/index.json | jq -r '[.[]|select(.lts!=false)][0].version'` then the
+     matching line of `https://nodejs.org/dist/<v>/SHASUMS256.txt` for `node-<v>-linux-x64.tar.xz`.
+     They would live in the Makefile beside `PODMAN_REMOTE_VERSION`/`_SHA256` and be passed as build args.
+  2. **How omp-env installs OMP, Bun and Chromium.** `~/repos/omp-env` is not mounted in a session, and npm
+     `oh-my-pi` is at 0.2.0 — nothing like the 18.x line the pin names — so the channel is something else
+     and guessing it would produce a broken OMP image. The `omp-env/Containerfile` settles it.
+  The Claude layer's own pin is ready: `@anthropic-ai/claude-code@2.1.318`, integrity
+  `sha512-OTJgLxcvWefv8IdTsq5n90Z2IxEhLwKqHUBhwZYE4odXzKA/Tb6p2Zb5Iy9Vq7JIVcNZzn9cPxW5sb42wLF95Q==`
+  (npm, 4 Nov), with the auto-updater off in the image and the version on the `agentbox.cli-version` label
+  that `ab selftest` already compares against.
+
+- **Old user image layers are never pruned** (4 Nov). Each harness image rebuild or Containerfile edit
+  gives a new `localhost/agentbox-<agent>-user:<key>` tag and leaves the previous one in podman storage.
+  `ab session gc` prunes agentbox's own images by age (`image_keep_days`); the user layers are not in that
+  sweep. Low: `podman image rm` by hand, or add them to the same sweep once the shape settles.
+
 ## Nice to have — cleanup / future
 - **A curator for the profile** (29 Oct, deliberately not built). `ab profile harvest` lists, groups and
   marks; promoting is still a human reading a skill and deciding. The follow-up would be a small project of

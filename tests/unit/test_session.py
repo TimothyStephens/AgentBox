@@ -128,20 +128,19 @@ class SessionTest(SettingsCase):
         self.assertIn(s.name, snaps[0])
 
     def test_agent_cli_version_from_image_label(self):
-        import types
+        """Read as JSON through the fake podman, so the real parse runs -- not a mocked `podman.run`."""
+        import json as _json
         s = self.make()
-        seen = {}
-
-        def fake(argv, **kw):
-            seen["argv"] = argv
-            return types.SimpleNamespace(stdout="claude 1.2.3 (Claude Code)\n", returncode=0, stderr="")
-        s.podman.run = fake
+        img = s.adapter.image
+        os.environ["FAKE_PODMAN_IMAGE_JSON"] = _json.dumps(
+            {img: {"Id": "sha256:aaa", "Config": {"Labels": {"agentbox.cli-version": "claude 1.2.3 (Claude Code)"}}}})
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGE_JSON", None)
         self.assertEqual(s.agent_cli_version(), "claude 1.2.3 (Claude Code)")
-        self.assertEqual(seen["argv"][:2], ["image", "inspect"])
-        self.assertIn(s.adapter.image, seen["argv"])
-        self.assertIn("agentbox.cli-version", " ".join(seen["argv"]))
-        # an image built before the label: podman prints "<no value>" -> None
-        s.podman.run = lambda argv, **kw: types.SimpleNamespace(stdout="<no value>\n", returncode=0, stderr="")
+        # an image built before the label exists at all -> None, not a crash
+        os.environ["FAKE_PODMAN_IMAGE_JSON"] = _json.dumps({img: {"Id": "sha256:aaa", "Config": {}}})
+        self.assertIsNone(s.agent_cli_version())
+        # and an image podman does not have (exit 125) is also None: this reports, it decides nothing
+        os.environ["FAKE_PODMAN_IMAGE_JSON"] = "{}"
         self.assertIsNone(s.agent_cli_version())
 
     def test_dev_swap_in_argv(self):

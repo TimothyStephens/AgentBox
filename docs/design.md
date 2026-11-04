@@ -600,6 +600,23 @@ start (for OMP, `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright 
 `profile` is deliberately *not* security-relevant, so a ceiling preset does not refuse `profile = "on"`:
 see decisions.md.
 
+**A personal image layer** (`userimage.py`, 4 Nov). The image chain is
+`agentbox-base -> agentbox-<agent> -> (optional) localhost/agentbox-<agent>-user`. A `Containerfile` in the
+profile is built by `ab image build <agent>` on top of the agent's harness image, for what only this user
+wants in every session without it entering agentbox's own images. Four things bound it:
+
+- **it is a layer, not a replacement.** The recipe must be `ARG BASE` then `FROM ${BASE}`, with no other
+  `FROM`; `ab image build` supplies BASE. Anything else would put an unknown image under the session.
+- **it cannot change how the agent is started.** `USER`, `ENTRYPOINT`, `CMD` and `PATH` must match the
+  harness image, and the built image must still report the pinned agent version and carry `git`, `rg`,
+  `python3` and the podman client. It is built under a candidate tag and only tagged for real once it
+  passes, so a rejected build leaves the image in use exactly where it was.
+- **it is never stale.** The tag is keyed on the **harness image ID** and the Containerfile, so a rebuilt
+  harness image gives a key nothing is tagged under: `ab run` says `personal layer out of date:
+  ab image build <agent>` and runs the plain harness image. A layer built on an older harness is never run.
+  Adding a skill does not invalidate it — the profile hash is not part of the key.
+- **`--no-profile` never selects it**, since a layer is profile content like a skill is.
+
 **OMP loads the profile the same way** (29 Oct), at `~/.omp/agent/{skills,rules,prompts,agents,commands}`.
 This rests on one fact about OMP: **autolearn writes only to `<agentDir>/managed-skills`**, never to
 `<agentDir>/skills`, and both are discovered unconditionally (oh-my-pi:

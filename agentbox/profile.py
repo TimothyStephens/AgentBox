@@ -344,14 +344,80 @@ def migrate_legacy_seed(settings, agent, out=None):
     return moved
 
 
-def user_image(settings, agent):
-    """The user's own image layer for this agent, or "" when there is none.
+# --- the user's own image layer ----------------------------------------------------------------------
+# `agentbox-base -> agentbox-<agent> -> this`. A user layer is profile content like a skill is, so
+# `--no-profile` never selects one (session.Session._resolve_image).
+USER_IMAGE_REPO = "localhost/agentbox-{agent}-user"
+CONTAINERFILE = "Containerfile"
+CONTRACT = ("a user Containerfile must begin with `ARG BASE`, then `FROM ${BASE}`, and may hold no other "
+            "FROM: `ab image build` passes the current harness image as BASE, and a layer that names its "
+            "own base is not a layer on this harness")
 
-    The hook point for the planned `agentbox-base -> agentbox-<agent> -> user layer` chain: a user layer is
-    built FROM the harness image and is profile content like a skill is, so `--no-profile` must not select
-    it. Nothing builds one yet, so this is always "" -- but the launcher asks HERE (`session.Session.image`),
-    which is what makes the `--no-profile` guarantee hold the moment something does."""
-    return ""
+
+def containerfile(src):
+    """The profile's Containerfile as bytes, or None when it has none -- which is the normal case, and
+    means "no user image layer", not an error."""
+    p = os.path.join(src, CONTAINERFILE)
+    if os.path.islink(p) or not os.path.isfile(p):
+        return None
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def user_image_key(harness_id, recipe):
+    """The tag a user layer built on THIS harness image from THIS recipe carries.
+
+    Keyed on the harness image ID and the Containerfile, deliberately NOT on the profile hash: adding a
+    skill must not invalidate a built image, and a new harness image must. The image ID rather than the
+    `:latest` tag it was built from, because that tag moves -- which is the entire staleness this exists to
+    notice."""
+    h = hashlib.sha256()
+    h.update(harness_id.encode() + b"\0" + recipe)
+    return h.hexdigest()[:16]
+
+
+def user_image_ref(agent, harness_id, recipe):
+    return f"{USER_IMAGE_REPO.format(agent=agent)}:{user_image_key(harness_id, recipe)}"
+
+
+def _directives(recipe):
+    """(KEYWORD, rest) for each Containerfile instruction, continuations joined and comments dropped."""
+    out, buf = [], ""
+    for raw in recipe.decode("utf-8", errors="replace").splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        stripped = raw.rstrip()
+        if stripped.endswith("\\"):
+            buf += stripped[:-1] + " "
+            continue
+        buf += stripped
+        if buf.strip():
+            word, _, rest = buf.strip().partition(" ")
+            out.append((word.upper(), rest.strip()))
+        buf = ""
+    if buf.strip():
+        word, _, rest = buf.strip().partition(" ")
+        out.append((word.upper(), rest.strip()))
+    return out
+
+
+def check_user_containerfile(recipe):
+    """Raise unless the recipe follows CONTRACT. Returns the directives when it does."""
+    ds = _directives(recipe)
+    froms = [i for i, (word, _rest) in enumerate(ds) if word == "FROM"]
+    if len(froms) != 1:
+        raise AgentboxError(f"{CONTAINERFILE}: expected exactly one FROM, found {len(froms)}; {CONTRACT}")
+    i = froms[0]
+    base = ds[i][1].split()[0] if ds[i][1] else ""
+    if base not in ("${BASE}", "$BASE"):
+        raise AgentboxError(f"{CONTAINERFILE}: FROM {base or '(nothing)'} is not allowed; {CONTRACT}")
+    before = ds[:i]
+    if [w for w, _r in before if w != "ARG"]:
+        raise AgentboxError(f"{CONTAINERFILE}: only `ARG BASE` may come before the FROM; {CONTRACT}")
+    if not any(w == "ARG" and r.split("=")[0].strip() == "BASE" for w, r in before):
+        raise AgentboxError(f"{CONTAINERFILE}: `ARG BASE` must be declared above the FROM that uses it, "
+                            f"or ${{BASE}} is empty; {CONTRACT}")
+    return ds
 
 
 def load_for_session(settings, adapter, *, out=None, off_reason=""):

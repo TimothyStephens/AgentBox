@@ -35,6 +35,10 @@ GROUPS = [
         ("ab profile promote", ["profile", "promote"]),
         ("ab profile dismiss", ["profile", "dismiss"]),
     ]),
+    ("ab image", [
+        ("ab image", ["image"]),
+        ("ab image build", ["image", "build"]),
+    ]),
     ("ab session", [
         ("ab session", ["session"]),
         ("ab session ls", ["session", "ls"]),

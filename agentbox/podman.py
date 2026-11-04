@@ -90,6 +90,30 @@ class Podman:
             raise AgentboxError(f"podman network ls output could not be read as JSON ({e}); "
                                 f"refusing to treat that as 'no networks'")
 
+    def image_json(self, ref):
+        """One image's inspect report, as podman gives it. `--format json` read in Python, never a Go
+        template: the `network ls` episode (above) is what that habit cost."""
+        p = self.run(["image", "inspect", ref, "--format", "json"])
+        try:
+            docs = json.loads(p.stdout or "[]") or []
+        except ValueError as e:
+            raise AgentboxError(f"podman image inspect {ref} output could not be read as JSON ({e})")
+        if not docs:
+            raise AgentboxError(f"podman image inspect {ref} returned nothing")
+        return docs[0]
+
+    def image_exists(self, ref):
+        """Does this image exist locally? `podman image exists` answers by exit status: 0 yes, 1 no.
+
+        Anything else is neither answer and raises, rather than reading as "no" -- a broken podman must not
+        look like a missing image, which is how a stale personal layer would be silently rebuilt or a
+        current one silently skipped."""
+        p = self.run(["image", "exists", ref], check=False)
+        if p.returncode in (0, 1):
+            return p.returncode == 0
+        err = (p.stderr or "").strip().splitlines()[-2:]
+        raise AgentboxError(f"podman image exists {ref} failed ({p.returncode}): {' '.join(err)}")
+
     def containers_json(self, labels):
         """Every container carrying all `labels`, as podman reports it.
 

@@ -139,6 +139,7 @@ class TheManualScriptCoversEveryFormat(unittest.TestCase):
     # Tim runs this script on the host, where live services are, so every podman subcommand in it has to be
     # one that only reads. Checked against the invocations themselves, not the prose around them.
     READ_ONLY = {("--version",), ("ps",), ("images",), ("inspect",), ("image", "inspect"),
+                 ("image", "exists"),
                  ("network", "ls"), ("network", "inspect"), ("pod", "ps"), ("volume", "ls")}
 
     def podman_subcommands(self):

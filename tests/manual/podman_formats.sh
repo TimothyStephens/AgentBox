@@ -93,11 +93,42 @@ else
   skip "inspect (networks json)" 'no container on this host'
 fi
 
-# agentbox/session.py: the agent CLI version label baked into the adapter image
+# agentbox/podman.py: image_json(), which `ab image build` and the CLI-version check both read. The label
+# used to be fetched with `{{index .Labels "..."}}` -- a template that works here but is exactly the kind
+# this script exists to doubt, so both readers go through --format json now.
 if [ -n "$img" ]; then
-  check "image inspect (label)" '{{index .Labels "agentbox.cli-version"}}'    image inspect "$img"
+  check "image inspect (json)" 'json'                                        image inspect "$img"
+  # Kept as a NOTE, not a check: nothing in agentbox issues it any more, but if a future podman stops
+  # accepting `index .Labels` here too, that is worth seeing before something reaches for it again.
+  if "$PODMAN" image inspect "$img" --format '{{index .Labels "agentbox.cli-version"}}' >/dev/null 2>&1; then
+    echo "NOTE  'index .Labels' still works on image inspect (agentbox reads json regardless)"
+  else
+    echo "NOTE  'index .Labels' is now REJECTED on image inspect too; agentbox already reads json"
+  fi
 else
-  skip "image inspect (label)" 'no tagged image on this host'
+  skip "image inspect (json)" 'no tagged image on this host'
+fi
+
+# agentbox/podman.py: image_exists() answers by EXIT STATUS, not a format -- 0 yes, 1 no, anything else is
+# neither and raises. Checked here because this script is the only place that asks real podman anything.
+if [ -n "$img" ]; then
+  "$PODMAN" image exists "$img"; rc=$?
+  if [ $rc -eq 0 ]; then
+    pass=$((pass + 1)); printf 'PASS  %-34s %s\n' "image exists (present)" "exit 0"
+  else
+    fail=$((fail + 1)); failed_list+=("image exists: an image that IS present exited $rc")
+    printf 'FAIL  %-34s exit %s\n' "image exists (present)" "$rc"
+  fi
+  "$PODMAN" image exists localhost/agentbox-no-such-image:abt 2>/dev/null; rc=$?
+  if [ $rc -eq 1 ]; then
+    pass=$((pass + 1)); printf 'PASS  %-34s %s\n' "image exists (absent)" "exit 1"
+  else
+    fail=$((fail + 1)); failed_list+=("image exists: an absent image exited $rc, not 1")
+    printf 'FAIL  %-34s exit %s\n' "image exists (absent)" "$rc"
+  fi
+else
+  skip "image exists (present)" 'no tagged image on this host'
+  skip "image exists (absent)"  'no tagged image on this host'
 fi
 
 echo

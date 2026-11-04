@@ -47,6 +47,10 @@ class ClaudeWithoutTheProfile(SettingsCase):
     def mounts(self, s):
         return {m.split("dst=")[1].split(",")[0]: m for m in s.run_args(["true"]) if "--mount=" in m}
 
+    def profile_log(self, s):
+        with open(s.log_path("profile")) as f:
+            return f.read().splitlines()
+
     # ---- the flag ----
 
     def test_with_the_profile_on_the_skill_is_mounted(self):
@@ -93,8 +97,10 @@ class ClaudeWithoutTheProfile(SettingsCase):
 
     def test_the_session_log_says_it_was_off_and_why(self):
         s, warnings = self.start(no_profile=True)
-        line = open(s.log_path("profile")).read()
-        self.assertEqual(line, "profile claude=off reason=flag\n")
+        lines = self.profile_log(s)
+        self.assertEqual(lines[0], "profile claude=off reason=flag")
+        self.assertEqual(lines[1], "image claude=localhost/agentbox-claude:latest",
+                         "and the log says which image actually ran")
         self.assertTrue(any("profile claude=off (reason=flag)" in w for w in warnings), warnings)
 
     # ---- the project setting ----
@@ -103,12 +109,12 @@ class ClaudeWithoutTheProfile(SettingsCase):
         s, _w = self.start("off1", profile="off")
         self.assertTrue(s.profile.off)
         self.assertEqual(s.profile.mounts, [])
-        self.assertEqual(open(s.log_path("profile")).read(), "profile claude=off reason=project\n")
+        self.assertEqual(self.profile_log(s)[0], "profile claude=off reason=project")
 
     def test_the_flag_is_the_reason_when_both_say_off(self):
         """The flag was typed just now; the setting has been there all along."""
         s, _w = self.start("off2", no_profile=True, profile="off")
-        self.assertEqual(open(s.log_path("profile")).read(), "profile claude=off reason=flag\n")
+        self.assertEqual(self.profile_log(s)[0], "profile claude=off reason=flag")
 
     def test_profile_on_is_the_default_and_loads(self):
         s, _w = self.start("on1", profile="on")
@@ -118,16 +124,24 @@ class ClaudeWithoutTheProfile(SettingsCase):
     # ---- the image ----
 
     def test_the_harness_image_is_used_and_a_user_layer_is_never_selected(self):
-        with mock.patch("agentbox.profile.user_image", return_value="localhost/mine:latest"):
-            s, _w = self.start(no_profile=True)
-            self.assertEqual(s.image, "localhost/agentbox-claude:latest")
-            self.assertIn("localhost/agentbox-claude:latest", s.run_args(["true"]))
-            on, _w2 = self.start("p3")
-            self.assertEqual(on.image, "localhost/mine:latest", "the hook point is consulted when on")
-
-    def test_there_is_no_user_layer_yet(self):
-        self.assertEqual(profile.user_image(self.settings, "claude"), "")
-        self.assertEqual(profile.user_image(self.settings, "omp"), "")
+        """A user image layer exists and is current, and `--no-profile` still runs the plain harness image:
+        a layer is built on the harness and is profile content, so "no profile" that ran the user's own
+        build of the agent would be a lie. The layer is not even looked for -- there is no warning."""
+        import json as _json
+        harness = "localhost/agentbox-claude:latest"
+        self.write("config/claude/profile/Containerfile", "ARG BASE\nFROM ${BASE}\nRUN true\n")
+        recipe = open(os.path.join(self.settings.profile_src("claude"), "Containerfile"), "rb").read()
+        ref = profile.user_image_ref("claude", "sha256:harness1", recipe)
+        os.environ["FAKE_PODMAN_IMAGE_JSON"] = _json.dumps({harness: {"Id": "sha256:harness1"},
+                                                            ref: {"Id": "sha256:layer1"}})
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGE_JSON", None)
+        s, warnings = self.start(no_profile=True)
+        self.assertEqual(s.image, harness)
+        self.assertIn(harness, s.run_args(["true"]))
+        self.assertNotIn(ref, s.run_args(["true"]))
+        self.assertFalse([w for w in warnings if "out of date" in w], warnings)
+        on, _w = self.start("p3")
+        self.assertEqual(on.image, ref, "and with the profile on, the layer is what runs")
 
 
 class TheSettingItself(SettingsCase):
@@ -222,7 +236,8 @@ class OmpWithoutTheProfile(OmpSessionBase):
     def test_the_profile_load_paths_are_dropped_as_well(self):
         s = self.make(no_profile=True)
         self.assertEqual(s.profile.mounts, [])
-        self.assertEqual(open(s.log_path("profile")).read(), "profile omp=off reason=flag\n")
+        with open(s.log_path("profile")) as f:
+            self.assertEqual(f.read().splitlines()[0], "profile omp=off reason=flag")
 
     def test_a_mid_start_plugin_change_is_not_checked_when_nothing_is_mounted(self):
         """`unchanged()` guards the mounts against an `omp-env install` racing the session start. With no

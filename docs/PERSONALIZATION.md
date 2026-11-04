@@ -51,6 +51,16 @@ persists across sessions of that project. The host `~/.claude` is never used.
   config dir at every start instead of being mounted read-only.
 - **Skills and sub-agents a session writes** no longer accumulate in the per-project config dir (those paths
   are read-only mounts now). Anything already there is moved to the project's inbox once, with a message.
+- **Your own image layer** (4 Nov): put a `Containerfile` in the profile, beginning `ARG BASE` then
+  `FROM ${BASE}`, and `ab image build claude` builds it on the harness image — for a toolchain or CLI you
+  want in every session. It is checked before it is tagged (USER/ENTRYPOINT/CMD/PATH unchanged, the pinned
+  agent version, `git`/`rg`/`python3`/podman present), and a failed build leaves the one you were using in
+  place. When the harness image is rebuilt, `ab run` says `personal layer out of date` and runs the plain
+  harness image until you build again. Only the `Containerfile` and `plugins.toml` affect the image's
+  identity — editing a skill does not. `ab run --no-profile` runs the harness image.
+- **Turning the profile off:** `ab run --no-profile` for one run, or `ab project set <p> --profile off` for
+  good. That drops the mounts, the copied `settings.json`, the profile text in `CLAUDE.md`, the plugins and
+  the image layer; agentbox's own session notes still apply.
 - **Plugins / slash commands:** Claude has no plugin tree like OMP; its reusable pieces are slash commands in
   `commands/`. Put them in the profile (global, read-only) or in the project's `.claude/commands/`.
 - **Memory shortcuts:** a `#` note aimed at the *project's* `CLAUDE.md` works as usual (it is in the grant,

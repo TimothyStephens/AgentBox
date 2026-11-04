@@ -17,6 +17,7 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 - [ab selftest](#ab-selftest)
 - [ab project](#ab-project)
 - [ab profile](#ab-profile)
+- [ab image](#ab-image)
 - [ab session](#ab-session)
 - [ab keys](#ab-keys)
 
@@ -27,12 +28,13 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 The launcher. `ab project` manages saved configuration; `ab session` manages live runs; `ab run` and `ab init` create them.
 
 ```text
-usage: ab [-h] {init,project,run,attach,profile,session,selftest,keys} ...
+usage: ab [-h]
+          {init,project,run,attach,profile,image,session,selftest,keys} ...
 
 agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session.
 
 positional arguments:
-  {init,project,run,attach,profile,session,selftest,keys}
+  {init,project,run,attach,profile,image,session,selftest,keys}
     init                scaffold a new project with a grantcheck-clean layout
                         (secrets masked, live data in a named volume), then
                         register it
@@ -43,6 +45,8 @@ positional arguments:
                         for a project
     profile             the host-owned agent profile: what every session
                         loads, and the inbox it feeds
+    image               your own image layer on top of an agent's harness
+                        image
     session             manage running sessions (the live instances)
     selftest            prove the sandbox boundaries hold (posture, egress,
                         mounts, podman scoping)
@@ -759,6 +763,52 @@ options:
 
 examples:
   ab profile dismiss web/notes.md
+```
+
+## ab image
+
+### `ab image`
+
+```text
+usage: ab image [-h] {build} ...
+
+A personal layer for what you want in every session -- a language toolchain, a linter, a private CLI -- without it going into agentbox's own images, and without a session being able to put it there. Write a Containerfile in your profile (~/.config/agentbox/<agent>/profile/Containerfile); it must begin `ARG BASE` then `FROM ${BASE}`, and `ab image build` supplies BASE as the current harness image.
+
+The built image is checked before it is tagged: USER, ENTRYPOINT, CMD and PATH must match the harness image, and the image must still report the pinned agent version and have git, rg, python3 and the podman client. A build that fails any of those is discarded, so what you were using stays in place.
+
+The tag covers the harness image ID and the Containerfile. When the harness image is rebuilt your layer no longer matches it, and `ab run` says `personal layer out of date` and runs the plain harness image -- it never runs a layer built on an older harness. Build it again and the next session picks it up.
+
+positional arguments:
+  {build}
+    build     build your profile's Containerfile on top of the agent's harness
+              image
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab image build claude
+  ab image build omp --force
+```
+
+### `ab image build`
+
+```text
+usage: ab image build [-h] [--force] {claude,omp}
+
+build your profile's Containerfile on top of the agent's harness image
+
+positional arguments:
+  {claude,omp}  whose harness image to build on
+
+options:
+  -h, --help    show this help message and exit
+  --force       rebuild even when an image for this harness and Containerfile
+                already exists
+
+examples:
+  ab image build claude
+  ab image build omp --force
 ```
 
 ## ab session

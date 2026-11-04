@@ -547,10 +547,12 @@ class OmpInboxAndProfile(OmpSessionBase):
     def test_the_log_records_what_was_loaded(self):
         self.profile_with("skills", "commands")
         s = self.make()
-        line = open(s.log_path("profile")).read()
-        self.assertIn(f"hash={s.profile.hash}", line)
-        self.assertIn("agent=omp", line)
-        self.assertEqual(sorted(line.split("loaded=")[1].strip().split(",")), ["commands", "skills"])
+        with open(s.log_path("profile")) as f:
+            lines = f.read().splitlines()
+        self.assertIn(f"hash={s.profile.hash}", lines[0])
+        self.assertIn("agent=omp", lines[0])
+        self.assertEqual(sorted(lines[0].split("loaded=")[1].strip().split(",")), ["commands", "skills"])
+        self.assertEqual(lines[1], f"image omp={s.image}", "and which image actually ran")
 
     # --- autolearn's own directory: writable, per session, harvested ---
 

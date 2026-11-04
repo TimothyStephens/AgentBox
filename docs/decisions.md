@@ -1409,3 +1409,41 @@ version does not match the host service. `required_tools` -- the list `ab selfte
 session -- is `bash, git, omp, bun, python, chromium, podman, podman-compose`, and the compose tool comes
 from `images/requirements.txt` via pip, not from the base. So no agentbox path invokes a container client
 that the base image provides, and the image restructure can drop them.
+
+## 4 November 2026 -- the personal image layer, and why it is keyed on the harness image ID
+
+`ab image build <agent>` builds a `Containerfile` from the profile on top of the agent's harness image
+(`agentbox/userimage.py`). The decisions worth writing down are about what it is keyed on and what it is
+checked against.
+
+**The tag is keyed on the harness image ID plus the Containerfile, not on the profile hash.** Three
+consequences, all wanted: adding a skill does not invalidate a built image (the profile changes constantly;
+the image's inputs do not); editing the Containerfile does invalidate it; and rebuilding the harness image
+invalidates it. The **ID** rather than the `:latest` tag it was built from, because that tag moves -- a tag
+would make the key look stable while what is underneath changed, which is the exact failure this is for.
+
+**A layer built on an older harness image is never run.** When the key does not match, nothing is tagged
+under it, so `ab run` reports `personal layer out of date: ab image build <agent>` and runs the plain
+harness image. Running it anyway was the alternative, and it means the agent CLI, the podman client and the
+toolchain under a session are whatever they were the last time someone remembered to rebuild -- silently,
+because the tag still resolves. A session that is one warning short of personalised is a much better
+failure than one that is quietly months old.
+
+**Four image properties are compared against the harness image:** `USER`, `ENTRYPOINT`, `CMD` and `PATH`.
+They are how the launcher's contract with the image is expressed -- the wrapper runs through the entrypoint,
+the agent binary is found on PATH, the container runs as the host user via USER plus `--userns=keep-id`.
+`PATH` is in there because it is how "the agent binary path" is checkable from `image inspect` at all:
+prepend a directory and `claude` is whatever is in it. The binary is then actually *run*: the built image is
+started once, offline, and must report the agent version the harness image is pinned at and carry `git`,
+`rg`, `python3` and the podman client.
+
+**A rejected build is never tagged.** It is built under `<ref>-candidate`, checked, and only then given the
+real tag. So a bad edit cannot take away the layer that was working: the failure is a message listing every
+reason, and the previous image is untouched.
+
+**`image inspect` is read as JSON, in Python**, by both this and the session's CLI-version check -- which
+was a Go template (`{{index .Labels "agentbox.cli-version"}}`) until now. The template works on
+`image inspect`; the point is that two readers of the same label should not reach it two different ways, and
+`podman network ls` already taught this project what a per-subcommand template contract costs.
+`podman image exists` answers by exit status, and 0/1 are the only answers taken: anything else raises
+rather than reading as "no", so a podman that cannot answer does not look like a missing image.
