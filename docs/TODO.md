@@ -33,13 +33,15 @@ that point; the unit suite also runs with zero ResourceWarnings. The third prese
   gone and nothing of its session running) is reaped, with what was removed reported; a live holder is never
   overruled, and an unreadable podman stops the operation instead of freeing a lock on a guess.
 
-- **`base_branch` has no source** (4 Nov). The scan reports a named base branch's new commits one by one
-  (`scan.report(..., base_branch=)`), and teardown reads the value from the scan state written at session
-  start, so `ab session kill` and `ab session gc` name the same branch the launcher would. **Nothing writes
-  it.** The one line needed is in `session._write_scan_state`, which has to put `base_branch` in the doc; what
-  it reads it *from* is the open question — a project registry key (so any project can name its integration
-  branch) or an agent-config value belonging to the adapter that wants it. Until then the parameter is
-  exercised by unit tests only (`tests/unit/test_scan.py:RefMovement`).
+- ~~**`base_branch` has no source**~~ — **wired 4 Nov** as a project registry key:
+  `ab project set <p> --base-branch mags/integration`. `session._write_scan_state` records it at session
+  START, so `ab session kill` and `ab session gc` name the branch the session was configured with even if
+  the registry is edited while it runs.
+
+  **agentbox does not own the value.** MAGS-CodeDev has its own `settings.base_branch`
+  (`mags_codedev/config.template.yaml`), and a project using it gives the same name here — one value in two
+  places, both the user's. Reading MAGS's config to find it would couple agentbox to another tool's file
+  format for a string the user can state in a word. agentbox neither creates nor checks out the branch.
 
 - ~~**The agent image layers are not restructured yet**~~ — **done, 4 Nov.** The chain is
   `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optionally a personal layer, and

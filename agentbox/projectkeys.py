@@ -33,6 +33,10 @@ from .errors import AgentboxError
 IMAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/:@*?-]*$")
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+# A git branch name, by git's own rules as far as they matter here: no leading '-' or '.', no '..', no
+# space or shell metacharacter, no trailing '/' or '.lock'. The name reaches `git log <ref> ^<ref>` in the
+# end-of-session scan, so it has to be a ref and nothing else.
+GIT_BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")
 PODMAN_TIERS = ("none", "observe", "exec", "dev")
 PODMAN_TIGHTEST = {"tier": "none"}
 
@@ -131,6 +135,17 @@ KEYS = (
          inert="", inert_reason=""),
     _key("swap", kind="project", arity="map", flags=("--swap",), dest="swap", validate="swap", values=(),
          security=True, clears=False, unsettable=True, display="stored", inert="", inert_reason=""),
+    # The branch the project's work lands on, so the end-of-session scan can name that branch's new
+    # commits one by one instead of reporting a count. NOT security-relevant: it changes what the scan
+    # REPORTS and grants nothing, so a ceiling preset must not refuse it.
+    #
+    # agentbox does not own the value. MAGS-CodeDev has its own `settings.base_branch` (its
+    # config.template.yaml), and a project using it sets this to the same name -- one value in two places,
+    # both of them the user's. Reading MAGS's config to find it would couple agentbox to another tool's
+    # file format for a string the user can simply state.
+    _key("base_branch", kind="project", arity="scalar", flags=("--base-branch",), dest="base_branch",
+         validate="git_branch", values=(), security=False, clears=False, unsettable=True,
+         display="stored", inert="", inert_reason=""),
     _key("build_memory", kind="project", arity="scalar", flags=("--build-memory",), dest="build_memory",
          validate="size", values=(), security=False, clears=False, unsettable=True, display="always",
          inert="not_dev_tier", inert_reason="only the dev tier builds"),
@@ -338,6 +353,16 @@ def _compose_name(_name, where, value, **_kw):
     return value
 
 
+def _git_branch(_name, where, value, **_kw):
+    """A branch name the scan can hand to git as a ref, and nothing that is not one."""
+    if not isinstance(value, str) or not GIT_BRANCH.match(value):
+        raise AgentboxError(f"{where}: base_branch {value!r}: a git branch name (letters, digits, "
+                            "'.', '_', '-', '/'), not starting with '-' or '.'")
+    if ".." in value or value.endswith((".lock", "/", ".")) or "//" in value:
+        raise AgentboxError(f"{where}: base_branch {value!r} is not a valid git ref")
+    return value
+
+
 def _image_patterns(_name, where, value, **_kw):
     if not isinstance(value, list) or not all(isinstance(p, str) and IMAGE_PATTERN.match(p) for p in value):
         raise AgentboxError(f"{where}: dev_images must be a list of image name patterns "
@@ -429,6 +454,7 @@ VALIDATORS = {
     "domains": _domains,
     "size": _size,
     "compose_name": _compose_name,
+    "git_branch": _git_branch,
     "image_patterns": _image_patterns,
     "rel_names": _rel_names,
     "name_list": _name_list,

@@ -74,8 +74,8 @@ Scaffold a new project with a safe-by-construction layout (secrets masked, live 
 usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
                [--data-ro DIR] [--data-rw DIR] [--egress MODE]
                [--extra-domain DOMAIN] [--build-memory SIZE]
-               [--profile on|off] [--mask-skip DIR] [--podman TIER]
-               [--compose-project NAME] [--dev-image PATTERN]
+               [--base-branch BRANCH] [--profile on|off] [--mask-skip DIR]
+               [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
                [--swap TARGET=STANDIN] [--observe-logs | --no-observe-logs]
                [--accept-history-secrets] [--i-understand-grant-exposure]
                {pod,python}
@@ -124,6 +124,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --base-branch BRANCH  the branch this project's work lands on (e.g.
+                        mags/integration). The end-of-session scan names that
+                        branch's new commits one by one instead of reporting a
+                        count. agentbox neither creates nor checks out the
+                        branch; when a tool like MAGS-CodeDev has its own
+                        base_branch setting, give the same name here
   --profile on|off      whether this project's sessions load the host-owned
                         profile (skills, sub-agents, commands, instructions,
                         settings) and the agent's plugins (default: on). `off`
@@ -309,8 +315,8 @@ Register a project with a preset, validating it against overlap and grant exposu
 ```text
 usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
-                      [--build-memory SIZE] [--profile on|off]
-                      [--mask-skip DIR] [--podman TIER]
+                      [--build-memory SIZE] [--base-branch BRANCH]
+                      [--profile on|off] [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
                       [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
@@ -359,6 +365,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --base-branch BRANCH  the branch this project's work lands on (e.g.
+                        mags/integration). The end-of-session scan names that
+                        branch's new commits one by one instead of reporting a
+                        count. agentbox neither creates nor checks out the
+                        branch; when a tool like MAGS-CodeDev has its own
+                        base_branch setting, give the same name here
   --profile on|off      whether this project's sessions load the host-owned
                         profile (skills, sub-agents, commands, instructions,
                         settings) and the agent's plugins (default: on). `off`
@@ -414,8 +426,8 @@ Change a registered project's settings in place, re-validated, with the same fla
 ```text
 usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
-                      [--build-memory SIZE] [--profile on|off]
-                      [--mask-skip DIR] [--podman TIER]
+                      [--build-memory SIZE] [--base-branch BRANCH]
+                      [--profile on|off] [--mask-skip DIR] [--podman TIER]
                       [--compose-project NAME] [--dev-image PATTERN]
                       [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
@@ -465,6 +477,12 @@ options:
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
                         2g, e.g. 4g)
+  --base-branch BRANCH  the branch this project's work lands on (e.g.
+                        mags/integration). The end-of-session scan names that
+                        branch's new commits one by one instead of reporting a
+                        count. agentbox neither creates nor checks out the
+                        branch; when a tool like MAGS-CodeDev has its own
+                        base_branch setting, give the same name here
   --profile on|off      whether this project's sessions load the host-owned
                         profile (skills, sub-agents, commands, instructions,
                         settings) and the agent's plugins (default: on). `off`
@@ -509,7 +527,8 @@ options:
                         again (repeatable); one of: compose, egress, podman,
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
-                        dev_images, mask_skip, swap, build_memory, profile
+                        dev_images, mask_skip, swap, base_branch,
+                        build_memory, profile
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains

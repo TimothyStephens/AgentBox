@@ -105,6 +105,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["build_memory"] = a.build_memory
     if a.profile:
         entry["profile"] = _check(a.name, "profile", a.profile)
+    if a.base_branch:
+        entry["base_branch"] = _check(a.name, "base_branch", a.base_branch)
     if a.mask_skip:
         entry["mask_skip"] = list(a.mask_skip)
     if a.podman:
@@ -463,7 +465,7 @@ def _print_effective(s, name):
                 "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
                 "compose_project": p.compose_project, "observe_logs": p.observe_logs,
                 "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
-                "profile": p.profile,
+                "profile": p.profile, "base_branch": p.base_branch,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
@@ -998,6 +1000,11 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="add a domain to the egress allowlist (repeatable)")
     x.add_argument("--build-memory", metavar="SIZE",
                    help="memory limit for each build in the dev tier (default: 2g, e.g. 4g)")
+    x.add_argument("--base-branch", metavar="BRANCH",
+                   help="the branch this project's work lands on (e.g. mags/integration). The "
+                        "end-of-session scan names that branch's new commits one by one instead of "
+                        "reporting a count. agentbox neither creates nor checks out the branch; when a "
+                        "tool like MAGS-CodeDev has its own base_branch setting, give the same name here")
     x.add_argument("--profile", choices=projectkeys.BY_NAME["profile"].values, metavar="on|off",
                    help="whether this project's sessions load the host-owned profile (skills, sub-agents, "
                         "commands, instructions, settings) and the agent's plugins (default: on). `off` also "

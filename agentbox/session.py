@@ -43,6 +43,7 @@ class Project:
     dev_images: list = field(default_factory=list)   # extra image name patterns the dev tier may run/build from
     compose_project_explicit: bool = False
     profile: str = "on"           # "off": this project's sessions load no host profile and no plugins
+    base_branch: str = ""         # the branch the work lands on; the scan names its new commits
 
     def value(self, key):
         return self.eff[key][0]
@@ -91,6 +92,7 @@ def load_project(settings, name):
                    preset=str(p.get("preset") or ""),
                    dev_images=_check(name, "dev_images", p.get("dev_images", [])),
                    profile=_check(name, "profile", p.get("profile", "on")),
+                   base_branch=_check(name, "base_branch", p["base_branch"]) if p.get("base_branch") else "",
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
                    # project would have had anyway waived the ownership check while changing nothing.
                    compose_project_explicit=bool(p.get("compose_project")
@@ -697,6 +699,9 @@ class Session:
         grants = [p.root] + list(p.data_rw)
         skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
         doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
+               # Recorded at START, so `ab session kill` and `ab session gc` name the branch this session
+               # was configured with even if the registry is edited while it runs.
+               "base_branch": p.base_branch,
                "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)},
                # What the inbox held at the start: teardown reports (and gives provenance to) the difference.
                "inbox": {"project": p.name, "agent": self.adapter.name, "items": profile.items(self.inbox),
@@ -1581,8 +1586,8 @@ def _scan(settings, session, started, warn):
         return
     _inbox_report(settings, doc, session, warn)
     try:
-        # base_branch is recorded in the scan state at session start, so `ab session kill` and `gc` name the
-        # same branch the launcher would have. Nothing sets it yet: it comes from the project's config.
+        # base_branch comes from the project registry, recorded in the scan state at session start, so
+        # `ab session kill` and `gc` name the same branch the launcher would have.
         summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"),
                                     base_branch=doc.get("base_branch"))
         st = doc.get("agent_state") or {}

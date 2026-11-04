@@ -1,11 +1,12 @@
 """Step 5: the end-of-session scan."""
+import json
 import os
 import subprocess
 from unittest import mock
 
-from agentbox import scan
+from agentbox import projectkeys, scan, session
 
-from .helpers import TempCase
+from .helpers import SettingsCase, TempCase
 
 FAKE_KEY = "sk-" + "Abc123" * 5        # built at run time: the host hook would flag a literal one here
 REGEX = r"sk-[a-zA-Z0-9_-]{20,}"         # one of the host hook's patterns
@@ -268,6 +269,64 @@ class RefMovement(TempCase):
         summary, text = self.report(base_branch="mags/integration")
         self.assertIn("base branch mags/integration: GONE", text)
         self.assertTrue(any("no longer exists" in s for s in summary), summary)
+
+
+class BaseBranchComesFromTheProject(SettingsCase):
+    """Where the scan learns which branch to name.
+
+    `scan.report(..., base_branch=)` could name a branch's new commits one by one from the start, but
+    nothing told it which branch -- the parameter was exercised by unit tests only. It is a project
+    registry key now (`ab project set <p> --base-branch mags/integration`).
+
+    agentbox does not own the value and does not create or check out the branch. MAGS-CodeDev has its own
+    `settings.base_branch`, and a project using it names the same branch here: one value in two places,
+    both the user's. Reading MAGS's config to find it would couple agentbox to another tool's file format
+    for a string the user can state in a word."""
+
+    def setUp(self):
+        super().setUp()
+        self.token()
+
+    def start(self, name="p1", **extra):
+        self.project(name, preset="script", **extra)
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, name),
+                                 warn=lambda m: None)
+        s.prepare(do_backup=False)
+        self.addCleanup(s.teardown)
+        return s
+
+    def scan_state(self, s):
+        with open(os.path.join(self.settings.session_run_dir(s.name), session.SCAN_STATE)) as f:
+            return json.load(f)
+
+    def test_unset_is_empty_and_the_scan_names_no_branch(self):
+        self.assertEqual(self.scan_state(self.start())["base_branch"], "")
+
+    def test_the_project_setting_reaches_the_scan_state(self):
+        s = self.start("mags", base_branch="mags/integration")
+        self.assertEqual(s.project.base_branch, "mags/integration")
+        self.assertEqual(self.scan_state(s)["base_branch"], "mags/integration")
+
+    def test_it_is_recorded_at_session_start_not_read_at_teardown(self):
+        """So `ab session kill` and `ab session gc` name the branch the session was configured with, even
+        if the registry is edited while it runs."""
+        from agentbox import registry
+        s = self.start("mags", base_branch="mags/integration")
+        reg = registry.load(self.settings.registry_path)
+        reg["mags"]["base_branch"] = "something/else"
+        registry.save(self.settings.registry_path, reg)
+        self.assertEqual(self.scan_state(s)["base_branch"], "mags/integration")
+
+    def test_a_value_that_is_not_a_git_ref_is_refused(self):
+        from agentbox.errors import AgentboxError
+        for bad in ("-dash", ".dot", "has space", "a..b", "trailing/", "x.lock", "a//b", 42):
+            with self.subTest(bad=bad), self.assertRaises(AgentboxError):
+                projectkeys.validate_value("base_branch", "project p", bad)
+
+    def test_the_names_a_project_would_really_use_are_accepted(self):
+        for ok in ("main", "mags/integration", "release-1.2", "feature/x_y", "v2.0"):
+            with self.subTest(ok=ok):
+                self.assertEqual(projectkeys.validate_value("base_branch", "project p", ok), ok)
 
 
 class AuditStep5C(TempCase):

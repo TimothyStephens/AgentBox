@@ -1615,3 +1615,27 @@ put `$(PODMAN_REMOTE_ARGS)` back, or rename a declared ARG. Both reddened.)
   found by reading these logs. So the 36 leaking sites became `read_file`/`read_json` helpers in
   `tests/unit/helpers.py` and `tests/integration/harness.py`, and the affected modules run clean under
   `python3 -W error::ResourceWarning`. The `open(f, "w").close()` sites are left alone: they close.
+
+
+## 4 November 2026 -- `base_branch` is a project key, and agentbox does not own the value
+
+The scan could name a base branch's new commits one by one from the start, but nothing told it which
+branch, so the parameter was exercised by unit tests only. It is a project registry key now
+(`ab project set <p> --base-branch mags/integration`), recorded into the scan state at session START so
+`ab session kill` and `ab session gc` name the branch the session was configured with even if the registry
+is edited while it runs.
+
+**Why a registry key rather than reading MAGS's config.** MAGS-CodeDev owns `settings.base_branch` in its
+own `config.template.yaml`; the value is its business. agentbox needs only to be *told* the name. Reading
+MAGS's YAML to find it would couple agentbox to another tool's file format -- and to its schema changing --
+for a string the user can state in a word, and would work for MAGS alone while the scan feature is
+agent-agnostic. So the project names its own integration branch, whatever put it there. One value in two
+places is the cost, and both places are the user's.
+
+agentbox neither creates nor checks out the branch, and says so in the flag's help: a name that does not
+exist yet simply has no new commits to report.
+
+**Not security-relevant**, for the same reason `profile` is not: it changes what the scan REPORTS and grants
+nothing, so a ceiling preset must not refuse it. The validator is strict about one thing only -- the value
+reaches `git log <ref> ^<ref>`, so it must be a ref and nothing else: no leading `-` or `.`, no `..`, no
+`//`, no trailing `/` or `.lock`, no spaces or shell metacharacters.
