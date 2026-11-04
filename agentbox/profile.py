@@ -27,35 +27,59 @@ import time
 
 from .errors import AgentboxError
 
-# What a profile may hold. Anything else in the directory is ignored (and reported by `ab profile harvest`),
-# so a stray note or a README cannot become something an agent loads.
+# What a profile may hold: the paths an agent LOADS. Anything else in the directory is ignored, so a stray
+# note or a README cannot become something an agent loads.
 ITEMS = ("skills", "agents", "commands", "rules", "prompts", "CLAUDE.md", "AGENTS.md", "settings.json")
+# Hashed and snapshotted as well, though no session mounts them: the inputs to the user's own image layer.
+# A change to either has to produce a new profile hash, because `ab image build` reads them.
+BUILD_ITEMS = ("plugins.toml", "Containerfile")
+SNAPSHOT_ITEMS = ITEMS + BUILD_ITEMS
 SIDECAR = ".provenance.json"
 SKIP = {".git"}
 
 
+def _link_refused(path):
+    return AgentboxError(f"profile {path} is a symlink; refusing to use it (a link here would be followed "
+                         "into the snapshot and mounted into every session)")
+
+
 def _walk(src):
-    """(relpath, absolute path) for every regular file in the profile, sorted, `.git` excluded.
+    """(relpath, absolute path) for the profile files that are hashed and snapshotted, sorted.
+
+    An ALLOWLIST (`SNAPSHOT_ITEMS`), not the whole tree minus `.git`. A profile is a git repository its
+    owner works in: it has a README, a `build.sh`, `tests/`, reference material, notes. None of that is ever
+    loaded -- but while this walked everything, editing any of it changed the profile hash, which copied a
+    fresh snapshot and told every session's log that the profile had changed when nothing a session reads
+    had. The hash now means "what sessions get", which is the only thing it was ever used to answer.
 
     Refuses a symlink or anything that is not a regular file: the snapshot copy would follow a link out of
     the profile (`~/.ssh/id_ed25519` is one bind away), and a device or socket has no business being
     mounted into a sandbox."""
     out = []
-    for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP)
-        for d in list(dirnames):
-            full = os.path.join(dirpath, d)
-            if os.path.islink(full):
-                raise AgentboxError(f"profile {full} is a symlink; refusing to use it (a link here would be "
-                                    "followed into the snapshot and mounted into every session)")
-        for fn in sorted(filenames):
-            full = os.path.join(dirpath, fn)
-            if os.path.islink(full):
-                raise AgentboxError(f"profile {full} is a symlink; refusing to use it (a link here would be "
-                                    "followed into the snapshot and mounted into every session)")
-            if not os.path.isfile(full):
-                raise AgentboxError(f"profile {full} is not a regular file; refusing to mount it")
-            out.append((os.path.relpath(full, src), full))
+    for item in sorted(SNAPSHOT_ITEMS):
+        top = os.path.join(src, item)
+        if not os.path.lexists(top):
+            continue
+        if os.path.islink(top):
+            raise _link_refused(top)
+        if os.path.isfile(top):
+            out.append((item, top))
+            continue
+        if not os.path.isdir(top):
+            raise AgentboxError(f"profile {top} is not a regular file or directory; refusing to use it")
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP)
+            for d in list(dirnames):
+                full = os.path.join(dirpath, d)
+                if os.path.islink(full):
+                    raise _link_refused(full)
+            for fn in sorted(filenames):
+                full = os.path.join(dirpath, fn)
+                if os.path.islink(full):
+                    raise _link_refused(full)
+                if not os.path.isfile(full):
+                    raise AgentboxError(f"profile {full} is not a regular file; refusing to mount it")
+                out.append((os.path.relpath(full, src), full))
     return sorted(out)
 
 

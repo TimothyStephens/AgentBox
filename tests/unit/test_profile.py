@@ -118,6 +118,94 @@ class Snapshot(SettingsCase):
         self.assertEqual(profile.snapshot(self.settings, "claude"), (None, ""))
 
 
+class SnapshotScope(SettingsCase):
+    """What the hash and the snapshot cover: the load paths, and the user image's build inputs. Nothing else.
+
+    A profile is a git repository its owner works in, so it holds a README, a build script, tests and
+    reference material. The walk used to take the whole tree minus `.git`, which meant editing any of that
+    changed the profile hash: a fresh snapshot was copied and every session log reported a changed profile
+    when nothing a session reads had changed. An allowlist fixes the whole class at once -- a file nobody
+    thought to exclude is excluded by default, rather than counted by default."""
+
+    IGNORED = {
+        "README.md": "# my profile\n",
+        "PARITY.md": "claude vs omp\n",
+        "THIRD_PARTY.md": "licences\n",
+        "build.sh": "#!/bin/sh\necho deploy\n",
+        "tools/gen.py": "print(1)\n",
+        "tests/test_skill.py": "assert True\n",
+        "reference/notes.md": "background\n",
+        ".dev/scratch.txt": "wip\n",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.settings.profile_src("claude")
+        self.write("config/claude/profile/skills/deploy/SKILL.md", "run make deploy\n")
+        self.write("config/claude/profile/CLAUDE.md", "house style\n")
+        for rel, text in self.IGNORED.items():
+            self.write(f"config/claude/profile/{rel}", text)
+
+    def test_the_hash_ignores_everything_that_is_not_loaded_or_built_with(self):
+        first = profile.tree_hash(self.src)
+        self.assertTrue(first)
+        for rel in self.IGNORED:
+            with self.subTest(changed=rel):
+                self.write(f"config/claude/profile/{rel}", "CHANGED\n")
+                self.assertEqual(profile.tree_hash(self.src), first,
+                                 f"editing {rel} must not change what sessions get")
+
+    def test_a_new_ignored_file_does_not_change_the_hash_either(self):
+        first = profile.tree_hash(self.src)
+        self.write("config/claude/profile/notes/today.md", "thinking out loud\n")
+        self.assertEqual(profile.tree_hash(self.src), first)
+
+    def test_the_snapshot_holds_only_the_allowlist(self):
+        dir, _digest = profile.snapshot(self.settings, "claude")
+        got = set()
+        for dirpath, _d, files in os.walk(dir):
+            got |= {os.path.relpath(os.path.join(dirpath, f), dir) for f in files}
+        self.assertEqual(got, {"skills/deploy/SKILL.md", "CLAUDE.md"})
+        for rel in self.IGNORED:
+            self.assertFalse(os.path.exists(os.path.join(dir, rel)), rel)
+
+    def test_a_loaded_file_still_changes_the_hash(self):
+        """The control: narrowing the walk must not have narrowed it to nothing."""
+        first = profile.tree_hash(self.src)
+        self.write("config/claude/profile/skills/deploy/SKILL.md", "run make deploy --prod\n")
+        self.assertNotEqual(profile.tree_hash(self.src), first)
+
+    def test_the_user_image_build_inputs_are_in_scope(self):
+        """`Containerfile` and `plugins.toml` are not loaded by a session, but `ab image build` reads them,
+        so a change to either has to be a new profile hash."""
+        for rel in profile.BUILD_ITEMS:
+            with self.subTest(item=rel):
+                before = profile.tree_hash(self.src)
+                self.write(f"config/claude/profile/{rel}", f"# {rel} v1\n")
+                after = profile.tree_hash(self.src)
+                self.assertNotEqual(after, before)
+                dir, _d = profile.snapshot(self.settings, "claude")
+                self.assertTrue(os.path.isfile(os.path.join(dir, rel)), f"{rel} is in the snapshot")
+
+    def test_a_symlink_outside_the_allowlist_is_no_longer_a_refusal(self):
+        """It is not read, so it cannot be followed anywhere. The refusal still stands where it matters."""
+        secret = self.write("outside.key", "PRIVATE\n")
+        os.symlink(secret, os.path.join(self.src, "reference", "link.md"))
+        self.assertTrue(profile.tree_hash(self.src))
+        os.symlink(secret, os.path.join(self.src, "skills", "link.md"))
+        with self.assertRaises(AgentboxError) as cm:
+            profile.tree_hash(self.src)
+        self.assertIn("symlink", str(cm.exception))
+
+    def test_an_allowlisted_item_that_is_itself_a_symlink_refuses(self):
+        import shutil
+        shutil.rmtree(os.path.join(self.src, "skills"))
+        os.symlink(self.mkdir("elsewhere"), os.path.join(self.src, "skills"))
+        with self.assertRaises(AgentboxError) as cm:
+            profile.tree_hash(self.src)
+        self.assertIn("symlink", str(cm.exception))
+
+
 class LegacySeedMigration(SettingsCase):
     """The seed used to be `~/.config/agentbox/claude/{settings.json,CLAUDE.md,commands/}`. It moves down
     into `profile/` once, explicitly: if the loader also read the old place, a skill could live in two
