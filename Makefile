@@ -70,18 +70,23 @@ verify-sockguard:
 #
 # EVERY pinned download in these images is decided here, so "what version does a session run" is one file.
 #
-# The base's own base is `node:22-bookworm-slim` -- debian bookworm-slim with node on it, maintained by the
+# The base's own base is the official node image on debian bookworm-slim -- bookworm-slim with node
 # node team. Both agents need node (Claude Code declares engines.node >= 22, OMP installs with npm), and it
 # is the node major Tim's omp-env used, so OMP runs on the node it always has.
 #
 # PIN IT BY DIGEST: a tag moves, and --pull=never on the agent layers means a moved tag would be invisible
 # until something broke. Resolve it with
-#   podman pull docker.io/library/node:22-bookworm-slim
-#   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'
+#   podman pull $(OS_BASE_TAG)
+#   podman image inspect $(OS_BASE_TAG) --format '{{index .RepoDigests 0}}'
 # and put the sha256:... part in OS_BASE_DIGEST (here, or on the command line). Left unset the build uses
 # the plain tag and prints a warning: a working build, not a reproducible one.
+# NODE_MAJOR is the one place the node version lives. It was 22 -- the major omp-env used -- and
+# moved to 26, the current LTS, on 4 Nov. Moving it changes OMP's node major, so `make itest` and
+# `make omp-live` are the gate, not just a rebuild.
+NODE_MAJOR := 26
+OS_BASE_TAG := docker.io/library/node:$(NODE_MAJOR)-bookworm-slim
 OS_BASE_DIGEST ?=
-OS_BASE := docker.io/library/node:22-bookworm-slim$(if $(OS_BASE_DIGEST),@$(OS_BASE_DIGEST))
+OS_BASE := $(OS_BASE_TAG)$(if $(OS_BASE_DIGEST),@$(OS_BASE_DIGEST))
 
 # The podman client in every agent image: podman-remote, static, matching the host's podman service (5.7.0).
 # The checksum is the release's own `shasums` entry, checked against the download on 30 Sep; the build's
@@ -110,8 +115,8 @@ base-image:
 	@if [ -z "$(OS_BASE_DIGEST)" ]; then \
 	  echo ">> WARNING: the OS base is not pinned by digest. To pin it, run these two and rerun with" >&2; \
 	  echo ">>   OS_BASE_DIGEST=<the sha256:... they print>:" >&2; \
-	  echo ">>   podman pull docker.io/library/node:22-bookworm-slim" >&2; \
-	  echo ">>   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'" >&2; \
+	  echo ">>   podman pull $(OS_BASE_TAG)" >&2; \
+	  echo ">>   podman image inspect $(OS_BASE_TAG) --format '{{index .RepoDigests 0}}'" >&2; \
 	fi
 	podman build --build-arg OS_BASE=$(OS_BASE) $(PODMAN_REMOTE_ARGS) \
 	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base

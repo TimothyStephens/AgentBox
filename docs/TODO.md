@@ -42,7 +42,7 @@ that point; the unit suite also runs with zero ResourceWarnings. The third prese
   exercised by unit tests only (`tests/unit/test_scan.py:RefMovement`).
 
 - ~~**The agent image layers are not restructured yet**~~ — **done, 4 Nov.** The chain is
-  `node:22-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optionally a personal layer, and
+  `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optionally a personal layer, and
   each agent image installs its own CLI at a Makefile pin that the build asserts. The two facts that
   blocked it are settled: node comes from the official image (so no node tarball checksum of ours), and
   OMP is `@oh-my-pi/pi-coding-agent@18.13.3` with Bun 1.4.4, both checksum- or integrity-verified. See
@@ -65,19 +65,18 @@ that point; the unit suite also runs with zero ResourceWarnings. The third prese
   network-pinning test (`tests/unit/test_gate.py`, a create naming no network at all), and the scan's
   HEAD/ref movement plus `base_branch` reporting. Nothing to do until the spec arrives.
 
-- **Node is pinned to 22, and the current LTS is newer** (4 Nov). `agentbox-base` is
-  `node:22-bookworm-slim` because that is the major Tim's omp-env used, so OMP runs on the node it always
-  has; Claude Code needs `>= 22`, so both are satisfied. At the time of writing `nodejs.org`'s newest LTS
-  was 26.13.0. Moving is a one-line change (`OS_BASE` in the Makefile) plus a rebuild of all three images
-  and both personal layers, but it changes OMP's node major, which wants `make itest` and `make omp-live`
-  behind it rather than a bump.
+- ~~**Node is pinned to 22, and the current LTS is newer**~~ — **moved to 26 on 4 Nov**, at Tim's call.
+  `NODE_MAJOR` in the Makefile is the one place it lives, and `tests/unit/test_images.py` pins that the
+  Containerfile's own `ARG OS_BASE` default names the same image (a stale default is a trap for a
+  hand-build rather than an error). `26-bookworm-slim` is published and node 26 is the current LTS, both
+  confirmed from `docker-library/official-images`. **This changes OMP's node major from 22 to 26**, so the
+  gate is `make base-image` + both agent images, then `make itest` and `make omp-live` — not just a rebuild.
 
-- **`make omp-live` passes but the local model is slow** (4 Nov): one turn took 257s, and the check used to
-  fail intermittently for that reason alone (a 900s timeout, then an empty answer, then a pass). The report
-  now names the case and the latency rather than just failing, so a repeat is diagnosable. Open question for
-  Tim, not a defect: whether the live check should prove "OMP works against the real local model" (keep it,
-  accept the minutes) or "OMP works against a model" (`AB_LIVE_MODEL=<provider/model>` with a keyed
-  provider, faster and steadier, but no longer exercising the LAN endpoint).
+- ~~**`make omp-live` passes but the local model is slow**~~ — **accepted, 4 Nov.** One turn takes about
+  257s, which is why that check used to fail intermittently (a 900s timeout, then an empty answer, then a
+  pass). Tim accepts the latency: the check stays on the real LAN model, because exercising that endpoint
+  is the point of it. The report names the case and the latency now, so a repeat reads as "slow model"
+  rather than as an unexplained FAIL, and `AB_LIVE_MODEL=<provider/model>` is there for a one-off.
 
 - **Old user image layers are never pruned** (4 Nov). Each harness image rebuild or Containerfile edit
   gives a new `localhost/agentbox-<agent>-user:<key>` tag and leaves the previous one in podman storage.

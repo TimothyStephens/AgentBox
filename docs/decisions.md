@@ -1524,12 +1524,12 @@ since 15 Oct, and omp-live passed on 16 Oct with it already broken.
 
 ## 4 November 2026 -- the agent images build their own CLI, on agentbox-base
 
-The restructure is finished: `node:22-bookworm-slim` -> `agentbox-base` -> `agentbox-{claude,omp}` ->
+The restructure is finished: `node:26-bookworm-slim` -> `agentbox-base` -> `agentbox-{claude,omp}` ->
 optionally a personal layer. Both agent images used to be `FROM localhost/{claudecode,omp-env}`, built
 outside this repo, which meant a session ran whatever CLI those images happened to hold -- 56 and 59 days
 old at the last check, and in OMP's case a version its own Containerfile did not ask for.
 
-**The OS base is `node:22-bookworm-slim`, and node lives in the base rather than per agent.** Both agents
+**The OS base is `node:26-bookworm-slim`, and node lives in the base rather than per agent.** Both agents
 need node: Claude Code 2.1.x declares `engines.node >= 22`, and OMP is installed with npm. A pinned node
 tarball in two layers is exactly the duplication the base exists to remove, and the official node image is
 debian bookworm-slim with node already on it, maintained and checksummed by the node team -- so there is no

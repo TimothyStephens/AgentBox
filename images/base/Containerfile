@@ -4,12 +4,14 @@
 # FROM this one, and a user's own layer builds FROM those, so anything needed by more than one agent belongs
 # here and nowhere else.
 #
-# The OS base is `node:22-bookworm-slim`, which IS debian bookworm-slim with node on it, maintained by the
-# node team. Both agents need node -- Claude Code 2.1.x declares `engines.node >= 22`, and OMP is installed
-# with npm -- so node is shared, not per-agent. Taking it from the official image rather than unpacking a
-# tarball here means there is no node checksum for us to keep current, and it is exactly what Tim's omp-env
-# used (`FROM node:22-bookworm-slim`), so OMP runs on the node it has always run on. Node 22 and not the
-# newest LTS for that reason: changing OMP's node major is a separate decision with its own testing.
+# The OS base is the official node image on debian bookworm-slim, which IS bookworm-slim with node on it,
+# maintained by the node team. Both agents need node -- Claude Code 2.1.x declares `engines.node >= 22`,
+# and OMP is installed with npm -- so node is shared, not per-agent. Taking it from the official image
+# rather than unpacking a tarball here means there is no node checksum for us to keep current.
+#
+# The major is `NODE_MAJOR` in the Makefile, which always passes OS_BASE; the default below only matters to
+# a hand-build and must name the same image (tests/unit/test_images.py checks they agree). It was 22 -- the
+# major omp-env used -- and is 26, the current LTS, since 4 Nov.
 #
 # What is here and why:
 #   * git, curl, ca-certificates, unzip, jq: the session's own work, and what the agent layers need to fetch
@@ -33,7 +35,7 @@
 # Every other ARG goes after the FROM, because FROM ends the pre-build stage and resets what came before it:
 # an ARG declared above and referenced in a RUN below is silently empty. (That is exactly how omp-env's
 # pinned OMP version never applied: it asks for 18.1.3 and gets whatever npm had.)
-ARG OS_BASE=docker.io/library/node:22-bookworm-slim
+ARG OS_BASE=docker.io/library/node:26-bookworm-slim
 FROM ${OS_BASE}
 # Declared again, because the one above is out of scope here: the LABEL at the end records what this was
 # built from, and without this line it would record an empty string. `make base-image` always passes

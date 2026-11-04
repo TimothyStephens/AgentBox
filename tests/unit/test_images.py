@@ -182,13 +182,26 @@ class TheBaseImage(unittest.TestCase):
         with npm -- so it is shared. A pinned node download in two layers is the duplication the base
         exists to remove, and the official node image is maintained and needs no checksum of ours."""
         self.assertRegex(self.text, r"FROM \$\{OS_BASE\}")
-        self.assertIn("node:22-bookworm-slim", makefile())
+        self.assertRegex(makefile(), r"(?m)^NODE_MAJOR := \d+$", "the major lives in one place")
         for agent in ("claude", "omp"):
             with open(os.path.join(IMAGES, agent, "Containerfile")) as f:
                 layer = f.read()
             with self.subTest(agent=agent):
                 self.assertNotIn("nodejs.org", layer, "node comes from the base")
                 self.assertIn("FROM ${BASE}", layer, "and the layer builds on agentbox-base")
+
+    def test_the_os_base_default_matches_the_makefile(self):
+        """The Makefile always passes OS_BASE, so the Containerfile's default only matters to a hand-build
+        -- which makes a stale default a trap rather than an error. They have to name the same image."""
+        mk = makefile()
+        major = re.search(r"(?m)^NODE_MAJOR := (\d+)$", mk)
+        self.assertTrue(major, "NODE_MAJOR not found in the Makefile")
+        tag = re.search(r"(?m)^OS_BASE_TAG := (\S+)$", mk)
+        self.assertTrue(tag, "OS_BASE_TAG not found in the Makefile")
+        expected = tag.group(1).replace("$(NODE_MAJOR)", major.group(1))
+        default = re.search(r"(?m)^ARG OS_BASE=(\S+)$", self.text)
+        self.assertTrue(default, "the Containerfile declares no OS_BASE default")
+        self.assertEqual(default.group(1), expected)
 
 
 class TheAgentLayers(unittest.TestCase):

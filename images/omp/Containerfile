@@ -12,8 +12,9 @@
 #     installs whatever that script serves and verifies nothing. OMP needs Bun to load extensions at all
 #     (`@oh-my-pi/pi-coding-agent@18.13.3` declares `engines.bun >= 1.4.4`), so it is a runtime dependency
 #     and gets the same treatment as every other download here.
-#   * **node comes from agentbox-base**, which is `node:22-bookworm-slim` -- the same node major omp-env
-#     used, so OMP runs on the node it has always run on.
+#   * **node comes from agentbox-base** (the official node image; the major is `NODE_MAJOR` in the
+#     Makefile). omp-env used node 22; agentbox moved to 26, the current LTS, on 4 Nov -- which is a change
+#     of OMP's node major, so `make itest` and `make omp-live` are the gate behind it.
 #   * **left out, and why:** `podman` and `docker.io` (the base carries the pinned podman-remote 5.x
 #     client, which must shadow Debian's 4.3 -- no agentbox path invokes either of omp-env's); `nano`,
 #     `vim` and neovim, the pi-bridge lua config and `EDITOR`/`VISUAL`/`PI_NVIM_APPNAME` (an editor is a

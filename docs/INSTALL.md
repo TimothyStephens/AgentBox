@@ -9,7 +9,7 @@ How to install the `ab` launcher on this host, and exactly where everything it u
   `rsync --link-dest` snapshot of its read-write grants before starting (the session's only undo), so
   without it `ab run` refuses. It is also needed to run agentbox's own test suite.
 - **No other image is needed.** agentbox builds its own chain — `agentbox-base` →
-  `agentbox-{claude,omp}` → optionally your own layer — from `node:22-bookworm-slim` upward, and installs
+  `agentbox-{claude,omp}` → optionally your own layer — from `node:26-bookworm-slim` upward, and installs
   each agent CLI at a pin named in the Makefile. It no longer layers on `localhost/claudecode` or
   `localhost/omp-env`; see `docs/RUNTIME.md` for what each image contains and how the pin is enforced.
 
@@ -24,13 +24,13 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    ```
    Installs `deploy/agentbox.slice` to `~/.config/systemd/user/agentbox.slice` and reloads the user daemon.
 
-2. **The base image** — the toolchain every session shares, whichever agent runs: node 22, git, curl, jq,
+2. **The base image** — the toolchain every session shares, whichever agent runs: node 26, git, curl, jq,
    unzip, rsync, python3 + venv, ripgrep, fd, a C/C++ toolchain, the checksum-pinned podman client and the
    compose tool. Build it before the agent images; theirs are `--pull=never` and will say so if it is
    missing.
    ```bash
-   podman pull docker.io/library/node:22-bookworm-slim
-   podman image inspect docker.io/library/node:22-bookworm-slim --format '{{index .RepoDigests 0}}'
+   podman pull docker.io/library/node:26-bookworm-slim
+   podman image inspect docker.io/library/node:26-bookworm-slim --format '{{index .RepoDigests 0}}'
    make base-image OS_BASE_DIGEST=sha256:<the digest that printed>
    ```
    `make base-image` on its own works too, and warns that the OS base is not pinned: a working build, not a
