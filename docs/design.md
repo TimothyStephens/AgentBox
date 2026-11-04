@@ -607,10 +607,14 @@ wants in every session without it entering agentbox's own images. Four things bo
 
 - **it is a layer, not a replacement.** The recipe must be `ARG BASE` then `FROM ${BASE}`, with no other
   `FROM`; `ab image build` supplies BASE. Anything else would put an unknown image under the session.
-- **it cannot change how the agent is started.** `USER`, `ENTRYPOINT`, `CMD` and `PATH` must match the
-  harness image, and the built image must still report the pinned agent version and carry `git`, `rg`,
-  `python3` and the podman client. It is built under a candidate tag and only tagged for real once it
-  passes, so a rejected build leaves the image in use exactly where it was.
+- **it cannot change how the agent is started, or take anything away.** `USER`, `ENTRYPOINT`, `CMD` and
+  `PATH` must match the harness image; and the harness image and the layer are each run once, offline, and
+  their answers compared — the layer may not lose `git`, `rg`, `python3` or the podman client where the
+  harness image has it, and may not change the agent's version. Every check is *relative*: a fixed list
+  would hold a layer to a standard its own base can fail (the first real build was rejected for missing
+  `rg`, which the Claude harness image lacks until `agentbox-base` is under it). It is built under a
+  candidate tag and only tagged for real once it passes, so a rejected build leaves the image in use
+  exactly where it was.
 - **it is never stale.** The tag is keyed on the **harness image ID** and the Containerfile, so a rebuilt
   harness image gives a key nothing is tagged under: `ab run` says `personal layer out of date:
   ab image build <agent>` and runs the plain harness image. A layer built on an older harness is never run.

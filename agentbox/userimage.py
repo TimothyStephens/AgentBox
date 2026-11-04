@@ -12,9 +12,12 @@ Three things make it safe to run an image the user built:
   * **it cannot change how the agent is started.** USER, ENTRYPOINT, CMD and PATH are compared against the
     harness image and must be identical. Those four are how the launcher's own contract with the image is
     expressed; a layer that moves any of them is a different image wearing the tag.
-  * **it must still be a working session image.** The built image is run once, offline, and asked for the
-    agent's version (which must equal the harness image's pin) and for `git`, `rg`, `python3` and the
-    podman client. A layer that breaks the agent is rejected rather than discovered at the next `ab run`.
+  * **it must still be a working session image.** The harness image and the built image are each run once,
+    offline, and asked for the agent's version and for `git`, `rg`, `python3` and the podman client. The
+    answers are COMPARED: a layer must not lose a tool the harness image has, and must not change the
+    agent. Comparing rather than checking against a fixed list is the point -- the first real
+    `ab image build claude` was rejected for "missing rg" when `rg` is not in that harness image either,
+    so the layer was being held to a standard its own base fails.
 
 A rejected build is never tagged: it is built under a candidate tag, checked, and only then given the real
 one. So the last good image stays exactly where it was, and the failure is a message rather than a session
@@ -99,8 +102,29 @@ def any_built(podman, agent):
     return bool(podman.images_json({USER_LAYER_LABEL: agent}))
 
 
+def probe(podman, ref, agent_bin):
+    """(version, tools of CHECK_TOOLS missing, did the check finish, podman's complaint) for one image.
+
+    Run once per image, offline: it answers "is this a working session image", which needs no network and
+    no mounts. `input=""` because the check reads nothing and a container that inherited a terminal's stdin
+    could block."""
+    p = podman.run(["run", "--rm", "--network=none", "--entrypoint=", ref,
+                    "sh", "-c", _check_script(agent_bin)], check=False, input="")
+    version, missing, done = _parse_check(p.stdout)
+    if p.returncode != 0 or not done:
+        err = " ".join((p.stderr or "").strip().splitlines()[-2:])
+        return "", [], False, f"({p.returncode}) {err}".strip()
+    return version, missing, True, ""
+
+
 def verify(podman, harness, candidate, agent_bin, pinned_version, *, run_check=True):
-    """[] when the candidate is a usable layer on `harness`, else the reasons it is not."""
+    """[] when the candidate is a usable layer on `harness`, else the reasons it is not.
+
+    Every check is RELATIVE to the harness image. The first real `ab image build claude` was rejected for
+    "missing from the image: rg" -- when `rg` is not in that harness image either, so the layer was being
+    held to a standard its own base fails (ripgrep arrives with agentbox-base). A layer can only be asked
+    not to have BROKEN anything: what it must not do is lose a tool, move the agent, or change how the
+    launcher starts it."""
     base, built = podman.image_json(harness), podman.image_json(candidate)
     bad = []
     for key in PINNED_CONFIG:
@@ -112,20 +136,29 @@ def verify(podman, harness, candidate, agent_bin, pinned_version, *, run_check=T
                    f"expects ({_path_of(base)!r} -> {_path_of(built)!r})")
     if not run_check:
         return bad
-    # input="": the check reads nothing, and a container that inherited a terminal's stdin could block.
-    p = podman.run(["run", "--rm", "--network=none", "--entrypoint=", candidate,
-                    "sh", "-c", _check_script(agent_bin)], check=False, input="")
-    version, missing, done = _parse_check(p.stdout)
-    if p.returncode != 0 or not done:
-        err = (p.stderr or "").strip().splitlines()[-2:]
-        bad.append(f"the image check did not run in it ({p.returncode}): {' '.join(err)}")
+    base_version, base_missing, base_ok, base_why = probe(podman, harness, agent_bin)
+    if not base_ok:
+        # Not the layer's fault, and saying so matters: the thing to go and fix is the harness image.
+        bad.append(f"the image check could not run in {harness} itself, so this layer cannot be compared "
+                   f"against it: {base_why}. Rebuild it (`make <agent>-image`)")
         return bad
-    if missing:
-        bad.append(f"missing from the image: {', '.join(missing)}")
+    version, missing, done, why = probe(podman, candidate, agent_bin)
+    if not done:
+        bad.append(f"the image check did not run in it: {why}")
+        return bad
+    lost = [t for t in missing if t not in base_missing]
+    if lost:
+        bad.append(f"{', '.join(lost)} present in {harness} but not in this layer")
     if not version:
         bad.append(f"{agent_bin} did not report a version in it")
+    elif version != base_version:
+        bad.append(f"{agent_bin} reports {version!r}, but {harness} reports {base_version!r}: a layer may "
+                   f"not change the agent")
     elif pinned_version and version != pinned_version:
-        bad.append(f"{agent_bin} reports {version!r}, but {harness} is pinned at {pinned_version!r}")
+        # Both agree, and both differ from the label: the harness image is off its own pin, which is a
+        # `make <agent>-image` problem. Reported here because this is where it becomes visible.
+        bad.append(f"{agent_bin} reports {version!r} in both this layer and {harness}, but {harness} is "
+                   f"labelled {pinned_version!r} -- the harness image is off its own pin; rebuild it")
     return bad
 
 

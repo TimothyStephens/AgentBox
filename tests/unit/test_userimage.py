@@ -99,12 +99,14 @@ class Verifying(SettingsCase):
         self.images = {HARNESS: BASE_DOC}
         self.podman = Podman(self.settings.podman)
 
-    def run_verify(self, candidate_doc, check_out=CHECK_OK):
+    def run_verify(self, candidate_doc, check_out=CHECK_OK, base_out=CHECK_OK):
+        """`base_out` is what the HARNESS image reports. Separate, because every check is relative to it
+        and one canned answer for both images cannot tell "the layer lost a tool" from "neither has it"."""
         self.images["cand"] = candidate_doc
         os.environ["FAKE_PODMAN_IMAGE_JSON"] = json.dumps(self.images)
-        os.environ["FAKE_PODMAN_RUN_OUT"] = check_out
+        os.environ["FAKE_PODMAN_RUN_OUT_BY_IMAGE"] = json.dumps({HARNESS: base_out, "cand": check_out})
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGE_JSON", None)
-        self.addCleanup(os.environ.pop, "FAKE_PODMAN_RUN_OUT", None)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_RUN_OUT_BY_IMAGE", None)
         return userimage.verify(self.podman, HARNESS, "cand", "claude", "2.1.318")
 
     def test_an_identical_config_passes(self):
@@ -128,13 +130,38 @@ class Verifying(SettingsCase):
         doc = {"Id": "x", "Config": dict(BASE_DOC["Config"], Env=["PATH=/opt/mine:/usr/local/bin:/usr/bin"])}
         self.assertTrue([b for b in self.run_verify(doc) if b.startswith("PATH differs")])
 
-    def test_a_missing_tool_is_refused(self):
+    def test_a_tool_the_layer_LOST_is_refused(self):
         bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="VERSION=2.1.318\nMISSING=rg\nDONE\n")
-        self.assertEqual(bad, ["missing from the image: rg"])
+        self.assertEqual(bad, [f"rg present in {HARNESS} but not in this layer"])
 
-    def test_a_different_agent_version_is_refused(self):
+    def test_a_tool_missing_from_BOTH_is_not_the_layers_fault(self):
+        """The first real `ab image build claude` was rejected for "missing from the image: rg" when `rg`
+        is not in that harness image either -- ripgrep arrives with agentbox-base. A layer can only be
+        asked not to have broken anything (4 Nov)."""
+        bad = self.run_verify(dict(BASE_DOC, Id="x"),
+                              check_out="VERSION=2.1.318\nMISSING=rg\nDONE\n",
+                              base_out="VERSION=2.1.318\nMISSING=rg\nDONE\n")
+        self.assertEqual(bad, [])
+
+    def test_a_layer_that_changes_the_agent_version_is_refused(self):
         bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out="VERSION=2.0.1\nDONE\n")
-        self.assertTrue([b for b in bad if "pinned at '2.1.318'" in b], bad)
+        self.assertTrue([b for b in bad if "may not change the agent" in b], bad)
+        self.assertTrue([b for b in bad if "'2.0.1'" in b and "'2.1.318'" in b], bad)
+
+    def test_a_harness_image_off_its_own_label_is_reported_as_the_harness_problem(self):
+        """Both images agree, and both differ from the label the harness carries: that is a
+        `make <agent>-image` problem, and blaming the layer would send the reader to the wrong file."""
+        both = "VERSION=2.0.9\nDONE\n"
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), check_out=both, base_out=both)
+        self.assertEqual(len(bad), 1, bad)
+        self.assertIn("off its own pin", bad[0])
+        self.assertIn("rebuild it", bad[0])
+
+    def test_a_harness_image_whose_own_check_will_not_run_is_not_blamed_on_the_layer(self):
+        bad = self.run_verify(dict(BASE_DOC, Id="x"), base_out="")
+        self.assertEqual(len(bad), 1, bad)
+        self.assertIn(f"could not run in {HARNESS} itself", bad[0])
+        self.assertIn("cannot be compared", bad[0])
 
     def test_no_version_at_all_is_refused(self):
         """Reported separately from a mismatch: "it does not run" and "it is the wrong one" are different
@@ -229,12 +256,20 @@ class Building(SettingsCase):
         ref = userimage.build(self.settings, self.podman, "claude", out=said.append, **kw)
         return ref, "\n".join(said)
 
-    def good_build(self, recipe, check_out=CHECK_OK):
-        """The harness image, plus a candidate that inspects identically to it."""
+    def good_build(self, recipe, check_out=CHECK_OK, base_out=CHECK_OK):
+        """The harness image, plus a candidate that inspects identically to it.
+
+        The two probe answers are set per image: `verify` runs the check in the harness image as well, and
+        one canned answer for both would make every check vacuous (a tool missing from both reads as a
+        tool the layer kept)."""
         self.set_images({HARNESS: BASE_DOC, "BUILT": dict(BASE_DOC, Id="sha256:layer")}, tags=[HARNESS])
-        os.environ["FAKE_PODMAN_RUN_OUT"] = check_out
-        self.addCleanup(os.environ.pop, "FAKE_PODMAN_RUN_OUT", None)
-        return profile.user_image_ref("claude", BASE_DOC["Id"], recipe)
+        ref = profile.user_image_ref("claude", BASE_DOC["Id"], recipe)
+        self.probe_answers({HARNESS: base_out, ref + userimage.CANDIDATE_SUFFIX: check_out})
+        return ref
+
+    def probe_answers(self, by_image):
+        os.environ["FAKE_PODMAN_RUN_OUT_BY_IMAGE"] = json.dumps(by_image)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_RUN_OUT_BY_IMAGE", None)
 
     def test_it_builds_tags_and_cleans_up(self):
         recipe = self.write_recipe()
@@ -252,7 +287,7 @@ class Building(SettingsCase):
             self.build()
         said = str(cm.exception)
         self.assertIn("not a usable layer", said)
-        self.assertIn("missing from the image: git", said)
+        self.assertIn("git present in", said)
         self.assertNotIn(want, self.tags(), "nothing is tagged under the real name")
         self.assertNotIn(want + userimage.CANDIDATE_SUFFIX, self.tags())
         self.assertIn("no personal layer is tagged", said)
@@ -263,7 +298,9 @@ class Building(SettingsCase):
         want = self.good_build(recipe)
         self.build()
         self.assertIn(want, self.tags())
-        os.environ["FAKE_PODMAN_RUN_OUT"] = "VERSION=1.0.0\nDONE\n"      # now the agent is the wrong version
+        # now the layer's agent is the wrong version, while the harness image's is unchanged
+        self.probe_answers({HARNESS: CHECK_OK,
+                            want + userimage.CANDIDATE_SUFFIX: "VERSION=1.0.0\nDONE\n"})
         with self.assertRaises(AgentboxError) as cm:
             self.build(force=True)
         self.assertIn("untouched", str(cm.exception))

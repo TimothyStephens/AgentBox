@@ -11,6 +11,9 @@
   FAKE_PODMAN_FAIL_STATUS  the status FAKE_PODMAN_FAIL exits with (default 1). 125 is podman's own "the
                           command could not be run", which for `image exists` is neither yes nor no
   FAKE_PODMAN_RUN_OUT   stdout for `run`
+  FAKE_PODMAN_RUN_OUT_BY_IMAGE  {image ref: stdout} for `run`, matched against argv. `ab image build`
+                          probes the harness image AND the candidate, and one canned answer for both
+                          cannot tell "the layer lost a tool" from "neither has it"
   FAKE_PODMAN_RUN_SLEEP seconds `run` waits before answering, so a test can signal a launcher mid-session
   FAKE_PODMAN_LOGS      stdout for `logs` (default: squid's ready line)
   FAKE_PODMAN_STATE     stdout for `inspect -f {{.State.Status}}`
@@ -170,5 +173,14 @@ elif argv[:1] == ["run"]:
     if os.environ.get("FAKE_PODMAN_RUN_SLEEP"):
         import time
         time.sleep(float(os.environ["FAKE_PODMAN_RUN_SLEEP"]))
-    sys.stdout.write(os.environ.get("FAKE_PODMAN_RUN_OUT", ""))
+    try:
+        by_image = json.loads(os.environ.get("FAKE_PODMAN_RUN_OUT_BY_IMAGE") or "{}")
+    except ValueError:
+        by_image = {}
+    out = None
+    for a in argv:
+        if a in by_image:
+            out = by_image[a]
+            break
+    sys.stdout.write(out if out is not None else os.environ.get("FAKE_PODMAN_RUN_OUT", ""))
 sys.exit(0)

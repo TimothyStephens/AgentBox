@@ -1482,6 +1482,36 @@ died on step 1 and never ran the key-leak scan or the teardown check -- the two 
 a run that left something behind. It is still a FAIL naming the command (the harness guarantee from 29
 Oct), but one the rest of the run survives.
 
+## 4 November 2026 -- a layer is checked against its own base, not against a list
+
+The first real `ab image build claude` was **rejected**: "missing from the image: rg". `rg` is not in that
+harness image either -- the Claude image is still `FROM localhost/claudecode`, and ripgrep arrives with
+`agentbox-base`, which is not under it yet. So the layer was being held to a standard its own base fails.
+`ab image build omp` succeeded at the same time only because omp-env happens to ship ripgrep.
+
+The defect was absolute-versus-relative. Everything else in `verify` already compares against the harness
+image -- USER, ENTRYPOINT, CMD, PATH -- and the tool and version checks were the two that did not. They do
+now: the harness image and the candidate are each probed once, offline, and only the **difference** is a
+failure. A layer can be asked not to have broken anything; it cannot be asked to fix its base.
+
+Three cases follow, each reported as what it is rather than as the layer's fault:
+
+- a tool missing from both images is no finding at all;
+- a tool the harness has and the layer lost is "`rg` present in `<harness>` but not in this layer";
+- the two agreeing on a version that differs from the harness image's own `agentbox.cli-version` label is
+  "the harness image is off its own pin; rebuild it" -- a `make <agent>-image` problem, and blaming the
+  layer would send the reader to the wrong file. Likewise when the check cannot run in the harness image at
+  all: then the layer simply cannot be compared, and that is what it says.
+
+The fake podman gained a per-image `run` answer for this (`FAKE_PODMAN_RUN_OUT_BY_IMAGE`). One canned
+answer for both probes makes every comparison vacuous -- a tool missing from both reads as a tool the layer
+kept -- which is the same shape as answering every `--format` with one canned string.
+
+**What `ab image build omp` proved on the way:** the happy path works end to end on real podman. The
+layer installed neovim and set `EDITOR`/`VISUAL`, was checked, tagged, and is now what OMP sessions run.
+`ENV` additions are deliberately not in `PINNED_CONFIG` -- only `PATH` is, because it decides which binary
+`claude` or `omp` resolves to -- so setting an editor is allowed and moving the agent is not.
+
 **What this was diagnosing, for the record.** `make itest` at the same commit runs the *real* `omp -p
 --no-title 'Reply with exactly: STUB_OK'` against a stub model and asserts the exact answer, `OMP_EXIT=0`,
 the model POST carrying the session key, and the session history on the host
