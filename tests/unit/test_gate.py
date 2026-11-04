@@ -80,6 +80,34 @@ class Containers(unittest.TestCase):
         self.assertEqual(spec["env"]["A"], "1")
         self.assertEqual(spec["env"]["http_proxy"], "http://p:3128")
 
+    def test_a_create_that_names_no_network_is_still_pinned(self):
+        """`podman run` with no `--network` at all -- which is what a test runner inside a session issues.
+
+        The pinning above is visible when the client NAMES a network and the gate rewrites it. The case that
+        matters for a plain `podman run` is the one where there is nothing to rewrite: podman would give such
+        a container its default network, which reaches the LAN (spike 1). The gate adds the session's
+        internal network instead, so a generated test reaches nothing but this session."""
+        for spec in ({"image": "x"},                                 # nothing at all
+                     {"image": "x", "netns": {"nsmode": "bridge"}},   # the default, said out loud
+                     {"image": "x", "Networks": {}}):
+            with self.subTest(spec=spec):
+                out = FakeGate().rewrite_libpod_container(dict(spec))
+                self.assertEqual(out["Networks"], {"abt-s-1-int": {}})
+                self.assertEqual(out["netns"], {"nsmode": "bridge"})
+        compat = FakeGate().rewrite_compat_container({"Image": "x", "HostConfig": {}})
+        self.assertEqual(compat["HostConfig"]["NetworkMode"], "abt-s-1-int")
+        self.assertEqual(compat["NetworkingConfig"], {"EndpointsConfig": {"abt-s-1-int": {"Aliases": []}}})
+
+    def test_the_networks_a_client_asks_for_are_dropped_not_added_to(self):
+        """A second network is how a container would get a route the session network does not have. The
+        session network is the whole list, every time -- including the keys podman accepts alongside it."""
+        g = FakeGate()
+        spec = g.rewrite_libpod_container({"image": "x", "Networks": {"podman": {}, "other-int": {}},
+                                           "cni_networks": ["podman"], "network_options": {"a": "b"}})
+        self.assertEqual(sorted(spec["Networks"]), ["abt-s-1-int"])
+        self.assertNotIn("cni_networks", spec)
+        self.assertNotIn("network_options", spec)
+
     def test_own_limits_kept(self):
         spec = FakeGate().rewrite_libpod_container({"image": "x", "resource_limits": {"memory": {"limit": 5}, "pids": {"limit": 7}}})
         self.assertEqual((spec["resource_limits"]["memory"]["limit"], spec["resource_limits"]["pids"]["limit"]), (5, 7))
