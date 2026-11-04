@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check egress-soak
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom base-image omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check egress-soak
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -63,6 +63,28 @@ verify-sockguard:
 	       --certificate-oidc-issuer '$(SG_ISSUER)' "$$ref" >/dev/null; then \
 	    echo "VERIFIED: $$ref (pinned: $$pin)"; exit 0; fi; \
 	done; echo "NOT VERIFIED: no digest of $$repo carries a signature from the release workflow"; exit 1
+
+# ---- images -------------------------------------------------------------------------------------------
+# The chain is agentbox-base -> agentbox-<agent> -> (optional) a user's own layer. Build the base first;
+# the agent builds are --pull=never and will say so if it is missing.
+#
+# The base's own base. PIN IT BY DIGEST: a tag moves, and --pull=never on the agent layers means a moved
+# tag would be invisible until something broke. Resolve the digest with
+#   podman pull docker.io/library/debian:bookworm-slim
+#   podman image inspect docker.io/library/debian:bookworm-slim --format '{{index .RepoDigests 0}}'
+# and put the sha256:... part in BOOKWORM_DIGEST (here, or on the command line). Left unset the build uses
+# the plain tag and prints a warning: that is a working build, not a reproducible one.
+BOOKWORM_DIGEST ?=
+DEBIAN_BASE := docker.io/library/debian:bookworm-slim$(if $(BOOKWORM_DIGEST),@$(BOOKWORM_DIGEST))
+
+base-image:
+	@if [ -z "$(BOOKWORM_DIGEST)" ]; then \
+	  echo ">> WARNING: debian base is not pinned by digest; set BOOKWORM_DIGEST (see the Makefile)." >&2; \
+	fi
+	podman build --build-arg DEBIAN_BASE=$(DEBIAN_BASE) $(PODMAN_REMOTE_ARGS) \
+	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base
+	@podman image inspect localhost/agentbox-base:latest \
+	  --format '>> agentbox-base {{.Id}} built from {{index .Config.Labels "agentbox.base"}}'
 
 # The podman client in every agent image: podman-remote, static, matching the host's podman service (5.7.0).
 # The checksum is the release's own `shasums` entry, checked against the download on 30 Sep; the build's

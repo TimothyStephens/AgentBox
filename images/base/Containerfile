@@ -1,0 +1,67 @@
+# agentbox base image: the toolchain every session has, whichever agent runs in it.
+#
+# Build with `make base-image` (tags localhost/agentbox-base:latest and :<date>). The agent images build
+# FROM this one, and a user's own layer builds FROM those, so anything needed by more than one agent belongs
+# here and nowhere else.
+#
+# What is here and why:
+#   * git, curl, ca-certificates, unzip, jq: the session's own work, and what the agent layers need to fetch
+#     and unpack their runtimes;
+#   * rsync: agentbox's own test suite shells out to it (the pre-session grant snapshot is
+#     rsync --link-dest), so without it `make test` run INSIDE a session cannot exercise any code path that
+#     prepares a session -- 111 of its tests errored on the missing binary (29 Oct);
+#   * python3, python3-pip, python3-venv: the trial (2 Oct) found agents need a venv, and the compose tool
+#     below is Python;
+#   * ripgrep and fd-find: what an agent actually greps and finds with. Debian installs fd as `fdfind`
+#     (the name `fd` belongs to another package), so it is linked to `fd` as well -- agents reach for `fd`;
+#   * gcc, g++, make: enough to build a native Python or Node extension, which pip does unprompted;
+#   * podman-remote and podman-compose: the dev and observe tiers both talk to the gate through them, and
+#     both agents list them in `required_tools`, so `ab selftest` fails the session without them.
+#
+# NOTHING here is downloaded without a checksum (tests/unit/test_images.py enforces that): apt verifies its
+# own packages, pip runs --require-hashes, and the one direct download uses ADD --checksum, which podman
+# checks BEFORE the file is used.
+
+# An ARG used in the FROM line itself must be declared before it -- this is the only place that is right.
+# Every other ARG goes after the FROM, because FROM ends the pre-build stage and resets what came before it:
+# an ARG declared above and referenced in a RUN below is silently empty. (That is exactly how omp-env's
+# pinned OMP version never applied: it asked for 18.1.3 and got whatever was current.)
+ARG DEBIAN_BASE=docker.io/library/debian:bookworm-slim
+FROM ${DEBIAN_BASE}
+# Declared again, because the one above is out of scope here: the LABEL at the end records what this was
+# built from, and without this line it would record an empty string. `make base-image` always passes
+# --build-arg DEBIAN_BASE, so the value is the same one FROM used; a hand-build that omits it gets an empty
+# label and the FROM default, which is cosmetic rather than an unpinned build.
+ARG DEBIAN_BASE
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates unzip jq rsync \
+        python3 python3-pip python3-venv \
+        ripgrep fd-find \
+        gcc g++ make \
+    && ln -sfn "$(command -v fdfind)" /usr/local/bin/fd \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# podman-remote 5.x, static, pinned and checksum-verified, at /usr/local/bin/podman -- ahead of any Debian
+# podman in /usr/bin on PATH. The version and checksum come from the Makefile, so one place decides which
+# client every agent image carries, and it matches the host's podman service major version (tests check it).
+ARG PODMAN_REMOTE_VERSION
+ARG PODMAN_REMOTE_SHA256
+ADD --checksum=sha256:${PODMAN_REMOTE_SHA256} \
+    https://github.com/podman-container-tools/podman/releases/download/v${PODMAN_REMOTE_VERSION}/podman-remote-static-linux_amd64.tar.gz \
+    /tmp/podman-remote.tar.gz
+RUN tar -xzf /tmp/podman-remote.tar.gz -C /tmp \
+    && install -m 0755 /tmp/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
+    && rm -f /tmp/podman-remote.tar.gz /tmp/bin/podman-remote-static-linux_amd64
+
+COPY requirements.txt /tmp/agentbox-requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --require-hashes \
+        -r /tmp/agentbox-requirements.txt \
+    && rm -f /tmp/agentbox-requirements.txt
+
+ENV PIP_CACHE_DIR=/tmp/pip-cache
+LABEL agentbox=1 \
+      agentbox.base="${DEBIAN_BASE}" \
+      org.opencontainers.image.title="agentbox-base" \
+      org.opencontainers.image.description="shared toolchain for agentbox agent images"
+WORKDIR /
