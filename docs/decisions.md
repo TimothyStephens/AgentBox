@@ -1447,3 +1447,18 @@ was a Go template (`{{index .Labels "agentbox.cli-version"}}`) until now. The te
 `podman network ls` already taught this project what a per-subcommand template contract costs.
 `podman image exists` answers by exit status, and 0/1 are the only answers taken: anything else raises
 rather than reading as "no", so a podman that cannot answer does not look like a missing image.
+
+**A correction, from the first host run** (`ab selftest`, 4 Nov). A profile that holds a `Containerfile`
+nobody has built yet reported `personal layer out of date` on every session. "Out of date" is only true of
+a layer that exists and no longer matches; for one that was never built it sends the reader looking for an
+image that was never there. The two cases are told apart by the `agentbox.user-layer=<agent>` label
+`ab image build` puts on what it builds (`userimage.any_built`), and the never-built message names the
+`Containerfile` in the **profile** rather than in the snapshot, since that is the file to edit or delete.
+The label query is what makes it per-agent: without it, an OMP layer would make Claude's unbuilt
+Containerfile read as out of date.
+
+Two things fell out of adding that query. The fake podman now honours `--filter label=` on `images`,
+because a fake that answers every filter with the same list cannot tell "no layer" from "some other
+agent's layer" -- the same defect class as the `network ls` template. And the image-gc test's fixture
+images carried none of the labels agentbox's own query filters on, so they only matched because the fake
+ignored the filter; the fixture is now what podman would really return for that query.

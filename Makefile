@@ -79,7 +79,10 @@ DEBIAN_BASE := docker.io/library/debian:bookworm-slim$(if $(BOOKWORM_DIGEST),@$(
 
 base-image:
 	@if [ -z "$(BOOKWORM_DIGEST)" ]; then \
-	  echo ">> WARNING: debian base is not pinned by digest; set BOOKWORM_DIGEST (see the Makefile)." >&2; \
+	  echo ">> WARNING: debian base is not pinned by digest. To pin it, run these two and rerun with" >&2; \
+	  echo ">>   BOOKWORM_DIGEST=<the sha256:... they print>:" >&2; \
+	  echo ">>   podman pull docker.io/library/debian:bookworm-slim" >&2; \
+	  echo ">>   podman image inspect docker.io/library/debian:bookworm-slim --format '{{index .RepoDigests 0}}'" >&2; \
 	fi
 	podman build --build-arg DEBIAN_BASE=$(DEBIAN_BASE) $(PODMAN_REMOTE_ARGS) \
 	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base

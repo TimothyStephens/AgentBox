@@ -88,6 +88,17 @@ def harness_pin(podman, image):
     return doc.get("Id") or "", (image_labels(doc).get("agentbox.cli-version") or "").strip()
 
 
+USER_LAYER_LABEL = "agentbox.user-layer"
+
+
+def any_built(podman, agent):
+    """Is there a personal layer for this agent at all, under any key?
+
+    This is what tells "out of date" from "never built". `ab image build` labels what it builds, so the
+    question is answered by the label rather than by guessing from tag names."""
+    return bool(podman.images_json({USER_LAYER_LABEL: agent}))
+
+
 def verify(podman, harness, candidate, agent_bin, pinned_version, *, run_check=True):
     """[] when the candidate is a usable layer on `harness`, else the reasons it is not."""
     base, built = podman.image_json(harness), podman.image_json(candidate)
@@ -146,7 +157,7 @@ def build(settings, podman, agent, *, force=False, run_check=True, out=print):
         f"    on  {adapter.image} ({harness_id[:12]})")
     # --pull=never: the base is the local harness image, and a layer must never reach for a registry one.
     podman.run(["build", "--pull=never", "--build-arg", f"BASE={adapter.image}",
-                "--label", f"agentbox.user-layer={agent}",
+                "--label", f"{USER_LAYER_LABEL}={agent}",
                 "--label", f"agentbox.harness-id={harness_id}",
                 "-t", candidate, src], capture=False, timeout=3600)
     try:

@@ -614,7 +614,9 @@ wants in every session without it entering agentbox's own images. Four things bo
 - **it is never stale.** The tag is keyed on the **harness image ID** and the Containerfile, so a rebuilt
   harness image gives a key nothing is tagged under: `ab run` says `personal layer out of date:
   ab image build <agent>` and runs the plain harness image. A layer built on an older harness is never run.
-  Adding a skill does not invalidate it — the profile hash is not part of the key.
+  Adding a skill does not invalidate it — the profile hash is not part of the key. A `Containerfile` that
+  has never been built says *that* instead, naming the file: "out of date" about an image that never
+  existed is a wrong answer, not a terse one.
 - **`--no-profile` never selects it**, since a layer is profile content like a skill is.
 
 **OMP loads the profile the same way** (29 Oct), at `~/.omp/agent/{skills,rules,prompts,agents,commands}`.

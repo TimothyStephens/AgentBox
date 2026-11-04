@@ -354,20 +354,51 @@ class WhatASessionRuns(SettingsCase):
         self.assertIn(ref, s.run_args(["true"]))
         self.assertFalse([w for w in warnings if "out of date" in w], warnings)
 
+    def built(self, refs, other=()):
+        """What `podman images` would list: `refs` are claude's own layers, `other` are OMP's.
+
+        `other` is why the label filter is not decoration -- a question asked without it would see another
+        agent's layer and call claude's Containerfile "out of date"."""
+        listed = [{"Id": "sha256:layer", "Names": [r], "Labels": {userimage.USER_LAYER_LABEL: "claude"}}
+                  for r in refs]
+        listed += [{"Id": "sha256:other", "Names": [r], "Labels": {userimage.USER_LAYER_LABEL: "omp"}}
+                   for r in other]
+        os.environ["FAKE_PODMAN_IMAGES"] = json.dumps(listed)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGES", None)
+
     def test_a_layer_built_on_an_older_harness_is_not_run(self):
         """The harness image has been rebuilt, so its ID moved. The layer under the old key still exists --
         and must not be used, because what is underneath it is last month's agent and toolchain."""
         stale = profile.user_image_ref("claude", "sha256:OLDharness", self.recipe)
         self.images({HARNESS: BASE_DOC, stale: {"Id": "sha256:layer"}})
+        self.built([stale])
         s, warnings = self.start("p1")
         self.assertEqual(s.image, HARNESS)
         self.assertNotIn(stale, s.run_args(["true"]))
         self.assertTrue([w for w in warnings if "personal layer out of date" in w], warnings)
         self.assertTrue([w for w in warnings if "ab image build claude" in w], warnings)
 
+    def test_a_containerfile_that_was_never_built_says_so_instead(self):
+        """"Out of date" is only true of a layer that exists. `ab selftest` on the host reported a layer
+        out of date for a profile whose Containerfile had never been built once -- which sends the reader
+        looking for an image that was never there (4 Nov)."""
+        self.images({HARNESS: BASE_DOC})
+        # Another agent HAS a layer. Asking "is any layer built?" without the agent label would find it and
+        # report claude's Containerfile as out of date (found by mutation).
+        self.built([], other=["localhost/agentbox-omp-user:abcdef"])
+        s, warnings = self.start("p1")
+        self.assertEqual(s.image, HARNESS)
+        self.assertFalse([w for w in warnings if "out of date" in w], warnings)
+        said = [w for w in warnings if "ab image build claude" in w]
+        self.assertTrue(said, warnings)
+        self.assertIn("none has been built", said[0])
+        self.assertIn(os.path.join(self.src, "Containerfile"), said[0],
+                      "and names the file in the PROFILE, not the snapshot's internal copy")
+
     def test_an_edited_containerfile_also_makes_it_stale(self):
         built = profile.user_image_ref("claude", "sha256:harness1", self.recipe)
         self.images({HARNESS: BASE_DOC, built: {"Id": "sha256:layer"}})
+        self.built([built])
         self.write("config/claude/profile/Containerfile", GOOD + "RUN echo more\n")
         s, warnings = self.start("p1")
         self.assertEqual(s.image, HARNESS)

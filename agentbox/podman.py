@@ -102,6 +102,17 @@ class Podman:
             raise AgentboxError(f"podman image inspect {ref} returned nothing")
         return docs[0]
 
+    def images_json(self, labels):
+        """Every local image carrying all `labels`, as podman reports it. JSON read in Python, as above."""
+        filters = []
+        for k, v in labels.items():
+            filters += ["--filter", f"label={k}={v}"]
+        p = self.run(["images", "--format", "json"] + filters)
+        try:
+            return json.loads(p.stdout or "[]") or []
+        except ValueError as e:
+            raise AgentboxError(f"podman images output could not be read as JSON ({e})")
+
     def image_exists(self, ref):
         """Does this image exist locally? `podman image exists` answers by exit status: 0 yes, 1 no.
 

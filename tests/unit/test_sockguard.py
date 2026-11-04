@@ -304,7 +304,10 @@ class ImageGc(SettingsCase):
     def test_old_untagged_go_newest_per_tag_stays(self):
         day = 86400
         now = 100 * day
-        dev = {"agentbox.role": "dev", "agentbox.project": "p1", "agentbox.session": "s"}
+        # The labels agentbox's own query filters on, so the fixture is what podman would actually return
+        # for it. They used to be missing, which only passed because the fake ignored --filter (4 Nov).
+        dev = {**self.settings.labels, "agentbox.role": "dev", "agentbox.project": "p1",
+               "agentbox.session": "s"}
         imgs = [
             {"Id": "a" * 64, "Names": ["localhost/app:latest"], "Created": now - 30 * day, "Labels": dev},
             {"Id": "b" * 64, "Names": [], "Created": now - 30 * day, "Labels": dev},

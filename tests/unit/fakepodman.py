@@ -137,7 +137,21 @@ if argv[:1] == ["ps"]:
     else:
         sys.stdout.write(os.environ.get("FAKE_PODMAN_PS", ""))
 elif argv[:1] == ["images"]:
-    sys.stdout.write(os.environ.get("FAKE_PODMAN_IMAGES", "[]"))
+    # --filter label=k=v is honoured, because `any_built` asks exactly that question and a fake that
+    # answered every filter with the same list could not tell "no layer" from "some layer".
+    want = {}
+    for i, a in enumerate(argv[:-1]):
+        if a == "--filter" and argv[i + 1].startswith("label="):
+            k, _, v = argv[i + 1][len("label="):].partition("=")
+            want[k] = v
+    try:
+        listed = json.loads(os.environ.get("FAKE_PODMAN_IMAGES") or "[]")
+    except ValueError:
+        listed = []
+    if want:
+        listed = [img for img in listed
+                  if all((img.get("Labels") or {}).get(k) == v for k, v in want.items())]
+    sys.stdout.write(json.dumps(listed))
 elif argv[:2] == ["network", "ls"]:
     if fmt == "json":
         sys.stdout.write(os.environ.get("FAKE_PODMAN_NETJSON", "[]"))

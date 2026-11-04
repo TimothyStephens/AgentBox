@@ -410,10 +410,20 @@ class Session:
         ref = profile.user_image_ref(self.adapter.name, harness_id, recipe)
         if self.podman.image_exists(ref):
             return ref, ""
+        # "Out of date" is only true of a layer that EXISTS and no longer matches. A Containerfile that has
+        # never been built is a different thing to say, and saying the wrong one sends the reader looking
+        # for an image that was never there (seen in `ab selftest` output, 4 Nov).
+        if userimage.any_built(self.podman, self.adapter.name):
+            return (self.adapter.image,
+                    f"personal layer out of date: `ab image build {self.adapter.name}`. "
+                    f"This session runs {self.adapter.image} instead -- a layer built on an older harness "
+                    f"image is never run.")
+        # The SOURCE path, not the snapshot's: the snapshot is an internal copy, and the file the reader
+        # has to go and look at (or delete) is the one in the profile.
+        own = os.path.join(self.settings.profile_src(self.adapter.name), profile.CONTAINERFILE)
         return (self.adapter.image,
-                f"personal layer out of date: `ab image build {self.adapter.name}`. "
-                f"This session runs {self.adapter.image} instead -- a layer built on an older harness "
-                f"image is never run.")
+                f"{own} describes a personal image layer, but none has been built: "
+                f"`ab image build {self.adapter.name}`. This session runs {self.adapter.image}.")
 
     @property
     def state_dir(self):
