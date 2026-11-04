@@ -2,7 +2,7 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 27 Oct 2026
+**Updated:** 4 Nov 2026
 
 ## Status (single source of truth — what this tool does and does not do)
 
@@ -34,7 +34,9 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
 
-Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`.
+Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`, which is
+organised by what can be acted on: §1 open questions needing a decision, §2 scoped and ready, §3 deferred by
+design, §4 the maintainability backlog, §5 watch-only, §6 known limitations.
 
 ## Current step
 

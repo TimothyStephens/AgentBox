@@ -1,179 +1,324 @@
 # TODO & tech debt
 
-Nothing here blocks use. These are the optional / deferred items left — pick them up when a real change touches the area, or when they become worth doing. (Active work and the build state live in `progress.md`.)
+**Nothing in this file blocks use.** It is the durable backlog: what is deliberately not built, what needs a
+decision, and what is worth doing when a change next touches the area.
 
-Last reviewed 2026-11-04, after the image restructure. `make test` (1035), `make itest` (186),
-`make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s are green on the host at
-that point; the unit suite also runs with zero ResourceWarnings. The third preset/settings audit
-(F-1 … F-12, decisions.md 28 Oct) is fully closed.
+- **What the tool does and does not do** → `docs/progress.md`, the Status table (single source of truth).
+- **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
+- **The spec** → `docs/design.md`.
 
-## Needs an answer / a real fix
+**State as of 4 November 2026.** The image restructure is done and exercised end to end on the host:
+`node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
+CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1049), `make itest` (186),
+`make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
+runs with zero ResourceWarnings. Nine of eleven dead-enforcement items removed. The third preset/settings
+audit (F-1 … F-12) is fully closed.
 
-- ~~**OMP profile load paths**~~ — **resolved and built, 29 Oct.** The question was whether a read-only
-  profile at `agent/{skills,rules,prompts,agents,commands}` would break autolearn, which writes into that
-  area. Answered from the public source (`github.com/can1357/oh-my-pi`:
-  `packages/coding-agent/src/autolearn/managed-skills.ts`, `discovery/builtin.ts`, `docs/skills.md`):
-  **autolearn writes only to `<agentDir>/managed-skills`**, never to `<agentDir>/skills`, and both are
-  discovered unconditionally. So the authored directories carry the profile read-only, and autolearn keeps
-  its own directory — which agentbox gives it **empty every session** and harvests into the project's inbox
-  at teardown, because a skill the agent wrote itself is a proposal, not something later sessions should
-  load unreviewed. `omp.AUTOLEARN_DIR` names the one directory this rests on.
+**How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
+*the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
 
-  **The version caveat is closed, 4 Nov.** It used to depend on whichever OMP the host's `omp-env` image
-  happened to carry, which nobody could check from inside a sandbox. agentbox installs its own OMP now
-  (`OMP_VERSION := 18.13.3` in the Makefile, asserted at build time), and `make itest` exercises the whole
-  arrangement against the real binary: `test_omp_profile_paths_are_read_only`,
-  `test_omp_reads_a_profile_skill`, and the round trip that writes to `managed-skills`, finds it in the
-  inbox after teardown, and finds the directory empty again next session. All green on the host (186 itests).
+---
 
-- ~~**Two concurrent sessions of one project share its agent state**~~ — **fixed 29 Oct.** One live session
-  per project, enforced by a lock file in the project's state dir (`agentbox/projectlock.py`): `ab run`
-  takes it before any work and `ab attach <project>` is the way back to the session that holds it. The
-  sharing is impossible now rather than warned about, so the warning is gone. A stale lock (its launcher
-  gone and nothing of its session running) is reaped, with what was removed reported; a live holder is never
-  overruled, and an unreadable podman stops the operation instead of freeing a lock on a guess.
+## 1. Open questions — a decision is needed before any code
 
-- ~~**`base_branch` has no source**~~ — **wired 4 Nov** as a project registry key:
-  `ab project set <p> --base-branch mags/integration`. `session._write_scan_state` records it at session
-  START, so `ab session kill` and `ab session gc` name the branch the session was configured with even if
-  the registry is edited while it runs.
+### 1.1 `ab profile install` — the last thing between agentbox and decommissioning omp-env
 
-  **agentbox does not own the value.** MAGS-CodeDev has its own `settings.base_branch`
-  (`mags_codedev/config.template.yaml`), and a project using it gives the same name here — one value in two
-  places, both the user's. Reading MAGS's config to find it would couple agentbox to another tool's file
-  format for a string the user can state in a word. agentbox neither creates nor checks out the branch.
+**What.** Sessions mount OMP's plugins from the host's `~/.omp/{plugins,repos,pylibs}`, which only
+`omp-env install` produces — on the host, with `--network=host` and `~/.omp` read-write. agentbox no longer
+*builds on* omp-env (4 Nov), but it still *depends on* it for plugins.
 
-- ~~**The agent image layers are not restructured yet**~~ — **done, 4 Nov.** The chain is
-  `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optionally a personal layer, and
-  each agent image installs its own CLI at a Makefile pin that the build asserts. The two facts that
-  blocked it are settled: node comes from the official image (so no node tarball checksum of ours), and
-  OMP is `@oh-my-pi/pi-coding-agent@18.13.3` with Bun 1.4.4, both checksum- or integrity-verified. See
-  decisions.md. Unbuilt here (`make` is not in a sandbox): `make base-image`, `make claude-image omp-image`,
-  then `make itest` and both live targets are the gate.
+**Why it matters.** The stated end state is that omp-env is decommissioned once `ab` is finished; it is a
+backup for now. Until this exists, that cannot happen. There is also live drift: plugins installed against
+whatever OMP the host's omp-env has, meeting the OMP that `images/omp/Containerfile` pins. The known symptom
+is a plugin failing to load (`pi-statusline`'s `stripTerminalSequences`, seen 4 Nov). **Mitigation until
+then: keep `OMP_VERSION` near what omp-env installs with.**
 
-- **`omp-env` is now only a host tool** (4 Nov). agentbox no longer builds on `localhost/omp-env`, but
-  `omp-env install` is still what provisions `~/.omp/{plugins,repos,pylibs}`, which sessions mount
-  read-only. So the image and the plugins can drift apart: the plugins are installed against whatever OMP
-  the host's omp-env has, while the session now runs the OMP pinned in `images/omp/Containerfile`. The
-  known symptom is a plugin that fails to load (`pi-statusline`'s `stripTerminalSequences`). Closing this
-  properly is the `ab profile install` work below — a profile-owned `plugins.toml` installed in a gated
-  session against the image's own OMP. Until then, keep `OMP_VERSION` near what omp-env installs with.
+**Done looks like.** A profile-owned `plugins.toml` (already in `profile.BUILD_ITEMS`, so it is already
+hashed and snapshotted — that was put there for this). `ab profile install [--agent omp]` installs from it
+**in a gated session**, against the image's own OMP/node/Bun, into a host-owned tree that sessions mount
+read-only. `~/.omp` stops being an input.
 
-- **The MAGS adapter is parked** (4 Nov), waiting on a complete spec: MAGS changes that are not pushed yet,
-  and one design change since the plan was approved — its generated test containers get a **sealed network
-  (no proxy)** rather than the session's internal network. That matters because the session network carries
-  the squid proxy and the gate injects `HTTP(S)_PROXY` into every container it creates, so "reaches nothing"
-  needed the proxy taken away, not just the LAN. Built from the approved plan already: the gate's
-  network-pinning test (`tests/unit/test_gate.py`, a create naming no network at all), and the scan's
-  HEAD/ref movement plus `base_branch` reporting. Nothing to do until the spec arrives.
+**Decisions to make first** — this is not shovel-ready, and these are the reasons:
 
-- ~~**Node is pinned to 22, and the current LTS is newer**~~ — **moved to 26 on 4 Nov**, at Tim's call.
-  `NODE_MAJOR` in the Makefile is the one place it lives, and `tests/unit/test_images.py` pins that the
-  Containerfile's own `ARG OS_BASE` default names the same image (a stale default is a trap for a
-  hand-build rather than an error). `26-bookworm-slim` is published and node 26 is the current LTS, both
-  confirmed from `docker-library/official-images`. **This changes OMP's node major from 22 to 26**, so the
-  gate is `make base-image` + both agent images, then `make itest` and `make omp-live` — not just a rebuild.
+1. **Where the installed tree lives.** Candidates: `~/.config/agentbox/omp/plugins/` (host-owned config,
+   matches the profile) or `<data>/profiles/omp/plugins/<hash>/` (content-keyed, matches the snapshot
+   mechanism and gets staleness detection for free). The second composes better with how profiles work.
+2. **What network the install gets.** It needs npm and git, so `packages` egress through squid — the point
+   being that the install goes through the same gate and allowlist as everything else instead of
+   `--network=host`. But a plugin install is not a project, and the session machinery is built around one.
+   Either synthesise a project, or build a narrower "one container, session proxy, no grant" path.
+3. **Reproducibility.** `plugins.toml` should pin versions and the install should emit a lockfile, or
+   "install" means something different every time it runs.
+4. **How sessions pick it up.** `omp.omp_mounts` would read the new location instead of `~/.omp`. That
+   function is security-sensitive — the whitelist, `_plain`/`_version_dir` validation, the credential
+   hard-link check, the mid-start `unchanged()` recheck — and most of it exists *because* `~/.omp` is a
+   directory agentbox does not control. Owning the tree would let much of it go, which is a simplification
+   worth having but is a careful change, not a mechanical one.
 
-- ~~**`make omp-live` passes but the local model is slow**~~ — **accepted, 4 Nov.** One turn takes about
-  257s, which is why that check used to fail intermittently (a 900s timeout, then an empty answer, then a
-  pass). Tim accepts the latency: the check stays on the real LAN model, because exercising that endpoint
-  is the point of it. The report names the case and the latency now, so a repeat reads as "slow model"
-  rather than as an unexplained FAIL, and `AB_LIVE_MODEL=<provider/model>` is there for a one-off.
+**Where to start.** `agentbox/adapters/omp.py` (`omp_mounts`, `PROVISIONED`, `provisioned_targets`,
+`check_no_credentials`), `agentbox/profile.py` (`BUILD_ITEMS`, `snapshot`), `agentbox/cli.py` (the
+`ab profile` subparser). Read `docs/decisions.md` → "What the OMP session mounts from ~/.omp" first: it says
+why each piece of the current whitelist is there, and each reason has to be answered or retired.
 
-- **Old user image layers are never pruned** (4 Nov). Each harness image rebuild or Containerfile edit
-  gives a new `localhost/agentbox-<agent>-user:<key>` tag and leaves the previous one in podman storage.
-  `ab session gc` prunes agentbox's own images by age (`image_keep_days`); the user layers are not in that
-  sweep. Low: `podman image rm` by hand, or add them to the same sweep once the shape settles.
+**The gate.** `make test`; `make itest` (the OMP profile and managed-skills round trip); `make omp-live`
+with the real plugins, which is the only thing that proves a plugin actually loads.
 
-## Nice to have — cleanup / future
-- **A curator for the profile** (29 Oct, deliberately not built). `ab profile harvest` lists, groups and
-  marks; promoting is still a human reading a skill and deciding. The follow-up would be a small project of
-  its own: an agent session whose *job* is to review the inbox — read each item with its provenance, judge
-  whether it generalises beyond the project that produced it, rewrite it to house style, flag overlaps with
-  what the profile already has, and propose the promotion as a diff for a human to approve. It wants a
-  project of its own because it needs the profile read-write (which no normal session gets), a prompt that
-  is itself reviewed, and a record of what it rejected and why. Not started: harvest has to be lived with
-  first, to see what the review actually involves.
-- **Profile snapshots are never garbage-collected.** `<data>/profiles/<agent>/<hash>/` gains a directory per
-  distinct profile content, and old ones are kept so a running session's mount stays valid. They are small
-  (text), and `ab session gc` would be the place to drop any hash no live session mounts.
-- **A read-only project-root mount mode, for a planner preset** (the agent reads the code and writes a plan, but cannot edit the code). **Not built, and deliberately not bundled into the preset redesign** (26 Oct): the root is an unconditional read-write bind under every preset (`mounts.plan`: `rw_grants = [root] + data_rw`), so this needs a **new mount mode** *and* **another pass over the gate/covers logic** — the gate's read-only-grant handling (forcing `ro` on binds and grant-volume SubPaths), the after-start mountinfo check, and the cover pins all assume a writable root, and that area is security-reviewed (decisions.md, 5–6 Oct). It would also want a decision on one writable sub-directory inside a read-only root (notes/plans), which the grant validator does not model today. Raised because `research` reads as if the project were read-only and is not; design.md's preset table and the `--preset` description now say so explicitly. **Today's mitigation:** commit before a research session, plus the per-session rsync snapshot — a *within-session undo* that restores the grant to how it was at session start (explicitly not a data backup, decisions.md 6 Oct) — so unwanted edits are a `git diff` / `git checkout` away.
-- **`--format` templates are only checked by hand.** `tests/manual/podman_formats.sh` is the one check
-  against real podman (a unit test keeps it in step with the code, and the fake podman refuses the one
-  template we know 5.7 rejects). Running it inside `make itest` would make it automatic; it is manual today
-  because it reads whatever objects happen to exist on the host rather than creating its own.
-- **Unify the duplicated git-identity lookup** (`initproj.py` / `session.py`) — review finding 10; detail under *Support refactors* below.
-- **Deferred-by-design features** (intentionally not built — see the `progress.md` Status table): `ab ws`/`deploy`/`outbox`/`allow`/`reload`/`resume`, the podman `exec` tier, the model-key gateway, `masked_paths`, `--data-bind`, Pi/Codex adapters. (`ab attach` **is** built — 29 Oct, with the per-project lock. `ab ws` as a subcommand is not, but `contrib/ab-ws` is a tmux workspace launcher that does the job from outside, starting agents only through `ab run`.)
-- **Audit finding F9** (second preset/settings audit, 27 Oct) — **left as-is, benign.** A project's own root subdirectory is accepted as its own `data_rw` at add time, because the project is not yet in the registry and so is absent from the overlap comparison. Harmless: both mounts are read-write, and `mounts.plan` keeps the more specific one. (Cross-*project* overlap is enforced in both directions — decisions.md, 27 Oct, F3.)
-- The **Maintainability backlog** below: dead-code removal (each with a test proving deadness), the `gate.py`/`session.py` refactors, and the untested error paths E5–E12.
+### 1.2 The MAGS adapter — parked on a complete spec
 
-## Watch only — not an action
-- **Egress flakes** (squid upstream stalls; IPv6 suspected). Diagnostics are in place; act only if they recur. Candidate fix: a squid `dns_timeout` under the probe's 20 s. Full notes in `progress.md` → Watch items.
+**What.** An adapter for MAGS-CodeDev (`github.com/TimothyStephens/MAGS-CodeDev`), planned and approved in
+outline, then parked.
 
-## Retired by the 27 Oct settings table
+**Why it is parked.** Waiting on a complete spec. One design change since the plan was approved: its
+generated test containers get a **sealed network (no proxy)**, not the session's internal network. That
+followed from a finding — the session network carries the squid proxy *and* the gate injects
+`HTTP(S)_PROXY` into every container it creates, so "reaches nothing" needs the proxy taken away, not just
+the LAN.
 
-The five parallel per-key lists are gone: `cli.SECURITY_OVERRIDES`, `cli.UNSETTABLE`,
-`registry.PROJECT_KEYS`, `_print_effective`'s display gating and the ceiling's looseness orders all derive
-from `agentbox/projectkeys.py` now (decisions.md, 27 Oct). Five audit findings had been keys missing from one
-of them. The remaining duplication below is the same class and the same remedy when it next bites: one
-table, derived views.
+**Already built from the approved plan.** The gate's network-pinning test (`tests/unit/test_gate.py`: a
+create naming no network at all is still pinned to the session network, on both APIs); the scan's HEAD/ref
+movement reporting; and `base_branch` as a project key.
 
-## Maintainability backlog
+**What reading MAGS's own config established** (4 Nov, from `mags_codedev/config.template.yaml`) — carry
+these into the spec:
 
-Durable backlog of deferred work, moved here from `docs/reviews/2026-10-06-cleanup.md` and `docs/decisions.md` (6 Oct) so it is not lost. Line numbers are from the 6 Oct cleanup audit and drift with edits — treat them as a starting point, confirm before acting. Each item says why it is deferred and what should be true before it is done.
+- `test_runner: "auto"` auto-detects `podman > docker > apptainer > singularity > local`. The plan says test
+  containers go through the gate and `local` is refused, so the adapter must **force `test_runner: podman`**
+  rather than rely on `auto`, which would silently fall back to `local`.
+- `docker_test_image: "mags-dev-env:latest"`, "auto-built if not found" — that build goes through the gate,
+  so the name needs to be in the project's `dev_images` allowlist or be a session build the gate records.
+- `base_dir: ".mags-codedev"` holds **git worktrees inside the project root**. `scan.worktrees()` walks for
+  `.git`, so a MAGS run would produce a "NEW GIT REPO" line per module unless the adapter arranges a skip.
+  Decide this in the spec.
+- `MAGS_KEYS_FILE` is a 0600 file of `KEY=value` lines that "should live outside the project directory" —
+  which matches the plan's keys-on-tmpfs item exactly.
 
-## Enforcement dead code (remove only after a real-use baseline, each with a test proving deadness first)
+**Structurally confirmed already:** a tmpfs keys file in the agent container cannot be reached by a sibling
+container. The gate's bind allowlist is the grants only (`session.bind_roots`), and a tmpfs in the agent's
+mount namespace is not a host path at all. This holds **provided the keys file is not written inside a
+grant** — which is also what grantcheck would refuse.
 
-**Nine of eleven done, 4 Nov.** The baseline arrived with the image restructure. What is left is `D-E9`
-(the network-less `Session` path -- eight interlocked sites, and removing it forecloses a network-less
-session for good, so it is a design decision rather than a cleanup) and `D-E11` (a deliberate
-always-refuse knob, not dead code).
+### 1.3 D-E9 — remove the network-less `Session` path, or keep it?
 
-Proven to have no production caller, but it guards a boundary, so removal waits until the tests around the reachable paths bite (that is what the 6 Oct test pass started). Before deleting any item: add/confirm a test that fails if the live path's guard is removed, so the deletion rests on a net that bites.
+**What.** `make_session` always returns `NetSession`; the base `Session` is never instantiated, so a whole
+path is unreachable: `Session.network_args`, `start_infra`, `pin_args`,
+`add_network_cases`→`runner.network_none_cases`, `egress = "none"`, `sandbox_notes`' `"none"` branch, the
+`isinstance(self, NetSession)` checks, and `hardening.py`'s `--network=none` allowance.
 
-| ID | Where | Why dead / why deferred |
+**Why it is a decision, not a cleanup.** Eight interlocked sites across `session.py`, `runner.py` and
+`hardening.py`, and removing it **forecloses a network-less session for good**. Everything else in the
+dead-code backlog was a local deletion; this one changes what agentbox could be asked to do.
+
+**What would have to be true.** No planned feature wants a session with no network at all — worth checking
+against §3 (`analysis-offline` uses `locked` egress, not no network, so it is not a user). If the answer is
+"no", remove it as one change with tests; if "maybe", leave it and record that here.
+
+---
+
+## 2. Ready to implement — scoped, no decision needed
+
+### 2.1 `ab session gc` does not sweep the two newest kinds of leftover
+
+**What.** `gc_images` filters on `{**settings.labels, "agentbox.role": "dev"}`, so it prunes
+*session-built* images older than `image_keep_days` (keeping the newest per tag). Two things sit outside
+that sweep:
+
+- **Personal image layers.** Every harness rebuild or `Containerfile` edit gives a new
+  `localhost/agentbox-<agent>-user:<key>` and leaves the previous one in storage. They carry
+  `agentbox.user-layer=<agent>` and `agentbox.harness-id=<id>`, and neither `agentbox.role=dev` nor the
+  settings labels — so nothing collects them.
+- **Profile snapshots.** `<data>/profiles/<agent>/<hash>/` gains a directory per distinct profile content,
+  kept so a running session's read-only mount stays valid. Small (text), but unbounded.
+
+**Why it matters.** Low: disk only. But both are now produced *routinely* rather than rarely — the layers
+every time an image moves, the snapshots every time a skill is edited.
+
+**Done looks like.** `ab session gc` removes user layers that no live session is running and that are not
+the current key for their agent, and profile snapshot directories no live session mounts. Both need the
+liveness answer `gc` already has: **a sweep must never delete what a running session has mounted.**
+
+**Where to start.** `session.gc_images` (the pattern to copy), `session.sessions()` / the live-session query
+for what to protect, `userimage.USER_LAYER_LABEL` and `profile.user_image_ref` for the current key,
+`settings.profiles_dir`. Consider adding `agentbox-<agent>-user` images to `make clean`'s label sweep.
+
+**The gate.** Unit tests against the fake podman (it honours `--filter label=` on `images` since 4 Nov);
+`make itest` for the real sweep. Mutation-check that a layer or snapshot belonging to a *live* session is
+not removed — that is the assertion that matters.
+
+### 2.2 `tests/manual/podman_formats.sh` is only ever run by hand
+
+**What.** The one check of agentbox's `--format` templates against real podman. A unit test keeps the script
+in step with the code, and the fake podman refuses the one template podman 5.7 rejects — but the script
+itself runs only when someone remembers.
+
+**Why it matters.** This is the class that cost a whole build once: `network ls --format
+'{{index .Labels …}}'` is rejected by podman 5.7, the call was swallowed, and network-based session
+detection had never worked. A template is a per-subcommand contract with podman's internals; only running it
+proves anything.
+
+**Done looks like.** It runs inside `make itest`.
+
+**Why it is manual today.** It reads whatever objects happen to exist on the host rather than creating its
+own, so it cannot assert much; under `itest` it would need its own `abt-` objects to inspect.
+
+**Where to start.** `tests/manual/podman_formats.sh`, `tests/unit/test_podman_formats.py` (the sync test and
+its `READ_ONLY` list), `tests/integration/harness.py` for making `abt-` objects to point it at.
+
+### 2.3 Unify the duplicated git-identity lookup
+
+**What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
+slightly differently.
+
+**Why it matters.** Low — a cosmetic inconsistency between commits made inside a session and by `ab init`.
+Review finding 10 (pre-real-project review, 15 Oct). Unify when next touching either.
+
+---
+
+## 3. Features deferred by design
+
+Not bugs and not oversights — each was considered and left out. The Status table in `progress.md` is
+authoritative; this is the *why*.
+
+| Feature | Why not built |
+|---|---|
+| `ab deploy` | Step 6. Would validate a compose file, check `.env` against `.env.dev`, show the diff since the last deploy, confirm, then start the live stack through a sockguard deploy profile — never the raw socket. |
+| `ab ws` (subcommand) | `contrib/ab-ws` does the workspace job from outside the CLI, starting agents only through `ab run`, so the sandboxing stays in `ab`. A subcommand would add surface for no new capability. |
+| `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
+| podman `exec` tier | Refused in code (`session.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
+| Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
+| `masked_paths` (per-project masked dir) | Only secret-name masks and the `secrets/` tmpfs exist. `docs/agentbox-masked-paths.md` is a proposal, marked as such. |
+| `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
+| `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
+| Pi / Codex adapters | Step 8. The adapter interface is the only per-agent code and has carried two agents through a restructure, so a third is mostly configuration. |
+| Caps / devices opt-in | The gate refuses `cap_add`, `devices` and security options under every preset; the `caps = opt-in` preset value is inert and `ab project show` says so. |
+| A profile curator | `ab profile harvest` lists, groups and marks; promoting is a human reading a skill. A curator would need the profile **read-write** (which no normal session gets), a prompt that is itself security-reviewed, and a record of what it rejected and why. **Deliberately not started until `harvest` has been lived with** — right now we would be guessing at the hard part. |
+
+### 3.1 A read-only project root, for a planner preset
+
+Separate because it is the one deferred feature with a real design cost, and because `research` *reads* as
+though the project were read-only and is not.
+
+**What would be needed**, in order:
+
+1. A new mount mode in `mounts.plan` — the root is an unconditional read-write bind under every preset today
+   (`rw_grants = [root] + data_rw`).
+2. **The gate**, which is the expensive part: its read-only-grant handling forces `ro` on binds and on
+   grant-volume SubPaths from `ro_roots`, and the after-start mountinfo check and the cover pins all assume
+   a writable root. That is security-reviewed ground (decisions.md, 5–6 Oct).
+3. A decision on **one writable subdirectory inside a read-only root** (for the plan itself). The grant
+   validator does not model "a writable hole inside a read-only grant" at all.
+4. A preset to expose it. `grantcheck` largely becomes moot for such a project — a read-only root cannot be
+   damaged — which is worth stating rather than discovering.
+
+**Today's mitigation:** commit before a `research` session; the per-session rsync snapshot is a
+within-session undo (explicitly not a data backup), so unwanted edits are a `git diff` away.
+
+---
+
+## 4. Maintainability backlog
+
+Deferred work with a stated trigger, carried from `docs/reviews/2026-10-06-cleanup.md`. Line numbers drift —
+treat them as a starting point and confirm before acting.
+
+### 4.1 Enforcement dead code — 9 of 11 removed (4 Nov)
+
+The rule was "remove only after a real-use baseline, each with a test proving the **live** guard bites
+first". The baseline arrived with the image restructure and nine went (decisions.md, 4 Nov — including the
+two that were worth more than the deletion: `check_limits` had no test at all, and `hardening`'s `/dev/null`
+branch returned *before* the grant check, so the tests that used it were skipping that check unintentionally).
+
+Left:
+
+| ID | Where | Status |
 |---|---|---|
-| ~~D-E1~~ | `gate.py` `after_start` (~:1001-1010) | **removed 4 Nov.** By then no test called it either -- those had already moved to the live start path (`prepare_start` -> `mount_violations`, driven by `test_review_step5` E3/T2). |
-| ~~D-E2~~ | `gate.py` `labels_of` (~:492) | **removed 4 Nov.** No caller anywhere; the live guard (a named resource must be this session's dev stack) is `test_gate.test_named_resources_must_be_the_sessions_dev_stack`. |
-| ~~D-E3~~ | `gate.py` `check_binds` (~:1245) | **removed 4 Nov.** No caller anywhere; the singular `check_bind` is the live path, covered by `test_gate.test_libpod_refusals` (a bind on `/etc`). |
-| ~~D-E4~~ | `gate.py` `self.refused` (~:417, :522) | **removed 4 Nov.** Written on every removal, never read. The live protection is `verified.discard(oid)` in `remove()`, which had NO test until `test_gate.RemovalProtection` was added for this deletion -- the labels still say dev afterwards, so they cannot be what refuses it. |
-| ~~D-E5~~ | `gate.py` `check_limits(compat=)` (~:1385); `pipe_back(watch=)` (~:2386); `read_chunked` `sock is None` branch (~:2222) | **removed 4 Nov.** `check_limits(compat=)` was declared and never read (and `check_limits` had NO test at all; `test_gate.Limits` was written for the deletion and covers all three caps). `pipe_back(watch=)` was never passed -- a build's reply is watched by `pipe_build_reply`, which feeds its own watcher and hands the remainder on. `read_chunked`'s `sock is None` had one caller, always a real socket. |
-| ~~D-E6~~ | `gate.py` `rewrite_network(compat=None)` auto-detect (~:1659-1660) | **removed 4 Nov.** `compat` is keyword-only and required now; the two test lines that relied on the auto-detect pass it explicitly, as `decide` always did. |
-| ~~D-E7~~ | `grantcheck.py` `_rel_skips` (~:36-42) | **removed 4 Nov.** No caller; H3 stopped honouring `mask_skip` in the scan, and `test_grantcheck.test_mask_skip_is_not_an_exemption` is the live guard. |
-| ~~D-E8~~ | `hardening.py` `/dev/null` mask branch (~:104-108) | **removed 4 Nov.** Production has used `mask_file` since step 5; the two tests that reached the `/dev/null` branch drive the real mask file now, which also puts the mask source under the grant check. |
-| D-E9 | Step-1 network-less `Session` path | `make_session` always returns `NetSession`; base `Session` is never instantiated. Unreachable: `Session.network_args` (~:505), `start_infra` (~:603), `pin_args` (~:645), `add_network_cases`→`runner.network_none_cases` (~:656, `runner.py:238`), `egress = "none"` (~:332), `sandbox_notes` `"none"` branch (~:287), the `isinstance(self, NetSession)` checks (~:416-417), and `hardening.py:75`'s `--network=none` allowance. Large, interlocked — remove as one change, with tests, after confirming no step-7+ feature revives a network-less session. |
-| ~~D-E10~~ | `session.py` `podman_access(…, warn)` (~:117) | **removed 4 Nov.** The `warn` parameter was never read. |
-| D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` (~:267) | A deliberate knob that makes two checks always refuse. Keep, but be aware it is a constant branch; not really "dead". |
+| D-E9 | the network-less `Session` path | **a decision, not a cleanup** — see §1.3 |
+| D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` | **keep.** A deliberate knob that makes two checks always refuse — a constant branch, not dead code. |
 
-## Duplicated enforcement logic — consolidate WITH tests; trigger: a real bug traces to the drift
+### 4.2 Duplicated enforcement logic — consolidate only when a bug traces to the drift
 
-Do not merge pre-emptively. Consolidate when a real bug is traced to one of these diverging. Add tests pinning the shared behaviour first.
+Do not merge pre-emptively; add tests pinning the shared behaviour first.
 
-- **Secret-name test, three copies:** `mounts._masked` (includes custom swap targets), `grantcheck._is_secret_name` with its own `SECRET_FILES` (`grantcheck.py:30` vs `mounts.py:11`), and inline in `gate.unmasked_secret_under` (`gate.py` ~:628-632, ignores swap targets). Known drift: a custom swap target (e.g. `secrets.env`) is masked, but the gate's N6 check does not flag one created mid-session — this is the accepted host-writes-during-session known limitation (`docs/decisions.md`), not a bug to fix here.
-- ~~**"Covered" computed five ways**~~ — **done 28 Oct** (audit F-6). There are now two named computations
-  with different jobs: `mounts.hidden` (paths that read EMPTY — masks, mask dirs, dev-swap targets; the only
-  set the grant scan may use) and `mounts.covered` (that plus the read-only covers; what the gate refuses a
-  bind onto). `cli._mask_dsts` is gone, `session._plan_covered` delegates, and every grant scan goes through
-  `grantcheck.preflight`. `session.masked_paths` (build contexts) and `mounts.hardlink_masks` still walk the
-  plan themselves — both answer a third question (what a packed context must carry empty, and which inodes
-  have another name) and neither decides a verdict, so they are left alone.
-- **`mask_skip` resolved three times:** `mounts._rel_skips`, the dead `grantcheck._rel_skips` (see D-E7), and `grantcheck._under_mask_skip`.
+- **Secret-name test, three copies:** `mounts._masked` (includes custom swap targets),
+  `grantcheck._is_secret_name` with its own `SECRET_FILES` (`grantcheck.py` vs `mounts.py`), and inline in
+  `gate.unmasked_secret_under` (ignores swap targets). **Known drift:** a custom swap target (e.g.
+  `secrets.env`) is masked, but the gate's N6 check does not flag one created mid-session. That is the
+  accepted host-writes-during-session limitation, not a bug to fix here.
+- **`mask_skip` resolved twice:** `mounts._rel_skips` and `grantcheck._under_mask_skip`. (It was three;
+  `grantcheck._rel_skips` went with D-E7.)
 
-## Uncovered gate HTTP error-paths (low value; cover opportunistically)
+### 4.3 Uncovered gate HTTP error paths — cover opportunistically
 
-Reachable only through the HTTP/plumbing layer, mostly fail-closed error returns. Low value; add a test when touching the area.
+Reachable only through the HTTP/plumbing layer, mostly fail-closed error returns. Add a test when touching
+the area; none is a known defect.
 
-| ID | Where | What is untested |
-|---|---|---|
-| E5 | `gate.py` ~:523-532 | `remove` failure path (the fake `raw_request` always returns 200). |
-| E6 | `gate.py` ~:775-779, :1264-1265 | Grant-volume create failure or a name collision with a non-grant volume; named-volume create failure. |
-| E9 | `gate.py` ~:2411-2416, :2257, :2205, :2165 | `Content-Length` with `Transfer-Encoding`; an unsupported transfer encoding; a build context over 8 GB; a body/head over the limit. |
-| E10 | `gate.py` ~:1306-1331, :2016-2017, :1978-1981 | Build context errors: unreadable dockerfile param, no Containerfile, Containerfile not a file, bad tar, `FROM` with no image, `# escape=` directive. |
-| E11 | `gate.py` ~:1903-1904, :1914-1915 | Network create with `ignoreIfExists`; an unrecognised `/create` endpoint. |
-| E12 | `gate.py` ~:1069-1071, :1083-1085 | `mount_violations` "cannot confirm what is mounted" branches. |
+| ID | What is untested |
+|---|---|
+| E5 | the `remove` failure path (the fake `raw_request` always returns 200) |
+| E6 | grant-volume create failure; a name collision with a non-grant volume; named-volume create failure |
+| E9 | `Content-Length` with `Transfer-Encoding`; an unsupported transfer encoding; a build context over 8 GB; a body/head over the limit |
+| E10 | build-context errors: unreadable dockerfile param, no Containerfile, Containerfile not a file, bad tar, `FROM` with no image, `# escape=` |
+| E11 | network create with `ignoreIfExists`; an unrecognised `/create` endpoint |
+| E12 | `mount_violations`' "cannot confirm what is mounted" branches |
 
-## Support refactors (no behaviour change)
+### 4.4 Support refactors (no behaviour change)
 
-- **`gate.py` size / single-class split:** ~2,540 lines; one `Gate` class mixes HTTP plumbing, policy, image handling and mount verification. Long functions: `handle` (~110 lines), `decide` (~75), `rewrite_libpod_container` (~70), `check_common_libpod` (~57). A pod start inspects the pod three times (~:976, :984, :1939). Splitting plumbing from policy is a pure refactor — do it only alongside a change that already touches the gate, with the test suite as the net.
-- **`session.py`:** notes text, `ls`/idle and gc are mixed with the lifecycle; moving `sandbox_notes`/`dev_notes` out is a pure refactor.
-- **Duplicated git-identity lookup** (`initproj.py` ~:274 and `session.py` ~:197): the two read the author name/email slightly differently; unify when next touching either (pre-real-project review 2026-10-15, finding 10).
+Do these **only alongside a change that already touches the area**, with the suite as the net.
+
+- **`gate.py` (~2,527 lines):** one `Gate` class mixes HTTP plumbing, policy, image handling and mount
+  verification. Long functions: `handle` (~110 lines), `decide` (~75), `rewrite_libpod_container` (~70),
+  `check_common_libpod` (~57). A pod start inspects the pod three times. Splitting plumbing from policy is
+  pure refactoring.
+- **`session.py`:** notes text, `ls`/idle and gc are mixed with the lifecycle; moving
+  `sandbox_notes`/`dev_notes` out is pure refactoring.
+
+---
+
+## 5. Watch only — not an action
+
+- **Egress flakes** (squid upstream stalls; IPv6 suspected). Diagnostics are in place; act only if they
+  recur. Candidate fix: a squid `dns_timeout` under the probe's 20 s. Full notes in `progress.md` → Watch
+  items; `make egress-soak` is the measurement.
+- **`make omp-live`'s local model is slow** — about 257 s for one turn, which is why that check used to fail
+  intermittently. **Accepted** (4 Nov): the check stays on the real LAN endpoint, because exercising it is
+  the point. The report names the latency now, so a repeat reads as "slow model" rather than an unexplained
+  FAIL. `AB_LIVE_MODEL=<provider/model>` is there for a one-off.
+- **omp-env / image plugin drift** — see §1.1. Mitigation: keep `OMP_VERSION` near what omp-env installs.
+
+---
+
+## 6. Known limitations — recorded, not TODO
+
+Consequences of the threat model (**mistake containment + cross-project isolation**, *not* a wall against a
+deliberately malicious or prompt-injected agent). Listed so they are not mistaken for gaps.
+
+- **grantcheck catches common shapes only.** Secrets under other names, more DB shapes, exempt names and
+  host-written files all get past it. The operational rule — keep secrets and live data out of the grant —
+  is the real control; masks and the gate's cover checks are defence in depth behind it.
+- **Host writes during a session are not re-caught.** The scan and masks are fixed at session start.
+- **A project's own root subdirectory is accepted as its own `data_rw`** (audit F9, 27 Oct) — benign: both
+  mounts are read-write and `mounts.plan` keeps the more specific one. Cross-*project* overlap is enforced
+  in both directions.
+- **Backups are a within-session undo, not a data backup** — same disk, only as fresh as session start.
+  Never presented as one.
+
+---
+
+## Recently closed
+
+Full reasoning for each is in `docs/decisions.md` under the date.
+
+| Closed | What |
+|---|---|
+| 4 Nov | The image restructure: `agentbox-base`, both agent layers installing their own CLI at an asserted pin, Bun pinned, node 22→26 |
+| 4 Nov | `ab image build <agent>` — a personal layer keyed on the harness image ID + Containerfile, never run when stale, checked against its own base before it is tagged |
+| 4 Nov | `base_branch` as a project key (agentbox does not own the value — MAGS does) |
+| 4 Nov | Nine dead-enforcement items, each resting on a test of the live guard |
+| 4 Nov | The scan reports HEAD and ref movement, not only what changed on disk |
+| 4 Nov | `ab run --no-profile` / `profile = "off"` |
+| 4 Nov | `AGENTBOX_SESSION` in every session |
+| 4 Nov | The profile hash/snapshot narrowed to the load paths |
+| 4 Nov | omp-live says *why* it failed; a timeout no longer costs the whole report |
+| 4 Nov | The test log runs clean — zero ResourceWarnings |
+| 29 Oct | One live session per project (`projectlock.py`) + `ab attach` |
+| 29 Oct | The host-owned profile, the inbox, `ab profile harvest/promote/dismiss`; OMP's load paths and autolearn harvesting |
+| 28 Oct | Third preset/settings audit, F-1 … F-12 |
+| 27 Oct | One settings table (`projectkeys.py`), retiring five parallel per-key lists |
