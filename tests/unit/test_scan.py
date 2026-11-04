@@ -128,6 +128,148 @@ class Scan(TempCase):
         self.assertTrue(source.endswith("pre-commit"))
 
 
+class RefMovement(TempCase):
+    """What a session did to HEAD and the refs -- the changes that leave no file behind.
+
+    A session that moves a branch and ends with a clean work tree used to be invisible here: every signal the
+    report had was a file hash or a new object, and `git reset --hard`, `git branch -f` and `git switch`
+    produce neither."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.mkdir("proj")
+        git(self.repo, "init", "-q", "-b", "main")
+        for n in ("one", "two", "three"):
+            self.write(f"proj/{n}.txt", n + "\n")
+            git(self.repo, "add", "-A")
+            git(self.repo, "commit", "-qm", n)
+        self.state = scan.snapshot([self.repo])
+
+    def report(self, base_branch=None):
+        return scan.report(self.state, [self.repo], regex=REGEX, base_branch=base_branch)
+
+    def head(self, rev="HEAD"):
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", rev], capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def test_the_snapshot_keeps_refs_by_name_and_where_head_is(self):
+        repo = self.state["repos"][self.repo]
+        self.assertEqual(repo["byname"], {"refs/heads/main": self.head()})
+        self.assertEqual(repo["head_ref"], "refs/heads/main")
+        self.assertEqual(repo["head"], self.head())
+        self.assertEqual(repo["refs"], [self.head()], "the flat object list version 2 wrote is still there")
+
+    def test_a_clean_tree_with_a_moved_branch_is_reported(self):
+        """The case: nothing added, nothing changed on disk, and the branch is three commits back."""
+        before = self.head()
+        git(self.repo, "reset", "--hard", "-q", "HEAD~2")
+        summary, text = self.report()
+        self.assertIn(f"main: moved {before[:12]} -> {self.head()[:12]} (+0, -2 DROPPED)", text)
+        self.assertTrue(any("main dropped 2 commit(s)" in s for s in summary), summary)
+        self.assertIn("commits added this session: 0", text, "and it is not a new-commit report")
+
+    def test_a_branch_moved_forward_is_in_the_report_but_not_the_summary(self):
+        """Work looks like this. `commits added this session` already says it happened."""
+        before = self.head()
+        self.write("proj/four.txt", "four\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "four")
+        summary, text = self.report()
+        self.assertIn(f"main: moved {before[:12]} -> {self.head()[:12]} (+1)", text)
+        self.assertEqual(summary, [], "a fast-forward is not news")
+
+    def test_a_deleted_branch_is_news(self):
+        git(self.repo, "branch", "side", "HEAD~1")
+        self.state = scan.snapshot([self.repo])
+        gone = self.head("side")
+        git(self.repo, "branch", "-q", "-D", "side")
+        summary, text = self.report()
+        self.assertIn(f"side: DELETED (was {gone[:12]})", text)
+        self.assertTrue(any("side was deleted" in s for s in summary), summary)
+
+    def test_a_new_branch_and_tag_are_listed(self):
+        git(self.repo, "branch", "feature")
+        git(self.repo, "tag", "v1")
+        _summary, text = self.report()
+        self.assertIn(f"feature: new, at {self.head()[:12]}", text)
+        self.assertIn(f"tag v1: new, at {self.head()[:12]}", text)
+
+    def test_head_on_another_branch_is_news(self):
+        git(self.repo, "checkout", "-q", "-b", "other")
+        summary, text = self.report()
+        self.assertIn("HEAD moved from main to other", text)
+        self.assertTrue(any("HEAD is now other (was main)" in s for s in summary), summary)
+
+    def test_a_detached_head_is_news(self):
+        git(self.repo, "checkout", "-q", "--detach", "HEAD~1")
+        summary, text = self.report()
+        self.assertIn(f"HEAD moved from main to detached at {self.head()[:12]}", text)
+        self.assertTrue(any("detached at" in s for s in summary), summary)
+
+    def test_nothing_moved_is_quiet(self):
+        summary, text = self.report()
+        self.assertEqual(summary, [])
+        self.assertNotIn("refs changed", text)
+        self.assertNotIn("HEAD moved", text)
+
+    def test_a_version_2_start_state_says_it_cannot_compare(self):
+        """A session started on the older code and torn down by this one: better than calling every ref new."""
+        self.state["repos"][self.repo].pop("byname")
+        self.state["version"] = 2
+        git(self.repo, "checkout", "-q", "-b", "other")
+        summary, text = self.report()
+        self.assertIn("refs not compared", text)
+        self.assertEqual(summary, [], "and it is not reported as a change")
+
+    # ---- the base branch, named by the project ----
+
+    def test_the_base_branch_commits_are_named_one_by_one(self):
+        git(self.repo, "checkout", "-q", "-b", "mags/integration")
+        for n in ("alpha", "beta"):
+            self.write(f"proj/{n}.txt", n + "\n")
+            git(self.repo, "add", "-A")
+            git(self.repo, "commit", "-qm", f"add {n}")
+        summary, text = self.report(base_branch="mags/integration")
+        self.assertIn("new commits on mags/integration (2):", text)
+        self.assertIn("add alpha", text)
+        self.assertIn("add beta", text)
+        self.assertTrue(any("2 new commit(s) on mags/integration" in s for s in summary), summary)
+
+    def test_the_base_branch_is_summarised_even_when_it_only_moved_forward(self):
+        """The one branch whose ordinary progress is worth a summary line: it is what the session was for."""
+        self.write("proj/x.txt", "x\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "work")
+        summary, _text = self.report(base_branch="main")
+        self.assertTrue(any("1 new commit(s) on main" in s for s in summary), summary)
+
+    def test_a_secret_in_a_commit_subject_is_not_printed(self):
+        self.write("proj/y.txt", "y\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", f"wip {FAKE_KEY}")
+        _summary, text = self.report(base_branch="main")
+        self.assertIn("subject withheld", text)
+        self.assertNotIn(FAKE_KEY, text, "held to the same rule as an added line")
+
+    def test_an_unmoved_base_branch_says_so_without_a_summary_line(self):
+        summary, text = self.report(base_branch="main")
+        self.assertIn("no new commits this session", text)
+        self.assertEqual(summary, [])
+
+    def test_a_base_branch_that_is_not_there(self):
+        summary, text = self.report(base_branch="mags/integration")
+        self.assertIn("base branch mags/integration: not in this repo", text)
+        self.assertEqual(summary, [])
+
+    def test_a_base_branch_deleted_during_the_session_is_news(self):
+        git(self.repo, "branch", "mags/integration")
+        self.state = scan.snapshot([self.repo])
+        git(self.repo, "branch", "-q", "-D", "mags/integration")
+        summary, text = self.report(base_branch="mags/integration")
+        self.assertIn("base branch mags/integration: GONE", text)
+        self.assertTrue(any("no longer exists" in s for s in summary), summary)
+
+
 class AuditStep5C(TempCase):
     """docs/reviews/2026-10-01-step-5C.md: H2, H3, M3, M4, M5, L5."""
 

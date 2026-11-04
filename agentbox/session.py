@@ -1490,7 +1490,10 @@ def _scan(settings, session, started, warn):
         return
     _inbox_report(settings, doc, session, warn)
     try:
-        summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"))
+        # base_branch is recorded in the scan state at session start, so `ab session kill` and `gc` name the
+        # same branch the launcher would have. Nothing sets it yet: it comes from the project's config.
+        summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"),
+                                    base_branch=doc.get("base_branch"))
         st = doc.get("agent_state") or {}
         if st.get("dir"):
             s2, lines = scan.state_report(st.get("files") or {}, st["dir"])

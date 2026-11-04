@@ -19,7 +19,13 @@ At the end `report` lists:
   * files that became executable, and executables whose content changed;
   * git repos that are new, or whose metadata changed. git is never run in those (their config is the
     agent's: textconv, filters, a pager or a signature program would run on the host). Check their
-    .git/config and hooks before you use git there.
+    .git/config and hooks before you use git there;
+  * where HEAD and every ref went: a branch created, deleted, moved on or rewound, and HEAD on a different
+    branch or detached. A session can end with a clean work tree, no new file and no new object and still
+    have moved a branch (`git switch`, `git reset --hard`, `git branch -f`), which no file comparison sees.
+    A branch moved forward is what work looks like, so it is in the full report only; a ref deleted or
+    rewound, and HEAD somewhere else, are in the summary. When the project names a base branch, that
+    branch's new commits are listed one by one whatever it did.
 
 git runs only in repos whose metadata is unchanged since the start, with the system and global config off,
 no textconv, external diff, pager, hooks, fsmonitor or signature checks, and no `git status` (clean filters).
@@ -187,9 +193,22 @@ def git_meta(work):
 
 
 def _refs(work):
-    p = git(work, "for-each-ref", "--format=%(objectname)")
+    """Every ref by NAME with the object it points at, and where HEAD is.
+
+    The objects alone are enough to find the commits a session added, and that is all version 2 of the
+    snapshot kept. They are not enough to see a ref MOVE: `git reset --hard HEAD~3`, `git branch -f` and a
+    deleted branch all land refs on objects that already existed, so nothing is new, the work tree can be
+    clean, and a report that compares objects and files has nothing to say. The names are what makes it
+    visible."""
+    refs = {}
+    p = git(work, "for-each-ref", "--format=%(refname)%09%(objectname)")
+    for line in p.stdout.splitlines():
+        name, tab, oid = line.partition("\t")
+        if tab and name and oid:
+            refs[name] = oid
     head = git(work, "rev-parse", "--verify", "-q", "HEAD").stdout.strip()
-    return sorted(set(p.stdout.split()) | ({head} if head else set()))
+    on = git(work, "symbolic-ref", "-q", "HEAD").stdout.strip()
+    return {"refs": refs, "head": head, "head_ref": on}
 
 
 def snapshot(grants, skip=None):
@@ -198,17 +217,175 @@ def snapshot(grants, skip=None):
     for work in worktrees(grants, skip):
         meta, _gd = git_meta(work)
         try:
-            refs = _refs(work)
+            r = _refs(work)
         except (OSError, subprocess.SubprocessError):
-            refs = []
-        repos[work] = {"meta": meta, "refs": refs}
+            r = {"refs": {}, "head": "", "head_ref": ""}
+        # "refs" keeps the flat object list version 2 wrote: it is what the new-commit search negates with,
+        # and a session started on the older code is still reported by this code at its teardown.
+        objects = set(r["refs"].values()) | ({r["head"]} if r["head"] else set())
+        repos[work] = {"meta": meta, "refs": sorted(objects), "byname": r["refs"],
+                       "head": r["head"], "head_ref": r["head_ref"]}
     files = {g: files_state(g, (skip or {}).get(g, ())) for g in grants}
-    return {"version": 2, "repos": repos, "files": files}
+    return {"version": 3, "repos": repos, "files": files}
 
 
 def _redact(text):
     text = text.strip()
     return (text[:12] + "…") if len(text) > 12 else text
+
+
+def _grep(texts, regex):
+    """[(index into texts, redacted match)] for the lines the pattern matches, found with `grep -E -i` --
+    the host hook's own engine, so the scan cannot differ from the hook by a regex dialect."""
+    if not texts or not regex:
+        return []
+    p = subprocess.run(["grep", "-n", "-o", "-E", "-i", regex], input="\n".join(texts) + "\n",
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = []
+    for m in p.stdout.splitlines():
+        n, _, match = m.partition(":")
+        if n.isdigit() and 0 < int(n) <= len(texts):
+            out.append((int(n) - 1, _redact(match)))
+    return out
+
+
+def _short(oid):
+    return oid[:12] if oid else "(none)"
+
+
+def _label(full):
+    """A ref's full name as it is worth reading: `refs/heads/x` is the branch `x`, a tag says it is one."""
+    for prefix, fmt in (("refs/heads/", "{}"), ("refs/tags/", "tag {}"), ("refs/remotes/", "remote {}"),
+                        ("refs/stash", "the stash"), ("refs/notes/", "notes {}")):
+        if full.startswith(prefix):
+            return fmt.format(full[len(prefix):])
+    return full
+
+
+def _full_refname(name, refs):
+    """The full ref a configured branch name means, resolved the way git would."""
+    if name in refs:
+        return name
+    for prefix in ("refs/heads/", "refs/tags/", "refs/remotes/"):
+        if prefix + name in refs:
+            return prefix + name
+    return ""
+
+
+def _distance(work, old, new):
+    """(commits `new` has that `old` has not, commits `old` has that `new` has not), or (None, None) when one
+    of the objects is no longer in the repo. The second number is the one that matters: it counts what a move
+    took OFF the ref."""
+    p = git(work, "rev-list", "--count", "--left-right", f"{old}...{new}")
+    parts = p.stdout.split()
+    if p.returncode != 0 or len(parts) != 2 or not all(x.isdigit() for x in parts):
+        return None, None
+    return int(parts[1]), int(parts[0])
+
+
+def _ref_changes(work, before_map, now_map):
+    out = []
+    for name in sorted(set(before_map) | set(now_map)):
+        old, new = before_map.get(name), now_map.get(name)
+        if old == new:
+            continue
+        kind = "created" if old is None else "deleted" if new is None else "moved"
+        c = {"kind": kind, "name": name, "old": old or "", "new": new or ""}
+        if kind == "moved":
+            c["ahead"], c["dropped"] = _distance(work, old, new)
+        out.append(c)
+    return out
+
+
+BASE_COMMITS_MAX = 50
+
+
+def _base_branch_lines(work, base_branch, old_map, now_map, regex):
+    """What the session put on the branch the project says the work lands on.
+
+    Elsewhere the report gives a count; for this one branch it names the commits, because they are the
+    session's product and the count alone says nothing about what it is."""
+    full = _full_refname(base_branch, now_map)
+    if not full:
+        was = _full_refname(base_branch, old_map)
+        if was:
+            return ([f"base branch {base_branch}: GONE (was {_short(old_map[was])})"],
+                    [f"{work}: base branch {base_branch} no longer exists"])
+        return [f"base branch {base_branch}: not in this repo"], []
+    new, old = now_map[full], old_map.get(full)
+    # A branch that did not exist at the start is new in full: everything it has that no start ref had.
+    neg = [f"^{old}"] if old else [f"^{r}" for r in sorted(set(old_map.values()))]
+    p = git(work, "log", "--no-color", "--no-show-signature", "--no-textconv",
+            f"--max-count={BASE_COMMITS_MAX + 1}", "--format=%h %s", new, *neg, timeout=300)
+    if p.returncode != 0:
+        return ([f"base branch {base_branch}: its commits could not be listed ({p.stderr.strip()})"],
+                [f"{work}: commits on {base_branch} not listed"])
+    got = [l for l in p.stdout.splitlines() if l.strip()]
+    if not got:
+        return [f"base branch {base_branch} ({_short(new)}): no new commits this session"], []
+    # The subjects are the agent's own text: held to the same rule as an added line, never printed whole
+    # when the host hook's pattern matches them.
+    withheld = {i for i, _m in _grep(got, regex)}
+    shown = [(l.split(" ", 1)[0] + " <subject withheld: it matches the secret pattern>") if i in withheld else l
+             for i, l in enumerate(got[:BASE_COMMITS_MAX])]
+    more = len(got) > BASE_COMMITS_MAX
+    lines = [f"new commits on {base_branch} ({len(got)}{'+' if more else ''}):"] + [f"  {l}" for l in shown]
+    if more:
+        lines.append(f"  ... more than {BASE_COMMITS_MAX}")
+    return lines, [f"{work}: {len(got)}{'+' if more else ''} new commit(s) on {base_branch}"]
+
+
+def _movement(work, before, base_branch, regex):
+    """(section lines, summary lines): where HEAD and the refs went during the session.
+
+    A session can end with a clean work tree, no new file and no new object, and still have changed what the
+    next git command in the repo will do. None of that is a file, so none of it is in the file lists."""
+    try:
+        now = _refs(work)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"the refs could not be read: {e}"], [f"{work}: refs not read ({e})"]
+    old_map = before.get("byname")
+    if old_map is None:                 # a version 2 start state: say so rather than call every ref new
+        return ["refs not compared: this session's start state was recorded before refs were kept by name"], []
+    lines, summary = [], []
+    old_head, old_on = before.get("head") or "", before.get("head_ref") or ""
+    if now["head_ref"] != old_on:
+        was = _label(old_on) if old_on else f"detached at {_short(old_head)}"
+        isnow = _label(now["head_ref"]) if now["head_ref"] else f"detached at {_short(now['head'])}"
+        lines.append(f"HEAD moved from {was} to {isnow}")
+        summary.append(f"{work}: HEAD is now {isnow} (was {was})")
+    elif not now["head_ref"] and now["head"] != old_head:
+        lines.append(f"HEAD (detached) moved from {_short(old_head)} to {_short(now['head'])}")
+        summary.append(f"{work}: detached HEAD moved to {_short(now['head'])}")
+
+    changes = _ref_changes(work, old_map, now["refs"])
+    if changes:
+        lines.append(f"refs changed ({len(changes)}):")
+    for c in changes:
+        name = _label(c["name"])
+        if c["kind"] == "created":
+            lines.append(f"  {name}: new, at {_short(c['new'])}")
+        elif c["kind"] == "deleted":
+            lines.append(f"  {name}: DELETED (was {_short(c['old'])})")
+            summary.append(f"{work}: {name} was deleted (was {_short(c['old'])})")
+        elif c["ahead"] is None:
+            lines.append(f"  {name}: moved {_short(c['old'])} -> {_short(c['new'])} "
+                         "(not compared: an object is no longer in the repo)")
+            summary.append(f"{work}: {name} moved to {_short(c['new'])} and its old tip is gone")
+        else:
+            how = f"+{c['ahead']}" + (f", -{c['dropped']} DROPPED" if c["dropped"] else "")
+            lines.append(f"  {name}: moved {_short(c['old'])} -> {_short(c['new'])} ({how})")
+            if c["dropped"]:
+                summary.append(f"{work}: {name} dropped {c['dropped']} commit(s) "
+                               f"(a reset or a forced move), now at {_short(c['new'])}")
+    # A branch moved forward is what work looks like, and the commit count above already says it happened,
+    # so it is not in the summary. What is: a ref deleted or rewound, HEAD somewhere else, and the base
+    # branch, which is named in full whatever it did.
+    if base_branch:
+        bl, bs = _base_branch_lines(work, base_branch, old_map, now["refs"], regex)
+        lines += bl
+        summary += bs
+    return lines, summary
 
 
 def _new_commits(work, start_refs, regex):
@@ -232,19 +409,14 @@ def _new_commits(work, start_refs, regex):
                 current = name if name != "/dev/null" else None
         elif line.startswith("+") and current:
             added.append((current, line[1:]))
-    hits = []
-    if added and regex:
-        p = subprocess.run(["grep", "-n", "-o", "-E", "-i", regex], input="\n".join(t for _, t in added) + "\n",
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        for m in p.stdout.splitlines():
-            n, _, match = m.partition(":")
-            if n.isdigit() and 0 < int(n) <= len(added):
-                hits.append((added[int(n) - 1][0], _redact(match)))
+    hits = [(added[i][0], m) for i, m in _grep([t for _, t in added], regex)]
     return len(commits), hits, touched
 
 
-def report(state, grants, regex=None, skip=None):
-    """Returns (summary lines, full report text). Empty summary when nothing was found."""
+def report(state, grants, regex=None, skip=None, base_branch=None):
+    """Returns (summary lines, full report text). Empty summary when nothing was found.
+
+    `base_branch` is the branch the project says its work lands on: its new commits are named one by one."""
     lines, summary = [], []
     regex, source = (regex, "given") if regex else host_secret_regex()
     if not regex:
@@ -283,6 +455,9 @@ def report(state, grants, regex=None, skip=None):
             section.append("files that run later, changed in the session's commits (any branch):")
             section += [f"  {f}" for f in committed]
             summary.append(f"{work}: files that run later changed in commits: {', '.join(committed)}")
+        mv, mv_summary = _movement(work, before, base_branch, regex)
+        section += mv
+        summary += mv_summary
         lines += section + [""]
     start_files = (state or {}).get("files") or {}
     for g in grants:

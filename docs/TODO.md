@@ -33,6 +33,14 @@ finding is closed, F-12 included (its text arrived after the round and landed wi
   gone and nothing of its session running) is reaped, with what was removed reported; a live holder is never
   overruled, and an unreadable podman stops the operation instead of freeing a lock on a guess.
 
+- **`base_branch` has no source** (4 Nov). The scan reports a named base branch's new commits one by one
+  (`scan.report(..., base_branch=)`), and teardown reads the value from the scan state written at session
+  start, so `ab session kill` and `ab session gc` name the same branch the launcher would. **Nothing writes
+  it.** The one line needed is in `session._write_scan_state`, which has to put `base_branch` in the doc; what
+  it reads it *from* is the open question — a project registry key (so any project can name its integration
+  branch) or an agent-config value belonging to the adapter that wants it. Until then the parameter is
+  exercised by unit tests only (`tests/unit/test_scan.py:RefMovement`).
+
 ## Nice to have — cleanup / future
 - **A curator for the profile** (29 Oct, deliberately not built). `ab profile harvest` lists, groups and
   marks; promoting is still a human reading a skill and deciding. The follow-up would be a small project of

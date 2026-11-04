@@ -1323,3 +1323,38 @@ not what I had just observed, and I said it was.
 assertion that matched `podman volume ls` as if it were a removal (so "teardown really ran" was vacuous --
 `ids()` issues those listings itself), and the `ab run` warning test, which passed because `gc` happened to
 reap the session first. Both now assert on the specific containers and networks removed.
+
+## 4 November 2026 -- the scan reports where HEAD and the refs went
+
+A session can end with a clean work tree, no new file and no new object, and still have changed what the next
+git command in the repo does: `git switch`, `git reset --hard`, `git branch -f`, `git branch -D`. Every signal
+the end-of-session scan had was a file hash or a commit newly reachable from some ref, so none of those showed
+up at all. An agent whose work ends on a moved branch -- which is the normal shape of a test-writing agent --
+left nothing in the report but `commits added this session: N`.
+
+`scan.snapshot` is now version 3: refs are kept **by name** (`byname`), with HEAD's object and its symbolic
+ref, alongside the flat object list version 2 wrote. The flat list stays because it is what the new-commit
+search negates with, and because a session started on the older code is reported by this code at its teardown
+-- such a start state has no `byname`, and the report says it cannot compare rather than calling every ref new.
+
+`report` then names, per repo: refs created, deleted or moved (with how many commits the move added and how
+many it **took off**, from `rev-list --count --left-right`), and HEAD on a different branch or detached.
+
+**What goes in the summary.** A branch moved forward is what work looks like, and `commits added this session`
+already says it happened, so a fast-forward is in the full report only. The summary gets what is surprising: a
+ref deleted, a ref rewound (commits dropped), a move whose old tip is no longer in the repo, and HEAD
+somewhere else. Otherwise every session that commits would carry a summary line and the summary would stop
+being read.
+
+**The base branch is the exception.** When the project names the branch its work lands on, that branch's new
+commits are listed one by one -- short id and subject -- and summarised whatever it did, including a plain
+fast-forward. That branch's commits are the session's product; a count says nothing about what it is. Capped
+at 50 lines. A commit subject is the agent's own text, so it is held to the same rule as an added line: if
+the host hook's pattern matches a subject, the id is printed and the subject is withheld.
+
+The grep-with-the-hook's-engine call is now one helper (`_grep`), used by both the added-line scan and the
+subject check, so the two cannot drift into different regex dialects.
+
+**Not wired yet:** nothing sets `base_branch`. `report` takes it, and teardown reads it from the scan state
+written at session start (so `ab session kill` and `ab session gc` name the same branch the launcher would),
+but where the value comes from belongs to the agent-config work that needs it -- one line when that lands.
