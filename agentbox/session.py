@@ -104,7 +104,7 @@ def _check(name, key, value, **kw):
     return projectkeys.validate_value(key, f"project {name}", value, **kw)
 
 
-def podman_access(project, warn):
+def podman_access(project):
     """The compose project the session may observe, or None. (The dev tier is `dev_tier`.) The exec tier on
     the live stack is refused: the gate scopes exec to the session's own dev containers only."""
     podman = project.value("podman") or {}
@@ -487,7 +487,7 @@ class Session:
         for n in self.plan.notes:
             self.warn(f"agentbox: {n}")
         mounts.prepare(self.plan)
-        self.podman_live = podman_access(p, self.warn) if isinstance(self, NetSession) else None
+        self.podman_live = podman_access(p) if isinstance(self, NetSession) else None
         self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()

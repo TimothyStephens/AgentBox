@@ -418,8 +418,6 @@ class Gate:
         self.labels = dict(cfg["labels"])
         self.exec_ids = {}               # exec session id -> container id
         self.verified = set()            # IDs (volume names) whose post-create check passed
-        self.refused = set()             # IDs added on every removal; never pruned and never read (the
-                                         # protection is absence from `verified`, not presence here)
         self.lock = threading.Lock()
         # Per-container locks (audit 6 Oct, N1): a start holds its containers' locks from the gate's
         # init-and-check until podman's start reply, and every request that can stop or re-initialise a
@@ -494,10 +492,6 @@ class Gate:
     def is_dev(self, labels):
         return labels.get(DEV_OWNER) == self.session and labels.get("agentbox.role") == "dev"
 
-    def labels_of(self, kind, ref):
-        doc = self.inspect(kind, ref)
-        return None if doc is None else self.labels_in(kind, doc)
-
     def require_dev(self, kind, ref):
         """The object must carry the dev labels and must have passed this gate's post-create check.
         Returns its ID (a volume's name)."""
@@ -516,15 +510,16 @@ class Gate:
         return oid
 
     def remove(self, kind, oid, why):
-        """Remove an object the gate refused; check the outcome. An object that may still exist stays on the
-        refused list (it is never in `verified`, so nothing can use it)."""
+        """Remove an object the gate refused; check the outcome. An object that may still exist is dropped
+        from `verified` first, so nothing can use it even if the delete does not take effect."""
         path = {"containers": f"/libpod/containers/{quote(oid, safe='')}?force=true&v=true",
                 "pods": f"/libpod/pods/{quote(oid, safe='')}?force=true",
                 "volumes": f"/libpod/volumes/{quote(oid, safe='')}?force=true",
                 "networks": f"/libpod/networks/{quote(oid, safe='')}?force=true"}[kind]
         with self.lock:
+            # THE protection: nothing can use an object that is not in `verified`, whether or not the
+            # delete below takes effect. (A second `refused` set was written here and never read.)
             self.verified.discard(oid)
-            self.refused.add(oid)
         for _attempt in range(2):
             try:
                 status = self.raw_request("DELETE", path)
@@ -1249,10 +1244,6 @@ class Gate:
                        "by then). Bind the root and use the sub-path inside the container, or use a named volume "
                        "created in this session")
         raise Deny(f"bind mount {src} is outside the project's grants")
-
-    def check_binds(self, sources):
-        for src in sources:
-            self.check_bind(src)
 
     def check_mount_options(self, opts, where):
         for o in opts or []:

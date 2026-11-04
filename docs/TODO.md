@@ -129,15 +129,15 @@ Proven to have no production caller, but it guards a boundary, so removal waits 
 | ID | Where | Why dead / why deferred |
 |---|---|---|
 | D-E1 | `gate.py` `after_start` (~:1001-1010) | No production caller; `decide`/the handler use `prepare_start` + `after_start_checked`. Only unit tests called it (now rewritten onto the live path). Remove once nothing references it. |
-| D-E2 | `gate.py` `labels_of` (~:492) | No caller anywhere. |
-| D-E3 | `gate.py` `check_binds` (~:1245) | No caller anywhere. |
-| D-E4 | `gate.py` `self.refused` (~:417, :522) | Written on every removal, never pruned, never read. Protection is absence from `verified`. |
+| ~~D-E2~~ | `gate.py` `labels_of` (~:492) | **removed 4 Nov.** No caller anywhere; the live guard (a named resource must be this session's dev stack) is `test_gate.test_named_resources_must_be_the_sessions_dev_stack`. |
+| ~~D-E3~~ | `gate.py` `check_binds` (~:1245) | **removed 4 Nov.** No caller anywhere; the singular `check_bind` is the live path, covered by `test_gate.test_libpod_refusals` (a bind on `/etc`). |
+| ~~D-E4~~ | `gate.py` `self.refused` (~:417, :522) | **removed 4 Nov.** Written on every removal, never read. The live protection is `verified.discard(oid)` in `remove()`, which had NO test until `test_gate.RemovalProtection` was added for this deletion -- the labels still say dev afterwards, so they cannot be what refuses it. |
 | D-E5 | `gate.py` `check_limits(compat=)` (~:1385); `pipe_back(watch=)` (~:2386); `read_chunked` `sock is None` branch (~:2222) | Params never read / never passed; the branch was copied from the spike and only ever gets a real socket. |
 | D-E6 | `gate.py` `rewrite_network(compat=None)` auto-detect (~:1659-1660) | `decide` always passes `compat`; only a test uses the auto-detect (T7). |
-| D-E7 | `grantcheck.py` `_rel_skips` (~:36-42) | No caller; H3 stopped honouring `mask_skip` in the scan. |
+| ~~D-E7~~ | `grantcheck.py` `_rel_skips` (~:36-42) | **removed 4 Nov.** No caller; H3 stopped honouring `mask_skip` in the scan, and `test_grantcheck.test_mask_skip_is_not_an_exemption` is the live guard. |
 | D-E8 | `hardening.py` `/dev/null` mask branch (~:104-108) | Production masks use `mask_file` since step 5 (`mounts.py`); `session.py` never emits `/dev/null`. Only tests use it. |
 | D-E9 | Step-1 network-less `Session` path | `make_session` always returns `NetSession`; base `Session` is never instantiated. Unreachable: `Session.network_args` (~:505), `start_infra` (~:603), `pin_args` (~:645), `add_network_cases`→`runner.network_none_cases` (~:656, `runner.py:238`), `egress = "none"` (~:332), `sandbox_notes` `"none"` branch (~:287), the `isinstance(self, NetSession)` checks (~:416-417), and `hardening.py:75`'s `--network=none` allowance. Large, interlocked — remove as one change, with tests, after confirming no step-7+ feature revives a network-less session. |
-| D-E10 | `session.py` `podman_access(…, warn)` (~:117) | `warn` param never used. |
+| ~~D-E10~~ | `session.py` `podman_access(…, warn)` (~:117) | **removed 4 Nov.** The `warn` parameter was never read. |
 | D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` (~:267) | A deliberate knob that makes two checks always refuse. Keep, but be aware it is a constant branch; not really "dead". |
 
 ## Duplicated enforcement logic — consolidate WITH tests; trigger: a real bug traces to the drift

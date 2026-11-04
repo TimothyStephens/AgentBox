@@ -33,15 +33,6 @@ CRED_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@")     # scheme
 WALK_SKIP = set(mounts.WALK_SKIP) - {".git"}                            # .git is scanned for credential URLs
 
 
-def _rel_skips(root, grant, mask_skip):
-    out = set()
-    for s in mask_skip:
-        full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
-        if full == grant or full.startswith(grant.rstrip("/") + "/"):
-            out.add(os.path.relpath(full, grant))
-    return out
-
-
 def _is_secret_name(fn, in_secrets):
     return in_secrets or (fn not in mounts.MASK_EXEMPT
                           and any(fnmatch.fnmatchcase(fn, p) for p in SECRET_FILES))

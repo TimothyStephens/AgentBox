@@ -1639,3 +1639,33 @@ exist yet simply has no new commits to report.
 nothing, so a ceiling preset must not refuse it. The validator is strict about one thing only -- the value
 reaches `git log <ref> ^<ref>`, so it must be a ref and nothing else: no leading `-` or `.`, no `..`, no
 `//`, no trailing `/` or `.lock`, no spaces or shell metacharacters.
+
+
+## 4 November 2026 -- the first five dead-enforcement deletions
+
+The backlog's rule was "remove only after a real-use baseline, each with a test proving deadness first".
+The baseline arrived with the image restructure: `make test`, `make itest`, both `ab selftest`s and both
+live targets green on the host. So the five items with no interlocking went, each confirmed dead by search
+and each resting on a test of the LIVE guard rather than on the removal looking safe.
+
+| removed | what it was | the live guard, and its test |
+|---|---|---|
+| `gate.labels_of` | an inspect-then-read-labels helper | `require_dev`, pinned by `test_named_resources_must_be_the_sessions_dev_stack` |
+| `gate.check_binds` | a plural wrapper over `check_bind` | `check_bind` in `check_common_libpod`, pinned by `test_libpod_refusals` (a bind on `/etc`) |
+| `gate.self.refused` | a set written on every removal | `verified.discard(oid)` in `remove()` |
+| `grantcheck._rel_skips` | a `mask_skip` resolver | H3: the grant scan does not honour `mask_skip` at all, pinned by `test_mask_skip_is_not_an_exemption` |
+| `session.podman_access(warn)` | an unread parameter | none needed |
+
+**The one that earned the rule.** `self.refused` was written on every removal and read nowhere, so nothing
+rested on it -- and nothing proved what *did*. `tests/unit/test_gate.py:RemovalProtection` is that proof,
+written before the deletion: after `remove()`, the fake still answers `inspect` with the dev labels (as
+podman would for an object whose delete did not take effect), and the object is refused anyway, through
+`decide` as well as through `require_dev`. Mutating `remove()` to stop discarding from `verified` reddens
+five tests; before this commit it would have reddened none. Deleting the dead set without that test would
+have left the real guard as untested as it was.
+
+**Not touched, and why.** `D-E9` (the network-less `Session` path) is eight interlocked sites across
+`session.py`, `runner.py` and `hardening.py`, and removing it forecloses a network-less session for good --
+a design decision, not a cleanup. `D-E1`/`D-E5`/`D-E6`/`D-E8` are the same shape as the five above but each
+is currently reached by a test that would have to be rewritten onto the live path first. `D-E11`
+(`SYSCTL_ALLOWED = ()`) stays: it is a deliberate knob that makes two checks always refuse, not dead code.

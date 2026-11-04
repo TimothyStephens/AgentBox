@@ -357,6 +357,44 @@ class SpellingAndVerification(unittest.TestCase):
         self.assertTrue(g.container_violations(doc))
 
 
+class RemovalProtection(unittest.TestCase):
+    """What stops a refused object being used: it is no longer in `verified`.
+
+    `remove()` kept a second set, `self.refused`, written on every removal and never read -- so nothing
+    rested on it, and nothing proved what DID. This is that proof, added before the dead set was deleted
+    (the project's rule for removing enforcement code: the live guard must have a test that bites first)."""
+
+    def setUp(self):
+        self.g = FakeGate(labels={("containers", "web"): DEV, ("volumes", "vol"): DEV})
+
+    def test_a_removed_container_can_no_longer_be_used_even_though_its_labels_still_say_dev(self):
+        """The labels are not the protection -- the fake still answers `inspect` with the dev labels after
+        the removal, exactly as podman would for an object whose delete did not take effect."""
+        self.assertEqual(self.g.require_dev("containers", "web"), "web")
+        self.g.remove("containers", "web", "refused by a post-create check")
+        self.assertTrue(self.g.is_dev(self.g.labels_in("containers", self.g.inspect("containers", "web"))),
+                        "the labels are unchanged, so they cannot be what refuses it")
+        with self.assertRaises(gate.Deny) as cm:
+            self.g.require_dev("containers", "web")
+        self.assertIn("post-create check", str(cm.exception))
+
+    def test_it_holds_for_a_volume_too(self):
+        self.assertEqual(self.g.require_dev("volumes", "vol"), "vol")
+        self.g.remove("volumes", "vol", "refused")
+        with self.assertRaises(gate.Deny):
+            self.g.require_dev("volumes", "vol")
+
+    def test_every_request_naming_it_is_refused_afterwards(self):
+        """Through `decide`, not just the helper: this is what a client actually reaches."""
+        self.g.remove("containers", "web", "refused")
+        for method, path in (("POST", "/v5/libpod/containers/web/start"),
+                             ("POST", "/v5/libpod/containers/web/stop"),
+                             ("GET", "/v5/libpod/containers/web/logs"),
+                             ("POST", "/v5/libpod/containers/web/exec")):
+            with self.subTest(path=path), self.assertRaises((gate.Deny, gate.NotFound)):
+                self.g.decide(method, path, [], b"")
+
+
 class HolderNs(unittest.TestCase):
     """E2: the REAL holder_ns (both fakes override it). Every build reaches it to pin the build to the
     session holder's network namespace, and all four of its refusals were untested — most importantly the
