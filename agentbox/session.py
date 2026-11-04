@@ -295,6 +295,8 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
         "read-only in your containers.",
         "- Secret files (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/`) are masked and read as empty. Where a "
         "directory has `.env.dev`, that file appears at `.env`: add dev variables there.",
+        "- `AGENTBOX_SESSION` is set to this session's id. A script that must only run on the host (a deploy, "
+        "an installer, anything that needs the LAN or writes outside a grant) should check it and refuse.",
     ]
     if egress == "none":
         lines.append("- There is no network access in this session.")
@@ -708,7 +710,13 @@ class Session:
             opts.append("--tty")
         opts += hardening.fixed_flags(s, cgroup_parent=s.cgroup_parent)
         opts.append(f"--tmpfs={HOME}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
-        env = {"HOME": HOME, **git_identity(s, a.name), **a.env, **self.setup.env, **self.env}
+        # AGENTBOX_SESSION says "you are inside a session, and which one". A host-only script -- a profile
+        # repo's build.sh that deploys or installs, anything that assumes it can reach the LAN or write
+        # outside a grant -- can refuse in one line instead of failing halfway through. The id is already a
+        # container label and is in the scan state and the inbox provenance; this just lets the session
+        # itself see it. First in the dict, so an adapter or the launcher can still override it.
+        env = {"AGENTBOX_SESSION": self.name or "", "HOME": HOME, **git_identity(s, a.name), **a.env,
+               **self.setup.env, **self.env}
         if tty and os.environ.get("TERM"):
             env["TERM"] = os.environ["TERM"]
         opts += [f"--env={k}={v}" for k, v in env.items()]

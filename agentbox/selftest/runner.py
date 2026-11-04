@@ -128,6 +128,9 @@ def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, secret_
           lambda obs: _env_names_check(obs, secret_envs, any_name=True))
     for var in secret_envs:
         b.add("envset", [var], f"{var} is set for the agent", expect("set"))
+    # A host-only script can test one variable instead of guessing from the filesystem.
+    b.add("envset", ["AGENTBOX_SESSION"], "AGENTBOX_SESSION is set, so a host-only script can refuse",
+          expect("set"))
     for m in state_mounts:
         b.add("write", [os.path.join(m, ".abt-selftest")], f"agent state dir {m} writable", expect("ok"))
     for t in required_tools:
