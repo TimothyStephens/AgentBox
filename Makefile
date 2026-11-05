@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom base-image omp-image claude-image omp-live verify-sockguard install trial-snapshot trial-check egress-soak
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom base-image omp-image claude-image omp-live omp-plugin-probe verify-sockguard install trial-snapshot trial-check egress-soak
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -46,6 +46,18 @@ trial-check:
 # AB_LIVE_EGRESS=locked|packages|open (default packages); AB_LIVE_MODEL=<provider/model> picks the model.
 omp-live:
 	python3 -m tests.live.omp_live
+
+# Run by Tim, not by the builder: learns OMP's plugin/marketplace CLI and WHERE an installed plugin lands,
+# which is what `ab profile install` has to drive and mount. It runs inside a throwaway session -- `~/.omp`
+# is a tmpfs there -- so nothing it installs touches the host. Reads nothing of the host's ~/.omp
+# (--no-profile). AB_PROBE_PROJECT=<registered project> to choose where it runs (default agentbox).
+AB_PROBE_PROJECT ?= agentbox
+omp-plugin-probe:
+	@echo "probe: omp plugin CLI and install layout, in a session (nothing on the host changes)"
+	python3 -m agentbox run --agent omp --project $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
+	  < tests/manual/omp_plugin_probe.sh 2>&1 | tee /tmp/omp-plugin-probe.log
+	@echo
+	@echo "full output: /tmp/omp-plugin-probe.log"
 
 # Run by Tim (needs cosign v3 on PATH): verifies the pinned sockguard image was signed by sockguard's release
 # workflow (identity from its docs/verification.mdx at the pinned release). Tries the pinned digest, then the
