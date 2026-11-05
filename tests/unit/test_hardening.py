@@ -34,9 +34,19 @@ class HardeningTest(unittest.TestCase):
         self.assertNotIn("--cgroup-parent=", " ".join(hardening.fixed_flags(S, cgroup_parent="")))
 
     def test_clean_argv_passes(self):
-        self.assertTrue(audit(base(["--mount=type=bind,src=/proj,dst=/proj", "--network=none",
+        self.assertTrue(audit(base(["--mount=type=bind,src=/proj,dst=/proj", "--network=sess-int",
                                     f"--mount=type=bind,src={MASK},dst=/proj/.env,ro",
                                     "--mount=type=tmpfs,dst=/proj/secrets,notmpcopyup"])))
+
+    def test_the_agent_container_must_be_on_a_session_network(self):
+        """`--network=none` used to be waved through, for the base Session that had no network. There is
+        one kind of session now (D-E9, 5 Nov), so the agent container's network IS a session network and
+        anything else -- including a tighter one that arrived by another route -- is refused. It reads as a
+        loosening only if you forget that the session network is where the proxy and the gate are."""
+        for net in ("none", "sess-egr", "bridge"):
+            with self.subTest(net=net), self.assertRaises(AgentboxError) as cm:
+                audit(base([f"--network={net}"]))
+            self.assertIn("is not a session network", str(cm.exception))
 
     def test_forbidden(self):
         for bad in ("--privileged", "--privileged=true", "--cap-add=NET_ADMIN", "--cap-add", "--network=host",

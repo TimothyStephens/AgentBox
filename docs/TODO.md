@@ -11,7 +11,7 @@ decision, and what is worth doing when a change next touches the area.
 `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
 CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1073), `make itest` (186),
 `make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
-runs with zero ResourceWarnings. Nine of eleven dead-enforcement items removed. The third preset/settings
+runs with zero ResourceWarnings. Ten of eleven dead-enforcement items removed (D-E11 is a deliberate knob, and stays). The third preset/settings
 audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
 confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe, then again
 after `make omp-image && ab image build omp` so the image's own change is exercised too). `make claude-live`
@@ -122,21 +122,6 @@ container. The gate's bind allowlist is the grants only (`session.bind_roots`), 
 mount namespace is not a host path at all. This holds **provided the keys file is not written inside a
 grant** — which is also what grantcheck would refuse.
 
-### 1.3 D-E9 — remove the network-less `Session` path, or keep it?
-
-**What.** `make_session` always returns `NetSession`; the base `Session` is never instantiated, so a whole
-path is unreachable: `Session.network_args`, `start_infra`, `pin_args`,
-`add_network_cases`→`runner.network_none_cases`, `egress = "none"`, `sandbox_notes`' `"none"` branch, the
-`isinstance(self, NetSession)` checks, and `hardening.py`'s `--network=none` allowance.
-
-**Why it is a decision, not a cleanup.** Eight interlocked sites across `session.py`, `runner.py` and
-`hardening.py`, and removing it **forecloses a network-less session for good**. Everything else in the
-dead-code backlog was a local deletion; this one changes what agentbox could be asked to do.
-
-**What would have to be true.** No planned feature wants a session with no network at all — worth checking
-against §3 (`analysis-offline` uses `locked` egress, not no network, so it is not a user). If the answer is
-"no", remove it as one change with tests; if "maybe", leave it and record that here.
-
 ---
 
 ## 2. Ready to implement — scoped, no decision needed
@@ -208,7 +193,7 @@ Left:
 
 | ID | Where | Status |
 |---|---|---|
-| D-E9 | the network-less `Session` path | **a decision, not a cleanup** — see §1.3 |
+| D-E9 | the network-less `Session` path | **removed, 5 Nov** (decisions.md). `Session` and `NetSession` are one class; `make_session` has one thing to return. |
 | D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` | **keep.** A deliberate knob that makes two checks always refuse — a constant branch, not dead code. |
 
 ### 4.2 Duplicated enforcement logic — consolidate only when a bug traces to the drift
@@ -286,6 +271,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 5 Nov | D-E9: the network-less `Session` path removed — one session class, and the audit now requires the agent container to be on a session network |
 | 5 Nov | `tests/manual/podman_formats.sh` runs inside `make itest`, against the run's own abt- objects, with a skip counted as a failure |
 | 5 Nov | `ab session gc` sweeps personal image layers and profile snapshots (current key and live sessions protected; `image_keep_days` is the rollback window) |
 | 4 Nov | The image restructure: `agentbox-base`, both agent layers installing their own CLI at an asserted pin, Bun pinned, node 22→26 |

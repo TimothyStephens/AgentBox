@@ -1849,3 +1849,42 @@ script manual again.
 
 Still read-only by construction: the script lists and inspects, and the objects it is pointed at are the
 test's own, labelled and removed by the harness.
+
+## 5 November 2026 -- D-E9: there is one kind of session
+
+Tim: "Remove it." The backlog carried this as a **decision, not a cleanup**, because removing it forecloses
+a network-less session for good, and because it was eight interlocked sites rather than a local deletion.
+
+What was there: `make_session` always returned `NetSession`, so the base `Session` was never instantiated
+and its whole half had never run -- `network_args` returning `--network=none`, `egress = "none"`,
+`start_infra` as a no-op, the `pin_args` stub, `add_network_cases` -> `runner.network_none_cases`'s "only
+loopback" check, the two `isinstance(self, NetSession)` tests, and `hardening.audit`'s `--network=none`
+allowance.
+
+**The argument for removing it rather than keeping it as an option.** Unreachable code is not a feature,
+it is a claim. That path had never executed, so a session with no network at all would not have worked if
+anyone had asked for it -- and they would have found that out at the worst moment. Nothing in the deferred
+list wants it: `analysis-offline` runs `locked` egress **through the proxy**, which is a different thing.
+Rebuilding it deliberately, with tests, costs less than carrying eight untested sites through every
+refactor of `session.py`.
+
+**It is now one class.** `NetSession`'s body moved into `Session`, the base's five overridden stubs went,
+`SQUID_READY` moved above the class, and the merged `teardown` calls the module-level `teardown` directly
+(there is no `super()` left to call). `make_session` stays, since every caller goes through it, but its
+docstring now says it is not a choice of class.
+
+**One change here is a tightening worth naming.** `hardening.audit` accepted `--network=none` on the agent
+container, for the base session that had no network. It is refused now: the agent container's network must
+be one of the session's. `--network=none` is *tighter* than a session network, so this is not a security
+gain -- it is an invariant. The session network is where the proxy and the gate live, and an agent
+container that arrived with any other network value was built by a route nobody intended. Three spellings
+are tested (`none`, the egress network, a plain `bridge`), and the mutation that restores the old escape
+goes red.
+
+`agentbox/selftest/runner.py` loses `network_none_cases`; the remaining `network_cases` already asserts
+"only loopback and the session network". Two tests were pointed at the one class (`test_projectlock`
+patched `NetSession.run_captured`, `test_failopen` subclassed it) and `test_egress.NetSessionTest` became
+`SessionNetworkTest` -- renames, not weakenings.
+
+1075 unit tests, 0 failures, 0 errors, 0 ResourceWarnings; three mutations red (the `--network=none`
+escape restored, `egress` back to `"none"`, the dev tier forced off).

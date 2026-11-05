@@ -300,15 +300,12 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
         "- `AGENTBOX_SESSION` is set to this session's id. A script that must only run on the host (a deploy, "
         "an installer, anything that needs the LAN or writes outside a grant) should check it and refuse.",
     ]
-    if egress == "none":
-        lines.append("- There is no network access in this session.")
-    else:
-        desc = {"locked": "the model API only", "packages": "the model API and package registries "
-                "(PyPI, npm, crates.io, GitHub, Debian/Ubuntu/Alpine, conda, CRAN, Bioconductor)",
-                "open": "any public host"}[egress]
-        lines.append(f"- Network: egress mode `{egress}`, through an HTTP proxy (`HTTPS_PROXY`), reaching "
-                     f"{desc}. Private and LAN addresses are always refused. Tools that ignore the proxy "
-                     "variables cannot connect at all.")
+    desc = {"locked": "the model API only", "packages": "the model API and package registries "
+            "(PyPI, npm, crates.io, GitHub, Debian/Ubuntu/Alpine, conda, CRAN, Bioconductor)",
+            "open": "any public host"}[egress]
+    lines.append(f"- Network: egress mode `{egress}`, through an HTTP proxy (`HTTPS_PROXY`), reaching "
+                 f"{desc}. Private and LAN addresses are always refused. Tools that ignore the proxy "
+                 "variables cannot connect at all.")
     if podman_dev:
         lines += dev_notes(podman_live, project.dev_images)
     elif podman_live:
@@ -330,7 +327,25 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
     return "\n".join(lines)
 
 
+SQUID_READY = "Accepting HTTP Socket connections"
+
+
 class Session:
+    """One session: the agent's container, the two networks it lives between, and the sidecars.
+
+    <session>-int  internal, isolate=strict: the agent and the proxy; no route anywhere else
+    <session>-egr  isolate=strict bridge: the proxy only; its route out
+    <session>-proxy squid, on both, with this session's egress mode
+
+    There is ONE kind of session. There used to be two in the code -- this base, with no network at all,
+    and a `NetSession` on top -- but `make_session` only ever returned the networked one, so the base's
+    `--network=none`, `egress = "none"`, `start_infra` no-op, `pin_args` stub and "only loopback" selftest
+    case were a path that had never run (D-E9, removed 5 Nov). A session with no network at all is a thing
+    to build deliberately, with tests, not to keep eight untested sites warm for: `analysis-offline` runs
+    `locked` egress, through the proxy, and is not a user of it. decisions.md says why that was a decision
+    rather than a cleanup.
+    """
+
     def __init__(self, settings, agent, project, *, podman=None, warn=None, no_profile=False):
         self.settings = settings
         self.adapter = adapters.get(agent)
@@ -346,7 +361,7 @@ class Session:
         self.podman_live = None          # compose project the agent may observe through sockguard
         self.podman_dev = False          # the dev tier: a stack of the agent's own, through the gate
         self.started = time.time()       # reset when the session is reserved; names its kept logs
-        self.egress = "none"
+        self.egress = project.value("egress")
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
     # ---- naming -----------------------------------------------------------------
@@ -487,8 +502,8 @@ class Session:
         for n in self.plan.notes:
             self.warn(f"agentbox: {n}")
         mounts.prepare(self.plan)
-        self.podman_live = podman_access(p) if isinstance(self, NetSession) else None
-        self.podman_dev = dev_tier(p) and isinstance(self, NetSession)
+        self.podman_live = podman_access(p)
+        self.podman_dev = bool(dev_tier(p))
         if self.podman_live and not p.compose_project_explicit:
             self._check_live_stack_is_ours()
         off, why = self.profile_off
@@ -739,9 +754,6 @@ class Session:
         out += [os.path.realpath(k) for k in self.setup.keys.values()]
         return out + list(extra)
 
-    def network_args(self):
-        return ["--network=none"]
-
     def run_args(self, command, *, interactive=False, tty=False, extra_mounts=()):
         """The complete argv after `podman`, audited."""
         s, a, p = self.settings, self.adapter, self.project
@@ -858,10 +870,6 @@ class Session:
         return v if v and v not in ("<no value>", "unknown") else None
 
     # ---- lifecycle ----------------------------------------------------------------------
-    def start_infra(self):
-        """Overridden by NetSession to bring up networks and sidecars. Base Session is never instantiated
-        (make_session always returns a NetSession), so this base no-op is not reached in production."""
-
     def _guarded(self, body, *, agent_owns_ctrl_c):
         """Run body() and always tear down: on return, error, Ctrl-C, SIGTERM or SIGHUP (terminal closed).
         Teardown itself runs with those signals ignored, so a second signal cannot cut it short."""
@@ -901,41 +909,12 @@ class Session:
 
     probe_mounts = ()
 
-    def pin_args(self):
-        """Mounts that pin covers in place; none without the dev tier (nothing can bind past a cover)."""
-        return []
-
     def _dir_covers(self):
         """Directory covers (empty tmpfs): the plan's mask dirs and the adapter's project covers that are dirs.
         Nothing is mounted, pinned or listed beneath one (audit 6 Oct, N2)."""
         out = [m.dst for m in (self.plan.mounts if self.plan else []) if m.kind == "tmpfs"]
         out += [p for p in self.setup.project_covers if os.path.isdir(p) and not os.path.islink(p)]
         return [os.path.realpath(d) for d in out]
-
-    def add_network_cases(self, builder):
-        from .selftest import runner
-        runner.network_none_cases(builder)
-
-    def teardown(self):
-        if not self.name:
-            return
-        teardown(self.settings, self.podman, self.name, warn=self.warn)
-
-
-SQUID_READY = "Accepting HTTP Socket connections"
-
-
-class NetSession(Session):
-    """A session on its own internal network, whose only way out is a squid allowlist proxy.
-
-    <session>-int  internal, isolate=strict: the agent and the proxy; no route anywhere else
-    <session>-egr  isolate=strict bridge: the proxy only; its route out
-    <session>-proxy squid, on both, with this session's egress mode
-    """
-
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.egress = self.project.value("egress")
 
     @property
     def int_net(self):
@@ -1274,16 +1253,18 @@ class NetSession(Session):
     def teardown(self):
         if not self.name:
             return
-        super().teardown()
-        # super().teardown() -> module teardown -> sockguard.stop_service, which now reaps our service/gate
-        # Popen handles as well as killing by PID; this poll is a harmless belt-and-braces.
+        teardown(self.settings, self.podman, self.name, warn=self.warn)
+        # the module teardown -> sockguard.stop_service reaps our service and gate Popen handles as well as
+        # killing by PID; this poll is a harmless belt-and-braces.
         for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None)):
             if proc:
                 proc.poll()
 
 
 def make_session(settings, agent, project, **kw):
-    return NetSession(settings, agent, project, **kw)
+    """The one way a session is made. Kept as a function because every caller (cli, selftest, the tests)
+    goes through it, not because there is a choice of class to make."""
+    return Session(settings, agent, project, **kw)
 
 
 SCAN_STATE = "scan-state.json"

@@ -274,20 +274,20 @@ class RunHoldsTheProject(SettingsCase):
 
     def test_the_lock_is_held_while_the_session_runs(self):
         seen = {}
-        real = session.NetSession.run_captured
+        real = session.Session.run_captured
 
         def spy(self_, *a, **kw):
             seen["lock"] = projectlock.read(self_.settings, "p1")
             return real(self_, *a, **kw)
 
-        with mock.patch.object(session.NetSession, "run_captured", spy):
+        with mock.patch.object(session.Session, "run_captured", spy):
             self.ab("run", "claude", "p1", "--no-tty")
         self.assertTrue(seen["lock"], "held during the run")
         self.assertTrue(seen["lock"]["session"].startswith("abt-unit-claude-p1-"),
                         "and it records which session holds it")
 
     def test_the_lock_is_released_when_prepare_raises(self):
-        with mock.patch.object(session.NetSession, "_prepare_reserved",
+        with mock.patch.object(session.Session, "_prepare_reserved",
                                side_effect=AgentboxError("boom")):
             code, out = self.ab("run", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)

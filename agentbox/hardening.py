@@ -72,7 +72,10 @@ def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=
             raise AgentboxError(f"audit: forbidden option {o}")
         if o.startswith(("--network=", "--net=")):
             val = o.split("=", 1)[1]
-            if val != "none" and val not in networks:
+            # No `val != "none"` escape: every session is a networked one (D-E9, 5 Nov), so the agent
+            # container's network IS one of the session's. `--network=none` here would mean something
+            # built the argv by another route.
+            if val not in networks:
                 raise AgentboxError(f"audit: network {val!r} is not a session network")
         if o.startswith("--mount="):
             _audit_mount(o[len("--mount="):], allowed_mount_srcs, allowed_mount_dsts, allowed_sockets, mask_file)

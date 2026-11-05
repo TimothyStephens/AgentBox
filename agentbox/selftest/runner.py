@@ -238,11 +238,6 @@ def dev_cases(b, *, socket_path, canary, protected):
             b.add("api", [method, path, "-", socket_path], f"{what} {name} refused (not visible)", hidden)
 
 
-def network_none_cases(b):
-    b.add("ifaces", [], "only loopback (no network in this session)",
-          lambda obs: ("PASS" if obs.split() == ["lo"] else "FAIL", obs))
-
-
 REFUSED = "403"
 
 

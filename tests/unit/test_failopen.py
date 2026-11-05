@@ -122,7 +122,7 @@ class CoverIdentities(TempCase):
     the gate can no longer tell was renamed or replaced mid-session. An identity that cannot be read used to
     be skipped silently."""
 
-    class _CoversOnly(session.NetSession):
+    class _CoversOnly(session.Session):
         """Only `covered_paths()` matters here, and a real session needs rsync (prepare() makes the backup)."""
 
         def __init__(self, paths):

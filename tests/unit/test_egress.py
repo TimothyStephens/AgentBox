@@ -69,7 +69,10 @@ class SquidConfTest(SettingsCase):
         self.assertNotIn("10.0.0.2", env["NO_PROXY"])
 
 
-class NetSessionTest(SettingsCase):
+class SessionNetworkTest(SettingsCase):
+    """The session's networks and the proxy between them. (Was NetSessionTest, when there were two session
+    classes -- D-E9, 5 Nov.)"""
+
     def setUp(self):
         super().setUp()
         self.root = self.project("p1", extra_domains=["huggingface.co"])
