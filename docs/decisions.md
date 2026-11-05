@@ -2010,8 +2010,10 @@ install this plugin id", and guessing it would mean writing an installer that ru
 Tim's list: `pi-statusline`, `pi-context-prune`, `pi-lens`, `pi-rules`, `mags-codedev`,
 `pi-session-stats`, `pi-content-audit`, and "I dont think pi-nvim-bridge is needed". With the profile's
 existing EGM entry that is **eight**: one marketplace plugin, four npm packages, three checkouts.
-`docs/examples/plugins.toml` is the worked file, and a test pins the list -- "which entries" is a decision,
-and a silent re-appearance should fail a test rather than a session.
+`docs/examples/plugins.toml` was the worked file handed to Tim; it went once he had copied the entries
+into the profile repo (5 Nov), and the eight entries now live inline in `tests/unit/test_plugins.py` so
+the real-world file is still parsed by a test -- "which entries" is a decision, and a silent
+re-appearance should fail a test rather than a session.
 
 **The three repo refs were resolved here**, `git ls-remote <url> main` from the sandbox (egress `packages`
 reaches GitHub, and git honours the proxy variables), so they are real shas rather than placeholders.
@@ -2096,3 +2098,61 @@ in the session printed **v22.23.4**, where the image is built on `node:26-bookwo
 ahead of `/usr/local/bin` and Bun ships a `node` shim that reports the Node version it emulates. If so,
 plugins in an OMP session run under Bun-as-node-22 and not the image's node 26, which would make the
 `NODE_MAJOR` move invisible where it matters most. Round 2 asks `which -a node` and friends.
+
+## 5 November 2026 -- probe round 2: the installer's shape, and a node that was not what the tag said
+
+Five answers, two of which change what gets built. (Round 1 is the entry above.)
+
+**1. `node` in a session is REAL node 22, not a Bun shim -- so the image is wrong.** `which -a node` gives
+one answer, `/usr/local/bin/node`, it is not a symlink, `/root/.bun/bin` holds only `bun`, and
+`/usr/local/bin/node --version` is **v22.23.4**. So my "[likely] Bun's node shim" guess was wrong: the OMP
+image genuinely carries node 22, while `NODE_MAJOR := 26`, `OS_BASE_TAG` says `node:26-bookworm-slim`, and
+`ab image build claude` reported 26.13.0 on the same host.
+
+[likely] the cause is the **digest overriding the tag**: `OS_BASE` is `$(OS_BASE_TAG)@$(OS_BASE_DIGEST)`,
+and podman resolves the digest and ignores the tag, so a digest looked up while `NODE_MAJOR` was still 22
+builds node 22 under a name that says 26. `make base-image` *printed* `node --version` and nothing compared
+it, which is the same class as omp-env's never-applied `ARG OMP_VERSION`: **a printed version is not a
+check.** Fixed where it belongs, in the build: `ARG NODE_MAJOR` after the FROM, the toolchain step now
+refuses unless `node --version` matches it (and refuses an empty `NODE_MAJOR`, so an unpassed arg cannot
+read as "fine"), the error names the re-pin commands, and the major goes on the image as
+`agentbox.node-major` so a stale image can be told apart. Five mutations red. The host needs
+`make base-image` (with a digest for node 26, or none) and then both agent images; the build will now
+refuse the mismatch instead of shipping it.
+
+**2. The npm kind works, and it is Bun that installs it.** `omp plugin install pi-rules@0.1.1` landed in
+`~/.omp/plugins/node_modules/pi-rules`, wrote `~/.omp/plugins/package.json`
+(`{"name":"omp-plugins","private":true,"dependencies":{"pi-rules":"0.1.1"}}`) and a **`bun.lock`** -- which
+is why Bun is in the image. `plugin list --json` then reports the package with its `manifest.extensions`
+and `manifest.skills`. Note the size: the dependency closure it pulled includes OMP's own
+`@earendil-works/pi-*`, `@aws-sdk/*`, `@google/genai` and the rest, so the installed tree is large, not a
+handful of files.
+
+**3. `omp plugin link <path>` reports as an npm plugin.** Linking the pi-session-stats checkout gave
+`path: ~/.omp/plugins/node_modules/pi-session-stats` and it appears in `plugin list --json` under `npm`.
+So a `[[repo]]` entry is: clone at the declared sha, then `omp plugin link <clone>` -- and the clone has to
+live **inside the tree agentbox owns**, because that path is recorded and followed later.
+
+**4. The pinned-marketplace route works, and the catalog is COPIED rather than cloned.**
+`omp plugin marketplace add /tmp/ab-probe-egm` was accepted, `marketplaces.json` recorded
+`"sourceType": "local", "sourceUri": "/tmp/ab-probe-egm"`, and `omp plugin install egm@egm` installed from
+it. The cache directory is not a git repository at all (`git -C ... log` says "not a git repository"), so
+for a local source OMP copies the catalog -- meaning **the commit agentbox checked out is exactly what is
+in the cache**, which is the property the whole pinning design needed.
+
+**5. The consequence that shapes the installer: install AT THE PATH A SESSION WILL SEE.** The tree records
+absolute paths all over -- `installPath`, `catalogPath`, `sourceUri`, the `node_modules` entries -- so the
+install has to happen with the tree mounted where a session mounts it (`~/.omp/plugins`), not at some
+host path that is correct only on the host. That settles a question the design had open: the install
+container mounts the host-owned tree **at `/home/<user>/.omp/plugins`**, and the catalog clones live inside
+that tree so their recorded `sourceUri` is valid in a session too.
+
+**What is still not settled, and the chmod test could not settle it.** Whether OMP tolerates a read-only
+`~/.omp/plugins`. `chmod -R a-w` then `plugin list`/`doctor` succeeded, but that proves little: the
+session's uid may bypass the mode bits, and the `find` that was meant to show writes used
+`marketplaces.json` as its reference point -- which the step-4 install had just rewritten, so the files it
+listed (`installed_plugins.json`, `omp-plugins.lock.json`, the `cache/plugins/...` tree) were from the
+install, not from step 5. **A badly chosen reference point produced output that looked like an answer.**
+The real test is an actual read-only bind mount, and it belongs in the installer's itest -- where it is
+also worth knowing that `installed_plugins.json` and `omp-plugins.lock.json` exist, because those two are
+state OMP writes *inside* the tree and may need a writable overlay even when the rest is read-only.

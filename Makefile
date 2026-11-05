@@ -130,10 +130,11 @@ base-image:
 	  echo ">>   podman pull $(OS_BASE_TAG)" >&2; \
 	  echo ">>   podman image inspect $(OS_BASE_TAG) --format '{{index .RepoDigests 0}}'" >&2; \
 	fi
-	podman build --build-arg OS_BASE=$(OS_BASE) $(PODMAN_REMOTE_ARGS) \
+	podman build --build-arg OS_BASE=$(OS_BASE) --build-arg NODE_MAJOR=$(NODE_MAJOR) $(PODMAN_REMOTE_ARGS) \
 	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base
 	@podman image inspect localhost/agentbox-base:latest \
 	  --format '>> agentbox-base {{.Id}} built from {{index .Config.Labels "agentbox.base"}}'
+	@echo ">> node $$(podman run --rm --entrypoint "" localhost/agentbox-base:latest node --version) (NODE_MAJOR=$(NODE_MAJOR), asserted in the build)"
 
 # $(1) agent name  $(2) the command that prints its CLI version  $(3) extra build args
 #

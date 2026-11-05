@@ -18,16 +18,58 @@ Mostly refusals, and each one has a reason worth stating:
   * `id = "<name>@<marketplace>"` must agree with `marketplace`: one name said twice, and a mismatch
     installs something other than what is declared.
 
-`docs/examples/plugins.toml` is parsed here too -- a template that does not parse is worse than none.
+The profile's own eight entries are parsed here too, inline: a rule that only works on tidy input is
+not a rule, and the real file has a scoped npm name and three real shas in it.
 """
-import pathlib
 import unittest
 
 from agentbox import plugins
 from agentbox.errors import AgentboxError
 
-HERE = pathlib.Path(__file__).resolve().parent
-EXAMPLE = HERE.parent.parent / "docs" / "examples" / "plugins.toml"
+# The eight entries the profile declares (agentbox-profile-omp, 5 Nov): EGM plus the list Tim asked for.
+# Inline rather than a file in this repo, because the PROFILE owns that file -- `docs/examples/plugins.toml`
+# existed only to hand Tim the entries, and went once he had copied them in. What this is for is the one
+# thing a hand-written case cannot do: parse the real-world file, with its real shas and its scoped npm
+# name, so a rule that only works on tidy input fails here.
+PROFILE_FILE = """
+[[plugin]]
+id = "egm@egm"
+marketplace = "egm"
+source = "google/elephant-goldfish-model"
+ref = "464db031e7dd1b9a79803ac8ea45f55c7c20c5bc"
+
+[[npm]]
+name = "@narumitw/pi-statusline"
+version = "0.50.4"
+
+[[npm]]
+name = "pi-context-prune"
+version = "2.2.0"
+
+[[npm]]
+name = "pi-lens"
+version = "4.4.9"
+
+[[npm]]
+name = "pi-rules"
+version = "0.1.1"
+
+[[repo]]
+name = "mags-codedev"
+url = "https://github.com/TimothyStephens/MAGS-CodeDev.git"
+ref = "d44fea8c5bf4021e3103ee9671a06940fc7f713c"
+extension_dir = "mags-codedev-extension"
+
+[[repo]]
+name = "pi-session-stats"
+url = "https://github.com/TimothyStephens/pi-session-stats.git"
+ref = "9c7a0c2dd1900dcd98aa7be0d84bbee214967d96"
+
+[[repo]]
+name = "pi-content-audit"
+url = "https://github.com/TimothyStephens/pi-content-audit.git"
+ref = "7aa11e085d2be4a2327307d8121977f200e0e0ce"
+"""
 
 SHA = "464db031e7dd1b9a79803ac8ea45f55c7c20c5bc"
 OTHER_SHA = "1" * 40
@@ -94,12 +136,11 @@ class Accepts(unittest.TestCase):
         self.assertEqual(plugins.summary(plugins.parse(PLUGIN)), "1 plugin")
         self.assertEqual(plugins.summary(plugins.parse(PLUGIN + NPM + REPO)), "1 plugin, 1 npm, 1 repo")
 
-    def test_the_example_in_docs_parses_and_is_the_list_tim_asked_for(self):
-        """The worked example is the 5 Nov list: EGM, four npm packages and three checkouts, every ref a
-        real sha (`git ls-remote`). Pinned here because a template that does not parse is worse than none,
-        and because "which entries" is a decision -- pi-codegraph and pi-nvim-bridge are deliberately out,
-        and a silent re-appearance should fail a test rather than a session."""
-        entries = plugins.load(EXAMPLE)
+    def test_the_profiles_eight_entries(self):
+        """The real declaration: EGM, four npm packages and three checkouts, every ref a real sha
+        (`git ls-remote`, 5 Nov). "Which entries" is a decision -- pi-codegraph and pi-nvim-bridge are
+        deliberately out -- so this also pins that a quiet re-appearance fails a test, not a session."""
+        entries = plugins.parse(PROFILE_FILE)
         self.assertEqual(plugins.summary(entries), "1 plugin, 4 npms, 3 repos")
         self.assertEqual([e.label for e in entries],
                          ["egm@egm", "@narumitw/pi-statusline", "pi-context-prune", "pi-lens", "pi-rules",

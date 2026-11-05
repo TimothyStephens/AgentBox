@@ -69,7 +69,7 @@ below are answered; `docs/decisions.md` (5 Nov, "ab profile install") has the re
 lives in `~/.config/agentbox/omp/plugins/`, the install runs in one hardened container behind the session
 proxy rather than a synthesised project, `plugins.toml` pins npm exactly and lets git name a branch with
 the **lockfile** recording the commit, and `omp_mounts` moves to the new tree in its own commit afterwards.
-`agentbox/plugins.py` and `docs/examples/plugins.toml` are the first step and are done — against **the
+`agentbox/plugins.py` is the first step and is done — against **the
 profile repo's schema**, which already existed: marketplace `[[plugin]]` entries pinned by 40-character
 sha, plus the `[[npm]]` and `[[repo]]` kinds the profile's own comment asked agentbox to add. The first
 draft invented a format from omp-env's `manifest.json` and was wrong (decisions.md, 5 Nov later).
@@ -114,8 +114,8 @@ with the real plugins, which is the only thing that proves a plugin actually loa
 **Decided 5 Nov: MAGS runs as an OMP extension, and agentbox grows the three things it needs.** Not a
 `--agent mags` adapter, and not a standalone tool outside `ab`. The evidence is in omp-env's
 `manifest.json`: `mags-codedev` is a git entry with `extensionDir: mags-codedev-extension`, so **MAGS
-ships an OMP extension** — "part of OMP" is how it is built, not a convenience. It is a `[[git]]` entry in
-`docs/examples/plugins.toml`; dropping that entry is how it stays out of sessions.
+ships an OMP extension** — "part of OMP" is how it is built, not a convenience. It is a `[[repo]]` entry in the
+profile's `plugins.toml`; dropping that entry is how it stays out of sessions.
 
 **Why not standalone on the host.** Its job is to run model-generated code and its own generated tests. On
 the host that means no gate (the spikes proved any container on a default or plain bridge network reaches

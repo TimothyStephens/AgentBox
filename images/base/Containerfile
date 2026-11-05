@@ -42,6 +42,12 @@ FROM ${OS_BASE}
 # --build-arg OS_BASE, so the value is the same one FROM used; a hand-build that omits it gets an empty
 # label and the FROM default, which is cosmetic rather than an unpinned build.
 ARG OS_BASE
+# The node major this image is meant to carry, checked below against the node that is actually here. Not
+# cosmetic: OS_BASE can be a TAG AND A DIGEST, and podman resolves the digest and ignores the tag, so
+# `node:26-bookworm-slim@sha256:<a node 22 digest>` builds node 22 while every name in the Makefile says
+# 26. That is what shipped: a session reported `node v22.23.4` from an image whose tag said 26 (5 Nov).
+# A printed version is not a check; this is the check.
+ARG NODE_MAJOR
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates unzip jq rsync \
@@ -72,11 +78,20 @@ RUN pip install --no-cache-dir --break-system-packages --require-hashes \
 # missing by `ab image build`'s check or by a session (`required_tools`).
 RUN set -eu; for t in git curl jq rsync python3 pip3 rg fd gcc g++ make node npm podman podman-compose; do \
       command -v "$t" >/dev/null || { echo "missing from agentbox-base: $t" >&2; exit 1; }; \
-    done; node --version; podman --version
+    done; \
+    node --version; podman --version; \
+    test -n "${NODE_MAJOR}" || { echo "NODE_MAJOR was not passed; build with \`make base-image\`" >&2; exit 1; }; \
+    node --version | grep -Eq "^v${NODE_MAJOR}\\." || { \
+      echo "node is $(node --version), not v${NODE_MAJOR}.x: OS_BASE=${OS_BASE} resolved to a different" >&2; \
+      echo "major. If OS_BASE carries a digest, that digest is for another node major -- re-pin it:" >&2; \
+      echo "  podman pull docker.io/library/node:${NODE_MAJOR}-bookworm-slim" >&2; \
+      echo "  podman image inspect docker.io/library/node:${NODE_MAJOR}-bookworm-slim --format '{{index .RepoDigests 0}}'" >&2; \
+      exit 1; }
 
 ENV PIP_CACHE_DIR=/tmp/pip-cache
 LABEL agentbox=1 \
       agentbox.base="${OS_BASE}" \
+      agentbox.node-major="${NODE_MAJOR}" \
       org.opencontainers.image.title="agentbox-base" \
       org.opencontainers.image.description="shared toolchain for agentbox agent images"
 WORKDIR /

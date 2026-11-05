@@ -203,6 +203,32 @@ class TheBaseImage(unittest.TestCase):
         self.assertTrue(default, "the Containerfile declares no OS_BASE default")
         self.assertEqual(default.group(1), expected)
 
+    def test_the_build_proves_which_node_it_got(self):
+        """The one that was missing, and it cost a wrong image. `OS_BASE` can carry a TAG AND A DIGEST, and
+        podman resolves the digest and ignores the tag -- so `node:26-bookworm-slim@sha256:<a node 22
+        digest>` builds node 22 while every name in the Makefile says 26. The build printed
+        `node --version` and nothing compared it, so a session ran node v22.23.4 from an image whose tag
+        said 26 (5 Nov). A printed version is not a check."""
+        mk = makefile()
+        major = re.search(r"(?m)^NODE_MAJOR := (\d+)$", mk).group(1)
+        self.assertRegex(self.text, r"(?m)^ARG NODE_MAJOR$",
+                         "NODE_MAJOR is not declared after the FROM, so ${NODE_MAJOR} below is empty")
+        self.assertIn("--build-arg NODE_MAJOR=$(NODE_MAJOR)", mk,
+                      "make base-image does not pass NODE_MAJOR, so the assertion cannot fire")
+        # The assertion itself, not the comment that explains it: a RUN line that compares node's version
+        # with the ARG, and a refusal when the ARG is empty (an unpassed ARG must not read as "fine").
+        steps = [l for l in self.text.splitlines() if not l.lstrip().startswith("#")]
+        body = "\n".join(steps)
+        # The prefix only: the Containerfile needs `\\.` so the parser hands grep a `\.`, and asserting
+        # that escape level here would just encode one fiddly detail in two places.
+        self.assertIn('node --version | grep -Eq "^v${NODE_MAJOR}', body,
+                      "nothing compares the node in the image with NODE_MAJOR")
+        self.assertIn('test -n "${NODE_MAJOR}"', body,
+                      "an unpassed NODE_MAJOR would make the comparison vacuous")
+        self.assertIn('agentbox.node-major="${NODE_MAJOR}"', body,
+                      "the major is not recorded on the image, so a stale image cannot be told apart")
+        self.assertNotIn(f"v{major}", body, "the major belongs in the Makefile, not written out here")
+
 
 class TheAgentLayers(unittest.TestCase):
     """Each agent image installs its own CLI at a pin, and proves the pin rather than claiming it."""
