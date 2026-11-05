@@ -2034,3 +2034,65 @@ not wanted. Each is one entry to add back.
 `omp plugin link` takes a path, and whether the marketplace add can be pinned to a commit at all. The
 `plugin --help` output says `TARGETS   Packages, paths, or plugin names`, which is suggestive of exactly
 the three kinds -- but suggestive is not a specification, and `make omp-plugin-probe` is what answers it.
+
+## 5 November 2026 -- what the plugin probe found: the marketplace cannot be pinned
+
+`make omp-plugin-probe`, against the image's own OMP (18.13.3, matching the Makefile pin). Four findings,
+the first of which changes the installer's design.
+
+**1. `omp plugin marketplace add` cannot be pinned to a commit.** All three spellings were refused:
+
+```
+$ omp plugin marketplace add google/elephant-goldfish-model@464db0...
+✘ Unrecognized source format. Did you mean './google/elephant-goldfish-model@464db0...' (local)
+  or 'owner/repo' (GitHub)?
+$ omp plugin marketplace add google/elephant-goldfish-model --ref 464db0...
+error: Unknown option '--ref'.
+```
+
+So the profile's `ref` is something **agentbox** has to honour, not something it can pass through. The
+refusal names the way: a **local path is a valid marketplace source**. So the installer clones the catalog
+itself, checks out the declared sha, and runs `omp plugin marketplace add <path to that clone>`. Pinning
+becomes agentbox's job, which is the right place for it -- the profile declares a sha and agentbox
+guarantees it, instead of hoping a `git clone` inside OMP lands on the same commit. (The alternative,
+adding it unpinned and then `git checkout` inside OMP's cache, is worse on two counts: it depends on
+OMP's cache layout, and that clone is **shallow** -- `.git/shallow` is in the tree -- so the declared sha
+may not even be present.)
+
+**2. The install tree is `~/.omp/plugins/`, with a sibling registry file.** From `plugin list --json` and
+`plugin doctor --json`:
+
+```
+~/.omp/plugins/cache/marketplaces/<name>/      the catalog, as a shallow git clone
+~/.omp/plugins/cache/plugins/<id>___<version>/  the installed plugin   (egm___egm___0.1.0)
+~/.omp/plugins/node_modules/                    doctor: "Found"
+~/.omp/plugins/package.json                     doctor: "Not created yet"
+~/.omp/marketplaces.json                        which marketplaces are configured
+```
+
+That is the tree agentbox owns and mounts read-only, and it is **two mounts, not one**: the directory and
+`marketplaces.json` beside it. A session's `~/.omp` is a tmpfs, so nothing persists there by accident --
+which is also why the probe could install for real without touching the host.
+
+**3. `plugin list --json` tracks two kinds, `npm` and `marketplace`**, which lines up with the three
+arrival paths (`link` presumably reports as one of the two). `doctor` naming `node_modules` and
+`package.json` says the npm kind installs into the same tree.
+
+**4. `--json` is not honoured everywhere.** `plugin install --json` printed `✔ Installed egm from egm
+(0.1.0)` -- human text, not JSON -- while `install --dry-run --json`, `list --json` and `doctor --json`
+all gave JSON. So the installer reads the **state** (`plugin list --json`) to decide what happened, rather
+than parsing what the install printed. Also: `omp plugin <action> --help` prints the same generic help for
+every action, so there is no per-action documentation to lean on; behaviour comes from running it.
+
+**Still open, hence a second probe round:** whether `omp plugin install <pkg>@<version>` takes an npm
+package, what `omp plugin link <path>` reports and where it puts things, whether the pinned-local-clone
+marketplace route actually installs, and -- the one that decides whether this design works at all --
+**whether OMP tolerates a read-only `~/.omp/plugins`**. `doctor` says `package.json` is "Not created yet",
+which is OMP announcing an intention to write there.
+
+**An unrelated thing the probe turned up, worth checking before it surprises someone.** `node --version`
+in the session printed **v22.23.4**, where the image is built on `node:26-bookworm-slim` and
+`ab image build claude` reported node 26.13.0 on the same host. [likely] `PATH` puts `/root/.bun/bin`
+ahead of `/usr/local/bin` and Bun ships a `node` shim that reports the Node version it emulates. If so,
+plugins in an OMP session run under Bun-as-node-22 and not the image's node 26, which would make the
+`NODE_MAJOR` move invisible where it matters most. Round 2 asks `which -a node` and friends.
