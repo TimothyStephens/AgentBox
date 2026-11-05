@@ -175,6 +175,23 @@ class TheManualScriptCoversEveryFormat(unittest.TestCase):
                 self.assertTrue(cmd[:2] in self.READ_ONLY or cmd[:1] in self.READ_ONLY,
                                 f"`podman {' '.join(cmd)}` is not a read-only command")
 
+    def test_it_runs_under_itest_against_this_runs_own_objects(self):
+        """It used to run only when somebody remembered, which is how the `network ls` template survived a
+        whole build. `make itest` now runs it (tests/integration/test_podman_formats.py) and hands it an
+        abt-<run> network, container and image, so a SKIP there means a target it was given could not be
+        inspected -- not that the host was idle. Pinned because deleting that one file would quietly make
+        this script manual again."""
+        itest = REPO / "tests" / "integration" / "test_podman_formats.py"
+        self.assertTrue(itest.is_file(), f"{itest} is missing: the script is only run by hand again")
+        text = itest.read_text()
+        self.assertIn("podman_formats.sh", text)
+        for var in ("AB_FMT_NET", "AB_FMT_CTR", "AB_FMT_IMG"):
+            self.assertIn(var, text, f"{var} is not passed, so that check would skip under itest")
+        self.assertIn("skip=0", text, "a skipped check under itest must be a failure")
+        script = MANUAL_SCRIPT.read_text()
+        for var in ("AB_FMT_NET", "AB_FMT_CTR", "AB_FMT_IMG"):
+            self.assertIn(var, script, f"the script ignores {var}, so itest cannot aim it at its own objects")
+
     def test_no_label_indexing_on_network_ls(self):
         """The specific shape podman 5.7 rejects, wherever it might come back."""
         for where, words, fmt in formats_in_source():

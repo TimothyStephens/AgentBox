@@ -1822,3 +1822,30 @@ mutations, and run them with `PYTHONDONTWRITEBYTECODE=1`. Worth recording becaus
 to write a test that already exists, and the same bug in the other direction (a false RED) would certify a
 test that proves nothing. The *other* GREEN was real: the "harness image is gone" test went through the
 exception handler, so the `if harness_id else None` branch beside it had no test at all until one was added.
+
+## 5 November 2026 -- the `--format` contract check runs under `make itest`
+
+`tests/manual/podman_formats.sh` was the only thing that could check this class for real -- a `--format`
+template is a per-subcommand contract with podman's internals, `index .Labels` being fine on
+`image inspect` and refused on `network ls` -- and it ran when somebody remembered. That is how the
+rejected `network ls` template lived in the code for a whole build.
+
+It now runs inside `make itest` (`tests/integration/test_podman_formats.py`). The change that makes it
+worth running is not the wiring: run by hand the script inspected **whatever the host happened to have**,
+so on an idle machine every inspect check SKIPped and it asserted almost nothing. The script now takes
+`AB_FMT_NET` / `AB_FMT_CTR` / `AB_FMT_IMG`, and the itest creates an `abt-<run>` network, starts a
+container **on** that network (so `{{json .NetworkSettings.Networks}}` is checked against a populated
+value, which is what agentbox reads it for) and points the image checks at `busybox:1.36`. Every check
+therefore has a target, and the itest asserts `skip=0`: under `itest` a skip means a target it was handed
+could not be inspected, not that the host was idle.
+
+**With a control, because `returncode == 0` is also what a gutted script returns.**
+`tests/integration/fmtrefuser.sh` is a stand-in podman that refuses every `--format`; the second test
+runs the script against it and requires a non-zero exit and the "podman rejected:" report. The unit suite
+pins the other direction: every `--format` literal in `agentbox/` must appear in the script, the script
+may only issue read-only subcommands (Tim runs it on a host with live services), and now also that the
+itest exists and passes all three `AB_FMT_*` variables -- deleting that one file would quietly make the
+script manual again.
+
+Still read-only by construction: the script lists and inspects, and the objects it is pointed at are the
+test's own, labelled and removed by the harness.

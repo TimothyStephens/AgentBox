@@ -141,26 +141,7 @@ against §3 (`analysis-offline` uses `locked` egress, not no network, so it is n
 
 ## 2. Ready to implement — scoped, no decision needed
 
-### 2.1 `tests/manual/podman_formats.sh` is only ever run by hand
-
-**What.** The one check of agentbox's `--format` templates against real podman. A unit test keeps the script
-in step with the code, and the fake podman refuses the one template podman 5.7 rejects — but the script
-itself runs only when someone remembers.
-
-**Why it matters.** This is the class that cost a whole build once: `network ls --format
-'{{index .Labels …}}'` is rejected by podman 5.7, the call was swallowed, and network-based session
-detection had never worked. A template is a per-subcommand contract with podman's internals; only running it
-proves anything.
-
-**Done looks like.** It runs inside `make itest`.
-
-**Why it is manual today.** It reads whatever objects happen to exist on the host rather than creating its
-own, so it cannot assert much; under `itest` it would need its own `abt-` objects to inspect.
-
-**Where to start.** `tests/manual/podman_formats.sh`, `tests/unit/test_podman_formats.py` (the sync test and
-its `READ_ONLY` list), `tests/integration/harness.py` for making `abt-` objects to point it at.
-
-### 2.2 Unify the duplicated git-identity lookup
+### 2.1 Unify the duplicated git-identity lookup
 
 **What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
 slightly differently.
@@ -305,6 +286,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 5 Nov | `tests/manual/podman_formats.sh` runs inside `make itest`, against the run's own abt- objects, with a skip counted as a failure |
 | 5 Nov | `ab session gc` sweeps personal image layers and profile snapshots (current key and live sessions protected; `image_keep_days` is the rollback window) |
 | 4 Nov | The image restructure: `agentbox-base`, both agent layers installing their own CLI at an asserted pin, Bun pinned, node 22→26 |
 | 4 Nov | `ab image build <agent>` — a personal layer keyed on the harness image ID + Containerfile, never run when stale, checked against its own base before it is tagged |

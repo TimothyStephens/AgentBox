@@ -12,9 +12,16 @@
 #
 #   ./tests/manual/podman_formats.sh            # uses whatever objects already exist
 #   PODMAN=/usr/bin/podman ./tests/manual/podman_formats.sh
+#   AB_FMT_NET=n AB_FMT_CTR=c AB_FMT_IMG=i ./tests/manual/podman_formats.sh   # inspect THESE
 #
 # Exit 0 if every format podman was asked for worked; 1 if any was rejected. A check SKIPs when the host has
 # no object of that kind to inspect -- a skip is not a pass, and the summary says so.
+#
+# AB_FMT_NET / AB_FMT_CTR / AB_FMT_IMG name the objects the inspect checks run against. Run by hand they
+# are unset and the script takes whatever the host happens to have, which is why it used to skip on an idle
+# machine and could assert so little. `make itest` creates its own abt-<run> network, container and image
+# reference and passes them in, so every check has a target and a skip there is a failure
+# (tests/integration/test_podman_formats.py asserts skip=0).
 #
 # tests/unit/test_podman_formats.py asserts every `--format` literal in agentbox/ appears in this file, so
 # the two cannot drift.
@@ -73,9 +80,9 @@ fi
 echo
 
 # --- inspects: need a target, so use whatever already exists -------------------------------------
-net=$("$PODMAN" network ls --format '{{.Name}}' 2>/dev/null | head -1)
-ctr=$("$PODMAN" ps -a --format '{{.Names}}' 2>/dev/null | head -1)
-img=$("$PODMAN" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)
+net=${AB_FMT_NET:-$("$PODMAN" network ls --format '{{.Name}}' 2>/dev/null | head -1)}
+ctr=${AB_FMT_CTR:-$("$PODMAN" ps -a --format '{{.Names}}' 2>/dev/null | head -1)}
+img=${AB_FMT_IMG:-$("$PODMAN" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '<none>' | head -1)}
 
 # agentbox/session.py: the egress/internal network's gateway and subnet
 if [ -n "$net" ]; then
