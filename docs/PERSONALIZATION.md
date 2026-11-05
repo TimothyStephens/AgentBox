@@ -24,6 +24,39 @@ The two adapters are deliberately different. **Claude's whole config dir is per-
 `config.yml` are a host-shared, read-only global; only its `agent/` working dir and your `config/omp` seed
 are per-project.**
 
+### Does your own installed agent reach into a session?
+
+The whole host surface a session can read is short, and worth knowing by heart:
+
+1. `~/.config/agentbox/` — the profiles, the per-agent seeds, `keys/`, `<agent>-oauth-token`, `presets/`,
+   `projects.toml`;
+2. `~/.local/share/agentbox/` — per-project agent state, inboxes, `backups/`, `logs/`, `profiles/` snapshots;
+3. `$XDG_RUNTIME_DIR/agentbox/` — this session's generated files and sockets;
+4. **the grants** — the project root and any `data_ro`/`data_rw`, at their real paths;
+5. the agent image;
+6. **`~/.omp` — OMP only.** The one exception, and the only way a host-installed agent's own config
+   reaches a session.
+
+**Claude: no.** `$HOME` in a session is a fresh tmpfs, `CLAUDE_CONFIG_DIR` points at the per-project state
+dir under (2), and the host's `~/.claude` is never mounted — `ab selftest` asserts it is not visible.
+Nothing you do to your own Claude Code install changes what a session sees.
+
+**OMP: yes, in three ways** — all of them from `~/.omp`, set by the `omp_home` setting:
+
+- `omp-env install` on the host rewrites `~/.omp/plugins`, so the next session silently gets different
+  plugins. This is not hypothetical: it is what made `make omp-live` fail on 4 Nov.
+- A host OMP upgrade changes which `versions/<v>/` directories exist. `provisioned_targets` validates the
+  *shape* of the links (each must be exactly `versions/<v>/<name>`), not which version they point at.
+- `agent/config.yml` is your host OMP's own config, mounted read-only. Change your host OMP's default
+  model and every agentbox session's default model changes with it.
+
+**All six of OMP's `~/.omp` mounts can move under `~/.config/agentbox/omp/`**, and three of its inputs
+already live there (`models.yml`, `mcp.json`, `mags-codedev.yaml` — see the table below, "Host source").
+What is left: `agent/config.yml` (move it, same shape, no mechanism needed); `bin/mags-codedev` (now a
+Python package with a `pyproject.toml`, so a pinned install in the image); `.cache/ms-playwright` (the image
+already carries chromium and sets `PUPPETEER_EXECUTABLE_PATH`); and `plugins`/`repos`/`pylibs`, which is
+the only one needing a decision — `docs/TODO.md` §1.1.
+
 ### Claude Code (`adapters/claude.py`)
 
 `CLAUDE_CONFIG_DIR` is set to `/run/agentbox/claude`, backed by a **per-project, read-write** state dir that
