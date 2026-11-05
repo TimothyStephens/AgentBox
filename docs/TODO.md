@@ -18,9 +18,10 @@ after `make omp-image && ab image build omp` so the image's own change is exerci
 re-recorded the same day. `ab session gc` now sweeps personal image layers and profile snapshots as well as
 session-built images.
 
-**Outstanding host run:** `make itest` for the gc sweep against real podman (unit-tested against the fake,
-which is not the same thing), and `make claude-live` will flag stale again -- `session.py` is one of
-`freshness.py`'s token files.
+**Outstanding host run (5 Nov, after the gc sweep, the `--format` itest and D-E9):** `make itest` — it
+gains `tests/integration/test_podman_formats.py` and it is the only check of the gc sweep and the merged
+`Session` against real podman. Then `make claude-live`, which `freshness.py` will flag stale:
+`session.py` and `hardening.py` are both token files and both changed.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
