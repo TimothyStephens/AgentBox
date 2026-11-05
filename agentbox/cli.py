@@ -688,6 +688,30 @@ def cmd_profile_promote(s, a):
     return 0
 
 
+def cmd_profile_install(s, a):
+    """`ab profile install <agent>`. The declaration is the profile's; what is installed is agentbox's.
+
+    Not a session: the profile is not a grant, so there is no project, no lock, no scan and no gate --
+    just one hardened container behind the same sealed networks and squid a session gets, with the tree
+    mounted at the path a session will see it at (installer.py says why that matters)."""
+    from . import installer, plugins
+    doc = installer.install(s, a.agent, podman=Podman(s.podman), warn=warn, dry_run=a.dry_run)
+    if a.dry_run:
+        print(f"would install {len(doc['entries'])} entry(ies); the container would run:\n")
+        print(doc["script"])
+        return 0
+    tree = installer.tree_dir(s, a.agent)
+    print(f"installed into {tree}")
+    print(f"  against {doc['image']['ref']} ({doc['image'].get('cli_version') or 'version unknown'}, "
+          f"node {doc['image'].get('node_major') or '?'})")
+    for kind in ("npm", "marketplace"):
+        for item in doc["state"].get(kind, []) or []:
+            print(f"  {kind:<12} {item.get('name') or item.get('id')} {item.get('version', '')}".rstrip())
+    print(f"  lockfile {os.path.join(tree, installer.LOCKFILE)}")
+    print("Sessions mount this read-only. `ab profile install` again after editing plugins.toml.")
+    return 0
+
+
 def cmd_profile_dismiss(s, a):
     from . import profile
     row = _find_item(s, a.agent, a.item)
@@ -1222,6 +1246,13 @@ def parser(settings=None):
                    help="where it goes inside the profile, e.g. skills/deploy (required unless the item is "
                         "plainly a skill directory)")
     x.set_defaults(fn=cmd_profile_promote)
+    x = add(prof_p, "install", "install the plugins the profile declares, in a sandbox, into a tree "
+                               "sessions mount read-only",
+            ex("ab profile install omp", "ab profile install omp --dry-run"))
+    x.add_argument("agent", choices=adapters.NAMES, help="whose plugins.toml to install")
+    x.add_argument("--dry-run", action="store_true",
+                   help="print what would be installed and the script that would run; change nothing")
+    x.set_defaults(fn=cmd_profile_install)
     x = add(prof_p, "dismiss", "mark an inbox item reviewed and leave it where it is (deletes nothing)",
             ex("ab profile dismiss web/notes.md"))
     x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")

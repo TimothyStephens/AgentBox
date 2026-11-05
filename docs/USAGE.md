@@ -703,16 +703,18 @@ examples:
 ### `ab profile`
 
 ```text
-usage: ab profile [-h] {harvest,promote,dismiss} ...
+usage: ab profile [-h] {harvest,promote,install,dismiss} ...
 
 The host-owned profile (~/.config/agentbox/<agent>/profile/) holds the skills, sub-agents, commands and instructions every session loads, read-only, in every project and under every preset. Sessions cannot write it; what they want to keep goes to the project's inbox, which nothing loads. These commands review that queue.
 
 positional arguments:
-  {harvest,promote,dismiss}
+  {harvest,promote,install,dismiss}
     harvest             list what sessions have put in their inboxes,
                         unreviewed first (read-only)
     promote             copy an inbox item into the profile and commit it,
                         with its provenance in the commit message
+    install             install the plugins the profile declares, in a
+                        sandbox, into a tree sessions mount read-only
     dismiss             mark an inbox item reviewed and leave it where it is
                         (deletes nothing)
 

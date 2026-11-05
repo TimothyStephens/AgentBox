@@ -169,7 +169,12 @@ elif argv[:1] == ["inspect"]:
 elif argv[:1] == ["run"] and "-d" in argv:
     sys.stdout.write("0123456789ab\n")
 elif argv[:1] == ["run"]:
-    sys.stdin.read()
+    # Only an --interactive run consumes stdin, as real podman does. It used to read unconditionally,
+    # which made a NON-interactive run (`ab profile install`'s container) block on a pipe nobody was
+    # writing to -- a unit test that hung for its full timeout and then failed with a timeout message
+    # instead of its actual assertion (5 Nov).
+    if "--interactive" in argv or "-i" in argv:
+        sys.stdin.read()
     if os.environ.get("FAKE_PODMAN_RUN_SLEEP"):
         import time
         time.sleep(float(os.environ["FAKE_PODMAN_RUN_SLEEP"]))

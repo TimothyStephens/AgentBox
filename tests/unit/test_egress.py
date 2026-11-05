@@ -29,6 +29,31 @@ class SquidConfTest(SettingsCase):
             self.assertEqual(rules[5], "http_access allow models", mode)
             self.assertEqual(rules[-1], "http_access deny all", mode)
 
+    def test_no_model_host_means_no_lan_rule_at_all(self):
+        """`ab profile install` fetches packages and has no business reaching a model API, so it passes no
+        model host -- and the way to say that is to leave the rule out, not to point it somewhere
+        harmless. The single private address a session may reach is an exception made FOR the local model
+        server; without one declared there is no exception to make.
+
+        The ordering matters as much as the absence: `deny private` must still be the first rule, so
+        dropping the allow cannot leave a gap above it."""
+        text = egress.squid_conf("packages", model_domains=[], model_host="", model_port=8080,
+                                 host_addrs=["10.0.0.103"])
+        self.assertNotIn("localmodel", text)
+        self.assertNotIn("modelport", text)
+        rules = access_lines(text)
+        self.assertEqual(rules[0], "http_access deny private")
+        self.assertEqual(rules[1], "http_access deny hostaddr")
+        self.assertEqual(rules[-1], "http_access deny all")
+        self.assertIn("http_access allow packages", rules)
+
+    def test_a_model_host_that_is_not_an_address_is_still_refused(self):
+        """Optional does not mean unchecked: anything non-empty must be an IP."""
+        for bad in ("api.example.com", "10.0.0", "1.2.3.4.5", " "):
+            with self.subTest(model_host=bad), self.assertRaises(Exception):
+                egress.squid_conf("packages", model_domains=[], model_host=bad, model_port=8080,
+                                  host_addrs=["10.0.0.103"])
+
     def test_modes(self):
         locked, packages, opened = (access_lines(conf(m, extra_domains=["huggingface.co"])) for m in egress.MODES)
         self.assertNotIn("http_access allow packages", locked)

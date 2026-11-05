@@ -2156,3 +2156,74 @@ install, not from step 5. **A badly chosen reference point produced output that 
 The real test is an actual read-only bind mount, and it belongs in the installer's itest -- where it is
 also worth knowing that `installed_plugins.json` and `omp-plugins.lock.json` exist, because those two are
 state OMP writes *inside* the tree and may need a writable overlay even when the rest is read-only.
+
+## 5 November 2026 -- `ab profile install`: one container, the tree where a session sees it
+
+The installer, built on what the two probe rounds established. `~/.omp` stops being an input the moment
+`omp_mounts` moves onto this tree (next commit); this one makes the tree.
+
+**It is not a session, and it does not pretend to be one.** The profile is not a grant, so there is no
+project, no lock, no scan, no backup, no gate and no sockguard -- just one hardened container. What it
+*does* share is the part that matters: `session.net_create_argv` and `session.proxy_run_argv` are now
+module-level and used by both, so the sealed pair of networks (`isolate=strict`, `--internal`) and the
+proxy's posture have **one definition**. A copy of those two argv shapes in the installer would have been
+a copy of the network isolation, which is exactly the kind of drift that is invisible until it matters.
+
+**`packages` egress with no model-host rule.** `egress.squid_conf` now takes an empty `model_host` and
+leaves the `localmodel` acl and its allow line out. The single private address a session may reach is an
+exception made *for* the local model server; an install fetches packages and has no business reaching a
+model API, and the honest way to say that is to omit the rule rather than point it at something harmless.
+Ordering is tested as well as absence: `deny private` must still be the first rule, so dropping an allow
+cannot leave a gap above it.
+
+**The tree is mounted at `~/.omp/plugins`, which is where a SESSION mounts it.** This is the probe finding
+that shaped everything: OMP records absolute paths (`installPath`, `catalogPath`, `sourceUri`, the
+`node_modules` entries), so an install at a host path would write paths that resolve to nothing in a
+session -- and look perfectly fine from the host. One mount, read-write, and nothing else; no socket, no
+grant, no volume.
+
+**Pinning is agentbox's job, in three lines per catalog.** `omp plugin marketplace add` cannot take a
+commit, so the script clones the source, checks out the declared sha, **verifies it**
+(`git rev-parse HEAD | grep -Fxq <sha>`) and only then adds that path. The verify line is what makes the
+lockfile's claim true rather than hopeful: a clone that resolved something else would otherwise pass
+silently. Clones live inside the tree (`<tree>/.agentbox/sources/<name>`) so their recorded paths are
+valid in a session too, and the whole script is `set -eu` with every interpolated value shell-quoted --
+belt and braces over `plugins.py`'s refusals, which is why a `ref` cannot become a git option.
+
+**What happened is read from state, not from output.** `plugin install --json` prints human text, so the
+script ends with `omp plugin list --json` into `<tree>/.agentbox/state.json`, and the lockfile is built
+from that. An install that reported nothing is an error, not an empty lockfile: the tree cannot be trusted
+if nothing recorded what is in it.
+
+**The tree is replaced, not updated.** OMP's `package.json`, `bun.lock` and `installed_plugins.json` are
+cumulative, so installing into a tree that already holds plugins would leave the removed ones installed
+and make the lockfile a description of something else. An install means "make the tree be what the file
+says". A symlink in place of the tree is refused rather than followed, because this function deletes.
+
+**The lockfile (`<tree>/.agentbox/install.json`) lives with the tree**, because it describes the tree: the
+declaration, what OMP reported, the profile hash, and the image it was built against -- id,
+`agentbox.cli-version` and `agentbox.node-major`. That last part is the whole point of the exercise: the
+drift this item exists to end was plugins installed against one OMP and loaded by another, and a tree can
+now say which OMP and which node it was built for.
+
+**Teardown on every path**, in a `finally`: an install leaves no container, no proxy and no networks. It is
+named and labelled like everything else agentbox makes (`<prefix>install-<agent>`, project label
+`(install)`, which no registry name can collide with), so `make clean` and the leftover checks see it.
+
+Ten mutations red, including the four that matter: the sha checkout removed, the marketplace added by
+shorthand instead of the pinned clone, the tree mounted at a host path, and the hardening audit skipped.
+One of them was GREEN on the first attempt because the mutation was badly built -- `if False else
+hardening.audit(...)` still calls audit -- which is the same lesson as before: **mutate the subject, and
+check that the mutation is actually a mutation.**
+
+**A fake-podman fix came out of this.** `run` consumed stdin unconditionally, where real podman only does
+for `--interactive`. The installer's container is not interactive, so one unit test blocked on a pipe
+nobody was writing to for its full 120-second timeout and then failed with a timeout message instead of
+its actual assertion. The fake now matches podman.
+
+**Not yet done, deliberately, and each its own commit:** sessions mounting this tree (`omp_mounts`), the
+staleness warning when the lockfile's image does not match the one a session runs, and the itest -- which
+is where the one open question gets answered: **does OMP tolerate a read-only `~/.omp/plugins`?** The
+chmod stand-in proved nothing (decisions.md, round 2), and `installed_plugins.json` and
+`omp-plugins.lock.json` are state OMP writes inside the tree, so a writable overlay for those two is the
+fallback if it does not.

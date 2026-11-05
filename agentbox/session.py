@@ -330,6 +330,45 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
 SQUID_READY = "Accepting HTTP Socket connections"
 
 
+# The two argv shapes that bring up an isolated network and the squid in front of it. Module-level, and
+# taking their labels rather than reading a project, because there is a SECOND consumer: `ab profile
+# install` needs the same sealed pair of networks and the same hardened proxy, and it has no project. A
+# copy of these in the installer is a copy of the network isolation -- `isolate=strict`, `--internal`, the
+# proxy's cap set -- so it is one definition used twice instead.
+def net_create_argv(settings, labels, name, *, internal, dev_owner=""):
+    """`podman network create` for a session (or an install) network.
+
+    IPv4 only, by decision (docs/decisions.md): no IPv6 destination is routable from the session.
+    `dev_owner` marks the network as owned, which is what the dev tier's sockguard checks before it lets a
+    container join one."""
+    args = ["network", "create", "--ipv6=false", "--opt", "isolate=strict"]
+    if internal:
+        args.append("--internal")
+        if dev_owner:
+            args += ["--label", f"{sockguard.DEV_OWNER}={dev_owner}"]
+    for k, v in labels.items():
+        args += ["--label", f"{k}={v}"]
+    return args + [name]
+
+
+def proxy_run_argv(settings, labels, name, *, conf_path, networks):
+    """`podman run -d` for the egress proxy: capabilities dropped to what squid needs to drop privileges,
+    read-only root with tmpfs for its spool and logs, and on both networks so it is the only route out."""
+    s = settings
+    args = ["run", "-d", f"--name={name}", f"--hostname={name}"]
+    args += [f"--label={k}={v}" for k, v in labels.items()]
+    args += ["--cap-drop=ALL", "--cap-add=SETUID,SETGID", "--security-opt=no-new-privileges", "--read-only"]
+    for d in ("/var/spool/squid", "/var/log/squid", "/run", "/tmp"):
+        args.append(f"--tmpfs={d}:rw,nosuid,nodev,notmpcopyup")
+    args += [f"--memory={s.squid_memory}", f"--memory-swap={s.squid_memory}", "--pids-limit=256",
+             f"--oom-score-adj={int(s.oom_score_adj)}"]
+    if s.cgroup_parent:
+        args.append(f"--cgroup-parent={s.cgroup_parent}")
+    args += [f"--network={n}" for n in networks]
+    args += [f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
+    return args
+
+
 class Session:
     """One session: the agent's container, the two networks it lives between, and the sidecars.
 
@@ -943,31 +982,12 @@ class Session:
                                  host_addrs=addrs, dns=dns)
 
     def net_create_args(self, name, internal):
-        # IPv4 only, by decision (docs/decisions.md): no IPv6 destination is routable from the session
-        args = ["network", "create", "--ipv6=false", "--opt", "isolate=strict"]
-        if internal:
-            args.append("--internal")
-            # the dev tier's sockguard only lets containers join networks its owner label marks as owned
-            args += ["--label", f"{sockguard.DEV_OWNER}={self.name}"]
-        for k, v in labels_for(self.settings, self.project.name, self.name, "network").items():
-            args += ["--label", f"{k}={v}"]
-        return args + [name]
+        return net_create_argv(self.settings, labels_for(self.settings, self.project.name, self.name, "network"),
+                               name, internal=internal, dev_owner=self.name if internal else "")
 
     def proxy_run_args(self, conf_path):
-        s = self.settings
-        args = ["run", "-d", f"--name={self.proxy_name}", f"--hostname={self.proxy_name}"]
-        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "proxy").items()]
-        args += ["--cap-drop=ALL", "--cap-add=SETUID,SETGID", "--security-opt=no-new-privileges", "--read-only"]
-        for d in ("/var/spool/squid", "/var/log/squid", "/run", "/tmp"):
-            args.append(f"--tmpfs={d}:rw,nosuid,nodev,notmpcopyup")
-        args += [f"--memory={s.squid_memory}", f"--memory-swap={s.squid_memory}", "--pids-limit=256",
-                 f"--oom-score-adj={int(s.oom_score_adj)}"]
-        if s.cgroup_parent:
-            args.append(f"--cgroup-parent={s.cgroup_parent}")
-        args += [f"--network={self.egr_net}", f"--network={self.int_net}",
-                 f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro",
-                 s.squid_image]
-        return args
+        return proxy_run_argv(self.settings, labels_for(self.settings, self.project.name, self.name, "proxy"),
+                              self.proxy_name, conf_path=conf_path, networks=[self.egr_net, self.int_net])
 
     def start_infra(self):
         pm, s = self.podman, self.settings
