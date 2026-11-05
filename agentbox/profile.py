@@ -119,6 +119,13 @@ def snapshot(settings, agent, src=None):
     base = os.path.join(settings.profiles_dir, agent)
     dst = os.path.join(base, digest)
     if os.path.isdir(dst):
+        # The snapshot's mtime is its "last used" mark, and `ab session gc` reads it: a snapshot is only
+        # swept once it is neither the current content nor used within the keep window. Without this, mtime
+        # would mean "first copied", and a snapshot in daily use would be swept the moment it aged out.
+        try:
+            os.utime(dst, None)
+        except OSError:
+            pass                                 # a sweep that runs too early is the whole cost
         return dst, digest
     os.makedirs(base, mode=0o700, exist_ok=True)
     tmp = os.path.join(base, f".{digest}.{os.getpid()}.tmp")

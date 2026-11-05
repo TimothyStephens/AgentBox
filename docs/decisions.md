@@ -1763,3 +1763,62 @@ hand OMP MCP servers to launch. "Ignoring" is the intended outcome; the warning 
 containing `{}` would silence it, and is deliberately not done: zero bytes is the unambiguous "this is masked"
 marker the covers tests read (`test -s` on the placeholder, `SECRETS_BYTES=0`), and trading that signal for a
 quieter log is the wrong way round.
+
+## 5 November 2026 -- `ab session gc` sweeps personal image layers and profile snapshots
+
+TODO.md's gc backlog item, now closed. `gc_images` filters on `agentbox.role=dev` plus the settings labels, so it could see neither
+of the two leftovers agentbox now produces *routinely*:
+
+- **personal image layers.** Every harness rebuild and every `Containerfile` edit is a new
+  `localhost/agentbox-<agent>-user:<key>`, and the old tag stays in storage. Today's
+  `make omp-image && ab image build omp` made two in a row.
+- **profile snapshots.** `<data>/profiles/<agent>/<hash>/` gains a directory per distinct profile content,
+  so one per skill edit. Text, but unbounded.
+
+**The rules are not "delete what is old".** Two of the three exist to stop exactly that:
+
+1. **The current layer is never removed, however old it is.** Age is not staleness here: a layer built in
+   September that still matches today's harness image ID and `Containerfile` is the one `ab run` uses. The
+   key is recomputed from the same `profile.user_image_ref` the session resolves through, so there is one
+   definition of "current", not two.
+2. **A superseded layer stays for the keep window.** The documented rollback is `podman tag` onto the
+   previous layer (4 Nov), and a sweep that took it the moment a rebuild superseded it would remove the
+   thing being rolled back to. `image_keep_days` is therefore the rollback window too, and its comment in
+   `config.py` now says so -- one knob for everything gc keeps.
+3. **`rmi` is never forced**, as in `gc_images`: a layer a container still uses, or one carrying a rollback
+   tag of its own, fails to remove, and is reported and kept rather than forced.
+
+**Unknown state is never read as "sweep it".** Without a current key *every* layer looks superseded, which
+is the fail-open shape the third audit spent a round closing. So no current key means **nothing is swept
+for that agent**: no `Containerfile` in the profile, `podman image inspect` of the harness image failing,
+or an inspect doc with no `Id`. A deleted `Containerfile` and an unreadable profile directory are not
+distinguishable from here, and `podman rmi` by hand always is.
+
+**Snapshots are not swept at all while any session is alive.** A snapshot is a live session's read-only
+mount source, and `session.json` does not record which hash a session took -- `_write_meta` deliberately
+runs *before* the profile is loaded, so that a session still in `prepare()` is visible as live. So "which
+snapshots are in use" cannot be answered, and the standing lesson is to refuse an unanswerable question
+rather than guess at it. `sessions()` raising on an unreadable podman keeps that fail-closed: gc removes
+nothing rather than deciding the host is idle. Belt and braces, `profile.snapshot` now touches a snapshot's
+mtime when it hands one out again, so the mtime means **last used** rather than first copied, and only
+directories shaped like a hash (`^[0-9a-f]{16}$`) are ever removed -- a `.<hash>.<pid>.tmp` another process
+is half-way through writing, and anything a person put there, are not this sweep's to touch.
+
+**`make clean` deliberately does NOT sweep user layers**, against the "consider" that backlog item carried. `make clean`
+removes test leftovers by the `agentbox-test=1` label; a personal layer is Tim's own build, and a target
+whose job is "tidy up after the tests" must not delete it.
+
+**One list of agents.** `adapters.NAMES` replaces four hand-written `("claude", "omp")` tuples in `cli.py`
+and the sweep iterates it, because "for each agent" was already asked in five places and an agent missing
+from one of them is a silent no-op -- a sweep that skips an agent rather than an error. A test pins the list
+against the adapters and against the CLI's own `--agent` choices.
+
+**A mutation harness can lie, and this one did.** Two of nine mutations reported GREEN ("no test catches
+this"), and one of those was false: the harness wrote same-size mutations into `agentbox/session.py` within
+the same mtime second, so CPython reused the `__pycache__` entry compiled from the *previous* mutation and
+the subprocess ran code nobody had written. `(mtime_seconds, size)` is the whole staleness check, and
+`None` -> `""` keeps the size identical. The fix is one line -- drop `agentbox/__pycache__` between
+mutations, and run them with `PYTHONDONTWRITEBYTECODE=1`. Worth recording because a false GREEN sends you
+to write a test that already exists, and the same bug in the other direction (a false RED) would certify a
+test that proves nothing. The *other* GREEN was real: the "harness image is gone" test went through the
+exception handler, so the `if harness_id else None` branch beside it had no test at all until one was added.

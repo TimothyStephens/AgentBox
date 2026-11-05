@@ -408,7 +408,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 **Bringing sessions back**
 
-- `ab session gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab session kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot.
+- `ab session gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab session kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot. It then sweeps storage nothing can use any more, all within one keep window (`image_keep_days`, 7 days): session-built images (the newest per tag stays), **superseded personal image layers** (`agentbox.user-layer`; the key a session would run right now is never removed however old it is, and the window is also the `podman tag` rollback window) and **unused profile snapshots** (`<data>/profiles/<agent>/<hash>`, only hash-shaped directories, and none at all while any session is alive -- a snapshot is a live session's mount source and `session.json` does not record which hash it took). Nothing is swept on an unknown state: no current key for an agent, or an unreadable podman, means that sweep removes nothing. `rmi` is never forced.
 - `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab run`; the agent's saved history is kept per project.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
@@ -555,7 +555,7 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
 | `ab session kill <session>` | Tear down everything the session created |
-| `ab session gc` | Remove containers, networks and sockets left by dead sessions (runs automatically after boot) |
+| `ab session gc` | Remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot) |
 | `ab selftest --agent <a> --project <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
 | `ab keys rotate claude` | Replace the Claude subscription token |

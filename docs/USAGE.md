@@ -849,8 +849,10 @@ positional arguments:
                         from your desktop with ssh -L)
     kill                tear down a session and everything it created (keeps
                         its logs and end-of-session scan)
-    gc                  remove containers, networks and sockets left by dead
-                        sessions (runs automatically after boot)
+    gc                  remove what dead sessions left (containers, networks,
+                        sockets) and storage nothing can use: session-built
+                        images, superseded personal image layers, unused
+                        profile snapshots (runs automatically after boot)
 
 options:
   -h, --help            show this help message and exit
@@ -932,7 +934,7 @@ Remove containers, networks and sockets left by dead sessions (also runs after b
 ```text
 usage: ab session gc [-h]
 
-remove containers, networks and sockets left by dead sessions (runs automatically after boot)
+remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot)
 
 options:
   -h, --help  show this help message and exit

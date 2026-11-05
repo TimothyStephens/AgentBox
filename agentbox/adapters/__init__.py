@@ -84,6 +84,13 @@ class SessionSetup:
     project_covers: list = field(default_factory=list)  # paths inside the project hidden (empty, read-only)
 
 
+# Every agent agentbox knows, in one place. "For each agent" is asked in several places -- the CLI's
+# --agent choices, `ab profile ls`, `ab session gc`'s sweep of personal image layers -- and an agent
+# missing from one of those lists is a silent no-op rather than an error (a sweep that skips an agent's
+# images, say). tests/unit/test_gc_layers.py pins the list against the adapters and against the CLI.
+NAMES = ("claude", "omp")
+
+
 def get(name):
     from . import claude, omp
     adapters = {"claude": claude.ADAPTER, "omp": omp.ADAPTER}

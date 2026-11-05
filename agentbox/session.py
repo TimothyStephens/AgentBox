@@ -1864,6 +1864,111 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
     return removed
 
 
+def _current_user_layer(settings, podman, agent):
+    """The personal image layer a session would run for this agent right now, or None when that cannot be
+    answered -- no Containerfile in the profile, or no readable harness image to key on.
+
+    None means "sweep nothing", deliberately. Without a current key every layer looks superseded, so the
+    permissive reading of an unknown state would delete all of them: the same shape as the liveness
+    fail-open the third audit closed. A deleted Containerfile and an unreadable profile directory are not
+    distinguishable from here, and `podman rmi` is always available by hand."""
+    recipe = profile.containerfile(settings.profile_src(agent))
+    if recipe is None:
+        return None
+    try:
+        harness_id, _pin = userimage.harness_pin(podman, adapters.get(agent).image)
+    except AgentboxError:
+        return None
+    return profile.user_image_ref(agent, harness_id, recipe) if harness_id else None
+
+
+def gc_user_layers(settings, podman, now=None, warn=lambda m: None):
+    """Personal image layers (`ab image build`, labelled agentbox.user-layer=<agent>) that are superseded
+    and past the keep window.
+
+    `gc_images` cannot see these: it filters on agentbox.role=dev plus the settings labels, and a layer
+    carries neither. They are produced routinely -- every harness rebuild and every Containerfile edit is a
+    new key, and the old tag stays in storage.
+
+    Two rules, and the reason for each:
+      * the CURRENT key is never removed, however old it is. Age is not staleness here: a layer built in
+        September that still matches today's harness image and Containerfile is the one a session runs.
+      * a superseded layer stays for image_keep_days, because the documented rollback is `podman tag` onto
+        the previous layer (decisions.md, 4 Nov). A sweep that ran the moment a rebuild superseded it would
+        take away the thing being rolled back to.
+
+    Never forced, like gc_images: a layer a container still uses, or one carrying a rollback tag of its
+    own, makes `rmi` fail and is reported and kept."""
+    now = time.time() if now is None else now
+    cutoff = now - float(settings.image_keep_days) * 86400
+    removed = []
+    for agent in adapters.NAMES:
+        current = _current_user_layer(settings, podman, agent)
+        if current is None:
+            continue
+        for img in podman.images_json({userimage.USER_LAYER_LABEL: agent}):
+            names = img.get("Names") or []
+            if current in names or img.get("Created", now) >= cutoff:
+                continue
+            shown = names[0] if names else (img.get("Id") or "")[:19]
+            r = podman.run(["rmi", img["Id"]], check=False)
+            if r.returncode == 0:
+                removed.append(f"layer {shown}")
+            else:
+                warn(f"agentbox: kept {shown}: {(r.stderr or '').strip()[-120:]}")
+    return removed
+
+
+SNAPSHOT_DIR = re.compile(r"^[0-9a-f]{16}$")      # profile.user_image_key's shape; nothing else is ours
+
+
+def gc_profile_snapshots(settings, podman, now=None, warn=lambda m: None):
+    """Profile snapshots (<data>/profiles/<agent>/<hash>) that are neither the agent's current profile
+    content nor used within the keep window.
+
+    Small (text) but unbounded: a directory per distinct profile content, so one per skill edit.
+
+    **Nothing is swept while any session is alive.** A snapshot is a live session's read-only mount source,
+    and session.json does not record which hash a session took -- the metadata is written before the
+    profile is loaded (`_write_meta` runs first, on purpose, so a session starting right now is visible).
+    So "which snapshots are in use" cannot be answered, and the lesson of three liveness audits is to
+    refuse an unanswerable question rather than guess at it. `sessions()` raising on an unreadable podman
+    keeps that fail-closed: gc removes nothing rather than deciding the host is idle.
+
+    Only directories shaped like a hash are ever removed, so a `.<hash>.<pid>.tmp` another process is
+    half-way through writing, and anything a person put there, are not this sweep's to touch."""
+    now = time.time() if now is None else now
+    # Silently: gc runs by itself on the first `ab run`/`ab ls` after boot, and "a session is running so
+    # I did not tidy up" is not news. (It was a warning for one test run, which `ab ls` then printed at
+    # anyone with a live session -- tests/unit/test_cli.py's test_ls_does_not_flag_a_busy_session.)
+    for name, info in sessions(settings, podman).items():
+        if session_is_alive(settings, name, info)[0]:
+            return []
+    cutoff = now - float(settings.image_keep_days) * 86400
+    removed = []
+    for agent in adapters.NAMES:
+        base = os.path.join(settings.profiles_dir, agent)
+        src = settings.profile_src(agent)
+        current = profile.tree_hash(src) if os.path.isdir(src) else ""
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for n in names:
+            d = os.path.join(base, n)
+            if n == current or not SNAPSHOT_DIR.match(n) or not os.path.isdir(d) or os.path.islink(d):
+                continue
+            try:
+                if os.stat(d).st_mtime >= cutoff:
+                    continue
+                shutil.rmtree(d)
+            except OSError as e:
+                warn(f"agentbox: kept the profile snapshot {agent}/{n}: {e}")
+                continue
+            removed.append(f"snapshot {agent}/{n}")
+    return removed
+
+
 def _young(settings, session, seconds=60):
     """Was this session's run dir touched just now? Used to tell a session starting right now (no metadata
     yet) from a dead leftover.
@@ -1920,7 +2025,11 @@ def gc(settings, podman, warn=lambda m: None):
 
     A session whose agent is still running is left alone even if its launcher died (`ab session kill` ends
     that one explicitly, and the warning says so). Nothing is reaped on a guess: an unreadable podman makes
-    `sessions()` raise, so gc removes nothing rather than deciding a session is dead."""
+    `sessions()` raise, so gc removes nothing rather than deciding a session is dead.
+
+    Then the storage nothing can use any more, each with its own rules: session-built images
+    (`gc_images`), superseded personal image layers (`gc_user_layers`) and unused profile snapshots
+    (`gc_profile_snapshots`)."""
     removed, kept = [], set()
     for s, info in sessions(settings, podman).items():
         alive, why = session_is_alive(settings, s, info)
@@ -1941,4 +2050,6 @@ def gc(settings, podman, warn=lambda m: None):
             warn(f"agentbox: stopped an orphaned podman service of {s} (pid {pid})")
             removed.append(f"{s} (podman service)")
     removed += gc_images(settings, podman, warn=warn)
+    removed += gc_user_layers(settings, podman, warn=warn)
+    removed += gc_profile_snapshots(settings, podman, warn=warn)
     return removed

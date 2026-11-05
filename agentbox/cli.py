@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from . import config, keys, presets, projectkeys, registry, session, tokens
+from . import adapters, config, keys, presets, projectkeys, registry, session, tokens
 from .config import HOME
 from .errors import AgentboxError
 from . import paths
@@ -590,7 +590,7 @@ def cmd_profile_harvest(s, a):
     and `egress open` is marked, because an item written by a session that could reach the whole internet
     deserves a closer read before it becomes something every later session loads."""
     from . import profile
-    agents = [a.agent] if a.agent else ["claude", "omp"]
+    agents = [a.agent] if a.agent else list(adapters.NAMES)
     total = 0
     for agent in agents:
         rows = [r for r in _inbox_rows(s, agent) if a.all or not r["reviewed"]]
@@ -1210,14 +1210,14 @@ def parser(settings=None):
                   "ab profile dismiss web/notes.md")).add_subparsers(dest="sub", required=True)
     x = add(prof_p, "harvest", "list what sessions have put in their inboxes, unreviewed first (read-only)",
             ex("ab profile harvest", "ab profile harvest --agent claude --all"))
-    x.add_argument("--agent", choices=("claude", "omp"), help="only this agent's profile (default: both)")
+    x.add_argument("--agent", choices=adapters.NAMES, help="only this agent's profile (default: both)")
     x.add_argument("--all", action="store_true", help="include items already reviewed")
     x.set_defaults(fn=cmd_profile_harvest)
     x = add(prof_p, "promote", "copy an inbox item into the profile and commit it, with its provenance in "
                                "the commit message",
             ex("ab profile promote web/skills-deploy --as skills/deploy"))
     x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")
-    x.add_argument("--agent", default="claude", choices=("claude", "omp"), help="whose profile (default: claude)")
+    x.add_argument("--agent", default="claude", choices=adapters.NAMES, help="whose profile (default: claude)")
     x.add_argument("--as", dest="as_path", metavar="PATH",
                    help="where it goes inside the profile, e.g. skills/deploy (required unless the item is "
                         "plainly a skill directory)")
@@ -1225,7 +1225,7 @@ def parser(settings=None):
     x = add(prof_p, "dismiss", "mark an inbox item reviewed and leave it where it is (deletes nothing)",
             ex("ab profile dismiss web/notes.md"))
     x.add_argument("item", help="the item, as <project>/<name> (or just <name> when unambiguous)")
-    x.add_argument("--agent", default="claude", choices=("claude", "omp"), help="whose profile (default: claude)")
+    x.add_argument("--agent", default="claude", choices=adapters.NAMES, help="whose profile (default: claude)")
     x.set_defaults(fn=cmd_profile_dismiss)
 
     img_p = sub.add_parser(
@@ -1247,7 +1247,7 @@ def parser(settings=None):
                                                                                         required=True)
     x = add(img_p, "build", "build your profile's Containerfile on top of the agent's harness image",
             ex("ab image build claude", "ab image build omp --force"))
-    x.add_argument("agent", choices=("claude", "omp"), help="whose harness image to build on")
+    x.add_argument("agent", choices=adapters.NAMES, help="whose harness image to build on")
     x.add_argument("--force", action="store_true",
                    help="rebuild even when an image for this harness and Containerfile already exists")
     x.set_defaults(fn=cmd_image_build)
@@ -1277,7 +1277,9 @@ def parser(settings=None):
     x.add_argument("session", help="the project whose session to tear down, or the session id itself "
                                    "(`ab session ls` shows both)")
     x.set_defaults(fn=cmd_kill)
-    add(sess, "gc", "remove containers, networks and sockets left by dead sessions (runs automatically after boot)",
+    add(sess, "gc", "remove what dead sessions left (containers, networks, sockets) and storage nothing "
+                    "can use: session-built images, superseded personal image layers, unused profile "
+                    "snapshots (runs automatically after boot)",
         ex("ab session gc")).set_defaults(fn=cmd_gc)
 
     x = add(sub, "selftest", "prove the sandbox boundaries hold (posture, egress, mounts, podman scoping)",

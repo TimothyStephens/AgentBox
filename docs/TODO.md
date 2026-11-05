@@ -9,13 +9,18 @@ decision, and what is worth doing when a change next touches the area.
 
 **State as of 5 November 2026.** The image restructure is done and exercised end to end on the host:
 `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
-CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1053), `make itest` (186),
+CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1073), `make itest` (186),
 `make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
 runs with zero ResourceWarnings. Nine of eleven dead-enforcement items removed. The third preset/settings
 audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
-confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe).
-**Outstanding host run:** `make claude-live` is flagged stale by `freshness.py` (`adapters/omp.py`,
-`hardening.py`, `session.py` changed since the recorded pass).
+confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe, then again
+after `make omp-image && ab image build omp` so the image's own change is exercised too). `make claude-live`
+re-recorded the same day. `ab session gc` now sweeps personal image layers and profile snapshots as well as
+session-built images.
+
+**Outstanding host run:** `make itest` for the gc sweep against real podman (unit-tested against the fake,
+which is not the same thing), and `make claude-live` will flag stale again -- `session.py` is one of
+`freshness.py`'s token files.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -136,35 +141,7 @@ against §3 (`analysis-offline` uses `locked` egress, not no network, so it is n
 
 ## 2. Ready to implement — scoped, no decision needed
 
-### 2.1 `ab session gc` does not sweep the two newest kinds of leftover
-
-**What.** `gc_images` filters on `{**settings.labels, "agentbox.role": "dev"}`, so it prunes
-*session-built* images older than `image_keep_days` (keeping the newest per tag). Two things sit outside
-that sweep:
-
-- **Personal image layers.** Every harness rebuild or `Containerfile` edit gives a new
-  `localhost/agentbox-<agent>-user:<key>` and leaves the previous one in storage. They carry
-  `agentbox.user-layer=<agent>` and `agentbox.harness-id=<id>`, and neither `agentbox.role=dev` nor the
-  settings labels — so nothing collects them.
-- **Profile snapshots.** `<data>/profiles/<agent>/<hash>/` gains a directory per distinct profile content,
-  kept so a running session's read-only mount stays valid. Small (text), but unbounded.
-
-**Why it matters.** Low: disk only. But both are now produced *routinely* rather than rarely — the layers
-every time an image moves, the snapshots every time a skill is edited.
-
-**Done looks like.** `ab session gc` removes user layers that no live session is running and that are not
-the current key for their agent, and profile snapshot directories no live session mounts. Both need the
-liveness answer `gc` already has: **a sweep must never delete what a running session has mounted.**
-
-**Where to start.** `session.gc_images` (the pattern to copy), `session.sessions()` / the live-session query
-for what to protect, `userimage.USER_LAYER_LABEL` and `profile.user_image_ref` for the current key,
-`settings.profiles_dir`. Consider adding `agentbox-<agent>-user` images to `make clean`'s label sweep.
-
-**The gate.** Unit tests against the fake podman (it honours `--filter label=` on `images` since 4 Nov);
-`make itest` for the real sweep. Mutation-check that a layer or snapshot belonging to a *live* session is
-not removed — that is the assertion that matters.
-
-### 2.2 `tests/manual/podman_formats.sh` is only ever run by hand
+### 2.1 `tests/manual/podman_formats.sh` is only ever run by hand
 
 **What.** The one check of agentbox's `--format` templates against real podman. A unit test keeps the script
 in step with the code, and the fake podman refuses the one template podman 5.7 rejects — but the script
@@ -183,7 +160,7 @@ own, so it cannot assert much; under `itest` it would need its own `abt-` object
 **Where to start.** `tests/manual/podman_formats.sh`, `tests/unit/test_podman_formats.py` (the sync test and
 its `READ_ONLY` list), `tests/integration/harness.py` for making `abt-` objects to point it at.
 
-### 2.3 Unify the duplicated git-identity lookup
+### 2.2 Unify the duplicated git-identity lookup
 
 **What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
 slightly differently.
@@ -328,6 +305,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 5 Nov | `ab session gc` sweeps personal image layers and profile snapshots (current key and live sessions protected; `image_keep_days` is the rollback window) |
 | 4 Nov | The image restructure: `agentbox-base`, both agent layers installing their own CLI at an asserted pin, Bun pinned, node 22→26 |
 | 4 Nov | `ab image build <agent>` — a personal layer keyed on the harness image ID + Containerfile, never run when stale, checked against its own base before it is tagged |
 | 4 Nov | `base_branch` as a project key (agentbox does not own the value — MAGS does) |
