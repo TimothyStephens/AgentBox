@@ -69,12 +69,20 @@ below are answered; `docs/decisions.md` (5 Nov, "ab profile install") has the re
 lives in `~/.config/agentbox/omp/plugins/`, the install runs in one hardened container behind the session
 proxy rather than a synthesised project, `plugins.toml` pins npm exactly and lets git name a branch with
 the **lockfile** recording the commit, and `omp_mounts` moves to the new tree in its own commit afterwards.
-`agentbox/plugins.py` and `docs/examples/plugins.toml` (omp-env's manifest.json converted) are the first
-step and are done.
+`agentbox/plugins.py` and `docs/examples/plugins.toml` are the first step and are done — against **the
+profile repo's schema**, which already existed: marketplace `[[plugin]]` entries pinned by 40-character
+sha, plus the `[[npm]]` and `[[repo]]` kinds the profile's own comment asked agentbox to add. The first
+draft invented a format from omp-env's `manifest.json` and was wrong (decisions.md, 5 Nov later).
 
 **What is left to build:** the installer itself (container + proxy + lockfile), `ab profile install` in the
 CLI, the staleness warning when the lockfile's OMP version is not the image's, then `omp_mounts` on the new
 tree and the whitelist simplification that follows from owning it.
+
+**Blocked on one thing only: OMP's non-interactive install surface.** `/marketplace add <source>` is a
+slash command *inside* OMP; the installer needs the command-line form of "add this marketplace at this
+commit, then install this plugin id". `omp plugin --help` and `omp marketplace --help` from inside a
+session, or the profile's vendored `reference/omp/marketplace.md`, settle it. Guessing would mean an
+installer that runs the wrong commands and reports success.
 
 **The questions as they were, kept because the answers only make sense against them:**
 

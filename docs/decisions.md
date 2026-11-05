@@ -1944,3 +1944,63 @@ how it stays out of sessions. One correction to what I said on 4 Nov: I called i
 dependency. The manifest shows a plain public `https://github.com/TimothyStephens/MAGS-CodeDev.git`. The
 conclusion stands on different ground -- one workflow's tool does not belong in the image every OMP session
 runs, and a `ref: main` install baked into an image is unreproducible -- but "private" was wrong.
+
+## 5 November 2026 (later) -- `plugins.toml` is the profile's format, and agentbox was wrong about it
+
+Tim: "should it not go in `~/repos/agentbox-profile-omp/plugins.toml`?" -- and that file **already exists,
+with a schema**, which is not the one I had just built. Two corrections, the second the substantive one.
+
+**Where it lives.** The profile repo owns it; `~/.config/agentbox/omp/profile/plugins.toml` is the
+deployed copy. "Copy the example into the live profile" was the wrong instruction: the live profile is
+deployed from the repo, so an edit there would be overwritten, and the version-controlled declaration is
+the point ("what the agent was taught has a history").
+
+**The schema.** I had modelled `plugins.toml` on omp-env's `manifest.json` -- `[[npm]]` entries and
+`[[git]]` clones -- because that is what the host had. The profile declares **OMP marketplace plugins**:
+
+```toml
+[[plugin]]
+id = "egm@egm"
+marketplace = "egm"                       # must equal the part of `id` after "@"
+source = "google/elephant-goldfish-model" # as `/marketplace add` takes it
+ref = "464db031e7dd1b9a79803ac8ea45f55c7c20c5bc"
+```
+
+That is a different mechanism, not a different spelling: a marketplace catalog
+(`.omp-plugin/marketplace.json`, or `.claude-plugin/marketplace.json` as the Claude-compatible fallback)
+versus an npm install or a git clone. The lesson is the plain one: **the profile is the spec for what the
+profile declares.** agentbox validates and installs; it does not get to choose the format. omp-env's
+manifest was the previous generation's input, and reading it as the requirement produced a format nobody
+had asked for.
+
+**All three arrival paths, because the profile asked for exactly that.** Its own comment says an OMP
+extension can arrive as a marketplace plugin, as "an npm package declaring `omp.extensions`", or through
+`omp plugin link` of a local checkout -- that "only the first is expressible in this file today", and that
+adding the others "is an `ab` change, not a profile change". So `plugins.toml` now has three sections:
+`[[plugin]]` (the profile's, unchanged), `[[npm]]` (name + exact version) and `[[repo]]` (url + sha +
+`extension_dir`, linked with `omp plugin link`). The five npm plugins and four git repos in omp-env's
+manifest are expressible again, and so is MAGS -- as a `[[repo]]`, which is how omp-env had it
+(`extensionDir: mags-codedev-extension`).
+
+**`ref` is a 40-character sha everywhere, which reverses my own revision from an hour earlier.** I had
+decided git entries could name a branch, with the lockfile recording the commit, on the grounds that four
+of Tim's repos are tracked on `main`. The profile's file already answered this, with the better reason:
+*"Never a branch or tag: marketplace catalogs are mutable and an unpinned install is not reproducible."*
+That reason does not stop at marketplaces -- a branch would make the tree a session mounts depend on when
+it happened to be installed -- so it applies to `[[repo]]` too. "A sha is a nuisance to look up" is a job
+for `ab profile install --resolve`, not a looser file. The three `ref`-not-a-sha mutations go red, and
+an abbreviated sha is refused as well: it is ambiguous by design.
+
+Also pinned, because they are OMP's rules and the error should name the entry rather than arrive from the
+installer: `id` must be `<name>@<marketplace>` and agree with `marketplace` (one name said twice; a
+mismatch installs something other than what is declared); names are ASCII letters, digits, hyphens and
+dots, starting and ending with a letter or digit, at most 64 characters, the whole `id` at most 128.
+
+1109 unit tests, 0 failures, 0 errors, 0 ResourceWarnings; 14 mutations red, one per rule.
+
+**Still needed before the installer can be written: OMP's non-interactive install surface.** The profile
+describes `/marketplace add <source>` -- a slash command *inside* OMP -- and `omp plugin link` for a local
+checkout. What the installer needs is the command-line form of "add this marketplace at this commit, then
+install this plugin id", and guessing it would mean writing an installer that runs the wrong commands.
+`omp plugin --help` and `omp marketplace --help` from inside a session, or the vendored
+`reference/omp/marketplace.md`, settle it.

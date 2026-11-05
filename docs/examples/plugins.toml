@@ -1,70 +1,59 @@
-# plugins.toml -- what `ab profile install --agent omp` installs.
+# plugins.toml -- what `ab profile install omp` installs.
 #
-# Copy this to ~/.config/agentbox/omp/profile/plugins.toml and edit it there. It is part of the profile, so
-# it is version-controlled with the rest of it, and changing it changes the profile hash (`ab profile ls`
-# shows what a session loaded).
+# THE REAL FILE LIVES IN THE PROFILE REPO (`agentbox-profile-omp/plugins.toml`), which is deployed to
+# ~/.config/agentbox/omp/profile/plugins.toml. This copy is documentation: the schema agentbox validates,
+# with one entry of each kind. Edit the profile repo, not this.
 #
-# This file is the conversion of omp-env's manifest.json (5 Nov 2026), minus two things:
+# An OMP plugin can arrive three ways (reference/omp/marketplace.md, reference/omp/extensions.md), and
+# each is a section here:
 #
-#   * `image.ompVersion`. agentbox's OMP version is the Makefile pin that the image build asserts by
-#     running `omp --version`, and the whole point of installing plugins IN a session image is that they
-#     are built against that OMP rather than against whatever the host's omp-env had. omp-env's own
-#     `ompVersion: 18.1.3` never applied anyway -- the ARG was declared above the FROM, so it read as
-#     empty and the image shipped 18.1.11 (decisions.md, 4 Nov).
-#   * `mags-codedev`. It is in here as a git entry because MAGS ships an OMP extension
-#     (`extensionDir: mags-codedev-extension`), which is what settles the "standalone tool or part of OMP"
-#     question: it IS an OMP extension. Drop the entry if you would rather MAGS stayed out of every
-#     session.
+#   [[plugin]]  a MARKETPLACE plugin. The source repo carries .omp-plugin/marketplace.json, or
+#               .claude-plugin/marketplace.json as the Claude-compatible fallback.
+#                 id           exactly "<name>@<marketplace>"
+#                 marketplace  must equal the part of `id` after "@"
+#                 source       GitHub shorthand "owner/repo", a git URL, or a catalog URL
+#                 ref          40-character commit sha
+#   [[npm]]     an npm package that declares `omp.extensions` in its package.json.
+#                 name         npm package name, scoped or not
+#                 version      exact version; a range or `latest` is refused
+#   [[repo]]    a git checkout, linked with `omp plugin link`, for an extension that is neither on npm nor
+#               carrying a marketplace catalog.
+#                 name         directory name in the installed tree
+#                 url          https:// git URL
+#                 ref          40-character commit sha
+#                 extension_dir  subdirectory holding the extension; "." when the repo is it (default)
 #
-# Rules, each enforced by agentbox/plugins.py with a reason in the error:
-#   * an npm entry names an EXACT version (no `^1.2.3`, no `latest`);
-#   * a git entry may name a branch, and the lockfile beside the installed tree records the commit it
-#     resolved to -- `ab profile install --locked` reproduces that tree exactly;
-#   * urls are https, with no credentials in them;
-#   * names and `extension_dir` become paths, so they may not leave the tree;
-#   * an unknown key is an error, not something ignored: a typo'd `verison` would be an entry with no
-#     version at all.
+# `ref` IS ALWAYS A 40-CHARACTER SHA -- never a branch or tag. The reason is the profile's own: marketplace
+# catalogs are mutable, so an unpinned install is not reproducible. It applies to [[repo]] for the same
+# reason: a branch would make the tree a session mounts depend on when it happened to be installed.
+#
+# Name rules, enforced here and by OMP itself: ASCII letters, digits, hyphens and dots; start and end with
+# a letter or digit; at most 64 characters each, and the whole `id` at most 128.
+#
+# An unknown key or section is an ERROR, not an ignored line: a typo'd `verison` would leave an entry with
+# no version at all.
+#
+# `ab run --no-profile` skips this file with the rest of the profile.
 
-[[npm]]
-name = "@isac322/pi-codegraph"
-version = "0.3.1"
+# A marketplace plugin: EGM, from the Claude-format catalog in google/elephant-goldfish-model.
+[[plugin]]
+id = "egm@egm"
+marketplace = "egm"
+source = "google/elephant-goldfish-model"
+ref = "464db031e7dd1b9a79803ac8ea45f55c7c20c5bc"
 
-[[npm]]
-name = "@narumitw/pi-statusline"
-version = "0.38.0"
-
-[[npm]]
-name = "pi-context-prune"
-version = "1.2.0"
-
+# An npm package declaring omp.extensions. (omp-env's manifest.json installed five of these by npm:
+# @isac322/pi-codegraph 0.3.1, @narumitw/pi-statusline 0.38.0, pi-context-prune 1.2.0, pi-lens 3.8.73,
+# pi-rules 0.1.1. Declare the ones you still want; the version must be exact.)
 [[npm]]
 name = "pi-lens"
 version = "3.8.73"
 
-[[npm]]
-name = "pi-rules"
-version = "0.1.1"
-
-[[git]]
+# A git checkout linked with `omp plugin link`. MAGS arrives this way: omp-env's manifest cloned
+# TimothyStephens/MAGS-CodeDev and pointed OMP at `mags-codedev-extension`, which is what settles that
+# MAGS is an OMP extension rather than a standalone tool. Needs a sha, not `main`.
+[[repo]]
 name = "mags-codedev"
 url = "https://github.com/TimothyStephens/MAGS-CodeDev.git"
-ref = "main"
+ref = "0000000000000000000000000000000000000000"  # a placeholder: no such commit exists
 extension_dir = "mags-codedev-extension"
-
-[[git]]
-name = "pi-session-stats"
-url = "https://github.com/TimothyStephens/pi-session-stats.git"
-ref = "main"
-extension_dir = "."
-
-[[git]]
-name = "pi-content-audit"
-url = "https://github.com/TimothyStephens/pi-content-audit.git"
-ref = "main"
-extension_dir = "."
-
-[[git]]
-name = "pi-nvim-bridge"
-url = "https://github.com/dabstractor/pi-nvim-bridge.git"
-ref = "main"
-extension_dir = "."
