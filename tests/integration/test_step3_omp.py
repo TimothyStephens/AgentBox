@@ -155,6 +155,10 @@ def setUpModule():
     os.makedirs(os.path.join(ENV.cfg, "omp"))
     with open(os.path.join(ENV.cfg, "omp", "models.yml"), "w") as f:
         f.write(seed + SEED_EXTRA)
+    # config.yml is agentbox's own since 4 Nov, not the host OMP's. The marker is what the probe below
+    # greps for: the file must be THIS one, and the host's (which ompfake gives a canary) must be gone.
+    with open(os.path.join(ENV.cfg, "omp", "config.yml"), "w") as f:
+        f.write("# ABT_AGENTBOX_CONFIG\n{}\n")
     kdir = os.path.join(ENV.cfg, "keys")
     os.makedirs(kdir, mode=0o700)
     for provider, value in KEYS.items():
@@ -280,6 +284,7 @@ class Step3(unittest.TestCase):
                         "test -e ~/.omp/$f && echo VISIBLE:$f; done; "
                         "touch ~/.omp/plugins/x 2>/dev/null && echo WRITABLE:plugins; "
                         "touch ~/.omp/agent/config.yml 2>/dev/null && echo WRITABLE:config; "
+                        "grep -q ABT_AGENTBOX_CONFIG ~/.omp/agent/config.yml && echo CONFIG_FROM_AGENTBOX; "
                         "touch ~/.omp/agent/models.yml 2>/dev/null && echo WRITABLE:models; "
                         "touch ~/.omp/agent/newfile && echo AGENT_DIR_WRITABLE; "
                         "python -c 'import abt_pylib_probe as m; print(m.VALUE)'; "
@@ -288,10 +293,14 @@ class Step3(unittest.TestCase):
         print(f"\n{redact(p.stdout)}\n{redact(p.stderr)[-800:]}")
         self.assertEqual(p.returncode, 0, p.stderr)
         seen = [l.strip() for l in p.stdout.splitlines() if l.strip() and ":" not in l and not l.isdigit()
-                and l.strip() not in ("AGENT_DIR_WRITABLE", "pylibs-importable", "PLUGIN_LINK_OK")]
+                and l.strip() not in ("AGENT_DIR_WRITABLE", "pylibs-importable", "PLUGIN_LINK_OK",
+                                      "CONFIG_FROM_AGENTBOX")]
         for rel in seen:
             self.assertTrue(ompfake.is_mounted(rel), f"{rel} is visible but not in the mount list")
-        self.assertIn("agent/config.yml", seen)
+        self.assertNotIn("agent/config.yml", seen,
+                         "the HOST's ~/.omp/agent/config.yml must not reach a session any more (4 Nov): "
+                         "agentbox mounts its own from ~/.config/agentbox/omp/")
+        self.assertIn("CONFIG_FROM_AGENTBOX", p.stdout, "and agentbox's own config.yml is what is there")
         self.assertNotIn("VISIBLE:", p.stdout)
         self.assertNotIn("WRITABLE:", p.stdout)
         self.assertIn("AGENT_DIR_WRITABLE", p.stdout)

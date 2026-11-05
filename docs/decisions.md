@@ -1690,3 +1690,58 @@ were skipping that check without anyone intending to; on the real mask file they
 
 Nine of the eleven dead-enforcement items are now gone.
 
+
+
+## 4 November 2026 -- `config.yml` becomes agentbox's own, and the Playwright cache goes
+
+Tim: "I don't like the idea of the user's default, system OMP interfering with agentbox's." Confirming
+where each harness loads from turned up that **Claude already has that property and OMP did not**. Claude's
+`$HOME` is a fresh tmpfs, `CLAUDE_CONFIG_DIR` points at the per-project state dir, and the host's
+`~/.claude` is never mounted (`ab selftest` asserts it is not visible). OMP read six things out of the
+host's `~/.omp`, and three of those were real interference, not just coupling:
+
+- `omp-env install` on the host rewrites `~/.omp/plugins`, so the next session silently gets different
+  plugins -- which is what made `make omp-live` fail earlier the same day;
+- a host OMP upgrade changes which `versions/<v>/` exist;
+- **`agent/config.yml` is the host OMP's own config**, so changing the default model of the OMP Tim runs
+  himself changed the default model of every agentbox session with it.
+
+Two of the six moved today, the two that needed no new mechanism:
+
+**`config.yml` is now `~/.config/agentbox/omp/config.yml`**, read through `USER_FILES` exactly as
+`mcp.json` and `mags-codedev.yaml` always were -- so it is mounted read-only at `~/.omp/agent/config.yml`
+when it exists, and absent means OMP starts on its own defaults. **No migration, deliberately:** copying
+the host's file in would carry over whatever is in it (including, in principle, a key -- `config.yml` is
+exactly where the session notes warn not to put one), and the point of the move is that agentbox's copy is
+the only one a session sees. The session names the file and prints the `cp` for anyone who wants what they
+had.
+
+**The Playwright cache is gone.** The image carries chromium and OMP's browser tool uses
+`PUPPETEER_EXECUTABLE_PATH`, so `~/.omp/.cache/ms-playwright` was a second copy nothing read. The image's
+`PLAYWRIGHT_BROWSERS_PATH` went with it: it pointed into `~/.omp`, which is a **tmpfs** in a session, so
+leaving it set would have aimed Playwright at an empty directory. **The gate is `make omp-live`'s browser
+probe** -- it worked with the cache mounted, and whether it needed it is the one thing this change cannot
+prove from a unit test. Reverting is one line in each file.
+
+**`--no-profile` now means "nothing from the host's ~/.omp".** `bin/mags-codedev` used to survive the flag,
+on the reasoning that a MAGS wrapper is not an extension. That classification was wrong: it is a wrapper
+INTO `repos/mags-codedev`, which the flag does drop, so all it did was leave a broken command behind.
+Gated with the plugins, the flag has a property worth stating -- and it is the property Tim asked about, so
+it is tested directly (`test_no_profile.test_nothing_at_all_comes_from_the_host_omp`, with a control that
+the wrapper IS there with the profile on, so the test cannot pass by nothing being mounted either way).
+agentbox's own `config.yml` still arrives under the flag: `--no-profile` turns off the profile and the
+plugins, not agentbox's configuration of the agent.
+
+**`bin/mags-codedev` did NOT move out of ~/.omp**, against the plan in the previous message. It is a wrapper *into*
+`repos/mags-codedev`, so it only works while `repos` is mounted; moving it alone would break MAGS use now
+for no gain, since `repos` is still mounted anyway. It belongs with the plugins/repos/pylibs decision
+(TODO.md 1.1). The earlier suggestion -- a pinned pip install of MAGS-CodeDev in the OMP image -- is also
+wrong on its own terms: it is a private GitHub dependency, so `pip install git+...` cannot satisfy
+`images/*/Containerfile`'s `--require-hashes` rule, and putting one workflow's tool into the image every
+OMP session runs is the wrong trade for a parked adapter. Tim's personal layer (`ab image build omp`) is
+where that belongs.
+
+**What this leaves.** The only reason a session reads the host's `~/.omp` at all is now the
+plugins/repos/pylibs snapshot plus that one wrapper. `test_omp.test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper`
+pins it: every mount source under the host home must be `versions/...` or `bin/mags-codedev`, so the next
+thing to creep back in fails a test rather than a review.

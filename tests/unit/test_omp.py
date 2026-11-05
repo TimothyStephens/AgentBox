@@ -138,10 +138,12 @@ class OmpMounts(TempCase):
         self.assertEqual(by_dst[f"{c}/plugins"], v(ompfake.PLUGINS_VERSION, "plugins"))
         self.assertEqual(by_dst[f"{c}/repos"], v(ompfake.ACTIVE, "repos"))
         self.assertEqual(by_dst[f"{c}/pylibs"], v(ompfake.ACTIVE, "pylibs"))
+        # config.yml and the Playwright cache left this list on 4 Nov: config.yml is agentbox's own seed
+        # now (USER_FILES), and the image's chromium replaced the host browser cache. What is left from
+        # ~/.omp is the plugins snapshot plus the MAGS wrapper, which is a wrapper INTO repos/.
         self.assertEqual(sorted(by_dst), sorted([
             f"{c}/versions/{ompfake.ACTIVE}", f"{c}/versions/{ompfake.PLUGINS_VERSION}",
-            f"{c}/plugins", f"{c}/repos", f"{c}/pylibs",
-            f"{c}/agent/config.yml", f"{c}/bin/mags-codedev", f"{c}/.cache/ms-playwright"]))
+            f"{c}/plugins", f"{c}/repos", f"{c}/pylibs", f"{c}/bin/mags-codedev"]))
         srcs = [s for s, _d in mounts]
         for s in srcs:
             self.assertTrue(ompfake.is_mounted(os.path.relpath(s, self.home)) or
@@ -236,10 +238,13 @@ class OmpMounts(TempCase):
             f.write('[remote "origin"]\n\turl = https://github.com/t/r.git\n')
         self.mounts()
 
-    def test_symlinked_config_refused(self):
-        cfg = os.path.join(self.home, "agent", "config.yml")
-        os.unlink(cfg)
-        os.symlink(os.path.join(self.home, "agent", "models.yml"), cfg)
+    def test_a_symlinked_file_in_omp_home_is_refused(self):
+        """`_plain` refuses a symlink among the named files, so a link planted in ~/.omp cannot carry
+        something else into a session. Pointed at `bin/mags-codedev` since 4 Nov -- it used to use
+        `agent/config.yml`, which agentbox now provides itself and never reads from ~/.omp."""
+        wrapper = os.path.join(self.home, "bin", "mags-codedev")
+        os.unlink(wrapper)
+        os.symlink(os.path.join(self.home, "agent", "models.yml"), wrapper)
         with self.assertRaises(AgentboxError):
             self.mounts()
 
@@ -265,6 +270,10 @@ class OmpSessionBase(SettingsCase):
         os.makedirs(os.path.join(self.cfg, "omp"))
         with open(os.path.join(self.cfg, "omp", "models.yml"), "w") as f:
             f.write(seed_without_keys())
+        # config.yml is agentbox's own seed since 4 Nov, not the host OMP's. The fake ~/.omp still has one
+        # (with a canary in it), which is what lets the test below prove the host copy is not the one used.
+        with open(os.path.join(self.cfg, "omp", "config.yml"), "w") as f:
+            f.write("# agentbox's own config.yml\n{}\n")
         self.set_key("openai", self.KEY)
 
     def set_key(self, provider, value):
@@ -360,6 +369,35 @@ class OmpSession(OmpSessionBase):
         m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
         self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
+
+    def test_config_yml_comes_from_agentbox_not_from_the_host_omp(self):
+        """The point of the 4 Nov move. It used to be mounted from `~/.omp/agent/config.yml` -- the host
+        OMP's OWN config -- so changing the default model of the OMP Tim runs himself changed it for every
+        agentbox session. The fake ~/.omp has a config.yml with a canary in it; a session must not see it."""
+        s = self.make()
+        c = os.path.join(HOME, ".omp")
+        m = [x for x in s.setup.mounts if x[1] == f"{c}/agent/config.yml"]
+        self.assertEqual(len(m), 1, "config.yml is still mounted, from agentbox's own seed")
+        self.assertEqual(m[0][0], os.path.join(self.cfg, "omp", "config.yml"))
+        self.assertTrue(m[0][2], "read-only")
+        host_copy = os.path.join(self.omp_home, "agent", "config.yml")
+        self.assertTrue(os.path.isfile(host_copy), "the fake host home still has one, or this proves nothing")
+        self.assertNotIn(host_copy, [src for src, _d, _ro in s.setup.mounts])
+
+    def test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper(self):
+        """What shrinking the ~/.omp list is FOR: after config.yml and the Playwright cache left it, the
+        only reason a session reads the host's ~/.omp at all is the plugins/repos/pylibs snapshot (plus the
+        MAGS wrapper, which is a wrapper into repos/ and goes with that decision -- TODO.md 1.1)."""
+        s = self.make()
+        real = os.path.realpath(self.omp_home)
+        from_host = sorted(os.path.relpath(os.path.realpath(src), real)
+                           for src, _d, _ro in s.setup.mounts
+                           if os.path.realpath(src).startswith(real + os.sep))
+        self.assertTrue(from_host, "nothing came from the host home at all, so this proves nothing")
+        for rel in from_host:
+            with self.subTest(rel=rel):
+                self.assertTrue(rel.startswith("versions/") or rel == "bin/mags-codedev",
+                                f"{rel} is still read from the host's ~/.omp")
 
     def test_code_paths_in_agent_state_are_read_only(self):
         """Review 2026-10-01 #2: a session cannot plant an extension, hook, tool or MCP server in the

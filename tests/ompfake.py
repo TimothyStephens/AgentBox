@@ -69,10 +69,12 @@ def build(dest):
     return dest
 
 
-# Files that must never be readable in a session (all of ~/.omp except the mounted pieces).
+# What a session may read out of ~/.omp; everything else in it must be unreachable. `agent/config.yml` and
+# `.cache/ms-playwright/` left this list on 4 Nov -- config.yml is agentbox's own seed now, and the image's
+# chromium replaced the host browser cache -- so the fake home still HAS both, and a session must not see
+# either (test_omp.test_config_yml_comes_from_agentbox_not_from_the_host_omp).
 MOUNTED_PREFIXES = (f"versions/{ACTIVE}/", f"versions/{PLUGINS_VERSION}/", "plugins/", "repos/", "pylibs/",
-                    "agent/config.yml",
-                    "bin/mags-codedev", ".cache/ms-playwright/")
+                    "bin/mags-codedev")
 
 
 def is_mounted(rel):

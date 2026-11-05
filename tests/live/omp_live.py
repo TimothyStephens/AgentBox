@@ -6,7 +6,7 @@ into the test config if it exists (it holds no keys; the launcher refuses one th
 lives under /tmp/abt-<run>/ and is removed afterwards.
 
   1. `omp -p` must answer AB_OK with the default model (the local model server must be up, or a keyed
-     provider must be the default in ~/.omp/agent/config.yml);
+     provider must be the default in ~/.config/agentbox/omp/config.yml);
   2. OMP is asked to use its browser tool on https://pypi.org/ and its bash tool to import debugpy;
      reported as INFO from OMP's own output;
   3. no key value may appear in any state file, log, backup or output.

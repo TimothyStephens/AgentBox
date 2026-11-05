@@ -50,12 +50,24 @@ Nothing you do to your own Claude Code install changes what a session sees.
 - `agent/config.yml` is your host OMP's own config, mounted read-only. Change your host OMP's default
   model and every agentbox session's default model changes with it.
 
-**All six of OMP's `~/.omp` mounts can move under `~/.config/agentbox/omp/`**, and three of its inputs
-already live there (`models.yml`, `mcp.json`, `mags-codedev.yaml` — see the table below, "Host source").
-What is left: `agent/config.yml` (move it, same shape, no mechanism needed); `bin/mags-codedev` (now a
-Python package with a `pyproject.toml`, so a pinned install in the image); `.cache/ms-playwright` (the image
-already carries chromium and sets `PUPPETEER_EXECUTABLE_PATH`); and `plugins`/`repos`/`pylibs`, which is
-the only one needing a decision — `docs/TODO.md` §1.1.
+**Two of those six left `~/.omp` on 4 November**, so the list above is already shorter than it was:
+
+- **`agent/config.yml` is agentbox's own now** — `~/.config/agentbox/omp/config.yml`, beside `models.yml`,
+  `mcp.json` and `mags-codedev.yaml`, which were always read from there. It is the third bullet above that
+  this closes: your host OMP's default model is no longer every session's default model. There is no
+  migration, by design — if you want what you had, `cp ~/.omp/agent/config.yml ~/.config/agentbox/omp/`,
+  and the session says so by name when the file is absent.
+- **`.cache/ms-playwright` is gone entirely.** The image carries chromium and OMP's browser tool uses
+  `PUPPETEER_EXECUTABLE_PATH`, so the host cache was a second copy nothing read. The image no longer sets
+  `PLAYWRIGHT_BROWSERS_PATH` either — it pointed into `~/.omp`, which is a tmpfs in a session.
+
+What is left from `~/.omp`: **`plugins`/`repos`/`pylibs`**, which needs a decision (`docs/TODO.md` §1.1),
+and **`bin/mags-codedev`**, which is a wrapper *into* `repos/` and so only works while that is mounted — it
+goes with the same decision rather than before it, and is gated with the plugins for the same reason.
+
+That gating gives `ab run --no-profile` a property worth knowing: **for OMP it now means a session reads
+nothing at all from the host's `~/.omp`.** agentbox's own `config.yml` still arrives — the flag turns off
+the profile and the plugins, not agentbox's configuration of the agent.
 
 ### Claude Code (`adapters/claude.py`)
 
@@ -114,13 +126,14 @@ per-project; the toolchain is a host-shared read-only global.
 |---|---|---|---|---|
 | Plugins | `~/.omp/versions/<v>/plugins` | `~/.omp/plugins` (+ `~/.omp/versions/<v>`) | **global, host-shared** | **ro** |
 | Repos / pylibs | `~/.omp/versions/<v>/{repos,pylibs}` | `~/.omp/{repos,pylibs}` | **global, host-shared** | **ro** |
-| `agent/config.yml` | `~/.omp/agent/config.yml` | `~/.omp/agent/config.yml` | **global, host-shared** | **ro** |
-| `bin/mags-codedev`, `.cache/ms-playwright` | `~/.omp/...` | same | global, host-shared | ro |
+| `agent/config.yml` | `~/.config/agentbox/omp/config.yml` | `~/.omp/agent/config.yml` | **global** | **ro** |
+| `bin/mags-codedev` | `~/.omp/bin/mags-codedev` | same | global, host-shared | ro |
 | Working dir (sessions, databases) | `~/.local/share/agentbox/<project>/omp/agent/` | `~/.omp/agent` | per-project, persistent | rw |
 | Logs | `~/.local/share/agentbox/<project>/omp/logs/` | `~/.omp/logs` | per-project, persistent | rw |
 | `models.yml` | generated from the keyless seed `~/.config/agentbox/omp/models.yml` | `~/.omp/agent/models.yml` | per-session | ro |
 | `AGENTS.md` | generated (see §4) | `~/.omp/agent/AGENTS.md` | per-session | ro |
 | MCP / MAGS (if you create them) | `~/.config/agentbox/omp/mcp.json`, `mags-codedev.yaml` | `~/.omp/agent/.mcp.json`, `~/.omp/agent/mags-codedev.yaml` | **global** | ro |
+| Chromium for the browser tool | the image (`/usr/bin/chromium`, `PUPPETEER_EXECUTABLE_PATH`) | — | global | — |
 | Repo config (`.omp/`, `.mcp.json`) | the project repo | the grant | per-project (committed) | rw (ro in lockdown) |
 | Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
 | Profile (`skills`, `rules`, `prompts`, `agents`, `commands`) | `~/.config/agentbox/omp/profile/` | `~/.omp/agent/<same>` | **global** (every project, every preset) | **ro** |

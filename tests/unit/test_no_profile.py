@@ -228,11 +228,26 @@ class OmpWithoutTheProfile(OmpSessionBase):
         self.assertIn("PYTHONPATH", self.make().setup.env)
         self.assertNotIn("PYTHONPATH", self.make(no_profile=True).setup.env)
 
-    def test_what_omp_needs_to_start_is_still_mounted(self):
-        """config.yml and the MAGS-CodeDev wrapper are not extensions; without them OMP does not run."""
-        dsts = self.dsts(self.make(no_profile=True))
-        self.assertIn(f"{omp.C_OMP}/agent/config.yml", dsts)
-        self.assertIn(f"{omp.C_OMP}/bin/mags-codedev", dsts)
+    def test_agentboxs_own_config_still_arrives(self):
+        """`config.yml` comes from `~/.config/agentbox/omp/`, which `--no-profile` does not touch: the flag
+        turns off the PROFILE and the plugins, not agentbox's own configuration of the agent."""
+        self.assertIn(f"{omp.C_OMP}/agent/config.yml", self.dsts(self.make(no_profile=True)))
+
+    def test_nothing_at_all_comes_from_the_host_omp(self):
+        """What `--no-profile` means for OMP since 4 Nov. `bin/mags-codedev` used to survive it, on the
+        grounds that a MAGS wrapper is not an extension -- but it is a wrapper INTO `repos/`, which the
+        flag does drop, so all it did was leave a broken command behind. Gated with the plugins, the flag
+        now has a property worth stating: a session reads NOTHING from the host's ~/.omp."""
+        s = self.make(no_profile=True)
+        real = os.path.realpath(self.omp_home)
+        from_host = [src for src, _d, _ro in s.setup.mounts
+                     if os.path.realpath(src) == real or os.path.realpath(src).startswith(real + os.sep)]
+        self.assertEqual(from_host, [])
+        self.assertNotIn(f"{omp.C_OMP}/bin/mags-codedev", self.dsts(s))
+
+    def test_the_wrapper_is_there_with_the_profile_on(self):
+        """The control, so the test above is not passing because nothing mounts it either way."""
+        self.assertIn(f"{omp.C_OMP}/bin/mags-codedev", self.dsts(self.make()))
 
     def test_the_profile_load_paths_are_dropped_as_well(self):
         s = self.make(no_profile=True)

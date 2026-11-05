@@ -2,9 +2,13 @@
 
 Only named pieces of the host's ~/.omp are mounted, all read-only (docs/decisions.md, "What the OMP session
 mounts from ~/.omp"): plugins, repos and pylibs from their actual link targets (they may sit in different
-versions), the version directories those live in or the plugins link into, agent/config.yml,
-bin/mags-codedev and the Playwright browser cache. Everything else in ~/.omp (models.yml and its backup,
-.mcp.json, mags-codedev.yaml, extensions, sessions, databases, logs, caches, run/) never enters a session.
+versions), the version directories those live in or the plugins link into, and bin/mags-codedev. Everything
+else in ~/.omp (models.yml and its backup, .mcp.json, mags-codedev.yaml, config.yml, extensions, sessions,
+databases, logs, caches, run/) never enters a session.
+
+Shrinking that list is the point: `config.yml` and the Playwright cache left it on 4 Nov, so the only
+remaining reason a session reads ~/.omp at all is the plugins/repos/pylibs snapshot -- plus
+bin/mags-codedev, which is a wrapper into repos/ and so goes with the same decision (TODO.md 1.1).
 
 Per project and persistent, read-write: ~/.omp/agent (sessions, OMP's databases) and ~/.omp/logs, from
 ~/.local/share/agentbox/<project>/omp/. Generated per session, read-only: agent/models.yml (only providers
@@ -25,11 +29,20 @@ from . import Adapter, SessionSetup
 
 C_OMP = os.path.join(HOME, ".omp")                     # ~/.omp inside the session
 PROVISIONED = ("plugins", "repos", "pylibs")
-READONLY_FILES = ("agent/config.yml", "bin/mags-codedev")
-READONLY_DIRS = (".cache/ms-playwright",)
+# Still from the host's ~/.omp, and gated with the plugins for that reason: `bin/mags-codedev` is a wrapper
+# INTO `repos/mags-codedev`, so without `repos` it is only a broken command. It belongs with the
+# plugins/repos/pylibs decision (TODO.md 1.1), not before it. The Playwright browser cache is gone
+# (4 Nov): the image carries chromium and OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so the host
+# cache was a second copy nobody read.
+READONLY_FILES = ("bin/mags-codedev",)
 # Files Tim creates himself under ~/.config/agentbox/omp/ (never copied from ~/.omp, never parsed or cleaned:
 # he is responsible for what is in them), mounted read-only at OMP's own path when they exist.
-USER_FILES = (("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags-codedev.yaml"))
+#
+# `config.yml` joined them on 4 Nov. It used to come from `~/.omp/agent/config.yml` -- the host OMP's OWN
+# config -- so changing the default model of the OMP Tim runs himself changed the default model of every
+# agentbox session with it. agentbox's copy is now the only one a session sees.
+USER_FILES = (("config.yml", "agent/config.yml"),
+              ("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags-codedev.yaml"))
 # Places in the per-project agent dir OMP loads code or code-running config from. They are covered read-only
 # (empty) so one session cannot plant something every later session of the project runs (review 2026-10-01
 # #2). Prompt-only dirs (skills, rules, prompts, agents, commands) stay writable: OMP's autolearn writes there.
@@ -184,10 +197,13 @@ def omp_mounts(omp_home, warn, plugins=True):
     Each of plugins/repos/pylibs is mounted from its actual target, and every version directory those
     targets live in, or that the plugins' own links point into, is mounted whole at ~/.omp/versions/<v>.
 
-    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) drops that whole half: no plugins, repos,
-    pylibs or version directories, and nothing to re-check, since nothing from them is mounted. What stays
-    is what is not an extension -- `agent/config.yml`, the MAGS-CodeDev wrapper and the Playwright cache --
-    because without those OMP does not start."""
+    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) returns NOTHING: no plugins, repos,
+    pylibs or version directories, no `bin/mags-codedev`, and nothing to re-check, since nothing is
+    mounted. The wrapper is in there because it is a wrapper INTO `repos/mags-codedev` -- present without
+    `repos` it would only be a broken command -- so `--no-profile` means exactly "a session reads nothing
+    from the host's ~/.omp", which is the property worth having while that directory still exists at all.
+    What a session still gets either way is agentbox's own `config.yml`, from
+    `~/.config/agentbox/omp/` (prepare_session, USER_FILES)."""
     omp_home = os.path.realpath(omp_home)
     versions_dir = os.path.join(omp_home, "versions")
     targets = provisioned_targets(omp_home) if plugins else {}
@@ -213,17 +229,14 @@ def omp_mounts(omp_home, warn, plugins=True):
     if not targets and plugins:
         warn(f"agentbox: {omp_home} has no provisioned plugins/repos/pylibs; OMP runs without extensions "
              "(run omp-env install)")
-    for rel in READONLY_FILES:
-        p = os.path.join(omp_home, rel)
-        if os.path.lexists(p):
-            src = _plain(p, omp_home, "OMP file")
-            if not os.path.isfile(src):
-                raise AgentboxError(f"{p} is not a regular file")
-            out.append((src, os.path.join(C_OMP, rel)))
-    for rel in READONLY_DIRS:
-        p = os.path.join(omp_home, rel)
-        if os.path.lexists(p):
-            out.append((_plain(p, omp_home, "OMP directory"), os.path.join(C_OMP, rel)))
+    if plugins:
+        for rel in READONLY_FILES:
+            p = os.path.join(omp_home, rel)
+            if os.path.lexists(p):
+                src = _plain(p, omp_home, "OMP file")
+                if not os.path.isfile(src):
+                    raise AgentboxError(f"{p} is not a regular file")
+                out.append((src, os.path.join(C_OMP, rel)))
 
     def unchanged():
         if not plugins:
@@ -433,12 +446,12 @@ class OmpAdapter(Adapter):
                 missing.append(fn)
         if missing:
             sess.warn(f"agentbox: no {' or '.join(missing)} in {s.seed_dir(self.name)}; OMP starts without "
-                      "them (create them there yourself to use MCP servers or MAGS-CodeDev settings)")
+                      f"them, on its own defaults. Create them there yourself -- config.yml is OMP's own "
+                      f"config (a default model, for one), and it used to be read from the host's ~/.omp: "
+                      f"`cp ~/.omp/agent/config.yml {s.seed_dir(self.name)}/` if you want what you had.")
         for fn, path in gen.items():
             _prepare_file(os.path.join(agent_dir, fn))
             setup.mounts.append((path, os.path.join(C_OMP, "agent", fn), True))
-        if any(dst == os.path.join(C_OMP, "agent", "config.yml") for _s, dst in mounts):
-            _prepare_file(os.path.join(agent_dir, "config.yml"))
         return setup
 
 
@@ -447,7 +460,8 @@ def _omp_notes(doc):
     return ("\n## OMP in this sandbox\n\n"
             f"- Model providers configured for this session: {names}. Other providers have no key here.\n"
             "- Provider keys go through `ab keys` (regenerated into a keyless models.yml that is never mounted). "
-            "config.yml and plugins are mounted read-only into every session — never put secrets there.\n"
+            "config.yml comes from agentbox's own config, not from the host's ~/.omp; it and the plugins are "
+            "mounted read-only in every session — never put secrets in either.\n"
             "- `~/.omp/agent/models.yml`, `config.yml` and this file are read-only and regenerated each session.\n"
             "- `~/.omp/plugins`, `repos`, `pylibs` and `versions` are read-only; install Python packages with "
             "`pip install --user` or into a project virtualenv instead.\n"

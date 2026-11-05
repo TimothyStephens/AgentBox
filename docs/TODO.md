@@ -27,6 +27,12 @@ audit (F-1 … F-12) is fully closed.
 `omp-env install` produces — on the host, with `--network=host` and `~/.omp` read-write. agentbox no longer
 *builds on* omp-env (4 Nov), but it still *depends on* it for plugins.
 
+**Narrowed on 4 Nov.** `agent/config.yml` moved to `~/.config/agentbox/omp/config.yml` and the Playwright
+cache was dropped, so the only reason a session reads the host's `~/.omp` at all is now the
+plugins/repos/pylibs snapshot plus `bin/mags-codedev` — a wrapper *into* `repos/`, so it belongs with this
+decision rather than before it. `test_omp.test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper`
+pins that: anything else creeping back in fails a test.
+
 **Why it matters.** The stated end state is that omp-env is decommissioned once `ab` is finished; it is a
 backup for now. Until this exists, that cannot happen. There is also live drift: plugins installed against
 whatever OMP the host's omp-env has, meeting the OMP that `images/omp/Containerfile` pins. The known symptom

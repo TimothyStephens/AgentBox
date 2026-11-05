@@ -87,8 +87,11 @@ RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o 
     if [ -n "$found" ]; then echo "credential-like files in /root: $found" >&2; exit 1; fi
 RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
 
+# No PLAYWRIGHT_BROWSERS_PATH: it pointed at ~/.omp/.cache/ms-playwright, a host cache agentbox stopped
+# mounting on 4 Nov (the image carries chromium and OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so
+# the cache was a second copy nobody read). ~/.omp is a tmpfs in a session, so leaving the variable set
+# would have pointed Playwright at an empty directory.
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    PLAYWRIGHT_BROWSERS_PATH=/root/.omp/.cache/ms-playwright \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_CACHE_DIR=/tmp/pip-cache
 LABEL agentbox=1 \

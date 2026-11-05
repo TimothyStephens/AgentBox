@@ -2,7 +2,8 @@
 the test never touches the real one):
 
   * a write to ~/.omp/logs/<f> lands in the per-project state dir, NOT the host ~/.omp/logs;
-  * the host-shared read-only mounts (plugins/, agent/config.yml, bin/mags-codedev) reject writes;
+  * the read-only mounts reject writes: `plugins/` and `bin/mags-codedev` from the host's ~/.omp, and
+    `agent/config.yml` from agentbox's own config (it moved there on 4 Nov -- see decisions.md);
   * no key material is readable: the session's ~/.omp/agent/models.yml references AB_KEY_<NAME> variables, not
     a literal key, and no key string (the live key value, or a sentinel planted in the host's never-mounted
     models.yml) appears in any file under ~/.omp.
@@ -10,7 +11,9 @@ the test never touches the real one):
 What this does NOT prove, because the adapter does not enforce it (it is an assumption about where OMP keeps
 keys): a key string sitting literally in agent/config.yml or under plugins/ WOULD be mounted read-only and
 readable. check_no_credentials only refuses a hard-linked credential file or a git-URL credential; it does
-not scan config.yml or plugins for secrets. See the module docstring note and docs for the gap.
+not scan config.yml or plugins for secrets. Since 4 Nov config.yml is a file the user writes under
+~/.config/agentbox/omp/ rather than one copied from a host OMP install, so the warning is in the session
+notes ("never put secrets there") and the gap is unchanged. See docs for it.
 """
 import os
 import secrets
@@ -53,6 +56,10 @@ def setUpModule():
     os.makedirs(os.path.join(ENV.cfg, "omp"), exist_ok=True)
     with open(os.path.join(ENV.cfg, "omp", "models.yml"), "w") as f:
         f.write(SEED)
+    # config.yml is agentbox's own since 4 Nov. Without this seed nothing mounts over agent/config.yml and
+    # the read-only check below would be probing a plain writable file in the state dir.
+    with open(os.path.join(ENV.cfg, "omp", "config.yml"), "w") as f:
+        f.write("# agentbox's own config.yml\n{}\n")
     kdir = os.path.join(ENV.cfg, "keys")
     os.makedirs(kdir, mode=0o700, exist_ok=True)
     kf = os.path.join(kdir, "stubai")
@@ -109,7 +116,8 @@ class OmpIsolation(unittest.TestCase):
 
         # 2. the host-shared read-only mounts reject writes
         self.assertNotEqual(out.get("PLUGINS_RC"), "0", "plugins/ must be read-only")
-        self.assertNotEqual(out.get("CONFIG_RC"), "0", "agent/config.yml must be read-only")
+        self.assertNotEqual(out.get("CONFIG_RC"), "0",
+                            "agent/config.yml must be read-only -- agentbox's own copy now, not the host's")
         self.assertNotEqual(out.get("BIN_RC"), "0", "bin/mags-codedev must be read-only")
 
         # 3. no key material is readable under ~/.omp
