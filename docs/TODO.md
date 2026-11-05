@@ -36,6 +36,17 @@ plugins/repos/pylibs snapshot plus `bin/mags-codedev` — a wrapper *into* `repo
 decision rather than before it. `test_omp.test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper`
 pins that: anything else creeping back in fails a test.
 
+**The `--no-profile` read, 5 Nov.** `ab run --agent omp --project agentbox-profile-omp --no-profile -- -p
+--no-title 'Reply with exactly: AB_OK'` answered `AB_OK`, with no `config.yml`, no plugins, no `repos`, no
+`pylibs` and no provider key but the local model's. So **OMP with nothing from the host's `~/.omp` starts,
+reaches a model and completes a turn** — the extensions are not load-bearing for a plain turn, and this
+question is not blocking use. What that run does *not* settle is whether a workflow you actually care about
+needs one of them: a single `-p` turn exercises no tool, no statusline, no MCP server and not
+`mags-codedev`. **The deciding evidence is therefore use, not another probe:** run real work with
+`--no-profile` for a while, and either nothing is missed (delete the whitelist machinery) or you hit a
+specific extension (which is the input `ab profile install` needs anyway — see decision 3 below,
+reproducibility, which cannot be answered without knowing what is being installed).
+
 **Why it matters.** The stated end state is that omp-env is decommissioned once `ab` is finished; it is a
 backup for now. Until this exists, that cannot happen. There is also live drift: plugins installed against
 whatever OMP the host's omp-env has, meeting the OMP that `images/omp/Containerfile` pins. The known symptom
