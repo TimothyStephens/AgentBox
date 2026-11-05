@@ -1,0 +1,70 @@
+# plugins.toml -- what `ab profile install --agent omp` installs.
+#
+# Copy this to ~/.config/agentbox/omp/profile/plugins.toml and edit it there. It is part of the profile, so
+# it is version-controlled with the rest of it, and changing it changes the profile hash (`ab profile ls`
+# shows what a session loaded).
+#
+# This file is the conversion of omp-env's manifest.json (5 Nov 2026), minus two things:
+#
+#   * `image.ompVersion`. agentbox's OMP version is the Makefile pin that the image build asserts by
+#     running `omp --version`, and the whole point of installing plugins IN a session image is that they
+#     are built against that OMP rather than against whatever the host's omp-env had. omp-env's own
+#     `ompVersion: 18.1.3` never applied anyway -- the ARG was declared above the FROM, so it read as
+#     empty and the image shipped 18.1.11 (decisions.md, 4 Nov).
+#   * `mags-codedev`. It is in here as a git entry because MAGS ships an OMP extension
+#     (`extensionDir: mags-codedev-extension`), which is what settles the "standalone tool or part of OMP"
+#     question: it IS an OMP extension. Drop the entry if you would rather MAGS stayed out of every
+#     session.
+#
+# Rules, each enforced by agentbox/plugins.py with a reason in the error:
+#   * an npm entry names an EXACT version (no `^1.2.3`, no `latest`);
+#   * a git entry may name a branch, and the lockfile beside the installed tree records the commit it
+#     resolved to -- `ab profile install --locked` reproduces that tree exactly;
+#   * urls are https, with no credentials in them;
+#   * names and `extension_dir` become paths, so they may not leave the tree;
+#   * an unknown key is an error, not something ignored: a typo'd `verison` would be an entry with no
+#     version at all.
+
+[[npm]]
+name = "@isac322/pi-codegraph"
+version = "0.3.1"
+
+[[npm]]
+name = "@narumitw/pi-statusline"
+version = "0.38.0"
+
+[[npm]]
+name = "pi-context-prune"
+version = "1.2.0"
+
+[[npm]]
+name = "pi-lens"
+version = "3.8.73"
+
+[[npm]]
+name = "pi-rules"
+version = "0.1.1"
+
+[[git]]
+name = "mags-codedev"
+url = "https://github.com/TimothyStephens/MAGS-CodeDev.git"
+ref = "main"
+extension_dir = "mags-codedev-extension"
+
+[[git]]
+name = "pi-session-stats"
+url = "https://github.com/TimothyStephens/pi-session-stats.git"
+ref = "main"
+extension_dir = "."
+
+[[git]]
+name = "pi-content-audit"
+url = "https://github.com/TimothyStephens/pi-content-audit.git"
+ref = "main"
+extension_dir = "."
+
+[[git]]
+name = "pi-nvim-bridge"
+url = "https://github.com/dabstractor/pi-nvim-bridge.git"
+ref = "main"
+extension_dir = "."

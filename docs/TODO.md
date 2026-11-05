@@ -64,7 +64,19 @@ hashed and snapshotted — that was put there for this). `ab profile install [--
 **in a gated session**, against the image's own OMP/node/Bun, into a host-owned tree that sessions mount
 read-only. `~/.omp` stops being an input.
 
-**Decisions to make first** — this is not shovel-ready, and these are the reasons:
+**Decided, 5 Nov (Tim: "Build it. I have no need for ~/.omp and won't miss anything").** The four questions
+below are answered; `docs/decisions.md` (5 Nov, "ab profile install") has the reasoning. In short: the tree
+lives in `~/.config/agentbox/omp/plugins/`, the install runs in one hardened container behind the session
+proxy rather than a synthesised project, `plugins.toml` pins npm exactly and lets git name a branch with
+the **lockfile** recording the commit, and `omp_mounts` moves to the new tree in its own commit afterwards.
+`agentbox/plugins.py` and `docs/examples/plugins.toml` (omp-env's manifest.json converted) are the first
+step and are done.
+
+**What is left to build:** the installer itself (container + proxy + lockfile), `ab profile install` in the
+CLI, the staleness warning when the lockfile's OMP version is not the image's, then `omp_mounts` on the new
+tree and the whitelist simplification that follows from owning it.
+
+**The questions as they were, kept because the answers only make sense against them:**
 
 1. **Where the installed tree lives.** Candidates: `~/.config/agentbox/omp/plugins/` (host-owned config,
    matches the profile) or `<data>/profiles/omp/plugins/<hash>/` (content-keyed, matches the snapshot

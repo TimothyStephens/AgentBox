@@ -1888,3 +1888,59 @@ patched `NetSession.run_captured`, `test_failopen` subclassed it) and `test_egre
 
 1075 unit tests, 0 failures, 0 errors, 0 ResourceWarnings; three mutations red (the `--network=none`
 escape restored, `egress` back to `"none"`, the dev tier forced off).
+
+## 5 November 2026 -- `ab profile install`: the format, and the four questions answered
+
+Tim: "Build it. I have no need for ~/.omp and won't miss anything. I have already moved ~/.omp so we can
+start testing cleanly." (Moving it breaks nothing: `provisioned_targets` skips links that are not there, so
+a session warns and runs without extensions.) This entry records the answers; the first commit is the file
+format and its validator.
+
+**1. The installed tree lives in `~/.config/agentbox/omp/plugins/`**, beside `config.yml` and `mcp.json` --
+one place, which is what Tim asked for when `config.yml` moved. Written only by `ab profile install`,
+mounted read-only in sessions. The alternative was a content-keyed directory under `<data>/profiles/`,
+which would have given staleness detection for free; a **lockfile** beside the tree gives the same thing
+more legibly, because it can also record the OMP version the plugins were built against. That is the drift
+this whole item exists to end: plugins installed against the host's omp-env OMP, meeting the OMP the image
+pins (`pi-statusline`'s `stripTerminalSequences`, 4 Nov).
+
+**2. The install gets one hardened container behind the session proxy**, with `packages` egress -- not a
+synthesised project. It reuses the audited pieces (`net_create_args`, `proxy_run_args`, `squid_conf`,
+`hardening.fixed_flags`) with only the install tree mounted read-write, no grants, no podman socket.
+Synthesising a project to satisfy the session machinery would mean a lock, a scan and a backup for
+something that is not a project.
+
+**3. Pinning, revised against the real manifest.** The plan said "refuse anything unpinned". Tim's
+`omp-env/manifest.json` has five npm entries at exact versions and four git repos at `ref: main`, four of
+which are his own. So: **npm must be exact** (a range or `latest` resolves to different code on different
+days, and the manifest has the number), **git may name a branch**, and the **lockfile records the commit it
+resolved to**, with `ab profile install --locked` reproducing that tree. A branch in the input plus a
+commit in the lockfile is the npm/cargo bargain; refusing branches would have made the tool useless for
+four of nine entries, which is how a rule gets worked around instead of followed.
+
+**4. `omp_mounts` moves to the new tree in its own commit, after the installer works.** Most of that
+whitelist (`_plain`, `_version_dir`, `provisioned_targets`, `referenced_versions`) exists *because*
+`~/.omp` is a directory agentbox does not control. Owning the tree retires most of it and keeps the three
+rules that still earn their place: no symlink leaving the tree, no credential files, read-only mount.
+
+**`plugins.toml` is a validator, not a loop over a TOML file.** Every string becomes argv in a container
+with network (`npm install <name>@<version>`, `git clone <url>`, `git checkout <ref>`) and several become
+directory names in a tree every OMP session mounts. So: npm names and exact versions by regex; https only,
+with no credentials in the URL (a credential never enters a sandbox, and this one would sit in the profile);
+refs checked against git's own rule (`..`, `@{`, a `.lock` suffix) as well as a leading `-`, which git
+would read as an option; `extension_dir` and git names may not leave the tree; `node_modules` is reserved,
+because that is where the npm entries land in the same tree. **An unknown key is an error, not an ignored
+line** -- a dropped `verison` is an entry with no version at all, which is the exact failure this file
+exists to prevent. Nine mutations red, one per rule.
+
+**No `pylibs`.** omp-env produced one, but the manifest names no python dependency, so the installer does
+not invent a source for it. If a plugin needs python libraries that becomes a `[[pylib]]` section with
+pinned, hashed requirements -- the rule `images/*/Containerfile` already enforces for pip.
+
+**And the manifest settled the MAGS question.** `mags-codedev` is in `gitRepos` with
+`extensionDir: mags-codedev-extension`: MAGS **ships an OMP extension**, so "part of OMP" is not a
+convenience, it is how the thing is built. It is a git entry in the template, and dropping that entry is
+how it stays out of sessions. One correction to what I said on 4 Nov: I called it a *private* GitHub
+dependency. The manifest shows a plain public `https://github.com/TimothyStephens/MAGS-CodeDev.git`. The
+conclusion stands on different ground -- one workflow's tool does not belong in the image every OMP session
+runs, and a `ref: main` install baked into an image is unreproducible -- but "private" was wrong.
