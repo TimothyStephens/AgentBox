@@ -172,6 +172,14 @@ class Install:
         opts = [f"--label={k}={v}" for k, v in self.labels("install").items()]
         opts += hardening.fixed_flags(s, cgroup_parent=s.cgroup_parent)
         opts.append(f"--tmpfs={HOME}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
+        # ~/.omp has to be a tmpfs OF THE CONTAINER USER, exactly as the OMP adapter makes it for a
+        # session (`SessionSetup(tmpfs=[C_OMP])`). Without this line podman creates `~/.omp` itself, as
+        # the mount point for the tree below it -- owned by root inside the HOME tmpfs -- and the container
+        # runs as the host uid under `--userns=keep-id`, so OMP's first write there fails:
+        #   ✘ Failed to add marketplace: EACCES: permission denied, open '~/.omp/marketplaces.json.tmp'
+        # (host, 5 Nov). Everything OMP writes outside the tree lands here and goes with the container;
+        # what has to survive is copied into the tree by the script.
+        opts.append(f"--tmpfs={C_OMP}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
         opts.append(f"--network={self.int_net}")
         env = {"HOME": HOME, "AGENTBOX_SESSION": self.name, **egress.proxy_env(self.proxy_name)}
         opts += [f"--env={k}={v}" for k, v in env.items()]
@@ -180,7 +188,8 @@ class Install:
         opts.append(f"--workdir={C_TREE}")
         opts.append("--entrypoint=/bin/sh")
         hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=[os.path.realpath(self.tree)],
-                        allowed_mount_dsts=[C_TREE], networks=[self.int_net], tmpfs_dirs=("/tmp", HOME))
+                        allowed_mount_dsts=[C_TREE], networks=[self.int_net],
+                        tmpfs_dirs=("/tmp", HOME, C_OMP))
         return args + opts + [self.adapter.image, "-c", script]
 
     def start_infra(self):

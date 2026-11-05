@@ -2227,3 +2227,34 @@ is where the one open question gets answered: **does OMP tolerate a read-only `~
 chmod stand-in proved nothing (decisions.md, round 2), and `installed_plugins.json` and
 `omp-plugins.lock.json` are state OMP writes inside the tree, so a writable overlay for those two is the
 fallback if it does not.
+
+## 5 November 2026 -- the first real install: `~/.omp` has to be the container user's own tmpfs
+
+`ab profile install omp` on the host, first run:
+
+```
+✘ Failed to add marketplace: Error: EACCES: permission denied, open '/home/vmuser/.omp/marketplaces.json.tmp'
+```
+
+My bug, and an obvious one in hindsight. The installer mounted the tree at `~/.omp/plugins` and gave
+`$HOME` a tmpfs -- so **podman created `~/.omp` itself**, as the mount point for the tree beneath it,
+owned by root inside that tmpfs. The container runs as the host uid under `--userns=keep-id`, so OMP's
+first write outside the tree failed. The OMP *adapter* has always done this correctly for sessions
+(`SessionSetup(mount_root=C_OMP, tmpfs=[C_OMP])`); the installer is the second place that needs it and did
+not have it.
+
+Fixed by giving `~/.omp` its own tmpfs with `mode=0700,U` -- `U` chowning it to the container user -- and
+adding it to the `tmpfs_dirs` the audit allows. That is also the right shape for what it holds: everything
+OMP writes outside the tree (`marketplaces.json`, `agent.db`, logs, sessions) lands there and goes with
+the container, and the one piece that has to survive is copied into the tree by the script. The `.tmp`
+suffix in the error is worth keeping in mind too -- it confirms OMP writes that file by rename, which is
+why it is copied out at the end rather than bind-mounted. Two mutations red (the tmpfs dropped; the tmpfs
+not chowned).
+
+**The other thing the run showed, which is not a bug:** the dry run reported "1 plugin", not the eight
+entries. The installer reads `settings.profile_src(agent)` -- the **deployed** profile at
+`~/.config/agentbox/omp/profile/plugins.toml` -- and Tim had copied the entries into the profile *repo*,
+which is the source the deployed copy comes from. So the installer was right and the file it read was the
+old one. Worth writing down because it is the same distinction as everywhere else in the profile
+mechanism: the repo is what you edit and review, the deployed profile is what a session (and now an
+install) actually reads.

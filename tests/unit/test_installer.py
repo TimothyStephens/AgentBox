@@ -138,6 +138,20 @@ class TheContainer(SettingsCase):
         self.assertIn(f"src={os.path.realpath(self.job.tree)}", mounts[0])
         self.assertNotIn(",ro", mounts[0], "the install writes the tree")
 
+    def test_omp_home_is_a_tmpfs_owned_by_the_container_user(self):
+        """The bug the first real run found. Without this, podman creates `~/.omp` as the mount point for
+        the tree -- root-owned, inside the HOME tmpfs -- and the container runs as the host uid, so OMP's
+        first write there is EACCES on `marketplaces.json.tmp`. It is also where everything OMP writes
+        outside the tree goes, which is why it must be writable and must NOT persist."""
+        tmpfs = [a for a in self.args() if a.startswith("--tmpfs=")]
+        omp = [a for a in tmpfs if a.startswith(f"--tmpfs={installer.C_OMP}:")]
+        self.assertEqual(len(omp), 1, tmpfs)
+        self.assertIn(",U,", omp[0] + ",", "the tmpfs must be chowned to the container user")
+        self.assertIn("mode=0700", omp[0])
+        self.assertIn("notmpcopyup", omp[0])
+        # And the tree sits inside it, so the order of these two matters to podman, not to us.
+        self.assertTrue(installer.C_TREE.startswith(installer.C_OMP + "/"))
+
     def test_nothing_else_is_mounted_and_no_socket_is_given(self):
         argv = self.args()
         self.assertEqual(len([a for a in argv if a.startswith("--mount=")]), 1)
