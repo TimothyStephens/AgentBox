@@ -7,12 +7,15 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 4 November 2026.** The image restructure is done and exercised end to end on the host:
+**State as of 5 November 2026.** The image restructure is done and exercised end to end on the host:
 `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
-CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1049), `make itest` (186),
+CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1053), `make itest` (186),
 `make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
 runs with zero ResourceWarnings. Nine of eleven dead-enforcement items removed. The third preset/settings
-audit (F-1 … F-12) is fully closed.
+audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
+confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe).
+**Outstanding host run:** `make claude-live` is flagged stale by `freshness.py` (`adapters/omp.py`,
+`hardening.py`, `session.py` changed since the recorded pass).
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.

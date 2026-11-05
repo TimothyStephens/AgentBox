@@ -1745,3 +1745,21 @@ where that belongs.
 plugins/repos/pylibs snapshot plus that one wrapper. `test_omp.test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper`
 pins it: every mount source under the host home must be `versions/...` or `bin/mags-codedev`, so the next
 thing to creep back in fails a test rather than a review.
+
+**Confirmed on the host, 5 November.** `make itest` ran 186 tests, OK -- including the four whose assertions
+this change inverted -- and `make omp-live` passed with the browser probe working, which is the gate the
+Playwright drop needed: **the cache was not load-bearing.** One caveat worth writing down rather than
+forgetting: `make omp-live` does not rebuild the image, so the probe proves the *cache mount* is unnecessary,
+while removing `PLAYWRIGHT_BROWSERS_PATH` from `images/omp/Containerfile` is only exercised after
+`make omp-image` (and then `ab image build omp`, since the layer is keyed on the harness image ID). An env
+var pointing into a tmpfs that nothing populates is the weaker half of the change, but it is unproven until
+that rebuild.
+
+**An expected warning in the session log, so nobody chases it.** OMP logs
+`Ignoring unreadable user MCP config for server lists ... ~/.omp/agent/mcp.json: JSON Parse error: Unexpected
+EOF` on every start where no `mcp.json` was seeded. That is `CODE_FILES` working: agentbox mounts the
+zero-byte `omp-empty` read-only over `agent/{.mcp.json,mcp.json,settings.json}` so a repo (or the host) cannot
+hand OMP MCP servers to launch. "Ignoring" is the intended outcome; the warning is the cost. Mounting a file
+containing `{}` would silence it, and is deliberately not done: zero bytes is the unambiguous "this is masked"
+marker the covers tests read (`test -s` on the placeholder, `SECRETS_BYTES=0`), and trading that signal for a
+quieter log is the wrong way round.
