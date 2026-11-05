@@ -101,16 +101,39 @@ why each piece of the current whitelist is there, and each reason has to be answ
 **The gate.** `make test`; `make itest` (the OMP profile and managed-skills round trip); `make omp-live`
 with the real plugins, which is the only thing that proves a plugin actually loads.
 
-### 1.2 The MAGS adapter — parked on a complete spec
+### 1.2 MAGS — three session features, not an adapter
 
-**What.** An adapter for MAGS-CodeDev (`github.com/TimothyStephens/MAGS-CodeDev`), planned and approved in
-outline, then parked.
+**Decided 5 Nov: MAGS runs as an OMP extension, and agentbox grows the three things it needs.** Not a
+`--agent mags` adapter, and not a standalone tool outside `ab`. The evidence is in omp-env's
+`manifest.json`: `mags-codedev` is a git entry with `extensionDir: mags-codedev-extension`, so **MAGS
+ships an OMP extension** — "part of OMP" is how it is built, not a convenience. It is a `[[git]]` entry in
+`docs/examples/plugins.toml`; dropping that entry is how it stays out of sessions.
 
-**Why it is parked.** Waiting on a complete spec. One design change since the plan was approved: its
-generated test containers get a **sealed network (no proxy)**, not the session's internal network. That
-followed from a finding — the session network carries the squid proxy *and* the gate injects
-`HTTP(S)_PROXY` into every container it creates, so "reaches nothing" needs the proxy taken away, not just
-the LAN.
+**Why not standalone on the host.** Its job is to run model-generated code and its own generated tests. On
+the host that means no gate (the spikes proved any container on a default or plain bridge network reaches
+the LAN, including this machine's live stacks), no secret masks over `.env`, and no end-of-session scan. Of
+everything here, a tool that executes generated code is the worst candidate for running outside the
+sandbox.
+
+**Why not an adapter.** The adapter interface is for *harnesses*: an interactive agent CLI with its own
+config, per-project state, instructions file and profile mounts. MAGS is a batch tool that calls models
+itself and needs none of that, while the things it does need are session and gate features that sit
+outside the adapter interface anyway.
+
+**What to build — three features, each useful beyond MAGS:**
+
+1. **A sealed network for gate-created containers.** Today the gate pins every container the agent creates
+   to the session network *and* injects `HTTP(S)_PROXY`, so "reaches nothing" needs the proxy taken away,
+   not just the LAN. A project setting (`spawned_network = "sealed"`) giving an `--internal`,
+   `isolate=strict` network with no proxy environment. Any "run generated code" workflow wants it.
+2. **A combined keys file on tmpfs** (`MAGS_KEYS_FILE`: 0600, `KEY=value` lines). agentbox already mounts
+   per-provider key files read-only and never in the environment; this renders one file from them into the
+   agent's tmpfs. What makes it safe is already enforced: never inside a grant, which grantcheck refuses.
+3. **The scan must tell a worktree from a new repo.** `base_dir: .mags-codedev` holds git worktrees in the
+   project root, so the scan prints "NEW GIT REPO" per module. The right fix is general: a `.git` *file*
+   pointing inside the project is a worktree. Better than a skip list, which would hide a real new repo.
+
+**Still needed from Tim:** the four answers below, which are the spec. Nothing else blocks it.
 
 **Already built from the approved plan.** The gate's network-pinning test (`tests/unit/test_gate.py`: a
 create naming no network at all is still pinned to the session network, on both APIs); the scan's HEAD/ref
@@ -120,8 +143,8 @@ movement reporting; and `base_branch` as a project key.
 these into the spec:
 
 - `test_runner: "auto"` auto-detects `podman > docker > apptainer > singularity > local`. The plan says test
-  containers go through the gate and `local` is refused, so the adapter must **force `test_runner: podman`**
-  rather than rely on `auto`, which would silently fall back to `local`.
+  containers go through the gate and `local` is refused, so the session must **force
+  `test_runner: podman`** rather than rely on `auto`, which would silently fall back to `local`.
 - `docker_test_image: "mags-dev-env:latest"`, "auto-built if not found" — that build goes through the gate,
   so the name needs to be in the project's `dev_images` allowlist or be a session build the gate records.
 - `base_dir: ".mags-codedev"` holds **git worktrees inside the project root**. `scan.worktrees()` walks for
