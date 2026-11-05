@@ -94,11 +94,22 @@ class Accepts(unittest.TestCase):
         self.assertEqual(plugins.summary(plugins.parse(PLUGIN)), "1 plugin")
         self.assertEqual(plugins.summary(plugins.parse(PLUGIN + NPM + REPO)), "1 plugin, 1 npm, 1 repo")
 
-    def test_the_example_in_docs_parses(self):
+    def test_the_example_in_docs_parses_and_is_the_list_tim_asked_for(self):
+        """The worked example is the 5 Nov list: EGM, four npm packages and three checkouts, every ref a
+        real sha (`git ls-remote`). Pinned here because a template that does not parse is worse than none,
+        and because "which entries" is a decision -- pi-codegraph and pi-nvim-bridge are deliberately out,
+        and a silent re-appearance should fail a test rather than a session."""
         entries = plugins.load(EXAMPLE)
-        self.assertTrue(entries, "the template declares nothing")
-        egm, = [e for e in entries if e.kind == "plugin"]
-        self.assertEqual(egm.id, "egm@egm")
+        self.assertEqual(plugins.summary(entries), "1 plugin, 4 npms, 3 repos")
+        self.assertEqual([e.label for e in entries],
+                         ["egm@egm", "@narumitw/pi-statusline", "pi-context-prune", "pi-lens", "pi-rules",
+                          "mags-codedev", "pi-session-stats", "pi-content-audit"])
+        mags, = [e for e in entries if e.label == "mags-codedev"]
+        self.assertEqual(mags.extension_dir, "mags-codedev-extension")
+        for e in entries:
+            if e.kind != "npm":
+                with self.subTest(entry=e.label):
+                    self.assertNotEqual(e.ref, "0" * 40, "a placeholder sha, not a resolved one")
 
 
 class RefusesMarketplacePlugins(unittest.TestCase):

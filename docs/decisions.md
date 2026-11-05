@@ -2004,3 +2004,33 @@ checkout. What the installer needs is the command-line form of "add this marketp
 install this plugin id", and guessing it would mean writing an installer that runs the wrong commands.
 `omp plugin --help` and `omp marketplace --help` from inside a session, or the vendored
 `reference/omp/marketplace.md`, settle it.
+
+## 5 November 2026 (later still) -- the eight entries, and why three npm pins moved
+
+Tim's list: `pi-statusline`, `pi-context-prune`, `pi-lens`, `pi-rules`, `mags-codedev`,
+`pi-session-stats`, `pi-content-audit`, and "I dont think pi-nvim-bridge is needed". With the profile's
+existing EGM entry that is **eight**: one marketplace plugin, four npm packages, three checkouts.
+`docs/examples/plugins.toml` is the worked file, and a test pins the list -- "which entries" is a decision,
+and a silent re-appearance should fail a test rather than a session.
+
+**The three repo refs were resolved here**, `git ls-remote <url> main` from the sandbox (egress `packages`
+reaches GitHub, and git honours the proxy variables), so they are real shas rather than placeholders.
+Resolving a ref is a read; it needs no credential and changes nothing.
+
+**Three npm pins moved forward, deliberately, and this is the judgement call to overrule if you disagree.**
+omp-env pinned `@narumitw/pi-statusline 0.38.0`, `pi-context-prune 1.2.0`, `pi-lens 3.8.73`; the registry's
+current versions are `0.50.4`, `2.2.0`, `4.4.9` (`pi-rules 0.1.1` is unchanged). The usual rule is "pin
+what you tested", which would mean omp-env's numbers -- but those were installed against OMP **18.1.11**
+while the image pins **18.13.3**, and the one failure actually observed from that drift was
+`pi-statusline`'s `stripTerminalSequences` (4 Nov). An old plugin against a newer OMP is the combination
+known to be broken here, so the old pins are the ones with evidence against them. omp-env's numbers are in
+the file's comments; going back is one edit each, and `make omp-live` is what settles it.
+
+**Two entries are deliberately absent, both named in the file so their absence is a statement:**
+`@isac322/pi-codegraph` (omp-env had 0.3.1, current 0.5.2) was not in Tim's list, and `pi-nvim-bridge` is
+not wanted. Each is one entry to add back.
+
+**What this does not settle.** Whether `omp plugin install` takes an npm package name as a target the way
+`omp plugin link` takes a path, and whether the marketplace add can be pinned to a commit at all. The
+`plugin --help` output says `TARGETS   Packages, paths, or plugin names`, which is suggestive of exactly
+the three kinds -- but suggestive is not a specification, and `make omp-plugin-probe` is what answers it.
