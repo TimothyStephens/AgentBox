@@ -7,9 +7,10 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 5 November 2026.** The image restructure is done and exercised end to end on the host:
+**State as of 6 November 2026.** The image restructure is done and exercised end to end on the host:
 `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
-CLI installed by agentbox at a Makefile pin the build asserts. `make test` (1073), `make itest` (186),
+CLI installed by agentbox at a Makefile pin the build asserts (node's major included, since a
+digest pin can silently override the tag). `make test` (1150), `make itest`,
 `make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
 runs with zero ResourceWarnings. Ten of eleven dead-enforcement items removed (D-E11 is a deliberate knob, and stays). The third preset/settings
 audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
@@ -18,10 +19,16 @@ after `make omp-image && ab image build omp` so the image's own change is exerci
 re-recorded the same day. `ab session gc` now sweeps personal image layers and profile snapshots as well as
 session-built images.
 
-**Outstanding host run (5 Nov, after the gc sweep, the `--format` itest and D-E9):** `make itest` — it
-gains `tests/integration/test_podman_formats.py` and it is the only check of the gc sweep and the merged
-`Session` against real podman. Then `make claude-live`, which `freshness.py` will flag stale:
-`session.py` and `hardening.py` are both token files and both changed.
+**6 November: `~/.omp` is no longer an input.** `ab profile install omp` builds a host-owned tree from
+the profile's `plugins.toml` (marketplace plugins pinned by sha, npm packages at exact versions, git
+checkouts linked), in one hardened container behind the session proxy, and sessions mount it **read-only**.
+`make itest` and `make omp-live` both pass, which settles the question that could have forced a redesign:
+**OMP tolerates a read-only `~/.omp/plugins`** — proved by a real read-only bind mount, not a `chmod`
+stand-in. About 160 lines of whitelist went with the host directory, and `omp_home` is a retired setting.
+
+**No outstanding host run.** `make test` (1150), `make itest`, `make claude-live`, `make omp-live`, both
+`ab selftest`s, both `ab image build`s and `ab profile install omp` are all green on the host as of
+6 November.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -30,86 +37,7 @@ gains `tests/integration/test_podman_formats.py` and it is the only check of the
 
 ## 1. Open questions — a decision is needed before any code
 
-### 1.1 `ab profile install` — the last thing between agentbox and decommissioning omp-env
-
-**What.** Sessions mount OMP's plugins from the host's `~/.omp/{plugins,repos,pylibs}`, which only
-`omp-env install` produces — on the host, with `--network=host` and `~/.omp` read-write. agentbox no longer
-*builds on* omp-env (4 Nov), but it still *depends on* it for plugins.
-
-**Narrowed on 4 Nov.** `agent/config.yml` moved to `~/.config/agentbox/omp/config.yml` and the Playwright
-cache was dropped, so the only reason a session reads the host's `~/.omp` at all is now the
-plugins/repos/pylibs snapshot plus `bin/mags-codedev` — a wrapper *into* `repos/`, so it belongs with this
-decision rather than before it. `test_omp.test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper`
-pins that: anything else creeping back in fails a test.
-
-**The `--no-profile` read, 5 Nov.** `ab run --agent omp --project agentbox-profile-omp --no-profile -- -p
---no-title 'Reply with exactly: AB_OK'` answered `AB_OK`, with no `config.yml`, no plugins, no `repos`, no
-`pylibs` and no provider key but the local model's. So **OMP with nothing from the host's `~/.omp` starts,
-reaches a model and completes a turn** — the extensions are not load-bearing for a plain turn, and this
-question is not blocking use. What that run does *not* settle is whether a workflow you actually care about
-needs one of them: a single `-p` turn exercises no tool, no statusline, no MCP server and not
-`mags-codedev`. **The deciding evidence is therefore use, not another probe:** run real work with
-`--no-profile` for a while, and either nothing is missed (delete the whitelist machinery) or you hit a
-specific extension (which is the input `ab profile install` needs anyway — see decision 3 below,
-reproducibility, which cannot be answered without knowing what is being installed).
-
-**Why it matters.** The stated end state is that omp-env is decommissioned once `ab` is finished; it is a
-backup for now. Until this exists, that cannot happen. There is also live drift: plugins installed against
-whatever OMP the host's omp-env has, meeting the OMP that `images/omp/Containerfile` pins. The known symptom
-is a plugin failing to load (`pi-statusline`'s `stripTerminalSequences`, seen 4 Nov). **Mitigation until
-then: keep `OMP_VERSION` near what omp-env installs with.**
-
-**Done looks like.** A profile-owned `plugins.toml` (already in `profile.BUILD_ITEMS`, so it is already
-hashed and snapshotted — that was put there for this). `ab profile install [--agent omp]` installs from it
-**in a gated session**, against the image's own OMP/node/Bun, into a host-owned tree that sessions mount
-read-only. `~/.omp` stops being an input.
-
-**Decided, 5 Nov (Tim: "Build it. I have no need for ~/.omp and won't miss anything").** The four questions
-below are answered; `docs/decisions.md` (5 Nov, "ab profile install") has the reasoning. In short: the tree
-lives in `~/.config/agentbox/omp/plugins/`, the install runs in one hardened container behind the session
-proxy rather than a synthesised project, `plugins.toml` pins npm exactly and lets git name a branch with
-the **lockfile** recording the commit, and `omp_mounts` moves to the new tree in its own commit afterwards.
-`agentbox/plugins.py` is the first step and is done — against **the
-profile repo's schema**, which already existed: marketplace `[[plugin]]` entries pinned by 40-character
-sha, plus the `[[npm]]` and `[[repo]]` kinds the profile's own comment asked agentbox to add. The first
-draft invented a format from omp-env's `manifest.json` and was wrong (decisions.md, 5 Nov later).
-
-**What is left to build:** the installer itself (container + proxy + lockfile), `ab profile install` in the
-CLI, the staleness warning when the lockfile's OMP version is not the image's, then `omp_mounts` on the new
-tree and the whitelist simplification that follows from owning it.
-
-**Blocked on one thing only: OMP's non-interactive install surface.** `/marketplace add <source>` is a
-slash command *inside* OMP; the installer needs the command-line form of "add this marketplace at this
-commit, then install this plugin id". `omp plugin --help` and `omp marketplace --help` from inside a
-session, or the profile's vendored `reference/omp/marketplace.md`, settle it. Guessing would mean an
-installer that runs the wrong commands and reports success.
-
-**The questions as they were, kept because the answers only make sense against them:**
-
-1. **Where the installed tree lives.** Candidates: `~/.config/agentbox/omp/plugins/` (host-owned config,
-   matches the profile) or `<data>/profiles/omp/plugins/<hash>/` (content-keyed, matches the snapshot
-   mechanism and gets staleness detection for free). The second composes better with how profiles work.
-2. **What network the install gets.** It needs npm and git, so `packages` egress through squid — the point
-   being that the install goes through the same gate and allowlist as everything else instead of
-   `--network=host`. But a plugin install is not a project, and the session machinery is built around one.
-   Either synthesise a project, or build a narrower "one container, session proxy, no grant" path.
-3. **Reproducibility.** `plugins.toml` should pin versions and the install should emit a lockfile, or
-   "install" means something different every time it runs.
-4. **How sessions pick it up.** `omp.omp_mounts` would read the new location instead of `~/.omp`. That
-   function is security-sensitive — the whitelist, `_plain`/`_version_dir` validation, the credential
-   hard-link check, the mid-start `unchanged()` recheck — and most of it exists *because* `~/.omp` is a
-   directory agentbox does not control. Owning the tree would let much of it go, which is a simplification
-   worth having but is a careful change, not a mechanical one.
-
-**Where to start.** `agentbox/adapters/omp.py` (`omp_mounts`, `PROVISIONED`, `provisioned_targets`,
-`check_no_credentials`), `agentbox/profile.py` (`BUILD_ITEMS`, `snapshot`), `agentbox/cli.py` (the
-`ab profile` subparser). Read `docs/decisions.md` → "What the OMP session mounts from ~/.omp" first: it says
-why each piece of the current whitelist is there, and each reason has to be answered or retired.
-
-**The gate.** `make test`; `make itest` (the OMP profile and managed-skills round trip); `make omp-live`
-with the real plugins, which is the only thing that proves a plugin actually loads.
-
-### 1.2 MAGS — three session features, not an adapter
+### 1.1 MAGS — three session features, not an adapter
 
 **Decided 5 Nov: MAGS runs as an OMP extension, and agentbox grows the three things it needs.** Not a
 `--agent mags` adapter, and not a standalone tool outside `ab`. The evidence is in omp-env's
@@ -170,7 +98,27 @@ grant** — which is also what grantcheck would refuse.
 
 ## 2. Ready to implement — scoped, no decision needed
 
-### 2.1 Unify the duplicated git-identity lookup
+### 2.1 `ab profile install --resolve`: print the current sha of every declared entry
+
+**What.** `plugins.toml` pins every `ref` to a 40-character sha, deliberately (a catalog is mutable, so a
+branch is not a pin). Bumping one means looking it up: `git ls-remote <url> <branch>` for a repo or a
+catalog, the npm registry for a package. `--resolve` should do that for every entry and print
+`declared → current`, so a bump is one command and a diff in the profile repo.
+
+**Why it matters.** Low, but it is the friction that makes people reach for a branch. The rule holds
+better if keeping it is cheap.
+
+**Done looks like.** `ab profile install omp --resolve` prints one line per entry and changes nothing. It
+runs in the same hardened container the install uses (network belongs in a container, not in `ab`), needs
+no clone — `git ls-remote` and an npm registry read are enough — and says plainly when an entry is already
+current.
+
+**Where to start.** `agentbox/installer.py` (`Install.container_args`, `_script`: this is a second, much
+smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install` for the flag.
+
+**The gate.** `make test`; by hand on the host once, since it reaches the network.
+
+### 2.2 Unify the duplicated git-identity lookup
 
 **What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
 slightly differently.
@@ -316,6 +264,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 | Closed | What |
 |---|---|
 | 5 Nov | D-E9: the network-less `Session` path removed — one session class, and the audit now requires the agent container to be on a session network |
+| 6 Nov | `ab profile install` — plugins declared by the profile, installed in a sandbox against the image's own OMP, mounted read-only; `~/.omp` stops being an input and ~160 lines of whitelist go with it |
 | 5 Nov | `tests/manual/podman_formats.sh` runs inside `make itest`, against the run's own abt- objects, with a skip counted as a failure |
 | 5 Nov | `ab session gc` sweeps personal image layers and profile snapshots (current key and live sessions protected; `image_keep_days` is the rollback window) |
 | 4 Nov | The image restructure: `agentbox-base`, both agent layers installing their own CLI at an asserted pin, Bun pinned, node 22→26 |

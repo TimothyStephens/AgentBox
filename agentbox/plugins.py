@@ -24,9 +24,16 @@ with the profile's reason: *"Never a branch or tag: marketplace catalogs are mut
 install is not reproducible."* It is applied to `[[repo]]` too -- the reason does not stop at marketplaces,
 and a branch would make the tree a session mounts depend on when it happened to be installed. An earlier
 draft of this module allowed a branch for git entries, on the grounds that the sources are tracked on
-`main`; the profile's rule is the better one, and "a sha is a nuisance to look up" is a job for
-`ab profile install --resolve`, not a reason to loosen the file. npm entries name an exact version for the
+`main`; the profile's rule is the better one. "A sha is a nuisance to look up" is a tooling problem --
+`git ls-remote <url> <branch>` prints one, and a `--resolve` that reports the current sha of every entry
+is on the backlog (TODO.md) -- not a reason to loosen the file. npm entries name an exact version for the
 same reason.
+
+**There is no lockfile for this file to need.** An earlier draft promised
+`ab profile install --locked` to reproduce a tree from recorded commits; with every `ref` already a sha,
+the declaration IS the lock, and re-running the install reproduces the tree. The lockfile
+`ab profile install` writes records what OMP reported and which image it was built against -- a receipt,
+not an input.
 
 **Why this is a validator rather than a loop over a TOML file.** Every string here becomes argv in a
 container that has network, and several become directory names in a tree every OMP session mounts

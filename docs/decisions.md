@@ -2334,3 +2334,30 @@ including the four that matter: the tree mounted read-write, a symlinked tree fo
 ignoring the tree, and staleness never reporting a mismatch. One was GREEN first time -- the retired-setting
 test asserted the map contained the key rather than that an old `agentbox.toml` still loads, which is the
 assertion-shaped-hole version of the same lesson as yesterday.
+
+## 6 November 2026 -- the gates passed, and OMP tolerates a read-only tree
+
+`make itest` and `make omp-live` both green on the host, which settles the question that had been open
+since the probe and could have forced a redesign: **OMP tolerates a read-only `~/.omp/plugins`.**
+`test_step3_omp` writes to the tree, to `node_modules`, to `.agentbox/` and to `marketplaces.json` from
+inside a session and requires every one to fail; `omp plugin list --json` and `omp plugin doctor --json`
+then run against that read-only tree and must succeed. Both held. So `doctor` reporting `package.json` as
+"Not created yet" was a statement about an absent file, not an intention to write one, and the writable
+overlay for `installed_plugins.json` and `omp-plugins.lock.json` is not needed. A prediction that turned
+out to be unnecessary is still worth having made: it named what would have broken and how it would have
+been fixed.
+
+`make omp-live` passing also means the real tree -- hard-linked into a temporary config dir -- mounted
+read-only and OMP ran a full turn against it. **What it does not prove is that a particular plugin
+loaded.** omp-live asserts the model answers, the browser tool works and the debugger attaches; nothing in
+it says "EGM's commands are available". That is the one thing still taken on trust, and the honest way to
+close it is an omp-live probe that asks OMP for its plugin list and requires the declared ones to be in
+it. Noted rather than written, because the declaration currently has one entry and Tim has not deployed
+the eight-entry file yet.
+
+**Two promises in my own documentation were removed rather than left to rot.** `plugins.py` referred to
+`ab profile install --resolve` and `--locked` as though they existed. `--locked` should never exist: with
+every `ref` already a sha, **the declaration is the lock**, and re-running the install reproduces the
+tree -- the lockfile the install writes is a receipt (what OMP reported, which image it was built
+against), not an input. `--resolve` is worth having and is on the backlog (TODO 2.1) with its shape
+written down: one line per entry, `declared -> current`, in the same hardened container, no clone needed.
