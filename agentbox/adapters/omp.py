@@ -18,7 +18,6 @@ session's tmpfs home.
 import ipaddress
 import os
 import re
-import stat
 from urllib.parse import urlsplit
 
 from .. import keys as keysmod
@@ -28,13 +27,12 @@ from ..errors import AgentboxError
 from . import Adapter, SessionSetup
 
 C_OMP = os.path.join(HOME, ".omp")                     # ~/.omp inside the session
-PROVISIONED = ("plugins", "repos", "pylibs")
-# Still from the host's ~/.omp, and gated with the plugins for that reason: `bin/mags-codedev` is a wrapper
-# INTO `repos/mags-codedev`, so without `repos` it is only a broken command. It belongs with the
-# plugins/repos/pylibs decision (TODO.md 1.1), not before it. The Playwright browser cache is gone
-# (4 Nov): the image carries chromium and OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so the host
-# cache was a second copy nobody read.
-READONLY_FILES = ("bin/mags-codedev",)
+# The installed plugin tree and the marketplace registry beside it, at the paths OMP decides. A session
+# mounts them READ-ONLY from `~/.config/agentbox/omp/plugins`, which `ab profile install omp` builds.
+# These are the only two things a session gets for plugins, and nothing at all comes from the host's
+# ~/.omp any more (5 Nov; installer.py and decisions.md say what that replaced and why).
+TREE_DST = os.path.join(C_OMP, "plugins")
+MARKETPLACES_DST = os.path.join(C_OMP, "marketplaces.json")
 # Files Tim creates himself under ~/.config/agentbox/omp/ (never copied from ~/.omp, never parsed or cleaned:
 # he is responsible for what is in them), mounted read-only at OMP's own path when they exist.
 #
@@ -69,185 +67,56 @@ LOCKDOWN_SETTINGS = "mcp:\n  enableProjectConfig: false\n"
 PATH = f"{C_OMP}/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
+def plugin_mounts(settings, warn, plugins=True):
+    """[(host src, container dst)] for the installed plugin tree, read-only. [] when there is nothing to
+    mount, which is a normal state and not an error.
 
+    **This replaced a whitelist.** Plugins used to come from the host's `~/.omp`, which only
+    `omp-env install` produced, and most of `adapters/omp.py` existed because that directory was one
+    agentbox did not control: the provisioned-link validation, the `versions/<v>` resolution, the
+    referenced-version scan, the credential hard-link check and a mid-start recheck in case an
+    `omp-env install` moved something underneath a starting session. agentbox owns this tree, builds it
+    itself, and replaces it whole, so none of that is needed: a session mounts two paths read-only.
 
-def _plain(path, omp_home, what):
-    """A file or dir in ~/.omp that is not a symlink and resolves inside ~/.omp."""
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode):
-        raise AgentboxError(f"{what} {path} is a symlink; refusing to mount it")
-    if not _inside(os.path.realpath(path), os.path.realpath(omp_home)):
-        raise AgentboxError(f"{what} {path} resolves outside {omp_home}")
-    return os.path.realpath(path)
-
-
-VERSION_REF = re.compile(r"\.omp/versions/([A-Za-z0-9._-]+)/")
-
-
-def _version_dir(omp_home, v):
-    """~/.omp/versions/<v>, which must be a real directory (not a symlink) directly in versions/."""
-    vdir = os.path.join(omp_home, "versions", v)
-    if v in ("", ".", "..") or "/" in v or os.path.islink(vdir) or not os.path.isdir(vdir):
-        raise AgentboxError(f"{vdir} is not a real version directory; refusing to mount it")
-    return vdir
-
-
-def provisioned_targets(omp_home):
-    """{name: real dir} for plugins, repos and pylibs: each link's actual target (they may point into different
-    versions). Each must be exactly ~/.omp/versions/<v>/<name> with <v> a real directory (review 2026-10-01
-    #3: "anywhere inside ~/.omp" let `pylibs -> .` mount the whole of it, keys included)."""
-    omp_home = os.path.realpath(omp_home)
-    out = {}
-    for name in PROVISIONED:
-        link = os.path.join(omp_home, name)
-        if not os.path.lexists(link):
-            continue
-        real = os.path.realpath(link)
-        if not os.path.isdir(real):
-            raise AgentboxError(f"{link} points to {os.readlink(link) if os.path.islink(link) else link}, "
-                                "which is missing; run omp-env install")
-        v = _version_of(real, omp_home)
-        if not v or real != os.path.join(omp_home, "versions", v, name):
-            raise AgentboxError(f"{link} resolves to {real}, not to {omp_home}/versions/<version>/{name}; "
-                                "refusing to mount it")
-        _version_dir(omp_home, v)
-        out[name] = real
+    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) returns nothing. agentbox's own
+    `config.yml` still arrives either way -- the flag turns off the profile and its plugins, not
+    agentbox's configuration of the agent."""
+    from .. import installer           # local: installer imports session, which imports this package
+    if not plugins:
+        return []
+    tree = installer.tree_dir(settings, "omp")
+    if os.path.islink(tree):
+        raise AgentboxError(f"{tree} is a symlink; refusing to mount it")
+    if not os.path.isdir(tree):
+        warn(f"agentbox: no plugins installed ({tree} does not exist); OMP runs on its own built-ins. "
+             "`ab profile install omp` installs what the profile's plugins.toml declares")
+        return []
+    out = [(tree, TREE_DST)]
+    mk = os.path.join(tree, installer.MARKETPLACES_COPY)
+    if os.path.islink(mk):
+        raise AgentboxError(f"{mk} is a symlink; refusing to mount it")
+    if os.path.isfile(mk):
+        out.append((mk, MARKETPLACES_DST))
+    else:
+        warn(f"agentbox: the installed tree has no {installer.MARKETPLACES_COPY}, so marketplace plugins "
+             f"will not load; `ab profile install omp` writes it")
     return out
 
 
-# Credential files in ~/.omp. A hard link to one inside a mounted version would carry it into the sandbox.
-CREDENTIAL_FILES = ("agent/models.yml", "agent/models.yml.backup", "agent/mags-codedev.yaml", "agent/.mcp.json",
-                    "agent/mcp.json")
-URL_CREDENTIALS = re.compile(r"^\s*(?:url|pushurl)\s*=\s*\S*://[^/\s@]+@", re.M | re.I)
-
-
-def check_no_credentials(omp_home, version_dirs):
-    """Refuse if a credential file in ~/.omp has another hard link, or if a git repo in a mounted version has
-    credentials in a remote URL (the credential rule: they never enter a sandbox)."""
-    for rel in CREDENTIAL_FILES:
-        p = os.path.join(omp_home, rel)
-        try:
-            st = os.lstat(p)
-        except FileNotFoundError:
-            continue
-        if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
-            raise AgentboxError(f"{p} has {st.st_nlink - 1} other hard link(s); one may sit in a mounted "
-                                "version. Find it with `find ~/.omp -samefile <file>`; refusing to start")
-    for vdir in version_dirs:
-        repos = os.path.join(vdir, "repos")
-        if not os.path.isdir(repos):
-            continue
-        for name in sorted(os.listdir(repos)):
-            cfg = os.path.join(repos, name, ".git", "config")
-            try:
-                with open(cfg) as f:
-                    text = f.read()
-            except OSError:
-                continue
-            if URL_CREDENTIALS.search(text):
-                raise AgentboxError(f"{cfg} has credentials in a remote URL; they would enter the sandbox. "
-                                    "Remove them (e.g. `git remote set-url`), then start again")
-
-
-def _version_of(path, omp_home):
-    """The version name if `path` (a host path, or a /root/.omp path as omp-env install writes them) lies in
-    ~/.omp/versions/<version>/, else None."""
-    for prefix in (os.path.join(omp_home, "versions") + "/", "/root/.omp/versions/"):
-        if path.startswith(prefix):
-            return path[len(prefix):].split("/", 1)[0] or None
-    return None
-
-
-def referenced_versions(omp_home, plugins_dir):
-    """Versions the plugins point into: absolute links in node_modules (and @scope/ dirs) and paths in
-    package.json / omp-plugins.lock.json. Link targets and file text are read, nothing is followed."""
-    found = set()
-    nm = os.path.join(plugins_dir, "node_modules")
-    entries = []
-    if os.path.isdir(nm):
-        for e in os.listdir(nm):
-            p = os.path.join(nm, e)
-            if e.startswith("@") and os.path.isdir(p) and not os.path.islink(p):
-                entries += [os.path.join(p, x) for x in os.listdir(p)]
-            else:
-                entries.append(p)
-    for p in entries:
-        if os.path.islink(p):
-            target = os.readlink(p)
-            if not os.path.isabs(target):
-                target = os.path.normpath(os.path.join(os.path.dirname(p), target))
-            v = _version_of(target, omp_home)
-            if v:
-                found.add(v)
-    for fn in ("package.json", "omp-plugins.lock.json"):
-        try:
-            with open(os.path.join(plugins_dir, fn)) as f:
-                found |= set(VERSION_REF.findall(f.read()))
-        except OSError:
-            pass
-    return found
-
-
-def omp_mounts(omp_home, warn, plugins=True):
-    """[(host src, container dst)] from the host's ~/.omp, all read-only, and a check that the provisioned
-    links still point where they did (run again just before the container starts).
-
-    Each of plugins/repos/pylibs is mounted from its actual target, and every version directory those
-    targets live in, or that the plugins' own links point into, is mounted whole at ~/.omp/versions/<v>.
-
-    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) returns NOTHING: no plugins, repos,
-    pylibs or version directories, no `bin/mags-codedev`, and nothing to re-check, since nothing is
-    mounted. The wrapper is in there because it is a wrapper INTO `repos/mags-codedev` -- present without
-    `repos` it would only be a broken command -- so `--no-profile` means exactly "a session reads nothing
-    from the host's ~/.omp", which is the property worth having while that directory still exists at all.
-    What a session still gets either way is agentbox's own `config.yml`, from
-    `~/.config/agentbox/omp/` (prepare_session, USER_FILES)."""
-    omp_home = os.path.realpath(omp_home)
-    versions_dir = os.path.join(omp_home, "versions")
-    targets = provisioned_targets(omp_home) if plugins else {}
-    out, versions = [], set()
-    for name, real in targets.items():
-        v = _version_of(real, omp_home)
-        if v:
-            versions.add(v)
-        out.append((real, os.path.join(C_OMP, name)))
-    if "plugins" in targets:
-        versions |= referenced_versions(omp_home, targets["plugins"])
-    mounted_versions = []
-    for v in sorted(versions):
-        vdir = os.path.join(versions_dir, v)
-        if not os.path.lexists(vdir):
-            warn(f"agentbox: {omp_home}/plugins refers to version {v}, which is missing; those plugins will "
-                 "not load (run omp-env install)")
-            continue
-        _version_dir(omp_home, v)
-        mounted_versions.append(vdir)
-        out.insert(0, (vdir, os.path.join(C_OMP, "versions", v)))
-    check_no_credentials(omp_home, mounted_versions)
-    if not targets and plugins:
-        warn(f"agentbox: {omp_home} has no provisioned plugins/repos/pylibs; OMP runs without extensions "
-             "(run omp-env install)")
-    if plugins:
-        for rel in READONLY_FILES:
-            p = os.path.join(omp_home, rel)
-            if os.path.lexists(p):
-                src = _plain(p, omp_home, "OMP file")
-                if not os.path.isfile(src):
-                    raise AgentboxError(f"{p} is not a regular file")
-                out.append((src, os.path.join(C_OMP, rel)))
-
-    def unchanged():
-        if not plugins:
-            return                 # none of them is mounted, so there is nothing for a change to affect
-        now = provisioned_targets(omp_home)
-        for vdir in mounted_versions:
-            _version_dir(omp_home, os.path.basename(vdir))
-        if now != targets:
-            raise AgentboxError(f"{omp_home}: plugins/repos/pylibs changed while the session was starting "
-                                "(an omp-env install or rollback?); start it again")
-    return out, unchanged
+def plugin_notes(settings, warn, image_labels, plugins=True):
+    """Say what the tree is, and whether it still fits this image. Silent when there are no plugins."""
+    from .. import installer, plugins as plugindecl
+    if not plugins:
+        return
+    try:
+        declared = plugindecl.load(os.path.join(settings.profile_src("omp"), "plugins.toml"))
+    except AgentboxError as e:
+        warn(f"agentbox: {e}")       # a broken plugins.toml must not stop a session from starting
+        declared = None
+    if not os.path.isdir(installer.tree_dir(settings, "omp")):
+        return                        # plugin_mounts already said so
+    for line in installer.staleness(settings, "omp", image_labels, declared=declared):
+        warn(f"agentbox: {line}")
 
 
 def _walk_strings(obj):
@@ -373,9 +242,6 @@ class OmpAdapter(Adapter):
                 f"`{C_OMP}/agent/skills` and the other authored directories are the shared profile, "
                 f"read-only."]
 
-    def omp_home(self, settings):
-        return os.path.expanduser(settings.omp_home)
-
     def prepare_session(self, sess, sandbox_notes):
         s = sess.settings
         state = sess.state_dir
@@ -407,11 +273,9 @@ class OmpAdapter(Adapter):
         # pieces mounted on top; without it the runtime creates it root-owned and OMP cannot write there.
         setup = SessionSetup(mount_root=C_OMP, tmpfs=[C_OMP], model_domains=domains, keys=used)
         setup.env.update({"PATH": PATH, "PIP_CACHE_DIR": "/tmp/pip-cache"})
-        mounts, unchanged = omp_mounts(self.omp_home(s), sess.warn,
-                                       plugins=not sess.profile_off[0])
-        setup.verify.append(unchanged)
-        if any(dst == os.path.join(C_OMP, "pylibs") for _src, dst in mounts):
-            setup.env["PYTHONPATH"] = os.path.join(C_OMP, "pylibs")
+        on = not sess.profile_off[0]
+        mounts = plugin_mounts(s, sess.warn, plugins=on)
+        plugin_notes(s, sess.warn, sess.image_labels(), plugins=on)
         setup.mounts.append((agent_dir, os.path.join(C_OMP, "agent"), False))
         setup.mounts.append((logs_dir, os.path.join(C_OMP, "logs"), False))
         setup.mounts += [(src, dst, True) for src, dst in mounts]

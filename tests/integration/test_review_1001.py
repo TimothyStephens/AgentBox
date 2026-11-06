@@ -97,10 +97,10 @@ OMP_SEED = """providers:
 def setUpModule():
     global ENV
     ENV = harness.Env()
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
-    os.makedirs(os.path.join(ENV.cfg, "omp"))
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(ENV.cfg)
+    os.makedirs(os.path.join(ENV.cfg, "omp"), exist_ok=True)
     with open(os.path.join(ENV.cfg, "omp", "models.yml"), "w") as f:
         f.write(OMP_SEED)
     kdir = os.path.join(ENV.cfg, "keys")

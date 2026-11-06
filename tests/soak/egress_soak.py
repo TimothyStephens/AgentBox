@@ -166,9 +166,9 @@ def report(client, squid, cache_errors, stats):
 
 def main():
     env = harness.Env()
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(env.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(env.cfg)
     env.make_project("soak", preset="python", extra=["--egress", "packages", "--extra-domain", "example.com"],
                      secrets_files=False)
     keys = ("AB_CONFIG_DIR", "AB_DATA_DIR", "AB_RUN_DIR")

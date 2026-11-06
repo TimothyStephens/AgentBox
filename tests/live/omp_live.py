@@ -15,6 +15,7 @@ AB_LIVE_EGRESS=locked|packages|open (default packages). AB_LIVE_MODEL=<provider/
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -111,8 +112,25 @@ def main():
         f.write(f'keys_dir = "{os.path.join(REAL_CFG, "keys")}"\n')
     seed = os.path.join(REAL_CFG, "omp", "models.yml")
     if os.path.isfile(seed):
-        os.makedirs(os.path.join(env.cfg, "omp"))
+        os.makedirs(os.path.join(env.cfg, "omp"), exist_ok=True)
         shutil.copyfile(seed, os.path.join(env.cfg, "omp", "models.yml"))
+    # The REAL installed plugin tree, so this check keeps the one property only it has: that a plugin
+    # actually loads. It used to come for free, when `omp_home` defaulted to the host's ~/.omp; the tree
+    # lives in the config dir now and omp-live runs with a temporary one, so it is brought in explicitly.
+    # `cp -al` makes hard links rather than copies -- the tree is node_modules-sized -- and the session
+    # mounts it read-only, so nothing in the session can reach the real files through them.
+    real_tree = os.path.join(REAL_CFG, "omp", "plugins")
+    tree = os.path.join(env.cfg, "omp", "plugins")
+    if os.path.isdir(real_tree):
+        os.makedirs(os.path.dirname(tree), exist_ok=True)
+        cp = subprocess.run(["cp", "-al", real_tree, tree], capture_output=True, text=True)
+        if cp.returncode != 0:
+            print(f"[omp-live: could not link the plugin tree: {cp.stderr.strip()[:200]}]", flush=True)
+        else:
+            print(f"[omp-live: plugin tree linked from {real_tree}]", flush=True)
+    else:
+        print(f"[omp-live: no installed plugin tree at {real_tree}; OMP runs without plugins "
+              "(`ab profile install omp`)]", flush=True)
     extra = [] if MODE == "packages" else ["--egress", MODE]
     root = env.make_project("omplive", extra=extra, secrets_files=False)
     print(f"[omp-live run {harness.RUN}: egress {MODE}, project {root}, seed {'yes' if os.path.isfile(seed) else 'none'}]",

@@ -893,6 +893,18 @@ class Session:
             return ["bash"] + list(extra)
         return self.adapter.agent_argv(self.project.value("approvals")) + list(extra)
 
+    def image_labels(self):
+        """The labels of the image this session will run, or {} when they cannot be read.
+
+        Deliberately NOT cached. It is read twice per session (the CLI-version line in the log, and the
+        plugin tree's staleness check), so a cache saves one `podman image inspect` and costs the ability
+        to ask twice and get the truth twice -- which a test that walks three image states on one session
+        does, and which is the kind of thing a cache quietly breaks. Read as JSON, never a Go template."""
+        try:
+            return userimage.image_labels(self.podman.image_json(self.image))
+        except AgentboxError:
+            return {}
+
     def agent_cli_version(self):
         """The agent CLI version baked into the image this session runs, from the `agentbox.cli-version`
         label that `make <agent>-image` records. None if the image predates the label (rebuild to get it),
@@ -901,11 +913,7 @@ class Session:
         Read as JSON, the same way `ab image build` reads the same label, so the two cannot come to
         disagree about where the pin lives. It was a Go template, which is the habit `podman network ls`
         taught this project to drop."""
-        try:
-            doc = self.podman.image_json(self.image)
-        except AgentboxError:
-            return None
-        v = (userimage.image_labels(doc).get("agentbox.cli-version") or "").strip()
+        v = (self.image_labels().get("agentbox.cli-version") or "").strip()
         return v if v and v not in ("<no value>", "unknown") else None
 
     # ---- lifecycle ----------------------------------------------------------------------

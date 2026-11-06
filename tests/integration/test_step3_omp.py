@@ -147,12 +147,12 @@ def setUpModule():
     if not image_present():
         raise unittest.SkipTest(f"{IMAGE} missing: run make omp-image")
     ENV = harness.Env()
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(ENV.cfg)
     with open(os.path.join(ompfake.FIXTURE, "models.redacted.yml")) as f:
         seed = "".join(line for line in f if not line.strip().startswith("apiKey"))
-    os.makedirs(os.path.join(ENV.cfg, "omp"))
+    os.makedirs(os.path.join(ENV.cfg, "omp"), exist_ok=True)
     with open(os.path.join(ENV.cfg, "omp", "models.yml"), "w") as f:
         f.write(seed + SEED_EXTRA)
     # config.yml is agentbox's own since 4 Nov, not the host OMP's. The marker is what the probe below
@@ -171,7 +171,7 @@ def setUpModule():
         for fn, text in (("stub.js", STUB), ("dap_probe.py", DAP_PROBE), ("dap_target.py", DAP_TARGET)):
             with open(os.path.join(root, fn), "w") as f:
                 f.write(text)
-    print(f"\n[itest run {harness.RUN}: step 3, omp_home {omp_home}]")
+    print(f"\n[itest run {harness.RUN}: step 3, plugin tree {tree}]")
 
 
 def tearDownModule():
@@ -272,40 +272,59 @@ class Step3(unittest.TestCase):
                                        for d, _, fs in os.walk(state_logs) for f in fs)[:20])
         self.assertEqual(hits, [], "a key was written at rest on the error path")
 
-    def test_only_named_omp_files_are_visible(self):
+    def test_the_plugin_tree_is_visible_read_only_and_nothing_else_is(self):
+        """What a session gets under `~/.omp`, now that the host's one is not read at all (5 Nov).
+
+        **The read-only check is the one this feature left open.** `ab profile install` builds the tree on
+        the host; a session mounts it read-only, and if that did not hold, one session could change what
+        every later session of every project loads. A chmod stand-in could not answer it (a uid may bypass
+        the mode bits) -- only a real read-only bind mount can, which is this.
+
+        The second half is that OMP TOLERATES it: `plugin list` and `plugin doctor` are run against the
+        read-only tree and must still work, because `doctor` had reported `package.json` as "Not created
+        yet", which was OMP announcing an intention to write there."""
         p = shell("o1", "grep -rRso 'OMPCANARY:[^ ]*' ~/.omp/ /root/.omp/ | sed 's/.*OMPCANARY://' | sort -u; "
-                        # agent/ and logs/ are the project's own state (OMP creates its databases there),
-                        # so the host's files are checked there by canary only, above.
                         # .mcp.json exists as an empty read-only placeholder (review 2026-10-01 #2)
                         "test -s ~/.omp/agent/.mcp.json && echo VISIBLE:nonempty-mcp; "
-                        "for f in agent/models.yml.backup agent/mags-codedev.yaml "
-                        "agent/extensions/pi-permission-system versions/legacy-20260905172136 logs/omp.2026-07-30.log "
-                        "puppeteer stats.db .omp-sandbox.json; do "
-                        "test -e ~/.omp/$f && echo VISIBLE:$f; done; "
+                        # the tree and the registry beside it: read, never write
                         "touch ~/.omp/plugins/x 2>/dev/null && echo WRITABLE:plugins; "
+                        "touch ~/.omp/plugins/node_modules/x 2>/dev/null && echo WRITABLE:node_modules; "
+                        "touch ~/.omp/plugins/.agentbox/x 2>/dev/null && echo WRITABLE:agentbox-dir; "
+                        "( echo x >> ~/.omp/marketplaces.json ) 2>/dev/null && echo WRITABLE:marketplaces; "
+                        "test -f ~/.omp/plugins/.agentbox/install.json && echo LOCKFILE_VISIBLE; "
+                        "grep -q OMPCANARY ~/.omp/plugins/node_modules/pi-fake-ext/index.js && echo PLUGIN_VISIBLE; "
+                        # agentbox's own config, and the per-project state that IS writable
                         "touch ~/.omp/agent/config.yml 2>/dev/null && echo WRITABLE:config; "
                         "grep -q ABT_AGENTBOX_CONFIG ~/.omp/agent/config.yml && echo CONFIG_FROM_AGENTBOX; "
                         "touch ~/.omp/agent/models.yml 2>/dev/null && echo WRITABLE:models; "
                         "touch ~/.omp/agent/newfile && echo AGENT_DIR_WRITABLE; "
-                        "python -c 'import abt_pylib_probe as m; print(m.VALUE)'; "
-                        "grep -q OMPCANARY ~/.omp/plugins/node_modules/pi-fake-ext/index.js && echo PLUGIN_LINK_OK; "
-                        "cat ~/.omp/agent/models.yml | head -c 0; grep -c apiKey ~/.omp/agent/models.yml")
+                        # pylibs went with omp-env: nothing declares python libraries for plugins
+                        "python -c 'import abt_pylib_probe' 2>/dev/null && echo VISIBLE:pylibs; "
+                        # and OMP's own view of a read-only tree
+                        "omp plugin list --json > /tmp/list.json 2>/tmp/list.err && echo PLUGIN_LIST_OK; "
+                        "omp plugin doctor --json > /tmp/doctor.json 2>/tmp/doctor.err && echo PLUGIN_DOCTOR_OK; "
+                        "head -c 400 /tmp/list.json; echo; head -c 600 /tmp/doctor.json; echo; "
+                        "head -c 300 /tmp/list.err /tmp/doctor.err; "
+                        "grep -c apiKey ~/.omp/agent/models.yml")
         print(f"\n{redact(p.stdout)}\n{redact(p.stderr)[-800:]}")
         self.assertEqual(p.returncode, 0, p.stderr)
-        seen = [l.strip() for l in p.stdout.splitlines() if l.strip() and ":" not in l and not l.isdigit()
-                and l.strip() not in ("AGENT_DIR_WRITABLE", "pylibs-importable", "PLUGIN_LINK_OK",
-                                      "CONFIG_FROM_AGENTBOX")]
-        for rel in seen:
-            self.assertTrue(ompfake.is_mounted(rel), f"{rel} is visible but not in the mount list")
-        self.assertNotIn("agent/config.yml", seen,
-                         "the HOST's ~/.omp/agent/config.yml must not reach a session any more (4 Nov): "
-                         "agentbox mounts its own from ~/.config/agentbox/omp/")
-        self.assertIn("CONFIG_FROM_AGENTBOX", p.stdout, "and agentbox's own config.yml is what is there")
+        self.assertNotIn("WRITABLE:", p.stdout,
+                         "something under ~/.omp that must be read-only is writable")
         self.assertNotIn("VISIBLE:", p.stdout)
-        self.assertNotIn("WRITABLE:", p.stdout)
-        self.assertIn("AGENT_DIR_WRITABLE", p.stdout)
-        self.assertIn("pylibs-importable", p.stdout)
-        self.assertIn("PLUGIN_LINK_OK", p.stdout, "a plugin's /root/.omp/versions/... link resolves in the session")
+        self.assertIn("AGENT_DIR_WRITABLE", p.stdout, "the project's own agent state stays writable")
+        self.assertIn("CONFIG_FROM_AGENTBOX", p.stdout, "agentbox's own config.yml is what is mounted")
+        self.assertIn("PLUGIN_VISIBLE", p.stdout, "the installed tree's content is readable in a session")
+        self.assertIn("LOCKFILE_VISIBLE", p.stdout, "the lockfile travels with the tree")
+        self.assertIn("PLUGIN_LIST_OK", p.stdout, "OMP cannot read its plugin state on a read-only tree")
+        self.assertIn("PLUGIN_DOCTOR_OK", p.stdout, "OMP's doctor fails on a read-only tree")
+        # Every canary a session can see must come from the tree. The fake writes one per file, so a
+        # canary from anywhere else is a path that should not be mounted.
+        seen = sorted({l.strip() for l in p.stdout.splitlines()
+                       if l.strip() and ":" not in l and "=" not in l and not l.isdigit()
+                       and l.strip().endswith((".js", ".lock", "MARKER"))})
+        for rel in seen:
+            with self.subTest(rel=rel):
+                self.assertIn(rel, ompfake.VISIBLE, f"{rel} is visible and is not part of the tree")
 
     def test_debugger(self):
         root = os.path.join(ENV.projects, "o1")

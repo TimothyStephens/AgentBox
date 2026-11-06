@@ -119,142 +119,154 @@ class BuildModels(TempCase):
         self.assertTrue(any("'cohere' not used" in w for w in warnings))
 
 
-class OmpMounts(TempCase):
-    """Against the real layout (tests/ompfake.py): plugins -> versions/19760485e9c2, repos and pylibs ->
-    versions/c1b51fef8911, a plugin linked to /root/.omp/versions/19760485e9c2/repos/..., legacy unused."""
+class ThePluginTree(SettingsCase):
+    """`plugin_mounts`: the two paths a session reads for plugins, both read-only.
 
-    def setUp(self):
-        super().setUp()
-        self.home = ompfake.build(self.mkdir("omp"))
+    This replaced a whitelist, and the deleted tests are the measure of what owning the tree bought. They
+    checked that a provisioned link pointed at `~/.omp/versions/<v>/<name>` and nothing else, that
+    `pylibs -> .` could not mount the whole of `~/.omp` (keys included), that a version directory swapped
+    mid-start was caught, that a credential file with a second hard link refused the session, and that a
+    repo with credentials in a remote URL refused it -- every one of them there because `~/.omp` was a
+    directory agentbox did not control and `omp-env install` could change it underneath a starting
+    session. agentbox builds this tree, replaces it whole and mounts it read-only, so those questions do
+    not arise. What is left is that it mounts the right two things and refuses a symlink."""
 
-    def mounts(self):
-        return omp.omp_mounts(self.home, lambda m: None)
+    DECLARED = ("[[plugin]]\n"
+                'id = "%s"\n' % ompfake.PLUGIN_ID +
+                'marketplace = "%s"\n' % ompfake.MARKETPLACE +
+                'source = "google/elephant-goldfish-model"\n' +
+                'ref = "%s"\n' % ompfake.SHA)
 
-    def test_each_link_mounted_from_its_real_target(self):
-        mounts, _check = self.mounts()
-        c = os.path.join(HOME, ".omp")
-        by_dst = {d: s for s, d in mounts}
-        v = lambda ver, name: os.path.join(self.home, "versions", ver, name)
-        self.assertEqual(by_dst[f"{c}/plugins"], v(ompfake.PLUGINS_VERSION, "plugins"))
-        self.assertEqual(by_dst[f"{c}/repos"], v(ompfake.ACTIVE, "repos"))
-        self.assertEqual(by_dst[f"{c}/pylibs"], v(ompfake.ACTIVE, "pylibs"))
-        # config.yml and the Playwright cache left this list on 4 Nov: config.yml is agentbox's own seed
-        # now (USER_FILES), and the image's chromium replaced the host browser cache. What is left from
-        # ~/.omp is the plugins snapshot plus the MAGS wrapper, which is a wrapper INTO repos/.
-        self.assertEqual(sorted(by_dst), sorted([
-            f"{c}/versions/{ompfake.ACTIVE}", f"{c}/versions/{ompfake.PLUGINS_VERSION}",
-            f"{c}/plugins", f"{c}/repos", f"{c}/pylibs", f"{c}/bin/mags-codedev"]))
-        srcs = [s for s, _d in mounts]
-        for s in srcs:
-            self.assertTrue(ompfake.is_mounted(os.path.relpath(s, self.home)) or
-                            os.path.relpath(s, self.home) in (f"versions/{ompfake.ACTIVE}",
-                                                              f"versions/{ompfake.PLUGINS_VERSION}"), s)
-        # never: an unreferenced version, models.yml and its backup, .mcp.json, sessions, databases, extensions
-        for bad in ("agent/models.yml", "agent/models.yml.backup", "agent/.mcp.json", "agent/mags-codedev.yaml",
-                    "agent/sessions", "agent/agent.db", "agent/extensions", "versions/legacy-20260905172136",
-                    "run", "logs", "puppeteer", ".cache/pip", ".omp-sandbox.json"):
-            self.assertFalse(any(s == os.path.join(self.home, bad) or s.startswith(os.path.join(self.home, bad) + "/")
-                                 for s in srcs), bad)
+    def mounts(self, warn=None, **kw):
+        return omp.plugin_mounts(self.settings, warn or (lambda m: None), **kw)
 
-    def test_version_reached_only_through_a_plugin_link_is_mounted(self):
-        nm = os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION, "plugins", "node_modules")
-        os.makedirs(os.path.join(nm, "@scope"))
-        os.symlink("/root/.omp/versions/legacy-20260905172136/plugins", os.path.join(nm, "@scope", "old"))
-        mounts, _check = self.mounts()
-        self.assertIn(os.path.join(HOME, ".omp", "versions", "legacy-20260905172136"), [d for _s, d in mounts])
+    def test_the_tree_and_the_marketplace_registry(self):
+        tree = ompfake.build(self.cfg)
+        self.assertEqual(self.mounts(), [(tree, omp.TREE_DST),
+                                         (os.path.join(tree, ompfake.MARKETPLACES), omp.MARKETPLACES_DST)])
 
-    def test_missing_target_refused(self):
-        os.rename(os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs"),
-                  os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs.gone"))
+    def test_the_container_paths_are_the_ones_the_installer_used(self):
+        """The install records absolute paths, so the two definitions must agree or a session mounts the
+        tree somewhere its own recorded paths do not point."""
+        from agentbox import installer
+        self.assertEqual(omp.TREE_DST, installer.C_TREE)
+        self.assertEqual(omp.MARKETPLACES_DST, os.path.join(installer.C_OMP, "marketplaces.json"))
+
+    def test_no_tree_is_a_warning_and_no_mounts(self):
+        """A profile that declares plugins nobody has installed is a normal state: OMP runs on its
+        built-ins, and the session says which command fixes it."""
+        said = []
+        self.assertEqual(self.mounts(warn=said.append), [])
+        self.assertTrue([w for w in said if "ab profile install omp" in w], said)
+
+    def test_a_tree_without_marketplaces_json_warns_and_still_mounts_the_tree(self):
+        tree = ompfake.build(self.cfg)
+        os.unlink(os.path.join(tree, ompfake.MARKETPLACES))
+        said = []
+        self.assertEqual(self.mounts(warn=said.append), [(tree, omp.TREE_DST)])
+        self.assertTrue([w for w in said if "marketplace" in w], said)
+
+    def test_a_symlinked_tree_is_refused(self):
+        tree = ompfake.tree_path(self.cfg)
+        os.makedirs(os.path.dirname(tree), exist_ok=True)
+        os.symlink(self.mkdir("elsewhere"), tree)
         with self.assertRaises(AgentboxError) as cm:
             self.mounts()
-        self.assertIn("missing", str(cm.exception))
+        self.assertIn("symlink", str(cm.exception))
 
-    def test_link_changed_during_startup_refused(self):
-        _mounts, check = self.mounts()
-        check()                                              # unchanged: fine
-        os.unlink(os.path.join(self.home, "pylibs"))
-        os.makedirs(os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION, "pylibs"))
-        os.symlink(f"versions/{ompfake.PLUGINS_VERSION}/pylibs", os.path.join(self.home, "pylibs"))
-        with self.assertRaises(AgentboxError) as cm:
-            check()
-        self.assertIn("changed while the session was starting", str(cm.exception))
-
-    def test_link_out_of_omp_refused(self):
-        os.unlink(os.path.join(self.home, "pylibs"))
-        os.symlink(self.mkdir("elsewhere"), os.path.join(self.home, "pylibs"))
-        with self.assertRaises(AgentboxError):
-            self.mounts()
-
-    def test_targets_must_be_their_own_versions_entry(self):
-        """Review 2026-10-01 #3: `pylibs -> .` or `plugins -> agent` would have mounted all of ~/.omp (keys
-        included) or every project's agent dir, because only "inside ~/.omp" was checked."""
-        for name, target in (("pylibs", "."), ("plugins", "agent"), ("repos", f"versions/{ompfake.ACTIVE}"),
-                             ("pylibs", f"versions/{ompfake.ACTIVE}/repos")):
-            with self.subTest(name=name, target=target):
-                link = os.path.join(self.home, name)
-                old = os.readlink(link)
-                os.unlink(link)
-                os.symlink(target, link)
-                try:
-                    with self.assertRaises(AgentboxError):
-                        self.mounts()
-                finally:
-                    os.unlink(link)
-                    os.symlink(old, link)
-
-    def test_version_symlink_leading_out_of_versions_refused(self):
-        vdir = os.path.join(self.home, "versions", ompfake.ACTIVE)
-        elsewhere = os.path.join(self.home, "agent", "stash")
-        os.rename(vdir, elsewhere)
-        os.symlink(elsewhere, vdir)
-        with self.assertRaises(AgentboxError):
-            self.mounts()
-
-    def test_version_dir_swapped_during_startup_refused(self):
-        _mounts, check = self.mounts()
-        vdir = os.path.join(self.home, "versions", ompfake.PLUGINS_VERSION)
-        os.rename(vdir, vdir + ".moved")
-        os.symlink(os.path.join(self.home, "agent"), vdir)
-        with self.assertRaises(AgentboxError):
-            check()
-
-    def test_hard_linked_credential_file_refused(self):
-        os.link(os.path.join(self.home, "agent", "models.yml"),
-                os.path.join(self.home, "versions", ompfake.ACTIVE, "pylibs", "innocent.txt"))
+    def test_a_symlinked_marketplaces_json_is_refused(self):
+        tree = ompfake.build(self.cfg)
+        mk = os.path.join(tree, ompfake.MARKETPLACES)
+        os.unlink(mk)
+        os.symlink(os.path.join(self.tmp, "anything"), mk)
         with self.assertRaises(AgentboxError) as cm:
             self.mounts()
-        self.assertIn("hard link", str(cm.exception))
+        self.assertIn("symlink", str(cm.exception))
 
-    def test_repo_with_credentials_in_a_remote_url_refused(self):
-        git = os.path.join(self.home, "versions", ompfake.ACTIVE, "repos", "mags-codedev", ".git")
-        os.makedirs(git)
-        with open(os.path.join(git, "config"), "w") as f:
-            f.write('[remote "origin"]\n\turl = https://x-access-token:ghp_FAKE@github.com/t/r.git\n')
-        with self.assertRaises(AgentboxError) as cm:
-            self.mounts()
-        self.assertIn("mags-codedev", str(cm.exception))
-        with open(os.path.join(git, "config"), "w") as f:
-            f.write('[remote "origin"]\n\turl = https://github.com/t/r.git\n')
-        self.mounts()
+    def test_plugins_off_mounts_nothing_and_says_nothing(self):
+        ompfake.build(self.cfg)
+        said = []
+        self.assertEqual(self.mounts(warn=said.append, plugins=False), [])
+        self.assertEqual(said, [])
 
-    def test_a_symlinked_file_in_omp_home_is_refused(self):
-        """`_plain` refuses a symlink among the named files, so a link planted in ~/.omp cannot carry
-        something else into a session. Pointed at `bin/mags-codedev` since 4 Nov -- it used to use
-        `agent/config.yml`, which agentbox now provides itself and never reads from ~/.omp."""
-        wrapper = os.path.join(self.home, "bin", "mags-codedev")
-        os.unlink(wrapper)
-        os.symlink(os.path.join(self.home, "agent", "models.yml"), wrapper)
-        with self.assertRaises(AgentboxError):
-            self.mounts()
 
-    def test_unprovisioned_home_warns(self):
-        for name in ("plugins", "repos", "pylibs"):
-            os.unlink(os.path.join(self.home, name))
-        warnings = []
-        mounts, _check = omp.omp_mounts(self.home, warnings.append)
-        self.assertTrue(warnings)
-        self.assertFalse(any("/versions/" in d for _s, d in mounts))
+class TheTreesStaleness(SettingsCase):
+    """What a session says about a tree that no longer fits. The drift this feature exists to end is
+    plugins installed against one OMP and loaded by another, so a session has to be able to say so."""
+
+    def notes(self, labels, *, plugins=True):
+        said = []
+        omp.plugin_notes(self.settings, said.append, labels, plugins=plugins)
+        return said
+
+    def fits(self):
+        return {"agentbox.cli-version": ompfake.CLI_VERSION, "agentbox.node-major": ompfake.NODE_MAJOR}
+
+    def declare(self, text=None):
+        src = self.settings.profile_src("omp")
+        os.makedirs(src, mode=0o700, exist_ok=True)
+        with open(os.path.join(src, "plugins.toml"), "w") as f:
+            f.write(ThePluginTree.DECLARED if text is None else text)
+
+    def test_a_tree_that_fits_says_nothing(self):
+        ompfake.build(self.cfg)
+        self.declare()
+        self.assertEqual(self.notes(self.fits()), [])
+
+    def test_a_different_agent_version_is_reported(self):
+        ompfake.build(self.cfg)
+        self.declare()
+        said = self.notes({**self.fits(), "agentbox.cli-version": "18.99.0"})
+        self.assertEqual(len(said), 1, said)
+        self.assertIn(ompfake.CLI_VERSION, said[0])
+        self.assertIn("18.99.0", said[0])
+        self.assertIn("ab profile install omp", said[0])
+
+    def test_a_different_node_major_is_reported(self):
+        """node 22 under a 26 tag was invisible for a day (5 Nov). A tree built against the wrong node is
+        the same class of thing, and this is where it surfaces."""
+        ompfake.build(self.cfg)
+        self.declare()
+        said = self.notes({**self.fits(), "agentbox.node-major": "22"})
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("node major", said[0])
+
+    def test_an_unreadable_label_says_nothing_rather_than_guessing(self):
+        """This reports and decides nothing: an image whose labels cannot be read is not evidence."""
+        ompfake.build(self.cfg)
+        self.declare()
+        self.assertEqual(self.notes({}), [])
+
+    def test_an_edited_plugins_toml_is_reported(self):
+        ompfake.build(self.cfg)
+        self.declare('[[npm]]\nname = "pi-lens"\nversion = "4.4.9"\n')
+        said = self.notes(self.fits())
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("plugins.toml has changed", said[0])
+
+    def test_a_broken_plugins_toml_warns_but_does_not_stop_the_session(self):
+        ompfake.build(self.cfg)
+        self.declare('[[npm]]\nname = "pi-lens"\nversion = "latest"\n')
+        said = self.notes(self.fits())
+        self.assertTrue([w for w in said if "not an exact version" in w], said)
+
+    def test_a_tree_with_no_lockfile_is_reported(self):
+        tree = ompfake.build(self.cfg)
+        os.unlink(os.path.join(tree, ompfake.LOCKFILE))
+        self.declare()
+        said = self.notes(self.fits())
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("install.json", said[0])
+
+    def test_nothing_is_said_when_there_is_no_tree_at_all(self):
+        """`plugin_mounts` already said it, and saying it twice trains the reader to skim."""
+        self.declare()
+        self.assertEqual(self.notes(self.fits()), [])
+
+    def test_nothing_is_said_with_the_profile_off(self):
+        ompfake.build(self.cfg)
+        self.declare()
+        self.assertEqual(self.notes(self.fits(), plugins=False), [])
 
 
 class OmpSessionBase(SettingsCase):
@@ -264,14 +276,13 @@ class OmpSessionBase(SettingsCase):
 
     def setUp(self):
         super().setUp()
-        self.omp_home = ompfake.build(self.mkdir("omp"))
-        with open(os.path.join(self.cfg, "agentbox.toml"), "a") as f:
-            f.write(f'omp_home = "{self.omp_home}"\n')
-        os.makedirs(os.path.join(self.cfg, "omp"))
+        # The installed plugin tree, where `ab profile install omp` puts it. There is no setting pointing
+        # anywhere else since 5 Nov: the host's ~/.omp is not read at all, so a test that wants plugins
+        # puts a tree in the config dir it already controls.
+        self.tree = ompfake.build(self.cfg)
+        os.makedirs(os.path.join(self.cfg, "omp"), exist_ok=True)
         with open(os.path.join(self.cfg, "omp", "models.yml"), "w") as f:
             f.write(seed_without_keys())
-        # config.yml is agentbox's own seed since 4 Nov, not the host OMP's. The fake ~/.omp still has one
-        # (with a canary in it), which is what lets the test below prove the host copy is not the one used.
         with open(os.path.join(self.cfg, "omp", "config.yml"), "w") as f:
             f.write("# agentbox's own config.yml\n{}\n")
         self.set_key("openai", self.KEY)
@@ -337,11 +348,14 @@ class OmpSession(OmpSessionBase):
             self.assertTrue(m[0].endswith(",ro"), m[0])
             self.assertTrue(os.path.isfile(os.path.join(agent_state, fn)), fn)
         for m in mounts:
-            if f"src={self.omp_home}" in m or f"src={os.path.realpath(self.omp_home)}" in m:
+            if f"src={self.tree}" in m or f"src={os.path.realpath(self.tree)}" in m:
                 self.assertTrue(m.endswith(",ro"), m)
         self.assertIn(f"--mount=type=tmpfs,dst={c},tmpfs-mode=0700,U=true,notmpcopyup", mounts)  # user-owned ~/.omp
         self.assertIn("--approval-mode=yolo", argv)                        # python preset: approvals off
-        self.assertIn(f"--env=PYTHONPATH={c}/pylibs", argv)
+        # No PYTHONPATH: `pylibs` was an omp-env directory of python libraries for plugins, and nothing
+        # declares one (plugins.toml has no [[pylib]] section, deliberately). It comes back with a
+        # section, pinned and hashed, if a plugin ever needs it.
+        self.assertFalse([a for a in argv if a.startswith("--env=PYTHONPATH=")])
 
     def test_user_files_mounted_only_when_created(self):
         warnings = []
@@ -370,34 +384,67 @@ class OmpSession(OmpSessionBase):
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
         self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
 
-    def test_config_yml_comes_from_agentbox_not_from_the_host_omp(self):
-        """The point of the 4 Nov move. It used to be mounted from `~/.omp/agent/config.yml` -- the host
-        OMP's OWN config -- so changing the default model of the OMP Tim runs himself changed it for every
-        agentbox session. The fake ~/.omp has a config.yml with a canary in it; a session must not see it."""
+    def test_config_yml_comes_from_agentboxs_own_seed(self):
+        """The point of the 4 Nov move: it used to be mounted from `~/.omp/agent/config.yml`, the host
+        OMP's OWN config, so changing the default model of the OMP Tim runs himself changed it for every
+        agentbox session. There is no host copy left to compare against -- no code path reads a host OMP
+        home at all (5 Nov) -- so what is pinned here is that it comes from the seed, read-only."""
         s = self.make()
         c = os.path.join(HOME, ".omp")
         m = [x for x in s.setup.mounts if x[1] == f"{c}/agent/config.yml"]
         self.assertEqual(len(m), 1, "config.yml is still mounted, from agentbox's own seed")
         self.assertEqual(m[0][0], os.path.join(self.cfg, "omp", "config.yml"))
         self.assertTrue(m[0][2], "read-only")
-        host_copy = os.path.join(self.omp_home, "agent", "config.yml")
-        self.assertTrue(os.path.isfile(host_copy), "the fake host home still has one, or this proves nothing")
-        self.assertNotIn(host_copy, [src for src, _d, _ro in s.setup.mounts])
 
-    def test_nothing_from_the_host_omp_but_the_plugin_snapshot_and_the_mags_wrapper(self):
-        """What shrinking the ~/.omp list is FOR: after config.yml and the Playwright cache left it, the
-        only reason a session reads the host's ~/.omp at all is the plugins/repos/pylibs snapshot (plus the
-        MAGS wrapper, which is a wrapper into repos/ and goes with that decision -- TODO.md 1.1)."""
+    def test_every_source_a_session_mounts_is_agentboxs_own(self):
+        """The property the whole `~/.omp` story was working towards, and it is structural now rather
+        than a whitelist: every mount source is under agentbox's config dir, its data dir or this
+        session's run dir. Nothing a session reads comes from a directory agentbox does not own -- so
+        there is no host OMP install to validate, race, or be surprised by."""
         s = self.make()
-        real = os.path.realpath(self.omp_home)
-        from_host = sorted(os.path.relpath(os.path.realpath(src), real)
-                           for src, _d, _ro in s.setup.mounts
-                           if os.path.realpath(src).startswith(real + os.sep))
-        self.assertTrue(from_host, "nothing came from the host home at all, so this proves nothing")
-        for rel in from_host:
-            with self.subTest(rel=rel):
-                self.assertTrue(rel.startswith("versions/") or rel == "bin/mags-codedev",
-                                f"{rel} is still read from the host's ~/.omp")
+        owned = tuple(os.path.realpath(d) + os.sep for d in
+                      (self.cfg, self.data, self.settings.session_run_dir(s.name), s.project.root))
+        for src, dst, _ro in s.setup.mounts:
+            with self.subTest(dst=dst):
+                self.assertTrue(os.path.realpath(src).startswith(owned),
+                                f"{src} is outside everything agentbox owns")
+        self.assertIn(self.tree, [src for src, _d, _ro in s.setup.mounts],
+                      "the installed tree is mounted, or this test is vacuous")
+
+    def test_no_code_path_reads_a_host_omp_home(self):
+        """Belt to the braces above: the adapter no longer has the words. `omp_home` was a setting, and
+        with it went `provisioned_targets`, `referenced_versions`, `_version_dir`, `_plain` and
+        `check_no_credentials` -- about 160 lines whose only reason to exist was that ~/.omp belonged to
+        omp-env."""
+        import inspect
+        src = inspect.getsource(omp)
+        for gone in ("omp_home", "provisioned_targets", "referenced_versions", "check_no_credentials",
+                     "PROVISIONED"):
+            self.assertNotIn(gone, src, f"{gone} is back")
+        from agentbox import config
+        self.assertNotIn("omp_home", config.DEFAULTS)
+        self.assertIn("omp_home", config.RETIRED, "an old agentbox.toml must be told, not refused")
+
+    def test_an_old_agentbox_toml_with_omp_home_still_starts(self):
+        """Removing a setting must not brick an install that used it. Refusing to start would punish
+        whoever was using the feature we removed; ignoring the line silently would leave them believing it
+        still does something. So it reports what replaced it and carries on -- and an unknown setting is
+        still refused, because that is a typo and not a retirement."""
+        import contextlib
+        import io
+        from agentbox import config
+        with open(os.path.join(self.cfg, "agentbox.toml"), "a") as f:
+            f.write('omp_home = "/nonexistent"\n')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            s = config.load()
+        self.assertIn("omp_home is no longer used", err.getvalue())
+        self.assertIn("ab profile install omp", err.getvalue())
+        self.assertEqual(s.name_prefix, "abt-unit-", "the rest of the file still applied")
+        with open(os.path.join(self.cfg, "agentbox.toml"), "a") as f:
+            f.write('ompp_home = "/typo"\n')
+        with self.assertRaises(ValueError):
+            config.load()
 
     def test_code_paths_in_agent_state_are_read_only(self):
         """Review 2026-10-01 #2: a session cannot plant an extension, hook, tool or MCP server in the

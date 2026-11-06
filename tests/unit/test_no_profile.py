@@ -188,10 +188,12 @@ class TheSettingItself(SettingsCase):
 
 
 class OmpWithoutTheProfile(OmpSessionBase):
-    """OMP has a second half: the `~/.omp` plugins/repos/pylibs snapshot. `--no-profile` drops it too."""
+    """OMP has a second half: the installed plugin tree. `--no-profile` drops it too.
 
-    PLUGIN_DSTS = tuple(f"{omp.C_OMP}/{n}" for n in omp.PROVISIONED)
-    VERSIONS = f"{omp.C_OMP}/versions/"
+    It used to be the host's `~/.omp` snapshot, and the flag's property was "a session reads nothing from
+    the host's ~/.omp". Since 5 Nov nothing reads that directory at all, so the property is now about the
+    tree agentbox builds: with the flag, a session gets no plugins -- and still gets agentbox's own
+    configuration of the agent, which is a different thing from the profile."""
 
     def make(self, preset="python", *, no_profile=False, **extra):
         self.project("p1", preset=preset, **extra)
@@ -205,49 +207,34 @@ class OmpWithoutTheProfile(OmpSessionBase):
     def dsts(self, s):
         return {m.split("dst=")[1].split(",")[0] for m in s.run_args(["true"]) if "--mount=" in m}
 
-    def test_the_plugin_marker_is_there_with_the_profile_on(self):
-        """The control. ompfake builds a real layout: plugins -> versions/<v>/plugins, and so on."""
+    def test_the_tree_is_mounted_with_the_profile_on(self):
+        """The control. Without it, every test below would pass with the tree never mounted at all."""
         dsts = self.dsts(self.make())
-        for d in self.PLUGIN_DSTS:
-            self.assertIn(d, dsts)
-        self.assertTrue([d for d in dsts if d.startswith(self.VERSIONS)])
+        self.assertIn(omp.TREE_DST, dsts)
+        self.assertIn(omp.MARKETPLACES_DST, dsts)
 
-    def test_the_flag_drops_every_plugin_mount(self):
+    def test_the_flag_drops_the_tree_and_the_marketplace_registry(self):
         dsts = self.dsts(self.make(no_profile=True))
-        for d in self.PLUGIN_DSTS:
-            self.assertNotIn(d, dsts)
-        self.assertEqual([d for d in dsts if d.startswith(self.VERSIONS)], [],
-                         "and the version directories that exist only to serve them")
+        self.assertNotIn(omp.TREE_DST, dsts)
+        self.assertNotIn(omp.MARKETPLACES_DST, dsts)
 
     def test_the_project_setting_drops_them_too(self):
         dsts = self.dsts(self.make(profile="off"))
-        for d in self.PLUGIN_DSTS:
-            self.assertNotIn(d, dsts)
+        self.assertNotIn(omp.TREE_DST, dsts)
+        self.assertNotIn(omp.MARKETPLACES_DST, dsts)
 
-    def test_pythonpath_is_not_set_when_pylibs_is_not_mounted(self):
-        self.assertIn("PYTHONPATH", self.make().setup.env)
-        self.assertNotIn("PYTHONPATH", self.make(no_profile=True).setup.env)
+    def test_nothing_of_the_tree_reaches_the_session_under_the_flag(self):
+        """By source, not by destination: a mount of the tree at some other path would still be the tree."""
+        s = self.make(no_profile=True)
+        tree = os.path.realpath(self.tree)
+        self.assertEqual([src for src, _d, _ro in s.setup.mounts
+                          if os.path.realpath(src) == tree
+                          or os.path.realpath(src).startswith(tree + os.sep)], [])
 
     def test_agentboxs_own_config_still_arrives(self):
         """`config.yml` comes from `~/.config/agentbox/omp/`, which `--no-profile` does not touch: the flag
         turns off the PROFILE and the plugins, not agentbox's own configuration of the agent."""
         self.assertIn(f"{omp.C_OMP}/agent/config.yml", self.dsts(self.make(no_profile=True)))
-
-    def test_nothing_at_all_comes_from_the_host_omp(self):
-        """What `--no-profile` means for OMP since 4 Nov. `bin/mags-codedev` used to survive it, on the
-        grounds that a MAGS wrapper is not an extension -- but it is a wrapper INTO `repos/`, which the
-        flag does drop, so all it did was leave a broken command behind. Gated with the plugins, the flag
-        now has a property worth stating: a session reads NOTHING from the host's ~/.omp."""
-        s = self.make(no_profile=True)
-        real = os.path.realpath(self.omp_home)
-        from_host = [src for src, _d, _ro in s.setup.mounts
-                     if os.path.realpath(src) == real or os.path.realpath(src).startswith(real + os.sep)]
-        self.assertEqual(from_host, [])
-        self.assertNotIn(f"{omp.C_OMP}/bin/mags-codedev", self.dsts(s))
-
-    def test_the_wrapper_is_there_with_the_profile_on(self):
-        """The control, so the test above is not passing because nothing mounts it either way."""
-        self.assertIn(f"{omp.C_OMP}/bin/mags-codedev", self.dsts(self.make()))
 
     def test_the_profile_load_paths_are_dropped_as_well(self):
         s = self.make(no_profile=True)
@@ -255,13 +242,11 @@ class OmpWithoutTheProfile(OmpSessionBase):
         with open(s.log_path("profile")) as f:
             self.assertEqual(f.read().splitlines()[0], "profile omp=off reason=flag")
 
-    def test_a_mid_start_plugin_change_is_not_checked_when_nothing_is_mounted(self):
-        """`unchanged()` guards the mounts against an `omp-env install` racing the session start. With no
-        plugin mounted there is nothing for a change to affect, so it must not refuse the session."""
-        s = self.make(no_profile=True)
-        os.rename(os.path.join(self.omp_home, "plugins"), os.path.join(self.omp_home, "plugins.gone"))
-        for check in s.setup.verify:
-            check()
+    def test_the_staleness_notes_are_silent_under_the_flag(self):
+        """Nothing is mounted, so a tree that does not fit this image is not this session's problem."""
+        said = []
+        omp.plugin_notes(self.settings, said.append, {"agentbox.cli-version": "99.0.0"}, plugins=False)
+        self.assertEqual(said, [])
 
 
 if __name__ == "__main__":

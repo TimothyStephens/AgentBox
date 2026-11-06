@@ -10,6 +10,7 @@ Every path can be moved with an environment variable so tests never touch the re
   AB_REPOS_DIR    default ~/repos                   (where `ab init` scaffolds new projects)
 """
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 
@@ -48,7 +49,6 @@ DEFAULTS = {
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
     "repos_dir": "~/repos",  # where `ab init` scaffolds new projects (AB_REPOS_DIR overrides)
     "session_idle_warn_hours": 6,  # ab session ls flags, and warns about, a running session idle longer than this
-    "omp_home": "~/.omp",  # the host's OMP install; only named pieces of it are mounted (adapters/omp.py)
 }
 
 
@@ -112,6 +112,14 @@ class Settings:
         return os.path.join(self.run_dir, "sessions", session)
 
 
+# Settings that existed and do not any more, with what replaced them. Read by `load` so an old
+# agentbox.toml reports instead of refusing to start (or worse, being silently ignored).
+RETIRED = {
+    "omp_home": "OMP plugins come from the tree `ab profile install omp` builds, not from the host's "
+                "~/.omp (5 Nov 2026)",
+}
+
+
 def load():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     config_dir = os.environ.get("AB_CONFIG_DIR") or os.path.join(HOME, ".config", "agentbox")
@@ -124,6 +132,13 @@ def load():
         with open(path, "rb") as f:
             user = tomllib.load(f)
         for k, v in user.items():
+            if k in RETIRED:
+                # A setting that used to exist is not an unknown setting. Refusing to start over one would
+                # punish whoever was using the feature we removed; ignoring it silently would leave them
+                # believing it still does something. So: say what replaced it, and carry on.
+                print(f"ab: {path}: {k} is no longer used -- {RETIRED[k]}. Remove the line.",
+                      file=sys.stderr)
+                continue
             if k not in DEFAULTS:
                 raise ValueError(f"{path}: unknown setting {k!r}")
             values[k] = v

@@ -75,6 +75,38 @@ def read_lock(settings, agent):
     return doc if isinstance(doc, dict) else None
 
 
+def staleness(settings, agent, image_labels, declared=None):
+    """Lines a session should say out loud about the installed tree. [] when there is nothing to say.
+
+    Three questions, each answered only when it CAN be -- an unreadable anything produces silence rather
+    than a guess, because this reports and decides nothing:
+
+      * is there a lockfile? A tree without one was not put there by `ab profile install`.
+      * was it built against this image? The drift this whole feature exists to end is plugins installed
+        against one OMP and loaded by another, so the agent CLI version and the node major are compared.
+      * does it still match what the profile declares? Compared against the DECLARATION, entry by entry,
+        not against the profile hash -- editing a skill changes the hash and has nothing to do with the
+        plugins, and a warning that cries wolf is one nobody reads.
+    """
+    lock = read_lock(settings, agent)
+    if lock is None:
+        return [f"the installed plugin tree at {tree_dir(settings, agent)} has no readable "
+                f"{LOCKFILE}, so what is in it cannot be told; `ab profile install {agent}` rebuilds it"]
+    out = []
+    was = lock.get("image") or {}
+    for key, label, what in (("cli_version", "agentbox.cli-version", "agent version"),
+                             ("node_major", "agentbox.node-major", "node major")):
+        then, now = (was.get(key) or "").strip(), (image_labels.get(label) or "").strip()
+        if then and now and then != now:
+            out.append(f"plugins were installed against {what} {then}; this session runs {now}. "
+                       f"`ab profile install {agent}` rebuilds them against this image")
+    if declared is not None:
+        if [_declared(e) for e in declared] != (lock.get("declared") or []):
+            out.append(f"plugins.toml has changed since the last install; the tree is what the previous "
+                       f"one declared. `ab profile install {agent}`")
+    return out
+
+
 def clone_url(source):
     """The https URL to clone a marketplace source from. GitHub shorthand (`owner/repo`) is what
     `/marketplace add` takes and what the profile uses; a URL is already one."""

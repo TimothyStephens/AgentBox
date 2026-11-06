@@ -51,9 +51,9 @@ def setUpModule():
         if harness.podman("image", "exists", img).returncode != 0:
             raise unittest.SkipTest(f"{img} not present")
     ENV = harness.Env()
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(ENV.cfg)
     for name, preset, extra in (("dv", "python", ["--podman", "dev"]), ("dvp", "pods", [])):
         root = ENV.make_project(name, preset=preset, extra=extra)
         with open(os.path.join(root, "Containerfile"), "w") as f:

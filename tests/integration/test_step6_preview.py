@@ -46,9 +46,9 @@ def setUpModule():
         raise unittest.SkipTest(f"{IMG} not present")
     ENV = harness.Env()
     from tests import ompfake
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(ENV.cfg)
     ENV.make_project("pv", preset="python", extra=["--podman", "dev"], secrets_files=False)
     keys = ("AB_CONFIG_DIR", "AB_DATA_DIR", "AB_RUN_DIR")
     OLD_ENV.update({k: os.environ.get(k) for k in keys})

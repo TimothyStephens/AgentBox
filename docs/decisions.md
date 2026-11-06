@@ -2258,3 +2258,79 @@ which is the source the deployed copy comes from. So the installer was right and
 old one. Worth writing down because it is the same distinction as everywhere else in the profile
 mechanism: the repo is what you edit and review, the deployed profile is what a session (and now an
 install) actually reads.
+
+## 6 November 2026 -- `~/.omp` stops being an input
+
+The commit the whole `ab profile install` item was for. A session's plugins now come from the tree
+agentbox builds, mounted read-only, and **no code path reads a host OMP install at all.**
+
+**Two mounts replace a whitelist.** `plugin_mounts` returns `<config>/omp/plugins` at `~/.omp/plugins` and
+that tree's `.agentbox/marketplaces.json` at `~/.omp/marketplaces.json`, both read-only. What went with
+the old one: `PROVISIONED`, `provisioned_targets`, `referenced_versions`, `_version_of`, `_version_dir`,
+`_plain`, `check_no_credentials`, `CREDENTIAL_FILES`, `URL_CREDENTIALS`, `VERSION_REF`, `READONLY_FILES`
+and the mid-start `unchanged()` recheck -- about 160 lines, and **every one of them existed because
+`~/.omp` was a directory agentbox did not control**: a link that had to resolve to
+`versions/<v>/<name>` and nothing else, a `pylibs -> .` that would have mounted the whole of `~/.omp`
+(keys included), a version directory swapped while a session was starting, a credential file with a second
+hard link, a repo with credentials in a remote URL. agentbox builds this tree and replaces it whole, so
+the questions do not arise. The deleted tests are the honest measure of that, and the replacement tests
+say so where a reader will find them.
+
+**`pylibs` is gone, and so is `PYTHONPATH`.** It was an omp-env directory of python libraries for plugins;
+nothing declares one (`plugins.toml` has no `[[pylib]]` section, deliberately), so setting `PYTHONPATH`
+into a path that does not exist would be a leftover pretending to be a feature. It comes back as a pinned,
+hashed section if a plugin ever needs it.
+
+**`bin/mags-codedev` is gone with it.** MAGS arrives as a `[[repo]]` entry now -- an OMP extension, which
+is what it is -- so the wrapper into `repos/mags-codedev` has nothing to wrap. It was already dead in
+practice: Tim moved `~/.omp` aside on 5 Nov, so sessions had been getting nothing there for a day. If the
+`mags-codedev` **CLI** turns out to be wanted inside a session, the checkout is in the tree
+(`.agentbox/sources/mags-codedev`) and the answer is a small feature, not a resurrection of this one.
+
+**A removed setting reports instead of refusing.** `omp_home` is out of `DEFAULTS` and into a new
+`config.RETIRED` map, so an `agentbox.toml` that still sets it prints what replaced it and carries on.
+Refusing to start would punish exactly the person who was using the feature we removed; ignoring the line
+silently would leave them believing it still does something. The behaviour is tested both ways -- a
+retired key loads and warns, an unknown key still raises, because that is a typo and not a retirement.
+
+**Staleness, in three questions a session can answer.** `installer.staleness` reports: a tree with no
+readable lockfile; a tree built against a different agent CLI version or node major than the image this
+session runs; and a `plugins.toml` that has changed since the install. The second is the drift this whole
+item existed to end. The third compares the **declaration**, entry by entry, rather than the profile hash
+-- editing a skill changes the hash and has nothing to do with plugins, and a warning that cries wolf is
+one nobody reads. Each question is answered only when it can be: unreadable labels produce silence, not a
+guess, because this reports and decides nothing.
+
+**`Session.image_labels()` is deliberately not cached.** It is read twice per session; a cache would save
+one `podman image inspect` and cost the ability to ask twice and get the truth twice -- which is what a
+test walking three image states on one session object does, and what a cache quietly breaks.
+
+**The itests changed shape, not depth.** `tests/ompfake.py` builds an installed tree instead of a fake
+`~/.omp` (node_modules, a marketplace cache, OMP's own `package.json`/`bun.lock`/`installed_plugins.json`,
+and `.agentbox/`), and every itest that used to write `omp_home` into a temp `agentbox.toml` now just
+builds a tree in the config dir it already owns -- there is nothing to point anywhere. Two of them needed
+care rather than a sed: `test_review_1001` and `test_step3_omp` created `<cfg>/omp` with a bare
+`os.makedirs` *after* the fake had already created `<cfg>/omp/plugins`, which would have been a
+`FileExistsError` in `setUpModule` and a whole module erroring out. Found by reading, like the four last
+time.
+
+**And the question this feature left open is now a test.** `test_step3_omp` writes to the tree, to
+`node_modules`, to `.agentbox/` and to `marketplaces.json` from inside a session and requires every one to
+fail -- a real read-only bind mount, which is the only thing that can answer it (a `chmod` stand-in
+cannot: a uid may bypass the mode bits). It then runs `omp plugin list --json` and `omp plugin doctor
+--json` against the read-only tree and requires both to work, because `doctor` had reported
+`package.json` as "Not created yet", which was OMP announcing an intention to write there. If OMP turns
+out to insist, the fallback is a writable tmpfs over `installed_plugins.json` and `omp-plugins.lock.json`
+-- but that is a prediction, and `make itest` is what settles it.
+
+**`make omp-live` keeps its one unique property on purpose.** It is the only check that proves a plugin
+actually loads, and it used to get the real plugins for free because `omp_home` defaulted to `~/.omp`. It
+now links Tim's real installed tree into its temporary config dir with `cp -al` -- hard links, because the
+tree is node_modules-sized, and the session mounts it read-only so nothing can reach the real files
+through them. Without a tree it says so and carries on, rather than quietly testing OMP with no plugins.
+
+1150 unit tests, 0 failures, 0 errors, 0 ResourceWarnings; 85/85 guard checks. Eight mutations red,
+including the four that matter: the tree mounted read-write, a symlinked tree followed, `--no-profile`
+ignoring the tree, and staleness never reporting a mismatch. One was GREEN first time -- the retired-setting
+test asserted the map contained the key rather than that an old `agentbox.toml` still loads, which is the
+assertion-shaped-hole version of the same lesson as yesterday.

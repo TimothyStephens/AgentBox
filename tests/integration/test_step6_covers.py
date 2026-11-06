@@ -34,9 +34,9 @@ def setUpModule():
             raise unittest.SkipTest(f"{img} not present")
     ENV = harness.Env()
     from tests import ompfake
-    omp_home = ompfake.build(os.path.join(harness.BASE, "omp"))
-    with open(os.path.join(ENV.cfg, "agentbox.toml"), "a") as f:
-        f.write(f'omp_home = "{omp_home}"\n')
+    # The installed plugin tree, where `ab profile install omp` puts it: there is no
+    # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
+    tree = ompfake.build(ENV.cfg)
     RO = os.path.join(ENV.projects, "covro")
     harness._write(os.path.join(RO, "data.txt"), "read-only grant\n")
     ROOT = ENV.make_project("cov", preset="python", extra=["--podman", "dev", "--data-ro", RO],
