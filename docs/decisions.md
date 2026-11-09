@@ -2361,3 +2361,68 @@ every `ref` already a sha, **the declaration is the lock**, and re-running the i
 tree -- the lockfile the install writes is a receipt (what OMP reported, which image it was built
 against), not an input. `--resolve` is worth having and is on the backlog (TODO 2.1) with its shape
 written down: one line per entry, `declared -> current`, in the same hardened container, no clone needed.
+
+## 9 November 2026 -- Claude Code plugins: the profile declares, `ab profile install claude` pins, the session declares in settings
+
+**What failed.** `./build.sh install` in `agentbox-profile-claude` ran `ab profile install claude` and got
+`plugins.toml: [[plugin]] #1: unknown key(s) name (allowed: id, marketplace, ref, source)`. The Claude
+profile's `plugins.toml` (3 Nov) and agentbox's `plugins.py` (5 Nov) had been written apart: the profile
+said `name = "egm@egm"` and put the GitHub shorthand in `marketplace`; agentbox's format, taken from the
+OMP profile, says `id`, `marketplace` (the catalog's own name), `source`, `ref`. And `installer.py` only
+knew how to install for OMP: `omp plugin ...` commands, a tree at `~/.omp/plugins`.
+
+**How Claude Code loads a plugin, from a probe in a session** (throwaway `CLAUDE_CONFIG_DIR`s under
+/tmp, Claude Code 2.1.318):
+
+- `claude plugin marketplace add <dir>` then `claude plugin install egm@egm` writes
+  `plugins/known_marketplaces.json`, `plugins/installed_plugins.json` and, in user `settings.json`,
+  `extraKnownMarketplaces` (source `directory`, that path) and `enabledPlugins`.
+- **`settings.json` alone does it.** A fresh config dir holding only those two keys registered the
+  marketplace and installed the plugin at the first interactive start (the `-p` run needed a token to
+  get that far; before login the marketplace was registered and the plugin was not).
+- **A directory marketplace is read in place.** `plugin list` says `Read from: <the directory>`; no copy
+  under `plugins/cache` is made on the settings-driven path (the CLI install path does copy). The
+  directory's git HEAD is recorded as `gitCommitSha`. Two consecutive starts against a directory with
+  all write bits removed loaded the plugin and touched nothing in it.
+- **A `github` or `git` source in `extraKnownMarketplaces`, with or without a `ref`, was not registered**
+  in the `-p` runs, token or no token. Whether that is "remote sources are added asynchronously and the
+  one-turn run exited first" or "not honoured from user settings" is not settled and does not need to
+  be: the pin has to be agentbox's either way, which is what the 5 Nov decision said for OMP.
+
+**So the design is OMP's with less in it.** `ab profile install claude` runs the same hardened container
+(sealed networks, squid with `packages` egress and no model-host rule, nothing mounted but the tree) and
+its script only clones each catalog at the declared sha into `<tree>/<marketplace>`, verifies HEAD,
+checks with python that the clone's `.claude-plugin/marketplace.json` names itself as declared and lists
+the plugin, and writes `state.json` from the clones. No agent command runs -- there is no install step,
+and `claude plugin install` would write into a config dir no session has. The tree lives at
+`~/.config/agentbox/claude/plugins/`, beside OMP's. A session mounts it read-only at
+`/run/agentbox/claude/marketplaces` and merges `extraKnownMarketplaces` and `enabledPlugins` into the
+copied `settings.json`, generated from the same `plugins.toml` (merged into, not over, anything the
+profile's own settings.json declares). Generating rather than committing the keys keeps container
+paths out of the profile repo and makes `--no-profile` drop them for nothing.
+
+**Choices made on the way:**
+
+- `plugins.sections_for(agent)`: Claude takes `[[plugin]]` only. An `[[npm]]` or `[[repo]]` entry in a
+  Claude profile is refused by name ("cannot be used by this agent"), not installed as nothing.
+- **Lockdown loads no Claude plugins**, as it loads no OMP extensions (15 Oct): a plugin can carry
+  hooks and MCP servers, and lockdown is "nothing runs unasked". The profile's skills still load there.
+- A declared plugin whose catalog the tree lacks is named in a warning and not enabled: an
+  `enabledPlugins` entry for a directory that is not there would be a startup error inside the sandbox,
+  reported to nobody. Staleness (plugins.toml edited since the install, tree built against another
+  Claude Code version) is reported through the same `installer.staleness` OMP uses.
+- `session._check_setup` now accepts an adapter mount under the agent's config dir (`state_mount`) as
+  well as under `SessionSetup.mount_root` -- the pair `_add_profile_mounts` already allowed and its
+  docstring already claimed. Claude's root is `/etc/claude-code`, and only with approvals on, so
+  without this a Claude adapter could mount nothing. The adapter makes the mount point itself, under
+  the state dir, for the reason `_own_mount_point` gives.
+- The Claude profile's `tools/check.py` now applies the installer's rules (all four keys, unknown key
+  and OMP-only section are errors, charset and length, shorthand-or-https source, 40-hex ref), so
+  `check` cannot pass what `ab profile install` refuses -- which is the failure this started from.
+
+**Not verified from inside a sandbox, and the gate for this item:** one `ab profile install claude` on
+the host, then a real session in which `/egm-review` is in the skill list and the session log shows the
+mount. The read-only result above used removed write bits, not a bind mount; `make claude-live` is
+where that is proved, as `make omp-live` proved it for OMP on 6 Nov. `${CLAUDE_PLUGIN_ROOT}` resolving
+to the mounted directory for an in-place plugin is inferred (it is the only copy), not observed.
+`make test`: 1150 -> 1179.

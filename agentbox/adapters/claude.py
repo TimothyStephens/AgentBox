@@ -12,14 +12,27 @@ settings.json is the exception: Claude Code writes it itself (it records
 `skipDangerousModePermissionPrompt` on first start with approvals off), so a read-only one would fail at
 every launch. It is copied from the profile into the state dir at every start instead, which keeps the host
 profile authoritative without pretending the file is immutable.
+
+Plugins (9 Nov) come the same way the profile does: `ab profile install claude` clones each marketplace
+the profile's `plugins.toml` declares, at its sha, into `~/.config/agentbox/claude/plugins/<marketplace>`;
+a session mounts that tree READ-ONLY at `/run/agentbox/claude/marketplaces` and writes two keys into the
+copied settings.json -- `extraKnownMarketplaces` (source `directory`, that path) and `enabledPlugins`.
+Claude Code registers the marketplace and enables the plugin at startup, reads the plugin from the mounted
+directory in place, and keeps its own records (`plugins/known_marketplaces.json`, `installed_plugins.json`)
+in the per-project state, where it can write. The probe that settled this is in decisions.md.
 """
 import json
 import os
 import re
 
+from ..errors import AgentboxError
 from . import Adapter, SessionSetup
 
 MANAGED_DIR = "/etc/claude-code"
+# The installed plugin tree's path in a session, and the state-dir name under it (state_mirrors maps the
+# config dir onto the state dir, so the mount point is `<state>/marketplaces`).
+MARKETPLACES_DST = "/run/agentbox/claude/marketplaces"
+MARKETPLACES_NAME = "marketplaces"
 # Per-project state directories that used to be where skills and sub-agents accumulated: whatever a session
 # wrote there is moved to the project's inbox once, since those paths are read-only mounts now (profile.py).
 MIGRATE_TO_INBOX = ("skills", "agents", "CLAUDE.md")
@@ -137,6 +150,23 @@ class ClaudeAdapter(Adapter):
             # settings, not reported as a change the user made on a fresh project (7 Oct).
             _merge_settings(os.path.join(sess.state_dir, "settings.json"), {"skipDangerousModePermissionPrompt": True})
         setup = SessionSetup()
+        # Plugins follow the profile, and are off in lockdown as OMP's are (decisions.md, 15 Oct): lockdown
+        # is "nothing runs unasked", and a plugin can carry hooks and MCP servers.
+        on = not sess.profile_off[0] and approvals_off
+        mounts, keys = plugin_setup(sess.settings, sess.warn, sess.image_labels(), plugins=on)
+        if mounts:
+            # The mount point is made here, under the state dir, so the runtime does not create it root-owned
+            # in the middle of the agent's config dir (session._own_mount_point says why that matters).
+            os.makedirs(os.path.join(sess.state_dir, MARKETPLACES_NAME), mode=0o700, exist_ok=True)
+            setup.mounts += [(src, dst, True) for src, dst in mounts]
+        if keys:
+            # Merged INTO the profile's own values for these two keys, not over them: a marketplace the
+            # profile's settings.json declares itself stays declared.
+            path = os.path.join(sess.state_dir, "settings.json")
+            had = _read_json(path)
+            had = had if isinstance(had, dict) else {}
+            _merge_settings(path, {k: {**(had.get(k) if isinstance(had.get(k), dict) else {}), **v}
+                                   for k, v in keys.items()})
         if not approvals_off:
             path = os.path.join(sess.settings.session_run_dir(sess.name), "claude-managed-settings.json")
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -145,6 +175,56 @@ class ClaudeAdapter(Adapter):
             setup.mount_root = MANAGED_DIR
             setup.mounts.append((path, f"{MANAGED_DIR}/managed-settings.json", True))
         return setup
+
+
+def plugin_setup(settings, warn, image_labels, plugins=True):
+    """([(host src, container dst)], {settings keys}) for the installed plugin tree. ([], {}) when there is
+    nothing to load, which is a normal state and not an error.
+
+    Both come from the same declaration, read fresh: the tree is mounted whole, and a marketplace is
+    declared to Claude Code only when the profile names it AND the tree holds its catalog. A declared
+    marketplace the tree lacks is said out loud with the command that fixes it, and nothing is declared for
+    it -- an `enabledPlugins` entry pointing at a directory that is not there is a startup error Claude
+    Code would report inside the sandbox, to nobody.
+
+    `plugins=False` (`ab run --no-profile`, `profile = "off"`, or lockdown) returns nothing and reads
+    nothing, so the profile's own settings.json is what the session gets, unchanged."""
+    from .. import installer, plugins as plugindecl   # local: installer imports session, which imports this package
+    if not plugins:
+        return [], {}
+    try:
+        declared = plugindecl.load(os.path.join(settings.profile_src("claude"), "plugins.toml"),
+                                   plugindecl.sections_for("claude"))
+    except AgentboxError as e:
+        warn(f"agentbox: {e}; no plugins are loaded this session")   # a broken file must not stop a session
+        return [], {}
+    if not declared:
+        return [], {}
+    tree = installer.tree_dir(settings, "claude")
+    if os.path.islink(tree):
+        raise AgentboxError(f"{tree} is a symlink; refusing to mount it")
+    if not os.path.isdir(tree):
+        warn(f"agentbox: no plugins installed ({tree} does not exist); Claude Code runs without "
+             f"{', '.join(e.id for e in declared)}. `ab profile install claude` installs what the profile's "
+             "plugins.toml declares")
+        return [], {}
+    for line in installer.staleness(settings, "claude", image_labels, declared=declared):
+        warn(f"agentbox: {line}")
+    marketplaces, enabled, missing = {}, {}, []
+    for e in declared:
+        manifest = os.path.join(tree, e.marketplace, installer.CLAUDE_MANIFEST)
+        if os.path.islink(manifest) or not os.path.isfile(manifest):
+            missing.append(e.id)
+            continue
+        marketplaces[e.marketplace] = {"source": {"source": "directory",
+                                                  "path": f"{MARKETPLACES_DST}/{e.marketplace}"}}
+        enabled[e.id] = True
+    if missing:
+        warn(f"agentbox: the installed tree has no catalog for {', '.join(missing)}; not enabled this "
+             "session. `ab profile install claude` rebuilds the tree from plugins.toml")
+    if not enabled:
+        return [], {}
+    return [(tree, MARKETPLACES_DST)], {"extraKnownMarketplaces": marketplaces, "enabledPlugins": enabled}
 
 
 def _merge_settings(path, defaults):

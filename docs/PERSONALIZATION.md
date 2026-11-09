@@ -79,7 +79,8 @@ persists across sessions of that project. The host `~/.claude` is never used.
 | Config dir (`CLAUDE_CONFIG_DIR`) | `~/.local/share/agentbox/<project>/claude/` | `/run/agentbox/claude/` | per-project, persistent | rw |
 | `skills/`, `agents/`, `commands/` | `~/.config/agentbox/claude/profile/` (the **profile**) | `/run/agentbox/claude/{skills,agents,commands}` | **global** (every project, every preset) | **ro** |
 | `CLAUDE.md` | the profile's own, with the sandbox notes prepended | `/run/agentbox/claude/CLAUDE.md`, generated per session | **global** | **ro** |
-| `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start | **global** | rw copy |
+| `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start, then the plugin keys below are merged in | **global** | rw copy |
+| Plugins (marketplace catalogs) | `~/.config/agentbox/claude/plugins/<marketplace>/`, built by `ab profile install claude` from the profile's `plugins.toml` | `/run/agentbox/claude/marketplaces/<marketplace>`, declared to Claude Code in the copied `settings.json` (`extraKnownMarketplaces`, `enabledPlugins`) | **global**, except lockdown (none) | **ro** |
 | Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/<agent>/inbox/` (under `ephemeral/<session>/` in lockdown) | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** (lockdown: deleted at teardown) | rw |
 | Managed policy (lockdown / approvals on) | generated in `<run>/sessions/<s>/claude-managed-settings.json` | `/etc/claude-code/managed-settings.json` | per-session | ro |
 | Repo config (`CLAUDE.md`, `.mcp.json`, `.claude/`) | the project repo (its real path) | same real path (the grant) | per-project (committed) | rw (ro where covered) |
@@ -106,8 +107,20 @@ persists across sessions of that project. The host `~/.claude` is never used.
 - **Turning the profile off:** `ab run --no-profile` for one run, or `ab project set <p> --profile off` for
   good. That drops the mounts, the copied `settings.json`, the profile text in `CLAUDE.md`, the plugins and
   the image layer; agentbox's own session notes still apply.
-- **Plugins / slash commands:** Claude has no plugin tree like OMP; its reusable pieces are slash commands in
-  `commands/`. Put them in the profile (global, read-only) or in the project's `.claude/commands/`.
+- **Plugins** (9 Nov): declared in the profile's `plugins.toml` as `[[plugin]]` entries (`id`, `marketplace`,
+  `source`, `ref`; the same format as OMP's, and Claude takes `[[plugin]]` only). `ab profile install claude`
+  clones each marketplace catalog at its sha into `~/.config/agentbox/claude/plugins/<marketplace>`, in the
+  same sandboxed container the OMP install uses, and checks the clone names itself as declared and lists the
+  plugin. A session mounts that tree read-only at `/run/agentbox/claude/marketplaces` and merges two keys
+  into the copied `settings.json`: `extraKnownMarketplaces` with a `directory` source at that path, and
+  `enabledPlugins`. Claude Code registers the marketplace and enables the plugin at startup, reading it from
+  the mounted directory in place (no copy is made, and a read-only directory is fine), and writes its own
+  records under `plugins/` in the per-project config dir. A declared plugin whose catalog is not in the tree
+  is named in a warning and not enabled; a tree that no longer matches `plugins.toml`, or was built against
+  another Claude Code version, is reported the same way as OMP's. Lockdown sessions load no plugins (as OMP's
+  do not, 15 Oct), and `--no-profile` loads none.
+- **Slash commands:** reusable pieces that are not a plugin are slash commands in `commands/`. Put them in
+  the profile (global, read-only) or in the project's `.claude/commands/`.
 - **Memory shortcuts:** a `#` note aimed at the *project's* `CLAUDE.md` works as usual (it is in the grant,
   and the end-of-session scan now reports it); aimed at the *user-level* `CLAUDE.md` it fails, because that
   file is generated and read-only. The session notes say so and point at the inbox.

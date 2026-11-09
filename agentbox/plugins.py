@@ -73,6 +73,11 @@ KEYS = {"plugin": {"id", "marketplace", "source", "ref"},
         "repo": {"name", "url", "ref", "extension_dir"}}
 REQUIRED = {"plugin": KEYS["plugin"], "npm": KEYS["npm"], "repo": {"name", "url", "ref"}}
 SECTIONS = ("plugin", "npm", "repo")
+# Which sections each agent's plugins.toml may use. OMP has three ways a plugin can arrive (above). Claude
+# Code has one: a marketplace catalog, loaded from a directory a session can see (the probe of 9 Nov,
+# decisions.md). An `[[npm]]` or `[[repo]]` entry in a Claude profile is a declaration nothing could honour,
+# so it is refused by name rather than installed as nothing.
+AGENT_SECTIONS = {"omp": SECTIONS, "claude": ("plugin",)}
 # The npm entries install into `node_modules/` of the installed tree; each repo entry is a directory beside
 # it, named by its `name`. So that one name is reserved.
 NPM_DIR = "node_modules"
@@ -138,9 +143,18 @@ def _check_omp_name(name, what, field):
                       f"starting and ending with a letter or digit, at most {OMP_NAME_MAX} characters")
 
 
-def parse(text):
+def sections_for(agent):
+    """The sections an agent's plugins.toml may use; every section for an agent this module does not know,
+    so the per-agent rule can only narrow what is accepted, never widen it."""
+    return AGENT_SECTIONS.get(agent, SECTIONS)
+
+
+def parse(text, sections=SECTIONS):
     """[Entry] in file order, every rule checked. Raises AgentboxError on anything doubtful; returns [] for
-    an empty file, because an agent with no plugins declared is a normal state and not an error."""
+    an empty file, because an agent with no plugins declared is a normal state and not an error.
+
+    `sections` narrows which kinds are allowed (`sections_for(agent)`): a section the file format knows but
+    this agent cannot use is refused with a message saying so, which is a different thing from a typo."""
     try:
         doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -149,8 +163,12 @@ def parse(text):
     if unknown:
         _refuse("file", f"unknown section(s) {', '.join(unknown)} "
                         f"(expected {', '.join('[[%s]]' % s for s in SECTIONS)})")
+    not_here = sorted(set(doc) & (set(SECTIONS) - set(sections)))
+    if not_here:
+        _refuse("file", f"section(s) {', '.join('[[%s]]' % s for s in not_here)} cannot be used by this "
+                        f"agent (it takes {', '.join('[[%s]]' % s for s in sections)} only)")
     out = []
-    for kind in SECTIONS:
+    for kind in sections:
         tables = doc.get(kind, [])
         if not isinstance(tables, list):
             _refuse(f"[{kind}]", f"must be written as [[{kind}]], one table per entry")
@@ -230,7 +248,7 @@ def _check_unique(entries):
         seen.add((e.kind, e.label))
 
 
-def load(path):
+def load(path, sections=SECTIONS):
     """[Entry] for a profile's plugins.toml; [] when there is none. A symlink is refused, as everywhere
     else in the profile: it would be followed out of the profile and into the installed tree."""
     if os.path.islink(path):
@@ -246,7 +264,7 @@ def load(path):
         text = raw.decode()
     except UnicodeDecodeError:
         raise AgentboxError(f"{path} is not UTF-8 text")
-    return parse(text)
+    return parse(text, sections)
 
 
 def npm_args(entries):

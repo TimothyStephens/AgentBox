@@ -30,6 +30,18 @@ their recorded paths are valid in a session too), OMP's `marketplaces.json` copi
 session gets it read-only; copied rather than bind-mounted, because a tool that rewrites a file atomically
 cannot rename over a bind mount), the state OMP reported, and `install.json` -- the lockfile, which lives
 with the tree because it describes the tree.
+
+**Claude Code's tree is simpler, for a reason the probe of 9 Nov found** (decisions.md). Claude Code loads
+a marketplace *in place* when its source is a directory: `settings.json` can declare the marketplace
+(`extraKnownMarketplaces`, source `directory`) and the plugin (`enabledPlugins`), and the agent registers
+both at startup, reading the plugin from that directory and writing its own records into its config dir --
+which in a session is the per-project state, read-write. So there is no `claude plugin install` step to
+run here and nothing records an absolute path into the tree. The install is the pin and nothing else: each
+catalog cloned into `<tree>/<marketplace>/` at the declared sha, checked, and a lockfile. The session mounts
+the tree read-only at `/run/agentbox/claude/marketplaces` and generates the two settings keys from the same
+`plugins.toml` (adapters/claude.py). A remote source declared in settings was tried and is not used: a
+`github` or `git` source, with or without a `ref`, was silently not registered at startup, and the pin has
+to be agentbox's in any case.
 """
 import json
 import os
@@ -52,6 +64,19 @@ LOCK_VERSION = 1
 # session as well as in the installer.
 C_OMP = os.path.join(HOME, ".omp")
 C_TREE = os.path.join(C_OMP, "plugins")
+# Claude Code's tree: one directory per marketplace, mounted read-only under the agent's config dir.
+# Nothing Claude Code writes records this path except the `settings.json` the launcher generates per
+# session, so the install mounts it here for the same reason OMP's is: one definition, used twice.
+C_CLAUDE_TREE = "/run/agentbox/claude/marketplaces"
+TREE_DST = {"omp": C_TREE, "claude": C_CLAUDE_TREE}
+
+
+def tree_dst(agent):
+    """The container path an agent's installed tree is mounted at, in the installer and in a session."""
+    try:
+        return TREE_DST[agent]
+    except KeyError:
+        raise AgentboxError(f"`ab profile install` does not know where {agent} loads plugins from")
 
 
 def tree_dir(settings, agent):
@@ -155,6 +180,70 @@ def _script(entries, *, tree=C_TREE):
     return "\n".join(lines) + "\n"
 
 
+# Claude Code's catalog manifest, and the python that checks a clone IS the marketplace the profile named
+# and lists the plugin the profile asked for. Run in the install container, which has python3 from
+# agentbox-base. Checked here, at install time, because a session that loads a catalog under the wrong name
+# would enable `egm@egm` from a marketplace calling itself something else -- and Claude Code would say so
+# only at startup, in a sandbox, to nobody.
+CLAUDE_MANIFEST = ".claude-plugin/marketplace.json"
+_CLAUDE_CHECK = ("import json,sys; d=json.load(open(sys.argv[1])); m,p=sys.argv[2],sys.argv[3]; "
+                 "ok=d.get('name')==m and any(isinstance(x,dict) and x.get('name')==p "
+                 "for x in d.get('plugins') or []); "
+                 "sys.exit(0 if ok else 'marketplace %r does not name itself %r or has no plugin %r' "
+                 "% (sys.argv[1], m, p))")
+# What a Claude tree's state.json says: each marketplace directory, the commit it is at, and the plugin
+# names its manifest lists. Written by the script, from the clones, so it reports what is in the tree and
+# not what was asked for.
+_CLAUDE_STATE = ("import json,subprocess,sys; out=[]\n"
+                 "for arg in sys.argv[2:]:\n"
+                 "    name, path = arg.split('=', 1)\n"
+                 "    d = json.load(open(path + '/" + CLAUDE_MANIFEST + "'))\n"
+                 "    sha = subprocess.run(['git', '-C', path, 'rev-parse', 'HEAD'], capture_output=True, "
+                 "text=True, check=True).stdout.strip()\n"
+                 "    out.append({'name': name, 'commit': sha, "
+                 "'plugins': [x.get('name') for x in d.get('plugins') or [] if isinstance(x, dict)]})\n"
+                 "json.dump({'marketplace': out}, open(sys.argv[1], 'w'), indent=1, sort_keys=True)\n")
+
+
+def _claude_script(entries, *, tree=C_CLAUDE_TREE):
+    """The shell a Claude install runs: clone each catalog at its sha into `<tree>/<marketplace>`, check it
+    is the catalog the profile named, and write the state. No agent command runs: the session's generated
+    settings.json is what makes Claude Code load the directory."""
+    q = shlex.quote
+    lines = ["set -eu"]
+    seen = {}
+    for e in entries:
+        path = f"{tree}/{e.marketplace}"
+        plugin = e.id.partition("@")[0]
+        if e.marketplace in seen:
+            # Two plugins from one catalog: one clone, and it must be the same pin, or the second entry
+            # silently changes what the first one loads.
+            if seen[e.marketplace] != e.ref:
+                raise AgentboxError(f"plugins.toml: marketplace {e.marketplace!r} is declared at two different "
+                                    f"refs ({seen[e.marketplace]}, {e.ref}); one catalog has one commit")
+        else:
+            seen[e.marketplace] = e.ref
+            lines += [f"rm -rf {q(path)}",
+                      f"git clone --quiet {q(clone_url(e.source))} {q(path)}",
+                      f"git -C {q(path)} checkout --quiet {q(e.ref)}",
+                      f"git -C {q(path)} rev-parse HEAD | grep -Fxq {q(e.ref)}"]
+        lines.append(f"python3 -I -c {q(_CLAUDE_CHECK)} {q(f'{path}/{CLAUDE_MANIFEST}')} "
+                     f"{q(e.marketplace)} {q(plugin)}")
+    lines.append(f"mkdir -p {q(f'{tree}/{OURS}')}")
+    lines.append(f"python3 -I -c {q(_CLAUDE_STATE)} {q(f'{tree}/{STATE}')} "
+                 + " ".join(q(f"{m}={tree}/{m}") for m in seen))
+    return "\n".join(lines) + "\n"
+
+
+def script_for(agent, entries):
+    """The install script for an agent's declaration."""
+    if agent == "claude":
+        return _claude_script(entries)
+    if agent == "omp":
+        return _script(entries)
+    raise AgentboxError(f"`ab profile install` has no installer for {agent}")
+
+
 class Install:
     """One install: its networks, its proxy, its container. Named like a session (`<prefix>install-<agent>`)
     and labelled the same way, so `make clean`, `ab session gc` and the leftover checks see it."""
@@ -204,24 +293,28 @@ class Install:
         opts = [f"--label={k}={v}" for k, v in self.labels("install").items()]
         opts += hardening.fixed_flags(s, cgroup_parent=s.cgroup_parent)
         opts.append(f"--tmpfs={HOME}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
-        # ~/.omp has to be a tmpfs OF THE CONTAINER USER, exactly as the OMP adapter makes it for a
-        # session (`SessionSetup(tmpfs=[C_OMP])`). Without this line podman creates `~/.omp` itself, as
-        # the mount point for the tree below it -- owned by root inside the HOME tmpfs -- and the container
-        # runs as the host uid under `--userns=keep-id`, so OMP's first write there fails:
-        #   ✘ Failed to add marketplace: EACCES: permission denied, open '~/.omp/marketplaces.json.tmp'
-        # (host, 5 Nov). Everything OMP writes outside the tree lands here and goes with the container;
-        # what has to survive is copied into the tree by the script.
-        opts.append(f"--tmpfs={C_OMP}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
+        tmpfs_dirs = ["/tmp", HOME]
+        if self.agent == "omp":
+            # ~/.omp has to be a tmpfs OF THE CONTAINER USER, exactly as the OMP adapter makes it for a
+            # session (`SessionSetup(tmpfs=[C_OMP])`). Without this line podman creates `~/.omp` itself, as
+            # the mount point for the tree below it -- owned by root inside the HOME tmpfs -- and the
+            # container runs as the host uid under `--userns=keep-id`, so OMP's first write there fails:
+            #   ✘ Failed to add marketplace: EACCES: permission denied, open '~/.omp/marketplaces.json.tmp'
+            # (host, 5 Nov). Everything OMP writes outside the tree lands here and goes with the container;
+            # what has to survive is copied into the tree by the script. A Claude install runs no agent
+            # command and writes nothing outside the tree, so it needs no second tmpfs.
+            opts.append(f"--tmpfs={C_OMP}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
+            tmpfs_dirs.append(C_OMP)
         opts.append(f"--network={self.int_net}")
         env = {"HOME": HOME, "AGENTBOX_SESSION": self.name, **egress.proxy_env(self.proxy_name)}
         opts += [f"--env={k}={v}" for k, v in env.items()]
         # The one thing mounted, read-write, AT THE PATH A SESSION WILL SEE IT AT.
-        opts.append(f"--mount=type=bind,src={os.path.realpath(self.tree)},dst={C_TREE}")
-        opts.append(f"--workdir={C_TREE}")
+        dst = tree_dst(self.agent)
+        opts.append(f"--mount=type=bind,src={os.path.realpath(self.tree)},dst={dst}")
+        opts.append(f"--workdir={dst}")
         opts.append("--entrypoint=/bin/sh")
         hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=[os.path.realpath(self.tree)],
-                        allowed_mount_dsts=[C_TREE], networks=[self.int_net],
-                        tmpfs_dirs=("/tmp", HOME, C_OMP))
+                        allowed_mount_dsts=[dst], networks=[self.int_net], tmpfs_dirs=tuple(tmpfs_dirs))
         return args + opts + [self.adapter.image, "-c", script]
 
     def start_infra(self):
@@ -267,11 +360,11 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
     The tree is replaced, not updated: an install is "make the tree be what the file says", so a plugin
     removed from `plugins.toml` is gone from the tree rather than left behind to be discovered later."""
     src = settings.profile_src(agent)
-    entries = plugins.load(os.path.join(src, "plugins.toml"))
+    entries = plugins.load(os.path.join(src, "plugins.toml"), plugins.sections_for(agent))
     if not entries:
         raise AgentboxError(f"{os.path.join(src, 'plugins.toml')} declares no plugins; nothing to install")
     job = Install(settings, agent, podman=podman, warn=warn)
-    script = _script(entries)
+    script = script_for(agent, entries)
     if dry_run:
         warn(f"agentbox: would install {plugins.summary(entries)} into {job.tree}")
         return {"dry_run": True, "script": script, "entries": [_declared(e) for e in entries]}
@@ -289,8 +382,9 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
     finally:
         job.teardown()
     doc = _lock(settings, agent, entries, pin, job.tree)
-    warn(f"agentbox: installed. {len(doc['state'].get('npm', []))} npm and "
-         f"{len(doc['state'].get('marketplace', []))} marketplace plugin(s) reported by OMP")
+    counts = ", ".join(f"{len(v or [])} {kind}" for kind, v in sorted(doc["state"].items())
+                       if isinstance(v, list))
+    warn(f"agentbox: installed. The tree reports {counts or 'nothing'}")
     return doc
 
 

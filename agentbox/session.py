@@ -702,11 +702,16 @@ class Session:
             _no_commas(dst, "adapter tmpfs")
             if not st.mount_root or not _inside(dst, st.mount_root):
                 raise AgentboxError(f"adapter tmpfs {dst} is not under the adapter's root {st.mount_root!r}")
+        # The same pair of roots `_add_profile_mounts` allows: the adapter's declared root and the agent's
+        # own config dir. Claude's plugin tree goes under the second (its root is /etc/claude-code, and
+        # only with approvals on); a mount ON either root, or anywhere else, is refused.
+        roots = [r for r in (st.mount_root, self.adapter.state_mount) if r]
         for src, dst, _ro in st.mounts:
             _no_commas(src, "adapter mount")
             _no_commas(dst, "adapter mount")
-            if not st.mount_root or not _inside(dst, st.mount_root) or dst == st.mount_root:
-                raise AgentboxError(f"adapter mount {dst} is not under the adapter's root {st.mount_root!r}")
+            if not any(_inside(dst, r) and dst != r for r in roots):
+                raise AgentboxError(f"adapter mount {dst} is not under the adapter's root "
+                                    f"({', '.join(roots) or 'none'})")
         for path in st.project_covers:
             _no_commas(path, "project cover")
             if not _inside(path, self.project.root) or path == self.project.root:

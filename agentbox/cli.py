@@ -706,7 +706,10 @@ def cmd_profile_install(s, a):
           f"node {doc['image'].get('node_major') or '?'})")
     for kind in ("npm", "marketplace"):
         for item in doc["state"].get(kind, []) or []:
-            print(f"  {kind:<12} {item.get('name') or item.get('id')} {item.get('version', '')}".rstrip())
+            detail = item.get("version") or (item.get("commit") or "")[:12]
+            if item.get("plugins"):
+                detail += f" ({', '.join(item['plugins'])})"
+            print(f"  {kind:<12} {item.get('name') or item.get('id')} {detail}".rstrip())
     print(f"  lockfile {os.path.join(tree, installer.LOCKFILE)}")
     print("Sessions mount this read-only. `ab profile install` again after editing plugins.toml.")
     return 0
@@ -1248,7 +1251,7 @@ def parser(settings=None):
     x.set_defaults(fn=cmd_profile_promote)
     x = add(prof_p, "install", "install the plugins the profile declares, in a sandbox, into a tree "
                                "sessions mount read-only",
-            ex("ab profile install omp", "ab profile install omp --dry-run"))
+            ex("ab profile install omp", "ab profile install claude", "ab profile install omp --dry-run"))
     x.add_argument("agent", choices=adapters.NAMES, help="whose plugins.toml to install")
     x.add_argument("--dry-run", action="store_true",
                    help="print what would be installed and the script that would run; change nothing")

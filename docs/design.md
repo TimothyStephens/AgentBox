@@ -588,6 +588,17 @@ sandbox notes followed by the profile's own). Four properties follow:
 `settings.json` is the one exception: Claude Code writes it itself, so it is **copied** from the profile into
 the per-project state at every start rather than mounted read-only.
 
+**Claude Code plugins** (9 Nov) are profile content of the same kind, pinned by `ab profile install claude`
+from the profile's `plugins.toml` (`[[plugin]]` entries only; the format is `plugins.py`'s, shared with OMP).
+The install clones each marketplace catalog at its sha into `~/.config/agentbox/claude/plugins/<marketplace>`
+and checks the clone is the catalog named. A session mounts that tree **read-only** at
+`/run/agentbox/claude/marketplaces` and merges `extraKnownMarketplaces` (source `directory`, that path) and
+`enabledPlugins` into the copied `settings.json`; Claude Code registers both at startup and reads the plugin
+from the directory in place, keeping its own records in the per-project config dir. The probe that settled
+the mechanism (decisions.md, 9 Nov) also found that a `github`/`git` source declared in settings is not
+registered at startup, so the pin is agentbox's, as it is for OMP. Lockdown loads no plugins (15 Oct);
+`--no-profile` loads none.
+
 **Turning it off** (4 Nov): `ab run --no-profile` for one run, or `profile = "off"` on the project for good
 (`ab project set <p> --profile off`; the session log records `profile <agent>=off reason=flag|project`). Off
 means off at every door the profile reaches a session through — the read-only mounts, the items copied into
