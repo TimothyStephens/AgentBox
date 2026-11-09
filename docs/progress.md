@@ -51,6 +51,12 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Done
 
+- **One project is one directory; a reused name is checked** (9 Nov): project state moved from `<data>/<name>/`,
+  `<data>/backups/<name>/` and `<data>/built-images/<name>.json` to `<data>/projects/<name>/{<agent>,backups,built-images.json}`
+  (a project named `logs` used to put its transcripts inside the kept logs; `purge` left the gate's build record behind). A
+  flat data dir migrates on the next `ab`. `projects/<name>/project.json` records the root; `ab project add`/`ab init`
+  refuse the name for another root without `--fresh` (archive) or `--reattach`; a session start checks too. `purge`
+  deletes the directory whole. decisions.md, 9 Nov.
 - **CLI: session commands grouped under `ab session`** (this commit): the session-management verbs moved from top level to `ab session ls` / `kill` / `gc` / `preview`, mirroring `ab project`; `ab run`, `ab init`, `ab selftest` stay top-level. Clean cutover, no aliases (pre-release). Two noun namespaces now: `ab project` (durable config) and `ab session` (running instances). Docs, help text, warnings and tests updated; `make test` 494 OK.
 - **Fifth-review H-series confirmed + forgotten-session guards**: H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab session ls` shows start/age/idle and flags long-idle running sessions; `ab run` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab run` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
 - **`ab init` scaffolding**: `ab init <pod|python> --name <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.

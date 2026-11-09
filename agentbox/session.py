@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, profile, projectkeys, projectlock, registry, tokens
 from . import keys as keysmod
-from . import buildcap, builtrec, scan, sockguard, userimage
+from . import buildcap, builtrec, config, layout, scan, sockguard, userimage
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -509,6 +509,9 @@ class Session:
         if found:
             self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
                       "are readable by the agent (accepted as rotated)")
+        # The state this session is about to mount must be this project's (layout.py): a registry edited by
+        # hand to another root would otherwise hand it another project's memory and built-image record.
+        layout.check_session(self.settings, p.name, p.root)
         self.reserve_name()
         try:
             self._prepare_reserved(do_backup)
@@ -587,11 +590,11 @@ class Session:
             gr = os.path.realpath(g)
             return [os.path.relpath(c, gr) for c in covered
                     if c != gr and c.startswith(gr.rstrip("/") + "/")]
-        backup.snapshot(self.settings.backups_dir, p.name, self.name, [p.root] + p.data_rw,
+        backup.snapshot(self.settings.project_backups_dir(p.name), self.name, [p.root] + p.data_rw,
                         skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
                         exclude_rel_for=covers_rel,
                         warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
-        backup.retain(self.settings.backups_dir, p.name, keep=int(self.settings.backup_keep),
+        backup.retain(self.settings.project_backups_dir(p.name), keep=int(self.settings.backup_keep),
                       daily_days=int(self.settings.backup_daily_days))
 
     @property
@@ -1224,7 +1227,7 @@ class Session:
             "build_memory": int(self.project.build_memory),
             "holder": self.holder_name, "registries": list(sockguard.REGISTRIES),
             "images": list(self.project.dev_images), "spool": os.path.join(service_tmp(s, self.name), "gate"),
-            "built_record": builtrec.path_for(s.data_dir, self.project.name),
+            "built_record": s.built_record(self.project.name),
             "build_proxy_env": build_env, "build_dns": build_dns,
             "log": os.path.join(svc, "gate.log"),
         }
@@ -1467,7 +1470,7 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
     inbox = settings.inbox_dir(project, adapter.name)
     moved, removed, unreadable, stuck = [], [], [], []
     for name in adapter.migrate_to_inbox:
-        # Always the project's own WRITABLE state (`<data>/<project>/<agent>/<name>`) -- never the profile's
+        # Always the project's own WRITABLE state (`<data>/projects/<project>/<agent>/<name>`) -- never the profile's
         # read-only snapshot, which is a different path and is what gets mounted ON TOP of this one.
         src = os.path.join(src_dir, name)
         if not os.path.exists(src) or os.path.islink(src):
@@ -1684,16 +1687,28 @@ def ephemeral_state(settings, session):
     return os.path.join(settings.data_dir, "ephemeral", session)
 
 
-def reset_state(settings, project, now=None):
-    """Move a project's agent state (every agent's) into the backups dir. Returns (moved from, moved to) or
-    None when there is none."""
-    src = os.path.join(settings.data_dir, project)
-    if not os.path.isdir(src) or not os.listdir(src):
+def reset_state(settings, project, now=None, *, built_record=False):
+    """Move a project's agent state (every agent's directory) into `<project>/backups/agent-state-<stamp>/`.
+    With `built_record`, the gate's record of the project's built images goes with it (`ab project add
+    --fresh`: a new project under an old name must not inherit images it may run). The identity file, the
+    lock and the grant backups stay. Returns (the project dir, the archive) or None when there is nothing."""
+    src = settings.project_dir(project)
+    names = [agent for agent, _ in settings.agent_state_dirs(project)]
+    record = settings.built_record(project)
+    if built_record and os.path.isfile(record):
+        names.append(config.BUILT_RECORD)
+    if not names:
         return None
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now or time.time()))
-    dst = os.path.join(settings.backups_dir, project, f"agent-state-{stamp}")
-    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
-    os.rename(src, dst)
+    dst = os.path.join(settings.project_backups_dir(project), f"agent-state-{stamp}")
+    os.makedirs(dst, mode=0o700)
+    for name in names:
+        os.rename(os.path.join(src, name), os.path.join(dst, name))
+    for leftover in (record + ".lock",):
+        try:
+            os.unlink(leftover)
+        except FileNotFoundError:
+            pass
     return src, dst
 
 

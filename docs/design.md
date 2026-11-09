@@ -156,7 +156,7 @@ The only per-agent code. An adapter declares, and the launcher validates:
 
 - image and launch command;
 - read-only config paths; the launcher rewrites the model config so provider keys are exported from per-provider files at start (the key gateway is deferred — see Model key gateway);
-- read-write state, scoped per project, under `~/.local/share/agentbox/<project>/<agent>/`;
+- read-write state, scoped per project, under `~/.local/share/agentbox/projects/<project>/<agent>/`;
 - secrets as read-only single files, only where the harness cannot use the gateway;
 - paths that must be tmpfs (OMP's `run`);
 - a generated `AGENTS.md` describing the real sandbox, including the project's preset and egress mode;
@@ -473,7 +473,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | `~/.omp` in the session | A tmpfs owned by the agent, with the pieces above mounted on it; `run/` and caches live there and vanish with the session |
 | Model config (`models.yml`) | Generated per session from a keyless seed (`~/.config/agentbox/omp/models.yml`): only providers with a key file (`ab keys set`), plus the local model server always; keys are named by variable, exported at start like the Claude token |
 | Key-handling contract (stated in the session's `AGENTS.md`) | Provider keys go through `ab keys` (regenerated into a keyless `models.yml` that is never mounted). `config.yml` and plugins are mounted read-only into every session — never put secrets there (the launcher does not scan them; keys staying out is a convention about where OMP keeps them, see decisions.md) |
-| Sessions, OMP's databases, logs | Per project, read-write: `~/.local/share/agentbox/<project>/omp/{agent,logs}` at `~/.omp/agent` and `~/.omp/logs`; sessions are named after the project's real path. The places OMP loads code from (`agent/extensions`, `hooks`, `tools`, `.mcp.json`, `mcp.json`, `settings.json`) are covered read-only and empty, so a session cannot plant code for later ones |
+| Sessions, OMP's databases, logs | Per project, read-write: `~/.local/share/agentbox/projects/<project>/omp/{agent,logs}` at `~/.omp/agent` and `~/.omp/logs`; sessions are named after the project's real path. The places OMP loads code from (`agent/extensions`, `hooks`, `tools`, `.mcp.json`, `mcp.json`, `settings.json`) are covered read-only and empty, so a session cannot plant code for later ones |
 | Browser | The image's Chromium through `PUPPETEER_EXECUTABLE_PATH`, proxied with `PUPPETEER_PROXY`; its shared daemon runs in the session's `run` tmpfs |
 | Approval prompts | OMP's own `--approval-mode`: `yolo` when the preset turns approvals off, `always-ask` when on (OMP's default is `yolo`) |
 | `AGENTS.md` | Generated per session, read-only |
@@ -486,7 +486,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Security flags | Fixed hardening (the existing script's flags) |
 | Image | `localhost/agentbox-claude`, derived from `claudecode` (`make claude-image`): podman-remote 5.7.0 (pinned, checksum-verified, first on PATH), python3 and the compose tool 1.5.0 |
 | Model access | Dedicated `claude setup-token` token, mounted read-only and exported as `CLAUDE_CODE_OAUTH_TOKEN` at start; the host's `~/.claude` is never mounted |
-| Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/<project>/claude/`, read-write and persistent (history, `--resume`); `settings.json`, `CLAUDE.md` and `commands/` copied in from `~/.config/agentbox/claude/` at each start |
+| Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/projects/<project>/claude/`, read-write and persistent (history, `--resume`); `settings.json`, `CLAUDE.md` and `commands/` copied in from `~/.config/agentbox/claude/` at each start |
 | User | `vmuser` via `keep-id` (Claude Code refuses to skip permissions as root) |
 | Network settings | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`; model domain `api.anthropic.com` |
 | Approval prompts | Follow the preset: `--dangerously-skip-permissions` and a pre-trusted folder when off; when on, no pre-trust and a read-only managed policy (`/etc/claude-code/managed-settings.json`: bypass mode disabled, only managed hooks and permission rules), so a repo's own settings cannot switch approvals off |
@@ -655,11 +655,23 @@ is named `learned-<name>` and carries the same provenance as anything else. Clau
 *project's* CLAUDE.md (in the grant, and reported by the end-of-session scan); aimed at the user-level one it
 fails, and the session notes say so and point at the inbox.
 
-**What survives removing a project.** `ab project rm` takes the registry entry only: the code, the agent
-state, the inbox and the backups all stay, so re-adding the name reattaches them — which `ab project add`
-now reports rather than doing silently. `ab project reset-state` keeps a copy in the backups dir;
-`ab project purge <name> --yes` is the only command that deletes the state and the inbox, and it prints how
-many unreviewed inbox items would be lost first.
+**One project is one directory.** Everything a project owns is under `~/.local/share/agentbox/projects/<name>/`:
+each agent's state and inbox (`<agent>/`), the pre-session grant snapshots (`backups/`), the gate's record of
+the images the project built (`built-images.json`), the one-live-session lock and `project.json`, the
+project's identity (the root it was registered with). Session-keyed things (`logs/`, `tmp/`, `ephemeral/`)
+and the profile snapshots (`profiles/`) stay at the top level, so a project name can never collide with
+them (decisions.md, 9 Nov 2026).
+
+**What survives removing a project.** `ab project rm` takes the registry entry only: the code and the whole
+project directory stay, so re-adding the name reattaches them — which `ab project add` reports rather than
+doing silently. Re-adding the name with a **different root** is refused, because the state (memory, inbox,
+backups and, under the threat model the part that matters, the built-image record the dev tier runs from)
+would otherwise pass quietly to an unrelated project: `--fresh` archives it first
+(`backups/agent-state-<stamp>/`), `--reattach` carries it over on purpose and records the old root in
+`project.json`. A session start makes the same check against the registry. `ab project reset-state` keeps a
+copy under `backups/`; `ab project purge <name> --yes` is the only command that deletes, and it deletes the
+project directory whole — state, inbox, backups and built-image record — after printing how many unreviewed
+inbox items would be lost.
 
 **Planned / not built** (see the Planned section and progress.md's Status table)
 

@@ -123,7 +123,7 @@ class SessionTest(SettingsCase):
     def test_backup_made_before_start(self):
         s = self.make()
         s.prepare()
-        snaps = os.listdir(os.path.join(self.settings.backups_dir, "p1"))
+        snaps = os.listdir(self.settings.project_backups_dir("p1"))
         self.assertEqual(len(snaps), 1)
         self.assertIn(s.name, snaps[0])
 
@@ -416,8 +416,8 @@ class BackupExcludesCovers(SessionTest):
         sess = self.make()
         sess.prepare()
 
-        bdir = self.settings.backups_dir
-        snaps = glob.glob(os.path.join(bdir, "p1", "*", self.root.lstrip("/")))
+        bdir = self.settings.project_backups_dir("p1")
+        snaps = glob.glob(os.path.join(bdir, "*", self.root.lstrip("/")))
         self.assertTrue(snaps, "a snapshot was written")
         snap = snaps[0]
 

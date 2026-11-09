@@ -324,9 +324,13 @@ def make(settings, a, *, out=print, warn=None):
     # Every setting is checked BEFORE anything is written, so a bad flag leaves no tree behind for a
     # corrected retry to trip over. The template's default preset is resolved first, since the checks
     # (lockdown ceiling included) are relative to it.
-    from . import cli
+    from . import cli, layout
     a.preset = a.preset or PRESET[template]
     cli.precheck_project_settings(settings, a)
+    # The name may have state on disk from an earlier project (layout.py); refused here, before the tree
+    # is written, with the same --reattach/--fresh answer `ab project add` takes.
+    layout.check_registration(settings, name, dest, reattach=getattr(a, "reattach", False),
+                              fresh=getattr(a, "fresh", False))
 
     files = _files(template, name)
     files.update(_template_overrides(settings, template, name))   # only OVERRIDABLE docs; structure stays built-in

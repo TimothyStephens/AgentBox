@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from . import adapters, config, keys, presets, projectkeys, registry, session, tokens
+from . import adapters, config, keys, layout, presets, projectkeys, registry, session, tokens
 from .config import HOME
 from .errors import AgentboxError
 from . import paths
@@ -272,19 +272,38 @@ def cmd_project_add(s, a):
     grant_kw = _grant_kw(s)
     entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
+    # `ab project rm` keeps the agent state, so adding the same name back picks it up. Right for the same
+    # project; a quiet merge for a different one under an old name, so the state's identity file is checked
+    # BEFORE anything is saved: a different root is refused unless --reattach or --fresh says what to do.
+    action = layout.check_registration(s, a.name, entry["root"], reattach=getattr(a, "reattach", False),
+                                       fresh=getattr(a, "fresh", False))
     _validate_and_save(s, reg, a.name, entry, a, presets_map)
     print(f"added project {a.name} ({entry['root']}, preset {entry['preset']})")
-    # `ab project rm` keeps the agent state and the inbox, so adding the same name back picks them up.
-    # That is usually what you want and occasionally a surprise (a different root, the same memory), so it
-    # is reported rather than silent.
-    lines, unreviewed = _state_summary(s, a.name)
-    if lines:
-        print(f"  reattached existing agent state under {os.path.join(s.data_dir, a.name)}:")
-        for line in lines:
-            print(line)
-        print(f"  this session will start with that memory. `ab project reset-state {a.name}` keeps a copy "
-              f"and clears it; `ab project purge {a.name}` deletes it outright"
-              + (f"; `ab profile harvest` shows the {unreviewed} unreviewed inbox item(s)" if unreviewed else ""))
+    if action == "fresh":
+        moved = session.reset_state(s, a.name, built_record=True)
+        if moved:
+            print(f"  --fresh: the state that was under {moved[0]} (every agent's, and the built-image "
+                  f"record) is archived in {moved[1]}; grant backups stay in "
+                  f"{s.project_backups_dir(a.name)}")
+        layout.write_identity(s, a.name, entry["root"])
+    elif action == "reattach":
+        old = layout.read_identity(s, a.name)
+        prev = list(old.get("previous_roots") or []) + [old["root"]]
+        layout.write_identity(s, a.name, entry["root"], created=old.get("created"), previous=prev)
+        print(f"  --reattach: the state made for {old['root']} now belongs to {entry['root']}")
+    else:
+        ident = layout.read_identity(s, a.name)
+        if ident is None or ident["root"] != entry["root"]:     # new, or an identity with no state behind it
+            layout.write_identity(s, a.name, entry["root"])
+    if action in ("keep", "reattach"):
+        lines, unreviewed = _state_summary(s, a.name)
+        if lines:
+            print(f"  reattached existing agent state under {s.project_dir(a.name)}:")
+            for line in lines:
+                print(line)
+            print(f"  this session will start with that memory. `ab project reset-state {a.name}` keeps a copy "
+                  f"and clears it; `ab project purge {a.name}` deletes it outright"
+                  + (f"; `ab profile harvest` shows the {unreviewed} unreviewed inbox item(s)" if unreviewed else ""))
     _print_cleared(cleared, a.name, entry, presets_map)
     _print_effective(s, a.name)
 
@@ -538,13 +557,14 @@ def _refuse_if_live(s, names, what):
 def cmd_project_reset_state(s, a):
     session.load_project(s, a.name)
     _refuse_if_live(s, [a.name], f"reset the agent state of {a.name}")
-    src = os.path.join(s.data_dir, a.name)
-    if not os.path.isdir(src) or not os.listdir(src):
+    src = s.project_dir(a.name)
+    if not s.agent_state_dirs(a.name):
         print(f"{a.name} has no agent state")
         return 0
     if not a.yes:
         answer = input(f"Reset the agent state of {a.name} (memory, settings, transcripts of every agent, in "
-                       f"{src})? It is moved to {s.backups_dir}/{a.name}/ first. [y/N] ")
+                       f"{src})? It is moved to {s.project_backups_dir(a.name)}/agent-state-<stamp>/ first. "
+                       f"[y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
             print("not reset")
             return 1
@@ -727,35 +747,39 @@ def cmd_profile_dismiss(s, a):
 
 
 def _state_summary(s, project):
-    """(lines, unreviewed count) describing what is on disk for a project outside the registry."""
-    from . import profile
-    base = os.path.join(s.data_dir, project)
+    """(lines, unreviewed count) describing what is on disk for a project outside the registry: each agent's
+    state and inbox, the grant backups and the built-image record (config.py's project layout)."""
+    from . import backup, builtrec, profile
     lines, unreviewed = [], 0
-    if not os.path.isdir(base):
+    if not os.path.isdir(s.project_dir(project)):
         return lines, 0
-    for agent in sorted(os.listdir(base)):
-        state = os.path.join(base, agent)
-        if not os.path.isdir(state):
-            continue
+    for agent, state in s.agent_state_dirs(project):
         inbox = s.inbox_dir(project, agent)
         names = profile.items(inbox)
         new = [n for n in names if not profile.read_sidecar(inbox, n).get("reviewed")]
         unreviewed += len(new)
         lines.append(f"  {agent}: state {state}" + (f", inbox {len(names)} item(s)"
                                                     f" ({len(new)} unreviewed)" if names else ", inbox empty"))
+    snaps = backup._snapshots(s.project_backups_dir(project))
+    if snaps:
+        lines.append(f"  backups: {len(snaps)} grant snapshot(s) in {s.project_backups_dir(project)}")
+    built = builtrec.ids(s.built_record(project))
+    if built:
+        lines.append(f"  built images: {len(built)} recorded in {s.built_record(project)} (the dev tier may run them)")
     return lines, unreviewed
 
 
 def cmd_project_purge(s, a):
-    """Delete a project's agent state, inbox included. The one command that does."""
+    """Delete the project's directory: agent state, inbox, grant backups, built-image record, identity. The
+    one command that does -- and since one project is one directory, nothing of it is left anywhere else."""
     import shutil
-    base = os.path.join(s.data_dir, a.name)
+    base = s.project_dir(a.name)
     if not os.path.isdir(base):
         print(f"{a.name} has no agent state at {base}")
         return 0
     _refuse_if_live(s, [a.name], f"purge the agent state of {a.name}")
     lines, unreviewed = _state_summary(s, a.name)
-    print(f"purge would delete {base}:")
+    print(f"purge would delete {base} (agent state, inbox, grant backups, built-image record):")
     for line in lines:
         print(line)
     print(f"{unreviewed} unreviewed inbox item(s) would be lost"
@@ -1066,6 +1090,18 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                         "move them outside it or add a mask)")
 
 
+def _add_identity_args(x):
+    """`ab project add` and `ab init`: what to do when the name already has state on disk made for another
+    root (layout.py). Without either, that is refused."""
+    g = x.add_mutually_exclusive_group()
+    g.add_argument("--reattach", action="store_true",
+                   help="the name has agent state on disk that was made for a different root: carry it over "
+                        "to this root on purpose (memory, inbox, backups and built-image record included)")
+    g.add_argument("--fresh", action="store_true",
+                   help="the name has agent state on disk: archive it first (every agent's state and the "
+                        "built-image record go to <project>/backups/agent-state-<stamp>/) and start empty")
+
+
 def _add_project_unset_args(x):
     """`ab project set`'s own flags for taking a setting away again (the add/init side has nothing to
     unset)."""
@@ -1122,6 +1158,7 @@ def parser(settings=None):
     _add_project_setting_args(x, preset_required=False, preset_choices=preset_choices,
                               presets_map=presets_map,
                               preset_note=" (default: the template's own — pod: build, python: script)")
+    _add_identity_args(x)
     x.set_defaults(fn=cmd_init)
 
     proj = sub.add_parser(
@@ -1142,6 +1179,7 @@ def parser(settings=None):
                                 "not overlap another project or a protected path")
     _add_project_setting_args(x, preset_required=True, preset_choices=preset_choices,
                               presets_map=presets_map)
+    _add_identity_args(x)
     x.set_defaults(fn=cmd_project_add)
     x = add(proj, "set", "change a registered project's settings in place (re-validated; refused while a "
                          "session for it is live)",
@@ -1382,6 +1420,12 @@ def main(argv=None):
         built = parser(s)          # the parser reads the presets, so a broken preset file reports cleanly
     except AgentboxError as e:
         print(f"ab: {e}", file=sys.stderr)
+        return 2
+    try:
+        layout.migrate(s, warn)    # a flat data dir moves into projects/ once (layout.py)
+    except OSError as e:
+        print(f"ab: could not move the data directory's project state into {s.projects_dir}: {e}",
+              file=sys.stderr)
         return 2
     a = built.parse_args(argv)
     if getattr(a, "fn", None) is cmd_run:

@@ -92,7 +92,7 @@ real config.
 | Agent images | `localhost/agentbox-{claude,omp}:latest` (+`:<date>`) | — | the session images (podman storage) |
 | Your own layer | `localhost/agentbox-<agent>-user:<key>` | — | optional, built by `ab image build <agent>` from a `Containerfile` in your profile; the key covers the harness image and that file |
 | Config | `~/.config/agentbox` | `AB_CONFIG_DIR` | `projects.toml`, `agentbox.toml`, `presets/`, `keys/`, `<agent>-oauth-token`, per-agent seeds (`claude/`, `omp/`) |
-| Data | `~/.local/share/agentbox` | `AB_DATA_DIR` | per-project agent state `<project>/<agent>/`, `backups/`, `logs/` |
+| Data | `~/.local/share/agentbox` | `AB_DATA_DIR` | `projects/<name>/` (each project's agent state `<agent>/`, `backups/`, `built-images.json`, `project.json`), `logs/`, `profiles/`, `tmp/`, `ephemeral/` |
 | Run (tmpfs) | `$XDG_RUNTIME_DIR/agentbox` | `AB_RUN_DIR` | live session metadata and generated configs under `sessions/`, podman sockets under `services/` — gone on reboot |
 | Scaffold root | `~/repos` | `AB_REPOS_DIR` | where `ab init <t> --name <n>` creates `<name>/` |
 | podman binary | `podman` on PATH | `AB_PODMAN` | the host podman the launcher drives |

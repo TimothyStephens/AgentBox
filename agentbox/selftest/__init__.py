@@ -57,9 +57,9 @@ def build_cases(sess, settings):
     p = sess.project
     reg = load_registry(settings.registry_path)
     others = [(n, q["root"]) for n, q in reg.items() if n != p.name and q.get("root")]
-    other_state = [os.path.join(settings.data_dir, n) for n, _ in others]
+    other_state = [settings.project_dir(n) for n, _ in others]
     host_protected = [os.path.join(HOME, ".ssh"), os.path.join(HOME, ".claude"), settings.config_dir,
-                      settings.data_dir, settings.backups_dir]
+                      settings.data_dir, settings.projects_dir]
     b = runner.Builder()
     runner.filesystem_cases(b, project=p, plan=sess.plan, other_roots=others, other_state_dirs=other_state,
                             secret_envs=sess.secret_env_names, state_mounts=_state_mounts(sess),
@@ -190,7 +190,7 @@ def podman_config_check(sess):
 def host_checks(sess, settings, output):
     res = []
     p = sess.project
-    snaps = os.path.join(settings.backups_dir, p.name)
+    snaps = settings.project_backups_dir(p.name)
     have = any(sess.name in d for d in os.listdir(snaps)) if os.path.isdir(snaps) else False
     res.append(Result("pre-session backup exists", "PASS" if have else "FAIL", snaps))
     leftovers = sess.podman.ids("container", {"agentbox.session": sess.name, **settings.labels})

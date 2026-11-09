@@ -249,12 +249,7 @@ def all_inboxes(settings, agent):
     """[(project, inbox dir)] for every project that has one, registered or not: an item outliving the
     project that made it is exactly what `ab profile harvest` must still show."""
     out = []
-    data = settings.data_dir
-    if not os.path.isdir(data):
-        return out
-    for project in sorted(os.listdir(data)):
-        if project in ("logs", "backups", "profiles", "ephemeral"):
-            continue
+    for project in settings.projects_on_disk():
         inbox = settings.inbox_dir(project, agent)
         if os.path.isdir(inbox) and items(inbox):
             out.append((project, inbox))

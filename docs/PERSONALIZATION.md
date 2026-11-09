@@ -9,7 +9,7 @@ host and in-session paths are given so there is no guessing.
 Three roots hold agentbox's own state (each movable by env var):
 
 - `~/.config/agentbox` (`AB_CONFIG_DIR`) — the registry, per-agent **seeds**, keys.
-- `~/.local/share/agentbox` (`AB_DATA_DIR`) — per-project **agent state**, backups, logs.
+- `~/.local/share/agentbox` (`AB_DATA_DIR`) — `projects/<name>/` (per-project **agent state**, inboxes, backups), logs.
 - `$XDG_RUNTIME_DIR/agentbox` (`AB_RUN_DIR`) — live, per-session generated files (tmpfs).
 
 In a session the agent runs as you (`--userns=keep-id`), so `~` inside the container is your real home path.
@@ -30,7 +30,7 @@ The whole host surface a session can read is short, and worth knowing by heart:
 
 1. `~/.config/agentbox/` — the profiles, the per-agent seeds, `keys/`, `<agent>-oauth-token`, `presets/`,
    `projects.toml`;
-2. `~/.local/share/agentbox/` — per-project agent state, inboxes, `backups/`, `logs/`, `profiles/` snapshots;
+2. `~/.local/share/agentbox/` — `projects/<name>/` (agent state, inboxes, backups, built-image record), `logs/`, `profiles/` snapshots;
 3. `$XDG_RUNTIME_DIR/agentbox/` — this session's generated files and sockets;
 4. **the grants** — the project root and any `data_ro`/`data_rw`, at their real paths;
 5. the agent image;
@@ -76,12 +76,12 @@ persists across sessions of that project. The host `~/.claude` is never used.
 
 | What | Host source | In-session path | Scope | Mode |
 |---|---|---|---|---|
-| Config dir (`CLAUDE_CONFIG_DIR`) | `~/.local/share/agentbox/<project>/claude/` | `/run/agentbox/claude/` | per-project, persistent | rw |
+| Config dir (`CLAUDE_CONFIG_DIR`) | `~/.local/share/agentbox/projects/<project>/claude/` | `/run/agentbox/claude/` | per-project, persistent | rw |
 | `skills/`, `agents/`, `commands/` | `~/.config/agentbox/claude/profile/` (the **profile**) | `/run/agentbox/claude/{skills,agents,commands}` | **global** (every project, every preset) | **ro** |
 | `CLAUDE.md` | the profile's own, with the sandbox notes prepended | `/run/agentbox/claude/CLAUDE.md`, generated per session | **global** | **ro** |
 | `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start, then the plugin keys below are merged in | **global** | rw copy |
 | Plugins (marketplace catalogs) | `~/.config/agentbox/claude/plugins/<marketplace>/`, built by `ab profile install claude` from the profile's `plugins.toml` | `/run/agentbox/claude/marketplaces/<marketplace>`, declared to Claude Code in the copied `settings.json` (`extraKnownMarketplaces`, `enabledPlugins`) | **global**, except lockdown (none) | **ro** |
-| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/<agent>/inbox/` (under `ephemeral/<session>/` in lockdown) | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** (lockdown: deleted at teardown) | rw |
+| Inbox (what a session wants to keep) | `~/.local/share/agentbox/projects/<project>/<agent>/inbox/` (under `ephemeral/<session>/` in lockdown) | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** (lockdown: deleted at teardown) | rw |
 | Managed policy (lockdown / approvals on) | generated in `<run>/sessions/<s>/claude-managed-settings.json` | `/etc/claude-code/managed-settings.json` | per-session | ro |
 | Repo config (`CLAUDE.md`, `.mcp.json`, `.claude/`) | the project repo (its real path) | same real path (the grant) | per-project (committed) | rw (ro where covered) |
 
@@ -141,14 +141,14 @@ per-project; the toolchain is a host-shared read-only global.
 | Repos / pylibs | `~/.omp/versions/<v>/{repos,pylibs}` | `~/.omp/{repos,pylibs}` | **global, host-shared** | **ro** |
 | `agent/config.yml` | `~/.config/agentbox/omp/config.yml` | `~/.omp/agent/config.yml` | **global** | **ro** |
 | `bin/mags-codedev` | `~/.omp/bin/mags-codedev` | same | global, host-shared | ro |
-| Working dir (sessions, databases) | `~/.local/share/agentbox/<project>/omp/agent/` | `~/.omp/agent` | per-project, persistent | rw |
-| Logs | `~/.local/share/agentbox/<project>/omp/logs/` | `~/.omp/logs` | per-project, persistent | rw |
+| Working dir (sessions, databases) | `~/.local/share/agentbox/projects/<project>/omp/agent/` | `~/.omp/agent` | per-project, persistent | rw |
+| Logs | `~/.local/share/agentbox/projects/<project>/omp/logs/` | `~/.omp/logs` | per-project, persistent | rw |
 | `models.yml` | generated from the keyless seed `~/.config/agentbox/omp/models.yml` | `~/.omp/agent/models.yml` | per-session | ro |
 | `AGENTS.md` | generated (see §4) | `~/.omp/agent/AGENTS.md` | per-session | ro |
 | MCP / MAGS (if you create them) | `~/.config/agentbox/omp/mcp.json`, `mags-codedev.yaml` | `~/.omp/agent/.mcp.json`, `~/.omp/agent/mags-codedev.yaml` | **global** | ro |
 | Chromium for the browser tool | the image (`/usr/bin/chromium`, `PUPPETEER_EXECUTABLE_PATH`) | — | global | — |
 | Repo config (`.omp/`, `.mcp.json`) | the project repo | the grant | per-project (committed) | rw (ro in lockdown) |
-| Inbox (what a session wants to keep) | `~/.local/share/agentbox/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
+| Inbox (what a session wants to keep) | `~/.local/share/agentbox/projects/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
 | Profile (`skills`, `rules`, `prompts`, `agents`, `commands`) | `~/.config/agentbox/omp/profile/` | `~/.omp/agent/<same>` | **global** (every project, every preset) | **ro** |
 | Autolearn's output | `<run>/sessions/<s>/omp-managed-skills` | `~/.omp/agent/managed-skills` | **per session**, harvested into the inbox at teardown | rw |
 
@@ -186,7 +186,7 @@ change, and a per-project OMP tweak lives in the repo.
 | **B. Global agent seed** | `~/.config/agentbox/claude/` or `~/.config/agentbox/omp/` | every session of that agent, all projects | copied/mounted each start |
 | **C. OMP global toolchain** | host `~/.omp` (`omp-env install`, `omp plugin link`) | every OMP session, all projects | host-shared, ro |
 | **D. Per-project repo files** | files committed in the project (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`, `.omp/`, `dev/fixtures/`) | that one project | in the repo |
-| **E. Per-project agent state** | `~/.local/share/agentbox/<project>/<agent>/` | that one project, across sessions | on disk, `ab project reset-state` wipes it |
+| **E. Per-project agent state** | `~/.local/share/agentbox/projects/<project>/<agent>/` | that one project, across sessions | on disk, `ab project reset-state` wipes it |
 | **F. Per-project settings** (preset, egress, grants, podman tier) | `ab project set <name> …` — the same flags `ab init`/`ab project add` take; `--unset KEY` returns one to its preset value | that one project, from its **next** session | `projects.toml` (`ab project show` prints each value's source) |
 
 A settings change applies to the next session, not a running one, and `ab project set` refuses while a
@@ -199,7 +199,7 @@ name inherits `lockdown`'s values for anything it omits (see `docs/design.md`, P
 - **MCP server:** create `.mcp.json` in the project repo (layer D) and commit it. Claude reads it from the
   project root in the session.
 - **Slash command:** add it to the repo's `.claude/commands/` (layer D), or to the per-project config dir
-  `~/.local/share/agentbox/<project>/claude/commands/` (layer E) if you don't want it committed.
+  `~/.local/share/agentbox/projects/<project>/claude/commands/` (layer E) if you don't want it committed.
 - These affect only this project. (In a `lockdown` project, repo `.claude/` hooks/rules are covered off; use
   it on a `pods`/`python` project.)
 

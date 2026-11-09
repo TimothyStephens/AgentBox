@@ -2426,3 +2426,59 @@ mount. The read-only result above used removed write bits, not a bind mount; `ma
 where that is proved, as `make omp-live` proved it for OMP on 6 Nov. `${CLAUDE_PLUGIN_ROOT}` resolving
 to the mounted directory for an in-place plugin is inferred (it is the only copy), not observed.
 `make test`: 1150 -> 1179.
+
+## 2026-11-09 · One project is one directory under `projects/`; a project's state knows its root
+
+**What.** The data dir (`~/.local/share/agentbox`) used to hold project state at the top level, beside
+agentbox's own directories: `<name>/<agent>/` (state, inbox, `session.lock`), `backups/<name>/` and
+`built-images/<name>.json`. It is now
+
+    projects/<name>/project.json        the identity: name, root (real path), created, previous_roots
+    projects/<name>/<agent>/            state and inbox, as before
+    projects/<name>/backups/            grant snapshots, and agent-state-<stamp>/ from reset-state
+    projects/<name>/built-images.json   the gate's record of the project's builds
+    projects/<name>/session.lock
+
+`logs/`, `tmp/<session>/`, `ephemeral/<session>/` (keyed by session) and `profiles/<agent>/` stay at the top.
+`config.py` documents the layout; `layout.py` holds the migration and the identity. `backup.snapshot`/`retain`
+take the project's backups directory, `builtrec.path_for` and `projectlock.path` derive from
+`config.project_dir`, and the two scans that walked the data dir skipping a hand-kept list of own names
+(`projectlock.projects_with_locks`, `profile.all_inboxes`) read `settings.projects_on_disk()`.
+
+**Migration.** `cli.main` calls `layout.migrate` after loading settings: each of the three old places is
+renamed under `projects/<name>/` (same filesystem, atomic; a live session's bind mounts follow the inode).
+A name that is not a project name, or whose destination already exists, is left and named in a warning --
+guessing is how two projects' state would get merged. `trial/` (tests/trial) joined the own-directory list
+so it is not mistaken for a project.
+
+**Identity and a reused name.** `ab project rm` keeps the state so that re-adding reattaches it (29 Oct above,
+"The host-owned agent profile, and the inbox": rm prints what stays, add prints what it reattached). That was right for the same project and a quiet merge for a
+new project under an old name: it inherited the old memory, inbox, backups and the built-image record, which
+decides what the dev tier may run -- cross-project movement, the thing the threat model is about -- and
+`purge` did not remove the record either, since it lived outside `<data>/<name>/`. Nothing on disk said which
+root a state directory belonged to; the registry entry was the only link and `rm` deletes it. Now
+`ab project add` writes `project.json`, and on a name that already has state:
+
+- same root: reattaches, as before, and says so;
+- no identity yet (state from before this change): reattaches and writes one -- `add` is the only thing
+  that knows the root;
+- a different root: refused, naming both roots and the three answers. `--fresh` archives every agent's state
+  and the built-image record to `backups/agent-state-<stamp>/` (grant backups stay; they are of the old
+  root, and retention ages them out), then writes a new identity. `--reattach` keeps everything and records
+  the old root in `previous_roots`. `ab project purge <name> --yes` deletes the directory whole.
+
+`ab init` runs the same check before it writes a tree. A session start compares the registry's root with
+the identity (`layout.check_session`) and refuses a mismatch, which only a hand-edited `projects.toml` can
+produce; a missing identity is written from the registry there.
+
+**Why now.** Asked where sessions' files go, the listing of the data dir showed twelve project directories
+mixed with six of agentbox's own, and reading `cmd_project_purge` against `builtrec.path_for` showed the
+record it left behind.
+
+**Not changed.** Session names (`ab-<agent>-<project>-<n>`) and the kept-log names. `ab project set` still
+cannot move `root` (rm + add, which now runs the identity check). `make test`: 1179 -> 1203, with
+`tests/unit/test_layout.py` covering the layout, the migration (including the collision and the
+not-a-name cases, and that `ab` migrates before any command), the identity (same root, different root
+refused with nothing saved, `--fresh`, `--reattach`, both flags, legacy state, `ab init`, the session-start
+check both ways), purge, and `remove_everywhere`. Not verified here: a real migration of the host's data
+dir -- the sandbox has none -- so the first `ab` on the host after this is the gate; it prints what it moved.

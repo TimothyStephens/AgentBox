@@ -13,11 +13,12 @@ module stays pure file mechanics.
 import json
 import os
 
+from . import config
 from .errors import AgentboxError
 
 
 def path(settings, project):
-    return os.path.join(settings.data_dir, project, "session.lock")
+    return os.path.join(settings.project_dir(project), config.LOCK_FILE)
 
 
 def read(settings, project):
@@ -96,16 +97,7 @@ def force_release(settings, project):
 def projects_with_locks(settings):
     """Every project that has a lock file, from the data directory rather than the registry: a lock has to
     be releasable after `ab project rm`, and a session can outlive its registry entry."""
-    out = []
-    data = settings.data_dir
-    if not os.path.isdir(data):
-        return out
-    for name in sorted(os.listdir(data)):
-        if name in ("logs", "backups", "profiles", "ephemeral"):
-            continue
-        if os.path.isfile(path(settings, name)):
-            out.append(name)
-    return out
+    return [name for name in settings.projects_on_disk() if os.path.isfile(path(settings, name))]
 
 
 def release_for_session(settings, session_id):

@@ -133,6 +133,6 @@ class StateLifecycle(SettingsCase):
             os.environ.pop("FAKE_PODMAN_PSJSON", None)
         with mock.patch("builtins.input", return_value="y"):
             self.assertEqual(cli.main(["project", "reset-state", "p1"]), 0)
-        self.assertFalse(os.path.exists(os.path.join(self.settings.data_dir, "p1")))
-        kept = os.listdir(os.path.join(self.settings.backups_dir, "p1"))
+        self.assertEqual(self.settings.agent_state_dirs("p1"), [], "every agent's state is gone")
+        kept = os.listdir(self.settings.project_backups_dir("p1"))
         self.assertTrue(any(k.startswith("agent-state-") for k in kept), kept)

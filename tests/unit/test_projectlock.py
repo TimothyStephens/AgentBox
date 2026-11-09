@@ -57,7 +57,7 @@ class LockFile(SettingsCase):
     def test_it_lives_in_the_projects_state_dir(self):
         projectlock.acquire(self.settings, "p1")
         self.assertEqual(projectlock.path(self.settings, "p1"),
-                         os.path.join(self.settings.data_dir, "p1", "session.lock"))
+                         os.path.join(self.settings.project_dir("p1"), "session.lock"))
 
     def test_release_only_removes_our_own(self):
         projectlock.acquire(self.settings, "p1", pid=111, pid_start=7)

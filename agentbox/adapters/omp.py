@@ -11,7 +11,7 @@ remaining reason a session reads ~/.omp at all is the plugins/repos/pylibs snaps
 bin/mags-codedev, which is a wrapper into repos/ and so goes with the same decision (TODO.md 1.1).
 
 Per project and persistent, read-write: ~/.omp/agent (sessions, OMP's databases) and ~/.omp/logs, from
-~/.local/share/agentbox/<project>/omp/. Generated per session, read-only: agent/models.yml (only providers
+~/.local/share/agentbox/projects/<project>/omp/. Generated per session, read-only: agent/models.yml (only providers
 with a key file, plus the local model server) and agent/AGENTS.md. The rest of ~/.omp (run/, caches) is the
 session's tmpfs home.
 """

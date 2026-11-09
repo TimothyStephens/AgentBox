@@ -18,10 +18,10 @@ class BackupTest(TempCase):
         self.write("proj/.venv/bin/py", "x")
         self.write("proj/big/huge.bin", "x")
         self.write("proj/src/__pycache__/c.pyc", "x")
-        self.backups = self.mkdir("backups")
+        self.backups = self.mkdir("backups", "p")      # the project's own backups directory
 
     def snap(self, t, **kw):
-        return backup.snapshot(self.backups, "p", f"s{t:%H%M%S}", [self.src], now=t,
+        return backup.snapshot(self.backups, f"s{t:%H%M%S}", [self.src], now=t,
                                skip_rel_for=lambda g: ["big"], **kw)
 
     def test_snapshot_contents(self):
@@ -59,8 +59,8 @@ class BackupTest(TempCase):
 
     def test_same_second_same_session(self):
         t = datetime.datetime(2026, 9, 29, 10, 0, 0)
-        a = backup.snapshot(self.backups, "p", "s1", [self.src], now=t)
-        b = backup.snapshot(self.backups, "p", "s1", [self.src], now=t)
+        a = backup.snapshot(self.backups, "s1", [self.src], now=t)
+        b = backup.snapshot(self.backups, "s1", [self.src], now=t)
         self.assertNotEqual(a, b)
         self.assertTrue(os.path.isdir(a) and os.path.isdir(b))
 
@@ -78,7 +78,7 @@ class BackupTest(TempCase):
                 n = f"202609{day:02d}-{hour:02d}0000-s"
                 os.mkdir(os.path.join(pdir, n))
                 names.append(n)
-        backup.retain(self.backups, "p", keep=5, daily_days=7, today=datetime.date(2026, 9, 10))
+        backup.retain(self.backups, keep=5, daily_days=7, today=datetime.date(2026, 9, 10))
         left = sorted(os.listdir(pdir))
         want = set(names[-5:]) | {f"202609{d:02d}-170000-s" for d in range(4, 11)}
         self.assertEqual(set(left), want)
@@ -122,10 +122,10 @@ class BackupExcludeEscaping(TempCase):
         self.src = self.mkdir("proj")
         self.write("proj/prod[1].key", "REAL-SECRET")       # the covered file (brackets are a glob class)
         self.write("proj/prod1.key", "innocent")            # what the unescaped class would match instead
-        self.backups = self.mkdir("backups")
+        self.backups = self.mkdir("backups", "p")      # the project's own backups directory
 
     def test_bracket_name_is_excluded_literally(self):
-        s = backup.snapshot(self.backups, "p", "s1", [self.src],
+        s = backup.snapshot(self.backups, "s1", [self.src],
                             now=datetime.datetime(2026, 10, 15, 10, 0, 0),
                             exclude_rel_for=lambda g: ["prod[1].key"])
         dst = os.path.join(s, self.src.lstrip("/"))
@@ -149,7 +149,7 @@ class MissingRsync(TempCase):
         with mock.patch("agentbox.backup.subprocess.run",
                         side_effect=FileNotFoundError(2, "No such file or directory: 'rsync'")):
             with self.assertRaises(AgentboxError) as cm:
-                backup.snapshot(self.mkdir("backups"), "p1", "sess-1", [grant])
+                backup.snapshot(self.mkdir("backups", "p1"), "sess-1", [grant])
         msg = str(cm.exception)
         self.assertIn("rsync", msg)
         self.assertIn("install", msg.lower())
@@ -159,10 +159,9 @@ class MissingRsync(TempCase):
         from unittest import mock
         grant = self.mkdir("proj")
         self.write("proj/app.py", "code\n")
-        backups = self.mkdir("backups")
+        backups = self.mkdir("backups", "p1")
         with mock.patch("agentbox.backup.subprocess.run", side_effect=OSError(2, "nope")):
             with self.assertRaises(AgentboxError):
-                backup.snapshot(backups, "p1", "sess-1", [grant])
-        left = [n for n in os.listdir(os.path.join(backups, "p1"))] if os.path.isdir(
-            os.path.join(backups, "p1")) else []
+                backup.snapshot(backups, "sess-1", [grant])
+        left = os.listdir(backups)
         self.assertEqual(left, [], "the work directory is removed")

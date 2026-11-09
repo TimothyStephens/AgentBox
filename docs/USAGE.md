@@ -78,6 +78,7 @@ usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
                [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
                [--swap TARGET=STANDIN] [--observe-logs | --no-observe-logs]
                [--accept-history-secrets] [--i-understand-grant-exposure]
+               [--reattach | --fresh]
                {pod,python}
 
 scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named volume), then register it
@@ -170,6 +171,14 @@ options:
                         register even though the grant holds secrets or live
                         data (a grant is for code; move them outside it or add
                         a mask)
+  --reattach            the name has agent state on disk that was made for a
+                        different root: carry it over to this root on purpose
+                        (memory, inbox, backups and built-image record
+                        included)
+  --fresh               the name has agent state on disk: archive it first
+                        (every agent's state and the built-image record go to
+                        <project>/backups/agent-state-<stamp>/) and start
+                        empty
 
 examples:
   ab init pod --name filelab
@@ -321,7 +330,7 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
-                      [--i-understand-grant-exposure]
+                      [--i-understand-grant-exposure] [--reattach | --fresh]
                       name root
 
 register a project with a preset (validated against overlap and grant exposure)
@@ -411,6 +420,14 @@ options:
                         register even though the grant holds secrets or live
                         data (a grant is for code; move them outside it or add
                         a mask)
+  --reattach            the name has agent state on disk that was made for a
+                        different root: carry it over to this root on purpose
+                        (memory, inbox, backups and built-image record
+                        included)
+  --fresh               the name has agent state on disk: archive it first
+                        (every agent's state and the built-image record go to
+                        <project>/backups/agent-state-<stamp>/) and start
+                        empty
 
 examples:
   ab project add web ~/repos/web --preset build

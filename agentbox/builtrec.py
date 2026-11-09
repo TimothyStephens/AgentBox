@@ -5,7 +5,7 @@ those are is decided by this record, never by labels: anyone can put agentbox's 
 elsewhere. The gate adds an image ID when a build it forwarded ends with that ID; `ab session gc` removes an ID when it
 removes the image.
 
-<data>/built-images/<project>.json: {"images": {"<64-hex id>": {"session": ..., "built": <unix time>}}}
+<data>/projects/<project>/built-images.json (config.py): {"images": {"<64-hex id>": {"session": ..., "built": <unix time>}}}
 Written under an exclusive lock (two sessions of one project may build at once), replaced atomically.
 """
 import fcntl
@@ -14,11 +14,13 @@ import os
 import re
 import time
 
+from . import config
+
 ID = re.compile(r"^[0-9a-f]{64}$")
 
 
 def path_for(data_dir, project):
-    return os.path.join(data_dir, "built-images", f"{project}.json")
+    return os.path.join(config.project_dir(data_dir, project), config.BUILT_RECORD)
 
 
 def load(path):
@@ -62,14 +64,14 @@ def remove(path, image_ids):
 
 def remove_everywhere(data_dir, image_ids):
     """Drop image IDs from every project's record (ab session gc, after it removed the images)."""
-    d = os.path.join(data_dir, "built-images")
-    if not os.path.isdir(d):
+    base = os.path.join(data_dir, config.PROJECTS)
+    if not os.path.isdir(base):
         return
-    for fn in os.listdir(d):
-        if fn.endswith(".json"):
-            p = os.path.join(d, fn)
-            if set(load(p)) & {i.split(":", 1)[-1] for i in image_ids}:
-                remove(p, image_ids)
+    gone = {i.split(":", 1)[-1] for i in image_ids}
+    for name in os.listdir(base):
+        p = path_for(data_dir, name)
+        if os.path.isfile(p) and set(load(p)) & gone:
+            remove(p, image_ids)
 
 
 class BuildWatcher:

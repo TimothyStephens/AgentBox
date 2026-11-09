@@ -95,7 +95,7 @@ def exclusions(settings):
     """Paths under $HOME the mtime scan skips: the trial project, ab's own state and logs, and places that
     change on their own (podman's storage, which the session's containers use; caches; shell history)."""
     return sorted({os.path.realpath(p) for p in (
-        ROOT, settings.data_dir, settings.config_dir, settings.backups_dir,
+        ROOT, settings.data_dir, settings.config_dir,
         os.path.join(HOME, ".local", "share", "containers"), os.path.join(HOME, ".cache"),
         os.path.join(HOME, ".local", "state"), os.path.join(HOME, "tmp"),
         os.path.join(HOME, ".bash_history"), os.path.join(HOME, ".lesshst"), os.path.join(HOME, ".viminfo"),

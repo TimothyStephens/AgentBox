@@ -34,10 +34,10 @@ def rsync_argv(src, dst, *, link_dest=None, skip_rel=(), exclude_rel=()):
     return argv
 
 
-def _snapshots(project_dir):
-    if not os.path.isdir(project_dir):
+def _snapshots(backups):
+    if not os.path.isdir(backups):
         return []
-    return sorted(d for d in os.listdir(project_dir) if SNAP.match(d) and not d.endswith(".incomplete"))
+    return sorted(d for d in os.listdir(backups) if SNAP.match(d) and not d.endswith(".incomplete"))
 
 
 def _total_size(stats):
@@ -45,20 +45,20 @@ def _total_size(stats):
     return int(m.group(1).replace(",", "")) if m else 0
 
 
-def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: (),
+def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
              exclude_rel_for=lambda g: (), warn_mb=0, now=None,
              warn=lambda msg: print(msg, file=sys.stderr)):
-    """Back up every grant into one snapshot directory. Returns the snapshot path. `exclude_rel_for(g)`
-    gives paths (files or dirs, relative to the grant) to leave out: the masks and covers, so the backup
-    never holds a plaintext copy of a secret the agent cannot damage anyway."""
+    """Back up every grant into one snapshot directory under `backups` (the project's own backups directory,
+    `settings.project_backups_dir`). Returns the snapshot path. `exclude_rel_for(g)` gives paths (files or
+    dirs, relative to the grant) to leave out: the masks and covers, so the backup never holds a plaintext
+    copy of a secret the agent cannot damage anyway."""
     now = now or datetime.datetime.now()
-    project_dir = os.path.join(backups_dir, project)
-    os.makedirs(project_dir, mode=0o700, exist_ok=True)
-    prev = _snapshots(project_dir)
+    os.makedirs(backups, mode=0o700, exist_ok=True)
+    prev = _snapshots(backups)
     # Session names are reused once a session ends, so two snapshots can share a second and a name.
     for n in range(1, 1000):
         name = f"{now:%Y%m%d-%H%M%S}-{session}" + (f".{n}" if n > 1 else "")
-        final = os.path.join(project_dir, name)
+        final = os.path.join(backups, name)
         work = final + ".incomplete"
         if os.path.exists(final):
             continue
@@ -75,7 +75,7 @@ def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: ()
         os.makedirs(dst, exist_ok=True)
         link = None
         if prev:
-            cand = os.path.join(project_dir, prev[-1], g.lstrip("/"))
+            cand = os.path.join(backups, prev[-1], g.lstrip("/"))
             if os.path.isdir(cand):
                 link = cand
         try:
@@ -101,10 +101,10 @@ def snapshot(backups_dir, project, session, grants, *, skip_rel_for=lambda g: ()
     return final
 
 
-def retain(backups_dir, project, *, keep=5, daily_days=7, today=None):
-    """Keep the newest `keep` snapshots, plus the newest snapshot of each of the last `daily_days` days."""
-    project_dir = os.path.join(backups_dir, project)
-    snaps = _snapshots(project_dir)
+def retain(backups, *, keep=5, daily_days=7, today=None):
+    """Keep the newest `keep` snapshots in the project's backups directory, plus the newest snapshot of each
+    of the last `daily_days` days. `agent-state-<stamp>/` directories (reset-state) are not snapshots and stay."""
+    snaps = _snapshots(backups)
     keep_set = set(snaps[-keep:]) if keep else set()
     today = today or datetime.date.today()
     newest_per_day = {}
@@ -117,11 +117,11 @@ def retain(backups_dir, project, *, keep=5, daily_days=7, today=None):
     removed = []
     for s in snaps:
         if s not in keep_set:
-            shutil.rmtree(os.path.join(project_dir, s), ignore_errors=True)
+            shutil.rmtree(os.path.join(backups, s), ignore_errors=True)
             removed.append(s)
     # Leftovers of interrupted backups; a day's grace so a concurrent session's copy is never removed.
-    for d in os.listdir(project_dir) if os.path.isdir(project_dir) else []:
-        full = os.path.join(project_dir, d)
+    for d in os.listdir(backups) if os.path.isdir(backups) else []:
+        full = os.path.join(backups, d)
         if d.endswith(".incomplete") and os.path.getmtime(full) < datetime.datetime.now().timestamp() - 86400:
             shutil.rmtree(full, ignore_errors=True)
     return removed

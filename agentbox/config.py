@@ -4,10 +4,26 @@ Every path can be moved with an environment variable so tests never touch the re
 ~/.config/agentbox or ~/.local/share/agentbox:
 
   AB_CONFIG_DIR   default ~/.config/agentbox        (projects.toml, agentbox.toml, presets/, <agent>/ seeds, tokens, keys/)
-  AB_DATA_DIR     default ~/.local/share/agentbox   (per-project agent state, backups)
+  AB_DATA_DIR     default ~/.local/share/agentbox   (per-project directories, logs, profile snapshots)
   AB_RUN_DIR      default $XDG_RUNTIME_DIR/agentbox (live session metadata, generated configs; tmpfs)
   AB_PODMAN       default podman
   AB_REPOS_DIR    default ~/repos                   (where `ab init` scaffolds new projects)
+
+The data directory (decisions.md, 9 Nov 2026):
+
+  projects/<name>/            everything one project owns -- `ab project purge` removes this and nothing else
+      project.json            the project's identity: the root it was registered with (layout.py)
+      <agent>/                the agent's state (memory, settings, transcripts) and its inbox/
+      backups/                pre-session snapshots of the grants, and agent-state-<stamp>/ from reset-state
+      built-images.json       the gate's record of the images this project built (builtrec.py)
+      session.lock            the one-live-session lock (projectlock.py)
+  logs/                       kept session logs, ab.log            (keyed by session)
+  tmp/<session>/              a session's build cache              (keyed by session)
+  ephemeral/<session>/        a lockdown session's agent state     (keyed by session)
+  profiles/<agent>/<digest>/  read-only snapshots of the profiles  (keyed by agent)
+
+Project state used to sit directly in the data dir, beside `logs/` and `backups/`, so a project named `logs`
+would have put its transcripts inside the kept logs; `layout.migrate` moves a flat layout into projects/ once.
 """
 import os
 import sys
@@ -15,6 +31,22 @@ import tomllib
 from dataclasses import dataclass, field
 
 HOME = os.path.expanduser("~")
+
+PROJECTS = "projects"
+# The data dir's own entries, old and new: never a project. `layout.migrate` leaves these where they are.
+OWN_DIRS = frozenset({PROJECTS, "logs", "tmp", "ephemeral", "profiles", "backups", "built-images",
+                      "trial"})   # trial: tests/trial/check.py's snapshots
+# A project directory's own entries: everything else in it is an agent's state dir.
+PROJECT_FILE = "project.json"
+BUILT_RECORD = "built-images.json"
+BACKUPS = "backups"
+LOCK_FILE = "session.lock"
+PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, LOCK_FILE, LOCK_FILE + ".tmp"})
+
+
+def project_dir(data_dir, project):
+    """One project's directory. Module-level so builtrec, which is handed a data dir, agrees with Settings."""
+    return os.path.join(data_dir, PROJECTS, project)
 
 DEFAULTS = {
     "name_prefix": "ab-",
@@ -75,8 +107,42 @@ class Settings:
         return os.path.join(self.config_dir, "presets")
 
     @property
-    def backups_dir(self):
-        return os.path.join(self.data_dir, "backups")
+    def projects_dir(self):
+        """One directory per project (registered or not: state outlives `ab project rm`)."""
+        return os.path.join(self.data_dir, PROJECTS)
+
+    def project_dir(self, project):
+        return project_dir(self.data_dir, project)
+
+    def project_file(self, project):
+        """The project's identity (layout.py): which root its state belongs to."""
+        return os.path.join(self.project_dir(project), PROJECT_FILE)
+
+    def project_backups_dir(self, project):
+        """Pre-session snapshots of the project's grants, and `agent-state-<stamp>/` from reset-state."""
+        return os.path.join(self.project_dir(project), BACKUPS)
+
+    def built_record(self, project):
+        return os.path.join(self.project_dir(project), BUILT_RECORD)
+
+    def projects_on_disk(self):
+        """Names of every project directory, registered or not, sorted."""
+        try:
+            names = os.listdir(self.projects_dir)
+        except FileNotFoundError:
+            return []
+        return sorted(n for n in names if os.path.isdir(os.path.join(self.projects_dir, n)))
+
+    def agent_state_dirs(self, project):
+        """[(agent, state dir)] for every agent that has state under the project: the project directory's
+        subdirectories that are not its own entries (PROJECT_ENTRIES)."""
+        base = self.project_dir(project)
+        try:
+            names = os.listdir(base)
+        except FileNotFoundError:
+            return []
+        return [(n, os.path.join(base, n)) for n in sorted(names)
+                if n not in PROJECT_ENTRIES and os.path.isdir(os.path.join(base, n))]
 
     @property
     def profiles_dir(self):
@@ -91,7 +157,7 @@ class Settings:
     def inbox_dir(self, project, agent):
         """Where a session puts what it wants to keep (a skill it wrote, a note). Read-write, never loaded
         by the agent, reviewed with `ab profile harvest`."""
-        return os.path.join(self.data_dir, project, agent, "inbox")
+        return os.path.join(self.state_dir(project, agent), "inbox")
 
     def token_file(self, agent):
         base = os.path.expanduser(self.values.get("token_dir") or "") or self.config_dir
@@ -101,7 +167,7 @@ class Settings:
         return os.path.join(self.config_dir, agent)
 
     def state_dir(self, project, agent):
-        return os.path.join(self.data_dir, project, agent)
+        return os.path.join(self.project_dir(project), agent)
 
     def service_dir(self, session):
         """A session's podman API service: socket, PID, log. Kept apart from the session run dir, whose

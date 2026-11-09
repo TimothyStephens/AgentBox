@@ -476,8 +476,8 @@ class StateMigratedToInbox(SettingsCase):
 
     def test_old_skills_and_agents_move_and_are_announced(self):
         os.makedirs(os.path.join(self.state, "skills", "mine"))
-        self.write("data/p1/claude/skills/mine/SKILL.md", "my own skill\n")
-        self.write("data/p1/claude/CLAUDE.md", "notes an earlier session wrote\n")
+        self.write("data/projects/p1/claude/skills/mine/SKILL.md", "my own skill\n")
+        self.write("data/projects/p1/claude/CLAUDE.md", "notes an earlier session wrote\n")
         _s, warnings = self.start()
         inbox = self.settings.inbox_dir("p1", "claude")
         self.assertEqual(sorted(profile.items(inbox)), ["from-state-CLAUDE.md", "from-state-skills"])
@@ -494,7 +494,7 @@ class StateMigratedToInbox(SettingsCase):
         from agentbox.adapters import claude
         self.write("config/claude/profile/CLAUDE.md", "house style\n")
         block = f"{claude.NOTES_BEGIN}\nold notes\n{claude.NOTES_END}\n"
-        self.write("data/p1/claude/CLAUDE.md", block + "\nhouse style\n")
+        self.write("data/projects/p1/claude/CLAUDE.md", block + "\nhouse style\n")
         _s, warnings = self.start()
         self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), [],
                          "nothing to review was queued")
@@ -507,7 +507,7 @@ class StateMigratedToInbox(SettingsCase):
         from agentbox.adapters import claude
         self.write("config/claude/profile/CLAUDE.md", "house style\n")
         block = f"{claude.NOTES_BEGIN}\nold notes\n{claude.NOTES_END}\n"
-        self.write("data/p1/claude/CLAUDE.md", block + "\nhouse style\nand one more rule\n")
+        self.write("data/projects/p1/claude/CLAUDE.md", block + "\nhouse style\nand one more rule\n")
         _s, warnings = self.start()
         inbox = self.settings.inbox_dir("p1", "claude")
         self.assertEqual(profile.items(inbox), ["from-state-CLAUDE.md"])
@@ -515,7 +515,7 @@ class StateMigratedToInbox(SettingsCase):
 
     def test_a_state_claude_md_against_no_profile_one_is_queued(self):
         """Nothing in the profile to be a copy OF, so the content is the user's and goes to review."""
-        self.write("data/p1/claude/CLAUDE.md", "notes with no profile counterpart\n")
+        self.write("data/projects/p1/claude/CLAUDE.md", "notes with no profile counterpart\n")
         self.start()
         self.assertEqual(profile.items(self.settings.inbox_dir("p1", "claude")), ["from-state-CLAUDE.md"])
 
@@ -579,7 +579,7 @@ class StateMigratedToInbox(SettingsCase):
         the writable state copy, and the one it is compared against is the profile's."""
         seen = []
         self.write("config/claude/profile/CLAUDE.md", "house style\n")
-        self.write("data/p1/claude/CLAUDE.md", "house style\n")
+        self.write("data/projects/p1/claude/CLAUDE.md", "house style\n")
         from agentbox.adapters import claude
         real = claude.ClaudeAdapter.redundant_state_copy
 
@@ -591,7 +591,7 @@ class StateMigratedToInbox(SettingsCase):
             self.start()
         self.assertEqual(seen, [os.path.join(self.state, "CLAUDE.md")])
         self.assertNotIn(self.settings.profiles_dir, seen[0], "never the read-only snapshot")
-        self.assertTrue(seen[0].startswith(os.path.join(self.settings.data_dir, "p1")), seen)
+        self.assertTrue(seen[0].startswith(self.settings.project_dir("p1")), seen)
 
     def test_an_empty_state_dir_is_not_moved(self):
         os.makedirs(os.path.join(self.state, "skills"), exist_ok=True)
@@ -859,7 +859,7 @@ class RmAddAndPurge(SettingsCase):
         self.assertTrue(os.path.isdir(self.settings.inbox_dir("p1", "claude")))
         code, out = self.ab("project", "purge", "p1", "--yes")
         self.assertEqual(code, 0, out)
-        self.assertFalse(os.path.exists(os.path.join(self.settings.data_dir, "p1")))
+        self.assertFalse(os.path.exists(self.settings.project_dir("p1")), "the whole project directory")
 
     def test_purge_is_refused_while_the_project_is_live(self):
         os.environ["FAKE_PODMAN_PSJSON"] = json.dumps(
