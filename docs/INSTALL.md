@@ -64,7 +64,7 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    - Pay-per-use providers: `ab keys set <provider>`, once each. Use dedicated, spend-capped keys.
    - A local model server that needs a key: `ab keys set llama-cpp`.
 
-6. **OMP model list:** copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every
+6. **OMP model list** (or keep a keyless copy in your OMP profile repo's `seed/`, which its `./build.sh deploy` installs when missing): copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every
    `apiKey` line removed. Only providers that have a key (step 5) are offered in a session; keys are injected
    as `AB_KEY_<PROVIDER>`, never written into this file.
 
