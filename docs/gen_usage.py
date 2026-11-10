@@ -36,7 +36,15 @@ GROUPS = [
         ("ab session kill", ["session", "kill"]),
         ("ab session gc", ["session", "gc"]),
     ]),
-    ("ab screen", [("ab screen", ["screen"])]),
+    ("ab screen", [
+        ("ab screen", ["screen"]),
+        ("ab screen start", ["screen", "start"]),
+        ("ab screen attach", ["screen", "attach"]),
+        ("ab screen ls", ["screen", "ls"]),
+        ("ab screen kill", ["screen", "kill"]),
+        ("ab screen layouts", ["screen", "layouts"]),
+        ("ab screen config", ["screen", "config"]),
+    ]),
     ("ab profile", [
         ("ab profile", ["profile"]),
         ("ab profile harvest", ["profile", "harvest"]),
@@ -66,8 +74,14 @@ INTENT = {
     "ab session start": "Start an agent session against a project in the foreground — build the sandbox, run the "
                         "agent, tear it down on exit.",
     "ab session attach": "Re-attach a terminal to the session already running for a project (or a session id).",
-    "ab screen": "Open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout "
-                 "from ~/.config/agentbox/screen.toml.",
+    "ab screen": "tmux workspaces, one per project: agent panes (each an `ab session start`) and host shells in a "
+                 "layout from ~/.config/agentbox/screen.toml. The verbs mirror `ab session`.",
+    "ab screen start": "Open a project's workspace from a layout and attach to it; both projects must be registered.",
+    "ab screen attach": "Join an open workspace.",
+    "ab screen ls": "List open workspaces, their project and the project's live session.",
+    "ab screen kill": "End a workspace; a session running in it is torn down.",
+    "ab screen layouts": "List the layouts in the config and which one auto picks at this width.",
+    "ab screen config": "Print a commented starter config.",
     "ab project selftest": "Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, "
                    "mounts, podman scoping).",
     "ab project": "Manage the durable registry entries — a project names a code grant, a preset and any extra "

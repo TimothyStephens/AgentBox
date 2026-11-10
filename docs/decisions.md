@@ -2537,7 +2537,8 @@ in-session errno probe as an itest. `make test`: 1203 -> 1234.
                                                       was: ab run [--agent A --project P | A P]
     ab session attach <project | session id>          was: ab attach <project>
     ab session ls | preview | kill | gc
-    ab screen [--layout L] [--agent A] <builder> [reviewer]   was: contrib/ab-ws
+    ab screen start <builder> [reviewer] [--layout L] [--agent A]   was: contrib/ab-ws
+    ab screen attach | ls | kill <project>; layouts; config
     ab profile | image | keys                         unchanged
 
 Every session verb takes a project name or a session id through the same resolution (`attach` and
@@ -2556,13 +2557,22 @@ throwaway session to prove one project's boundaries, so it is a check of the pro
 beside `check`. `add` was considered for sessions and rejected: a session is a foreground process, and
 `ab session add claude web` would block the terminal until the agent exits.
 
-**`ab screen`.** `contrib/ab-ws` became `agentbox/screen.py`: the same layouts, read from
-`<config dir>/screen.toml` (the old `ab-ws.toml` is read when the new name is absent, so AB_CONFIG_DIR
-moves it with the rest). Agent panes run `ab session start <agent> <project>`; the agent comes from
-`--agent` (default claude) or a pane's own `agent` key. The script had been typing `ab run <project>`
-with no agent, which `run` has refused since the positional form landed, so it was already stale. tmux
-is checked for at run time and named in the refusal; `--dry-run` prints the tmux commands, which is how
-the tests cover it without tmux. The design doc's `ab ws` (step 7) is this; `screen` is the name chosen.
+**`ab screen`.** `contrib/ab-ws` became `agentbox/screen.py`, and a noun with `ab session`'s verbs: a
+workspace is one tmux session per project, `ab-<project>`, so `start`, `attach`, `ls` and `kill` name a
+project like the session verbs do, and `layouts` and `config` replace the script's `--list` and
+`--print-config`. `start` looks both projects up in the registry and refuses an unregistered one with the
+`ab project add` message before tmux is touched (the script opened the workspace and let the agent pane
+fail); every pane opens in the project's registered root rather than the current directory, so the old
+`reviewer_dir` config key is ignored; a project that already has a live session gets an `ab session attach`
+pane instead of a `start` that would be refused; a workspace already open is refused with the attach and
+kill pointers. `ls` joins the tmux list with the launcher's own liveness, so it shows each workspace's
+project and its live session id. The same layouts are read from `<config dir>/screen.toml` (the old
+`ab-ws.toml` when the new name is absent, so AB_CONFIG_DIR moves it with the rest). The agent comes from
+`--agent` (default claude) or a pane's own `agent` key. The script had been typing `ab run <project>` with
+no agent, which `run` has refused since the positional form landed, so it was already stale. tmux is
+checked for at run time and named in the refusal; `--dry-run` prints the tmux commands and the tmux query
+is one function, which is how the tests cover it without tmux. The design doc's `ab ws` (step 7) is this;
+`screen` is the name chosen.
 
 **Churn.** One regex sweep over the launcher, its docs and its tests (`ab run` -> `ab session start`,
 `ab attach` -> `ab session attach`, `ab init X --name Y` -> `ab project init X Y`,

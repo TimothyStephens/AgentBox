@@ -1005,7 +1005,7 @@ def cmd_screen(s, a):
     """`ab screen`: the tmux workspace (agentbox/screen.py), every agent pane entering the sandbox through
     `ab session start`."""
     from . import screen
-    return screen.run(s, a, out=print, err=warn)
+    return screen.VERBS[a.sub](s, a, out=print, err=warn)
 
 
 def cmd_keys_set(s, a):
@@ -1373,13 +1373,19 @@ def parser(settings=None):
                     "snapshots (runs automatically after boot)",
         ex("ab session gc")).set_defaults(fn=cmd_gc)
 
-    x = add(sub, "screen", "open the tmux workspace: agent panes (each an `ab session start`) and host shells, "
-                           "in a layout from ~/.config/agentbox/screen.toml",
-            ex("ab screen web", "ab screen web web-review --layout wide", "ab screen --list",
-               "ab screen --print-config > ~/.config/agentbox/screen.toml"))
+    scr = sub.add_parser(
+        "screen", help="tmux workspaces: one per project, agent panes and host shells in a layout",
+        formatter_class=raw,
+        description="tmux workspaces, one per project (`ab-<project>`): agent panes that enter the sandbox "
+                    "through `ab session start` and host shells, laid out from ~/.config/agentbox/screen.toml. "
+                    "Both projects must be registered; every pane opens in the project's root.",
+        epilog=ex("ab screen start web", "ab screen start web web-review --layout wide", "ab screen ls",
+                  "ab screen attach web", "ab screen kill web", "ab screen layouts",
+                  "ab screen config > ~/.config/agentbox/screen.toml")).add_subparsers(dest="sub", required=True)
     from . import screen as _screen
-    _screen.add_args(x)
-    x.set_defaults(fn=cmd_screen)
+    _screen.add_verbs(scr, add, ex)
+    for verb in _screen.VERBS:
+        scr.choices[verb].set_defaults(fn=cmd_screen)
 
     ks = sub.add_parser(
         "keys", help="model tokens and provider API keys", formatter_class=raw,

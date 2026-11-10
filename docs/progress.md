@@ -53,8 +53,9 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 - **Two nouns hold every verb; `ab screen`** (10 Nov): `ab project init|selftest` (were `ab init`, `ab selftest`),
   `ab session start|attach` (were `ab run`, `ab attach`); every session verb takes a project name or a session id;
-  required agent arguments are positionals with choices. `contrib/ab-ws` became `agentbox/screen.py` as `ab screen`,
-  reading `~/.config/agentbox/screen.toml`, agent panes started only through `ab session start`. No aliases.
+  required agent arguments are positionals with choices. `contrib/ab-ws` became `agentbox/screen.py` as the `ab screen` noun
+  (`start|attach|ls|kill|layouts|config`): projects looked up in the registry, panes in the registered roots, agent
+  panes started only through `ab session start` (or `attach` when the project is already live). No aliases.
   decisions.md, 10 Nov. `make test`: 1240.
 - **One project is one directory; a reused name is checked** (9 Nov): project state moved from `<data>/<name>/`,
   `<data>/backups/<name>/` and `<data>/built-images/<name>.json` to `<data>/projects/<name>/{<agent>,backups,built-images.json}`

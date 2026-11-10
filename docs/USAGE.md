@@ -37,9 +37,8 @@ positional arguments:
     image               your own image layer on top of an agent's harness
                         image
     session             the live runs: start, attach, list, preview, kill, gc
-    screen              open the tmux workspace: agent panes (each an `ab
-                        session start`) and host shells, in a layout from
-                        ~/.config/agentbox/screen.toml
+    screen              tmux workspaces: one per project, agent panes and host
+                        shells in a layout
     keys                model tokens and provider API keys
 
 options:
@@ -860,34 +859,159 @@ examples:
 
 ### `ab screen`
 
-Open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout from ~/.config/agentbox/screen.toml.
+tmux workspaces, one per project: agent panes (each an `ab session start`) and host shells in a layout from ~/.config/agentbox/screen.toml. The verbs mirror `ab session`.
 
 ```text
-usage: ab screen [-h] [--agent {claude,omp}] [--layout LAYOUT] [--config FILE]
-                 [--list] [--print-config] [--dry-run]
-                 [builder] [reviewer]
+usage: ab screen [-h] {start,attach,ls,kill,layouts,config} ...
 
-open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout from ~/.config/agentbox/screen.toml
+tmux workspaces, one per project (`ab-<project>`): agent panes that enter the sandbox through `ab session start` and host shells, laid out from ~/.config/agentbox/screen.toml. Both projects must be registered; every pane opens in the project's root.
 
 positional arguments:
-  builder               builder project (a registered project name)
-  reviewer              reviewer project (a separate clone, registered too)
+  {start,attach,ls,kill,layouts,config}
+    start               open a project's workspace: agent panes (each an `ab
+                        session start`) and host shells in a layout, then
+                        attach to it
+    attach              join a project's open workspace (from inside tmux:
+                        switch to it)
+    ls                  list open workspaces with their project and its live
+                        session
+    kill                end a project's workspace; a session running in it is
+                        torn down (SIGHUP)
+    layouts             list the layouts available, and which one auto would
+                        pick here
+    config              print a commented starter config
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  ab screen start web
+  ab screen start web web-review --layout wide
+  ab screen ls
+  ab screen attach web
+  ab screen kill web
+  ab screen layouts
+  ab screen config > ~/.config/agentbox/screen.toml
+```
+
+### `ab screen start`
+
+Open a project's workspace from a layout and attach to it; both projects must be registered.
+
+```text
+usage: ab screen start [-h] [--agent {claude,omp}] [--layout LAYOUT]
+                       [--config FILE] [--dry-run]
+                       builder [reviewer]
+
+open a project's workspace: agent panes (each an `ab session start`) and host shells in a layout, then attach to it
+
+positional arguments:
+  builder               the builder project (registered)
+  reviewer              a reviewer project (registered; a separate clone)
 
 options:
   -h, --help            show this help message and exit
   --agent {claude,omp}  the agent the agent panes start (default: claude; a
                         pane's own `agent` key wins)
-  --layout LAYOUT       layout name (default: from the config, usually auto)
-  --config FILE         config file (default: <config dir>/screen.toml)
-  --list                list layouts, and which one auto would pick
-  --print-config        print a commented starter config
+  --layout LAYOUT       layout name (default: the config's `default`, usually
+                        auto)
+  --config FILE         layout config (default: <config dir>/screen.toml)
   --dry-run             print the tmux commands, run nothing
 
 examples:
-  ab screen web
-  ab screen web web-review --layout wide
-  ab screen --list
-  ab screen --print-config > ~/.config/agentbox/screen.toml
+  ab screen start web
+  ab screen start web web-review --layout wide
+  ab screen start web --agent omp
+  ab screen start web --dry-run   print the tmux commands
+```
+
+### `ab screen attach`
+
+Join an open workspace.
+
+```text
+usage: ab screen attach [-h] [--dry-run] project
+
+join a project's open workspace (from inside tmux: switch to it)
+
+positional arguments:
+  project     the project whose workspace to join
+
+options:
+  -h, --help  show this help message and exit
+  --dry-run   print the tmux command, run nothing
+
+examples:
+  ab screen attach web
+```
+
+### `ab screen ls`
+
+List open workspaces, their project and the project's live session.
+
+```text
+usage: ab screen ls [-h]
+
+list open workspaces with their project and its live session
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab screen ls
+```
+
+### `ab screen kill`
+
+End a workspace; a session running in it is torn down.
+
+```text
+usage: ab screen kill [-h] [--dry-run] project
+
+end a project's workspace; a session running in it is torn down (SIGHUP)
+
+positional arguments:
+  project     the project whose workspace to end
+
+options:
+  -h, --help  show this help message and exit
+  --dry-run   print the tmux command, run nothing
+
+examples:
+  ab screen kill web
+```
+
+### `ab screen layouts`
+
+List the layouts in the config and which one auto picks at this width.
+
+```text
+usage: ab screen layouts [-h] [--config FILE]
+
+list the layouts available, and which one auto would pick here
+
+options:
+  -h, --help     show this help message and exit
+  --config FILE  layout config (default: <config dir>/screen.toml)
+
+examples:
+  ab screen layouts
+```
+
+### `ab screen config`
+
+Print a commented starter config.
+
+```text
+usage: ab screen config [-h]
+
+print a commented starter config
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab screen config > ~/.config/agentbox/screen.toml
 ```
 
 ## ab profile

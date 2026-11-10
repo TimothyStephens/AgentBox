@@ -1,9 +1,11 @@
 """`ab screen`: a tmux workspace for agentbox.
 
-Opens a tmux session with your builder agent, an optional reviewer agent and host shells, laid out by a
-layout you pick or one chosen from your terminal width. Agents are only ever started with
-`ab session start`, so all sandboxing stays in ab. Re-running attaches to the existing workspace instead
-of starting duplicates.
+A workspace is one tmux session per project, named `ab-<project>`, holding your builder agent, an optional
+reviewer agent and host shells, laid out by a layout you pick or one chosen from your terminal width. Both
+projects must be registered: every pane opens in the project's registered root, and an agent pane enters
+the sandbox only through `ab session start` (or `ab session attach`, when the project already has a live
+session), so all sandboxing stays in ab. The verbs mirror `ab session`: start, attach, ls, kill, plus
+layouts and config.
 
 Layouts come from <config dir>/screen.toml when that file exists (AB_CONFIG_DIR moves it with the rest;
 the older name ab-ws.toml is read when screen.toml is absent), otherwise from the built-in defaults, which
@@ -16,9 +18,11 @@ import subprocess
 import sys
 import tomllib
 
-from . import adapters
+from . import adapters, registry
+from .errors import AgentboxError
 
 CONFIG_NAME = "screen.toml"
+PREFIX = "ab-"                 # tmux session name = PREFIX + project
 LEGACY_CONFIG_NAME = "ab-ws.toml"
 
 DEFAULT_CONFIG = r'''# ab screen layouts.  Save as ~/.config/agentbox/screen.toml
@@ -45,8 +49,9 @@ DEFAULT_CONFIG = r'''# ab screen layouts.  Save as ~/.config/agentbox/screen.tom
 #                           (default: true for builder, false for reviewer)
 #     cmd     "..."         for a shell pane, a command to run in it (e.g. "btop")
 #     dir     "builder" | "reviewer" | "/some/path"
-#                           working directory (default: builder for builder and shell
-#                           panes, reviewer for reviewer panes)
+#                           working directory: the builder or reviewer project's registered
+#                           root, or a path (default: builder for builder and shell panes,
+#                           reviewer for reviewer panes)
 #
 #   Reviewer panes are left out when you start ab screen without a reviewer project.
 #     agent   "claude" | "omp"  which agent an agent pane starts (default: --agent, then "claude")
@@ -57,9 +62,6 @@ DEFAULT_CONFIG = r'''# ab screen layouts.  Save as ~/.config/agentbox/screen.tom
 #   per run with:  ab screen --layout NAME ...
 
 default = "auto"
-
-# Where the reviewer's clone lives. {reviewer} is the reviewer project name.
-reviewer_dir = "~/repos/{reviewer}"
 
 # Ultrawide: builder | reviewer | shell, side by side.
 [[layout]]
@@ -146,7 +148,7 @@ def validate(cfg, source):
     layouts = cfg.get("layout")
     if not isinstance(layouts, list) or not layouts:
         raise ConfigError(f"{source}: no [[layout]] defined")
-    unknown_top = set(cfg) - {"default", "reviewer_dir", "layout"}
+    unknown_top = set(cfg) - {"default", "reviewer_dir", "layout"}     # reviewer_dir: old key, ignored
     if unknown_top:
         raise ConfigError(f"{source}: unknown top-level key(s): {', '.join(sorted(unknown_top))}")
     names = set()
@@ -279,19 +281,29 @@ def pane_dir(p, builder_dir, reviewer_dir):
     return os.path.expanduser(d)
 
 
-def pane_command(p, builder, reviewer, agent="claude"):
-    """-> (keys to type, press_enter)"""
-    a = shlex.quote(p.get("agent") or agent)
+def agent_command(project, live_session, agent):
+    """What an agent pane types: `ab session start` normally, `ab session attach` when the project already
+    has a live session (one per project, so start would only be refused with that pointer)."""
+    if live_session:
+        return f"ab session attach {shlex.quote(project)}"
+    return f"ab session start {shlex.quote(agent)} {shlex.quote(project)}"
+
+
+def pane_command(p, builder, reviewer, agent="claude", live=None):
+    """-> (keys to type, press_enter). Agent panes enter the sandbox through ab, and only that way, so the
+    sandboxing stays in ab. `live` maps a project to its live session id, or None."""
+    live = live or {}
+    a = p.get("agent") or agent
     if p["run"] == "builder":
-        return f"ab session start {a} {shlex.quote(builder)}", p.get("start", True)
+        return agent_command(builder, live.get(builder), a), p.get("start", True)
     if p["run"] == "reviewer":
-        return f"ab session start {a} {shlex.quote(reviewer)}", p.get("start", False)
+        return agent_command(reviewer, live.get(reviewer), a), p.get("start", False)
     if "cmd" in p:
         return p["cmd"], p.get("start", True)
     return None, False
 
 
-def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols, rows, agent="claude"):
+def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols, rows, agent="claude", live=None):
     first = True
     for wi, win in enumerate(layout["window"]):
         plan = plan_window(win, bool(reviewer),
@@ -330,7 +342,7 @@ def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols
                 remaining -= this
                 ids.append(pid)
             for (p, _), pane_id in zip(cpanes, ids):
-                keys, enter = pane_command(p, builder, reviewer, agent)
+                keys, enter = pane_command(p, builder, reviewer, agent, live)
                 if keys:
                     t("send-keys", "-t", pane_id, keys, *(["Enter"] if enter else []))
     if first:
@@ -339,18 +351,42 @@ def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols
     t("select-pane", "-t", session + ":^.0")
 
 
-def add_args(x):
-    """`ab screen`'s arguments, on the subparser the CLI builds."""
-    x.add_argument("builder", nargs="?", help="builder project (a registered project name)")
-    x.add_argument("reviewer", nargs="?", help="reviewer project (a separate clone, registered too)")
-    x.add_argument("--agent", choices=adapters.NAMES, default="claude",
-                   help="the agent the agent panes start (default: claude; a pane's own `agent` key wins)")
-    x.add_argument("--layout", help="layout name (default: from the config, usually auto)")
-    x.add_argument("--config", metavar="FILE", help=f"config file (default: <config dir>/{CONFIG_NAME})")
-    x.add_argument("--list", action="store_true", help="list layouts, and which one auto would pick")
-    x.add_argument("--print-config", action="store_true", help="print a commented starter config")
-    x.add_argument("--dry-run", action="store_true", help="print the tmux commands, run nothing")
+# ---- tmux, as a queryable thing -------------------------------------------------------------------------
 
+def tmux_available():
+    return shutil.which("tmux") is not None
+
+
+def _query(args):
+    """stdout of a tmux query, or None when tmux is absent or the query fails (no server running counts)."""
+    if not tmux_available():
+        return None
+    p = subprocess.run(["tmux", *args], capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else None
+
+
+def workspaces():
+    """[{name, project, windows, attached}] for every tmux session agentbox named (PREFIX + project)."""
+    out = _query(["list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}"])
+    rows = []
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0].startswith(PREFIX):
+            continue
+        rows.append({"name": parts[0], "project": parts[0][len(PREFIX):],
+                     "windows": int(parts[1] or 0), "attached": int(parts[2] or 0)})
+    return rows
+
+
+def workspace_name(project):
+    return PREFIX + project
+
+
+def _attach_argv(name):
+    return ["switch-client", "-t", name] if os.environ.get("TMUX") else ["attach", "-t", name]
+
+
+# ---- the verbs --------------------------------------------------------------------------------------------
 
 def config_path(settings, given=None):
     if given:
@@ -360,58 +396,182 @@ def config_path(settings, given=None):
     return legacy if not os.path.exists(new) and os.path.exists(legacy) else new
 
 
-def run(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
-    """The command. Returns an exit status (0 ok, 1 tmux failed, 2 refused)."""
-    if a.print_config:
-        sys.stdout.write(DEFAULT_CONFIG)
-        return 0
-    path = config_path(settings, a.config)
-    size = shutil.get_terminal_size((200, 50))
-    cols, rows = size.columns, size.lines
+def _layout_config(settings, a):
+    path = config_path(settings, getattr(a, "config", None))
+    cfg, source = load_config(path)
+    validate(cfg, source)
+    return cfg, source
+
+
+def _registered(settings, names):
+    """{project: registered root} for every name, or the `ab project add` message for the first that is not.
+    Both the builder and the reviewer must be registered: the panes open in the roots, and an agent pane's
+    `ab session start` would refuse an unregistered project anyway, one step later and inside tmux."""
+    from . import cli
+    reg = registry.load(settings.registry_path)
+    roots = {}
+    for n in names:
+        if n not in reg:
+            cli._require_registered(settings, n)
+        roots[n] = reg[n]["root"]
+    return roots
+
+
+def _live_sessions(settings, projects):
+    """{project: live session id} for the projects that have one (through the launcher's own liveness)."""
+    from . import session
+    from .podman import Podman
+    podman = Podman(settings.podman)
+    out = {}
+    for p in projects:
+        sid = session.live_session_of(settings, podman, p)
+        if sid:
+            out[p] = sid
+    return out
+
+
+def start(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen start <builder> [reviewer]`: open the workspace and attach to it."""
     try:
-        cfg, source = load_config(path)
-        validate(cfg, source)
-        if a.list:
-            auto = pick_layout(cfg, "auto", cols)["name"]
-            out(f"layouts from {source} (terminal is {cols} columns):")
-            for lay in cfg["layout"]:
-                mark = "  <- auto" if lay["name"] == auto else ""
-                out(f"  {lay['name']:<16} min_cols {lay.get('min_cols', 0):<5}{mark}")
-            out(f"default: {cfg.get('default', 'auto')}")
-            return 0
-        if not a.builder:
-            raise ConfigError("give the builder project name (`ab screen <project>`), or --list / --print-config")
+        cfg, source = _layout_config(settings, a)
+        names = [a.builder] + ([a.reviewer] if a.reviewer else [])
+        roots = _registered(settings, names)
+        size = shutil.get_terminal_size((200, 50))
+        cols, rows = size.columns, size.lines
         layout = pick_layout(cfg, a.layout, cols)
-        builder_dir = os.getcwd()
-        reviewer_dir = builder_dir
-        if a.reviewer:
-            tmpl = cfg.get("reviewer_dir", "~/repos/{reviewer}")
-            reviewer_dir = os.path.expanduser(tmpl.replace("{reviewer}", a.reviewer))
-            if not os.path.isdir(reviewer_dir):
-                err(f"ab screen: reviewer dir {reviewer_dir} not found; using {builder_dir}"
-                    f" (set reviewer_dir in {path})")
-                reviewer_dir = builder_dir
-        session = "ab-" + a.builder
+        name = workspace_name(a.builder)
+        if not a.dry_run and not tmux_available():
+            raise AgentboxError("tmux is not on PATH; `ab screen` is a tmux layout (install tmux, or use "
+                                "`ab session start` directly)")
+        if not a.dry_run and any(w["name"] == name for w in workspaces()):
+            raise AgentboxError(f"workspace {name} is already open: `ab screen attach {a.builder}` joins it, "
+                                f"`ab screen kill {a.builder}` ends it")
+        live = _live_sessions(settings, names)
+        for p, sid in live.items():
+            err(f"ab screen: {p} already has a live session ({sid}); its pane will attach to it")
+        if not a.dry_run and not shutil.which("ab"):
+            err("ab screen: `ab` is not on PATH; agent panes will fail to start")
+        err(f"ab screen: layout '{layout['name']}' ({source})")
         t = Tmux(a.dry_run)
-        attach = ["switch-client", "-t", session] if os.environ.get("TMUX") else ["attach", "-t", session]
-        if not a.dry_run and not shutil.which("tmux"):
-            raise ConfigError("tmux is not on PATH; `ab screen` is a tmux layout (install tmux, or use "
-                              "`ab session start` directly)")
-        exists = (not a.dry_run and
-                  subprocess.run(["tmux", "has-session", "-t", session],
-                                 stderr=subprocess.DEVNULL).returncode == 0)
-        if not exists:
-            if not a.dry_run and not shutil.which("ab"):
-                err("ab screen: `ab` is not on PATH; agent panes will fail to start")
-            err(f"ab screen: layout '{layout['name']}' ({source})")
-            build(t, session, layout, a.builder, a.reviewer, builder_dir, reviewer_dir, cols, rows, a.agent)
+        build(t, name, layout, a.builder, a.reviewer, roots[a.builder],
+              roots.get(a.reviewer, roots[a.builder]), cols, rows, a.agent, live)
         if a.dry_run:
-            t(*attach)
+            t(*_attach_argv(name))
             return 0
-        os.execvp("tmux", ["tmux", *attach])
+        os.execvp("tmux", ["tmux", *_attach_argv(name)])
     except ConfigError as e:
         err(f"ab screen: {e}")
         return 2
     except subprocess.CalledProcessError as e:
         err(f"ab screen: tmux failed: {e}")
         return 1
+
+
+def _open_or_refuse(project):
+    name = workspace_name(project)
+    have = workspaces()
+    if any(w["name"] == name for w in have):
+        return name
+    others = ", ".join(w["project"] for w in have) or "none"
+    raise AgentboxError(f"no workspace for {project} is open (open: {others}); "
+                        f"`ab screen start {project}` opens one, `ab screen ls` lists them")
+
+
+def attach(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen attach <project>`: join the project's workspace (switch to it from inside tmux)."""
+    if not tmux_available():
+        raise AgentboxError("tmux is not on PATH, so there is no workspace to attach to")
+    name = _open_or_refuse(a.project)
+    if a.dry_run:
+        out("tmux " + " ".join(shlex.quote(x) for x in _attach_argv(name)))
+        return 0
+    os.execvp("tmux", ["tmux", *_attach_argv(name)])
+
+
+def ls(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen ls`: every open workspace, its project, and the project's live agentbox session."""
+    if not tmux_available():
+        out("no workspaces (tmux is not on PATH)")
+        return 0
+    rows = workspaces()
+    if not rows:
+        out("no workspaces open; `ab screen start <project>` opens one")
+        return 0
+    reg = registry.load(settings.registry_path)
+    live = _live_sessions(settings, [w["project"] for w in rows])
+    out(f"{'WORKSPACE':<28} {'PROJECT':<20} {'WINDOWS':>7} {'ATTACHED':>8}  SESSION")
+    for w in rows:
+        proj = w["project"] + ("" if w["project"] in reg else " (not registered)")
+        out(f"{w['name']:<28} {proj:<20} {w['windows']:>7} {w['attached']:>8}  {live.get(w['project'], '-')}")
+    return 0
+
+
+def kill(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen kill <project>`: end the workspace. Every pane's process ends with it; an agent session in
+    it gets SIGHUP, which the launcher tears down cleanly (scan and logs kept)."""
+    if not tmux_available():
+        raise AgentboxError("tmux is not on PATH, so there is no workspace to kill")
+    name = _open_or_refuse(a.project)
+    live = _live_sessions(settings, [a.project])
+    if a.dry_run:
+        out(f"tmux kill-session -t {shlex.quote(name)}")
+        return 0
+    subprocess.run(["tmux", "kill-session", "-t", name], check=True)
+    out(f"killed workspace {name}" + (f"; its session {live[a.project]} is being torn down (SIGHUP)"
+                                      if a.project in live else ""))
+    return 0
+
+
+def layouts(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen layouts`: the layouts available, and which one auto would pick at this terminal width."""
+    try:
+        cfg, source = _layout_config(settings, a)
+    except ConfigError as e:
+        err(f"ab screen: {e}")
+        return 2
+    cols = shutil.get_terminal_size((200, 50)).columns
+    auto = pick_layout(cfg, "auto", cols)["name"]
+    out(f"layouts from {source} (terminal is {cols} columns):")
+    for lay in cfg["layout"]:
+        mark = "  <- auto" if lay["name"] == auto else ""
+        out(f"  {lay['name']:<16} min_cols {lay.get('min_cols', 0):<5}{mark}")
+    out(f"default: {cfg.get('default', 'auto')}")
+    return 0
+
+
+def config(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """`ab screen config`: a commented starter config, to redirect into <config dir>/screen.toml."""
+    sys.stdout.write(DEFAULT_CONFIG)
+    return 0
+
+
+VERBS = {"start": start, "attach": attach, "ls": ls, "kill": kill, "layouts": layouts, "config": config}
+
+
+def add_verbs(scr, add, ex):
+    """The `ab screen` subparsers, built with the CLI's own `add(subparsers, name, summary, epilog)` and
+    `ex(*lines)` helpers so the help reads like every other noun's."""
+    x = add(scr, "start", "open a project's workspace: agent panes (each an `ab session start`) and host shells "
+                          "in a layout, then attach to it",
+            ex("ab screen start web", "ab screen start web web-review --layout wide",
+               "ab screen start web --agent omp", "ab screen start web --dry-run   print the tmux commands"))
+    x.add_argument("builder", help="the builder project (registered)")
+    x.add_argument("reviewer", nargs="?", help="a reviewer project (registered; a separate clone)")
+    x.add_argument("--agent", choices=adapters.NAMES, default="claude",
+                   help="the agent the agent panes start (default: claude; a pane's own `agent` key wins)")
+    x.add_argument("--layout", help="layout name (default: the config's `default`, usually auto)")
+    x.add_argument("--config", metavar="FILE", help=f"layout config (default: <config dir>/{CONFIG_NAME})")
+    x.add_argument("--dry-run", action="store_true", help="print the tmux commands, run nothing")
+    x = add(scr, "attach", "join a project's open workspace (from inside tmux: switch to it)",
+            ex("ab screen attach web"))
+    x.add_argument("project", help="the project whose workspace to join")
+    x.add_argument("--dry-run", action="store_true", help="print the tmux command, run nothing")
+    add(scr, "ls", "list open workspaces with their project and its live session", ex("ab screen ls"))
+    x = add(scr, "kill", "end a project's workspace; a session running in it is torn down (SIGHUP)",
+            ex("ab screen kill web"))
+    x.add_argument("project", help="the project whose workspace to end")
+    x.add_argument("--dry-run", action="store_true", help="print the tmux command, run nothing")
+    x = add(scr, "layouts", "list the layouts available, and which one auto would pick here",
+            ex("ab screen layouts"))
+    x.add_argument("--config", metavar="FILE", help=f"layout config (default: <config dir>/{CONFIG_NAME})")
+    add(scr, "config", "print a commented starter config", ex(f"ab screen config > ~/.config/agentbox/{CONFIG_NAME}"))

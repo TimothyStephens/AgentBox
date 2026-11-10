@@ -337,7 +337,7 @@ Without the gate, a container created with no network, or a `podman build`, runs
 
 ### Workspace UI (planned, not built)
 
-- Build step 7, **built 10 Nov as `ab screen`** (`agentbox/screen.py`, formerly `contrib/ab-ws`): a tmux workspace of agent panes and host shells from a layout in `~/.config/agentbox/screen.toml`, every agent pane entering the sandbox through `ab session start`.
+- Build step 7, **built 10 Nov as `ab screen`** (`agentbox/screen.py`, formerly `contrib/ab-ws`): one tmux workspace per registered project (`ab screen start|attach|ls|kill <project>`, `layouts`, `config`), agent panes and host shells from a layout in `~/.config/agentbox/screen.toml`, every pane in the project's registered root and every agent pane entering the sandbox through `ab session start` (or `attach` when the project is already live).
 
 ## Presets
 
@@ -678,7 +678,7 @@ inbox items would be lost.
 
 | Command | What it would do |
 | --- | --- |
-| `ab screen --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
+| `ab screen start <name> [--agent <a>]` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
 | `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
@@ -691,7 +691,7 @@ The examples below and the worked example that follows show the **full intended 
 
 ```bash
 ab project add helper ~/repos/helper --preset build
-ab screen helper                                 # the tmux workspace; or plain: ab session start claude helper
+ab screen start helper                           # the tmux workspace; or plain: ab session start claude helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
 ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
 ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
@@ -702,7 +702,7 @@ ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
 ```bash
 ab project add dataproc ~/repos/dataproc --preset script \
    --data-ro ~/data/raw --data-rw ~/data/processed
-ab screen --agent omp --project dataproc
+ab screen start dataproc --agent omp
 # detach tmux, come back later with: ab session attach dataproc
 ```
 
@@ -710,7 +710,7 @@ ab screen --agent omp --project dataproc
 
 ```bash
 ab project add life-updates ~/repos/Life_Updates --preset lockdown
-ab screen --agent omp --project life-updates
+ab screen start life-updates --agent omp
 ```
 
 ## Worked example: a new pod for the home server
@@ -734,7 +734,7 @@ ab project selftest claude filelab
 **2. Start the agent and brief it**
 
 ```bash
-ab screen --agent claude --project filelab
+ab screen start filelab --agent claude
 ```
 
 Example brief, given all at once:
@@ -787,7 +787,7 @@ ab deploy filelab --lan 10.0.0.103:8095
 
 **7. Later changes**
 
-- `ab screen --agent claude --project filelab` starts a fresh `filelab-dev` stack.
+- `ab screen start filelab --agent claude` starts a fresh `filelab-dev` stack.
 - The agent can read the live stack's logs (observe) to chase a reported bug, but builds fixes only in `filelab-dev`.
 - Ship each change with `ab deploy filelab --lan 10.0.0.103:8095`, reviewing the diff each time.
 
