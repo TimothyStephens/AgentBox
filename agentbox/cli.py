@@ -67,7 +67,7 @@ def _unset_keys(a):
 
 
 def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
-    """Apply the override flags shared by `ab init`, `ab project add` and `ab project set` onto a registry
+    """Apply the override flags shared by `ab project init`, `ab project add` and `ab project set` onto a registry
     entry dict. For add/init, `entry` starts empty, so "if a.x:" writes only what was given. For `set`,
     `entry` starts as a copy of the project's existing stored entry, so omitting a flag leaves its stored
     value untouched, and giving one replaces it (a list flag replaces the whole list).
@@ -138,7 +138,7 @@ def _parse_swap(pairs):
 
 
 def precheck_project_settings(s, a):
-    """Validate the project-setting flags before anything is written. `ab init` calls this first, so a bad
+    """Validate the project-setting flags before anything is written. `ab project init` calls this first, so a bad
     flag leaves no half-scaffolded tree behind (which would then make a corrected retry fail with "already
     exists; refusing to scaffold over it"). Everything here is re-checked by cmd_project_add afterwards;
     only the checks that need the project root to exist are left to it."""
@@ -474,7 +474,7 @@ def _print_effective(s, name):
     printed, and one with no effect under the current posture is MARKED `(ignored: ...)` rather than hidden
     (audit F8 -- the old display gated compose_project/observe_logs/dev_images on the podman tier, which hid
     a waived live-stack ownership check and a dead image allowlist). Printed by `ab project show`, and after
-    `ab init` / `ab project add` / `ab project set`."""
+    `ab project init` / `ab project add` / `ab project set`."""
     p = session.load_project(s, name)
     stored = registry.load(s.registry_path)[name]
     presets_map = presets.load_presets(s.presets_dir)
@@ -833,24 +833,12 @@ def _dur(seconds):
 
 
 def cmd_run(s, a):
-    # Agent and project may be given as --agent/--project or positionally (`ab run <agent> <project>`), in any
-    # combination; flags like --shell are parsed normally, and anything after a `--` is passed through to the
-    # agent or shell (split off in main() as a.passthrough). Positionals fill whichever of agent/project the
-    # flags did not set, in order.
+    """`ab session start <agent> <project>`: flags like --shell are parsed normally, and anything after a
+    `--` is passed through to the agent or shell (split off in main() as a.passthrough)."""
     agent, project_name = a.agent, a.project
-    for val in a.names:
-        if agent is None:
-            agent = val
-        elif project_name is None:
-            project_name = val
-        else:
-            raise AgentboxError(f"unexpected argument {val!r}; pass agent/shell arguments after `--`")
-    if not agent or not project_name:
-        raise AgentboxError("give an agent and a project: `ab run --agent <a> --project <p>` "
-                            "or `ab run <a> <p>`")
     _require_registered(s, project_name)
     podman = Podman(s.podman)
-    # One live session per project: the lock is taken before any work, so two `ab run`s racing cannot both
+    # One live session per project: the lock is taken before any work, so two `ab session start`s racing cannot both
     # get past here, and it is released by teardown however this session ends.
     with session.take_project_lock(s, podman, project_name, warn=warn) as lock:
         project = session.load_project(s, project_name)
@@ -868,7 +856,7 @@ def cmd_run(s, a):
 
 
 def _require_registered(s, project_name):
-    """A project is a grant, so registering one is a decision -- never a side effect of `ab run`.
+    """A project is a grant, so registering one is a decision -- never a side effect of `ab session start`.
 
     The message is the command to run, filled in: the root guessed from the repos dir when something is
     actually there, and left as a placeholder when it is not."""
@@ -883,7 +871,7 @@ def _require_registered(s, project_name):
         f"no project named {project_name!r}. agentbox does not register one for you -- a project names a "
         f"grant the agent gets read-write, which is a decision, not a default. Register it, then run:"
         f"\n  ab project add {project_name} {root} --preset <preset>"
-        f"\n  ab run {project_name}"
+        f"\n  ab session start {project_name}"
         f"\n`ab project add --help` lists the presets. Registered now: {known}.")
 
 
@@ -893,21 +881,31 @@ def cmd_attach(s, a):
     The agent is a container the launcher started, so this is `podman attach` on it: the same stdio the
     launcher has. If the launcher's own terminal is still open, both are attached to the one agent -- which
     is the honest shape of re-attaching to a process rather than to a multiplexer. Detach with ctrl-p ctrl-q
-    (`ab ws`, the tmux workspace, is the planned version of this; design.md)."""
+    (`ab screen`, the tmux workspace, is the planned version of this; design.md)."""
     podman = Podman(s.podman)
-    sid = session.live_session_of(s, podman, a.project)
+    name = a.project
+    known = session.sessions(s, podman)
+    # A project name (the usual) or a session id (what `ab session ls` prints): every session verb takes
+    # either, through the same resolution as `kill` and `preview`.
+    sid = session.live_session_of(s, podman, name)
+    if not sid and name in known and session.session_is_alive(s, name, known[name])[0]:
+        sid = name
     if not sid:
-        _require_registered(s, a.project)
-        raise AgentboxError(f"no session of {a.project} is running; start one with "
-                            f"`ab run <agent> {a.project}`")
-    info = session.sessions(s, podman).get(sid) or {}
+        if name in known:
+            raise AgentboxError(f"session {name} is not running any more; `ab session ls` shows what is")
+        _require_registered(s, name)
+        raise AgentboxError(f"no session of {name} is running; start one with "
+                            f"`ab session start <agent> {name}`")
+    info = known.get(sid) or {}
+    project = (info.get("meta") or {}).get("project") or next(
+        (c.get("project") for c in info.get("containers") or [] if c.get("project")), name)
     agents = [c["name"] for c in info.get("containers") or []
               if c.get("role") == "agent" and c.get("state") == "running"]
     if not agents:
-        raise AgentboxError(f"session {sid} of {a.project} is alive but its agent container is not running "
+        raise AgentboxError(f"session {sid} of {project} is alive but its agent container is not running "
                             f"(it may be starting, or it may have exited). `ab session ls` shows it; "
-                            f"`ab session kill {a.project}` ends it.")
-    print(f"attaching to {a.project} (session {sid}); detach with ctrl-p ctrl-q", file=sys.stderr)
+                            f"`ab session kill {project}` ends it.")
+    print(f"attaching to {project} (session {sid}); detach with ctrl-p ctrl-q", file=sys.stderr)
     return podman.interactive(["attach", agents[0]])
 
 
@@ -929,7 +927,7 @@ def cmd_ls(s, a):
         if idle is not None and idle > idle_warn:
             mark = "  <-- idle"
             flagged.append((name, idle))
-        # The PROJECT is what a user names (`ab attach web`, `ab session kill web`); the session id is kept
+        # The PROJECT is what a user names (`ab session attach web`, `ab session kill web`); the session id is kept
         # because it is what the logs, the container labels and the inbox provenance carry.
         print(f"{meta.get('project', '?'):<16} {state:<7} {meta.get('agent', '?'):<7} "
               f"start {start_str}  age {age:<6} idle {_dur(idle):<6} "
@@ -943,14 +941,15 @@ def cmd_ls(s, a):
 def cmd_preview(s, a):
     from . import preview
     podman = Podman(s.podman)
+    sid = _resolve_session(s, podman, a.session)       # a project name or a session id, as kill and attach
     if a.stop:
-        gone = preview.stop(s, podman, a.session)
+        gone = preview.stop(s, podman, sid)
         print("removed: " + (" ".join(gone) if gone else "no previews"))
         return 0
     if not a.target:
         raise AgentboxError("give <service>:<port> (or --stop)")
-    port, desk = preview.start(s, podman, a.session, a.target, a.port)
-    print(f"preview of {a.target} in {a.session}: http://127.0.0.1:{port}/ (on this host only)\n"
+    port, desk = preview.start(s, podman, sid, a.target, a.port)
+    print(f"preview of {a.target} in {sid}: http://127.0.0.1:{port}/ (on this host only)\n"
           f"from your desktop: {desk}\n  then open http://127.0.0.1:{port}/\n"
           "it ends with the session (or ab session preview --stop)")
     return 0
@@ -990,16 +989,23 @@ def cmd_gc(s, a):
 
 def cmd_selftest(s, a):
     from . import selftest
-    results, raw = selftest.run(s, a.agent, a.project, warn=warn)
+    results, raw = selftest.run(s, a.agent, a.name, warn=warn)
     fails = [r for r in results if r.verdict == "FAIL"]
     if a.json:
         print(json.dumps([r.__dict__ for r in results], indent=1))
     else:
         for r in results:
             print(f"  {r.verdict:<4}  {r.label}" + (f"  [{r.detail}]" if r.verdict != "PASS" else ""))
-        print(f"\nRESULT selftest {a.agent}/{a.project}: {sum(r.verdict == 'PASS' for r in results)} pass, "
+        print(f"\nRESULT selftest {a.agent}/{a.name}: {sum(r.verdict == 'PASS' for r in results)} pass, "
               f"{len(fails)} fail, {sum(r.verdict == 'SKIP' for r in results)} skip")
     return 1 if fails else 0
+
+
+def cmd_screen(s, a):
+    """`ab screen`: the tmux workspace (agentbox/screen.py), every agent pane entering the sandbox through
+    `ab session start`."""
+    from . import screen
+    return screen.run(s, a, out=print, err=warn)
 
 
 def cmd_keys_set(s, a):
@@ -1030,7 +1036,7 @@ def cmd_keys_rotate(s, a):
 
 def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None,
                               preset_note="", presets_map=None):
-    """The override flags shared by `ab init`, `ab project add` and `ab project set`: same flag spellings,
+    """The override flags shared by `ab project init`, `ab project add` and `ab project set`: same flag spellings,
     choices and help text everywhere, so they cannot drift (one shared definition instead of three)."""
     catalog = presets_map if presets_map is not None else dict(presets.BUILTIN)
     x.add_argument("--preset", required=preset_required, default=preset_default, choices=preset_choices,
@@ -1062,7 +1068,7 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="whether this project's sessions load the host-owned profile (skills, sub-agents, "
                         "commands, instructions, settings) and the agent's plugins (default: on). `off` also "
                         "means the harness image rather than any user image layer; agentbox's own session "
-                        "notes still apply. `ab run --no-profile` does the same for one run")
+                        "notes still apply. `ab session start --no-profile` does the same for one run")
     x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
                    help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
                         "an exemption — grantcheck still scans it (repeatable)")
@@ -1100,7 +1106,7 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
 
 
 def _add_identity_args(x):
-    """`ab project add` and `ab init`: what to do when the name already has state on disk made for another
+    """`ab project add` and `ab project init`: what to do when the name already has state on disk made for another
     root (layout.py). Without either, that is refused."""
     g = x.add_mutually_exclusive_group()
     g.add_argument("--reattach", action="store_true",
@@ -1142,25 +1148,33 @@ def parser(settings=None):
         prog="ab", formatter_class=raw,
         description="agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one "
                     "project per session.",
-        epilog="`ab project` manages the saved configuration; `ab session` manages the live runs; `ab run` "
-               "and `ab init` are the verbs that create them. Full reference: docs/USAGE.md.\n\n"
-               + ex("ab init pod --name web            scaffold and register a new project",
-                    "ab run --agent claude --project web   start a session (also: ab run claude web)",
+        epilog="Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the "
+               "live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. Full reference: "
+               "docs/USAGE.md.\n\n"
+               + ex("ab project init pod web              scaffold and register a new project",
+                    "ab session start claude web          start a session",
                     "ab session ls                     list running sessions",
                     "ab project show web               a project's effective settings"))
     sub = p.add_subparsers(dest="cmd", required=True)
 
     from . import initproj
-    x = add(sub, "init",
+    proj = sub.add_parser(
+        "project", help="manage registered projects (the saved configuration)", formatter_class=raw,
+        description="manage registered projects (the saved configuration). A project names a code grant, a "
+                    "preset and any extra data grants.",
+        epilog=ex("ab project add web ~/repos/web --preset build",
+                  "ab project set web --egress open", "ab project show web", "ab project ls",
+                  "ab project rm web")).add_subparsers(
+        dest="sub", required=True)
+    x = add(proj, "init",
             "scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named "
             "volume), then register it",
-            ex("ab init pod --name filelab",
-               "ab init python --name dataproc --upstream git@github.com:me/dataproc.git"))
+            ex("ab project init pod filelab",
+               "ab project init python dataproc --upstream git@github.com:me/dataproc.git"))
     x.add_argument("template", choices=initproj.TEMPLATES,
                    help="which scaffold to create: `pod` (a compose/dev-stack service, live data in a named "
                         "volume) or `python` (a script/library, data path from DATA_DIR)")
-    x.add_argument("--name", required=True, metavar="NAME",
-                   help="project name; the repo is created at <repos_dir>/<name> and registered under it")
+    x.add_argument("name", help="project name; the repo is created at <repos_dir>/<name> and registered under it")
     x.add_argument("--upstream", metavar="URL",
                    help="git URL to add as origin and push to (an off-box CODE backup; it does NOT back up "
                         ".env or the data volume)")
@@ -1170,14 +1184,6 @@ def parser(settings=None):
     _add_identity_args(x)
     x.set_defaults(fn=cmd_init)
 
-    proj = sub.add_parser(
-        "project", help="manage registered projects (the saved configuration)", formatter_class=raw,
-        description="manage registered projects (the saved configuration). A project names a code grant, a "
-                    "preset and any extra data grants.",
-        epilog=ex("ab project add web ~/repos/web --preset build",
-                  "ab project set web --egress open", "ab project show web", "ab project ls",
-                  "ab project rm web")).add_subparsers(
-        dest="sub", required=True)
     x = add(proj, "add", "register a project with a preset (validated against overlap and grant exposure)",
             ex("ab project add web ~/repos/web --preset build",
                "ab project add dataproc ~/repos/dataproc --preset script --data-ro ~/data/raw --data-rw ~/data/out",
@@ -1241,37 +1247,14 @@ def parser(settings=None):
                                            "removes none)")
     x.set_defaults(fn=cmd_project_rm)
 
-    x = add(sub, "run", "start an agent session in the foreground (one per project)",
-            ex("ab run --agent claude --project web",
-               "ab run claude web                 positional form of --agent/--project",
-               "ab run claude web --shell         a bash shell in the sandbox instead of the agent",
-               "ab run claude web -- --resume     pass everything after -- to the agent",
-               "ab attach web                     re-attach to the session already running"))
-    x.add_argument("--agent", metavar="AGENT",
-                   help="agent to run: `claude` or `omp` (or give it positionally: `ab run <agent> <project>`)")
-    x.add_argument("--project", metavar="PROJECT",
-                   help="the registered project to run against (or give it positionally)")
-    x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
-    x.add_argument("--no-tty", action="store_true",
-                   help="do not allocate a TTY (for non-interactive or piped runs)")
-    x.add_argument("--no-profile", action="store_true",
-                   help="for this run only: load no host-owned profile (skills, sub-agents, commands, "
-                        "instructions, settings) and no plugins, and use the harness image. agentbox's own "
-                        "session notes still apply. `ab project set <p> --profile off` makes it permanent")
-    x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
-                   help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
-    x.add_argument("names", nargs="*", metavar="[AGENT [PROJECT]]",
-                   help="positional AGENT and PROJECT (an alternative to --agent/--project); anything after a "
-                        "`--` is passed through to the agent or shell")
-    x.set_defaults(fn=cmd_run)
+    x = add(proj, "selftest", "prove the sandbox boundaries hold for a project (posture, egress, mounts, "
+                              "podman scoping), in a throwaway session",
+            ex("ab project selftest claude web", "ab project selftest claude web --json"))
+    x.add_argument("agent", choices=adapters.NAMES, help="agent to run the checks as")
+    x.add_argument("name", help="the registered project to test")
+    x.add_argument("--json", action="store_true", help="print results as JSON instead of a table")
+    x.set_defaults(fn=cmd_selftest)
 
-    x = add(sub, "attach", "re-attach a terminal to the session already running for a project",
-            ex("ab attach web"))
-    x.add_argument("project", help="the project whose running session to attach to (one per project)")
-    x.set_defaults(fn=cmd_attach)
-
-    # Running sessions are managed under `ab session`, mirroring `ab project`; `ab run` stays the top-level
-    # verb that starts one.
     prof_p = sub.add_parser(
         "profile", help="the host-owned agent profile: what every session loads, and the inbox it feeds",
         formatter_class=raw,
@@ -1321,7 +1304,7 @@ def parser(settings=None):
                     "have git, rg, python3 and the podman client. A build that fails any of those is "
                     "discarded, so what you were using stays in place.\n\n"
                     "The tag covers the harness image ID and the Containerfile. When the harness image is "
-                    "rebuilt your layer no longer matches it, and `ab run` says `personal layer out of "
+                    "rebuilt your layer no longer matches it, and `ab session start` says `personal layer out of "
                     "date` and runs the plain harness image -- it never runs a layer built on an older "
                     "harness. Build it again and the next session picks it up.",
         epilog=ex("ab image build claude", "ab image build omp --force")).add_subparsers(dest="sub",
@@ -1334,18 +1317,45 @@ def parser(settings=None):
     x.set_defaults(fn=cmd_image_build)
 
     sess = sub.add_parser(
-        "session", help="manage running sessions (the live instances)", formatter_class=raw,
-        description="manage running sessions (the live instances). Start one with `ab run`.",
-        epilog=ex("ab session ls", "ab session preview ab-claude-web-1 web:8000",
-                  "ab session kill ab-claude-web-1", "ab session gc")).add_subparsers(dest="sub", required=True)
+        "session", help="the live runs: start, attach, list, preview, kill, gc", formatter_class=raw,
+        description="the live runs. `start` creates one in the foreground (one per project); every other "
+                    "verb names a project or a session id.",
+        epilog=ex("ab session start claude web", "ab session attach web", "ab session ls",
+                  "ab session preview web web:8000", "ab session kill web", "ab session gc")).add_subparsers(
+        dest="sub", required=True)
+    x = add(sess, "start", "start an agent session in the foreground (one per project)",
+            ex("ab session start claude web",
+               "ab session start claude web --shell         a bash shell in the sandbox instead of the agent",
+               "ab session start claude web -- --resume     pass everything after -- to the agent",
+               "ab session attach web                       re-attach to the session already running"))
+    x.add_argument("agent", choices=adapters.NAMES, help="the agent to run")
+    x.add_argument("project", help="the registered project to run against; anything after a `--` is passed "
+                                   "through to the agent or shell")
+    x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
+    x.add_argument("--no-tty", action="store_true",
+                   help="do not allocate a TTY (for non-interactive or piped runs)")
+    x.add_argument("--no-profile", action="store_true",
+                   help="for this run only: load no host-owned profile (skills, sub-agents, commands, "
+                        "instructions, settings) and no plugins, and use the harness image. agentbox's own "
+                        "session notes still apply. `ab project set <p> --profile off` makes it permanent")
+    x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
+                   help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
+    x.set_defaults(fn=cmd_run)
+
+    x = add(sess, "attach", "re-attach a terminal to the session already running for a project",
+            ex("ab session attach web", "ab session attach ab-claude-web-1   by session id"))
+    x.add_argument("project", help="the project whose running session to attach to (one per project), or the "
+                                   "session id itself")
+    x.set_defaults(fn=cmd_attach)
     add(sess, "ls", "list sessions with their project, start time, age and idle time",
         ex("ab session ls")).set_defaults(fn=cmd_ls)
     x = add(sess, "preview",
             "open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)",
-            ex("ab session preview ab-claude-web-1 web:8000",
-               "ab session preview ab-claude-web-1 web:8000 --port 18080",
-               "ab session preview ab-claude-web-1 --stop"))
-    x.add_argument("session", help="the session name (from `ab session ls`)")
+            ex("ab session preview web web:8000",
+               "ab session preview web web:8000 --port 18080",
+               "ab session preview web --stop"))
+    x.add_argument("session", help="the project whose session to preview, or the session id itself "
+                                   "(`ab session ls` shows both)")
     x.add_argument("target", nargs="?", metavar="SERVICE:PORT",
                    help="the dev-stack service (or container) and the port inside it, e.g. web:8000; omit with "
                         "--stop")
@@ -1363,12 +1373,13 @@ def parser(settings=None):
                     "snapshots (runs automatically after boot)",
         ex("ab session gc")).set_defaults(fn=cmd_gc)
 
-    x = add(sub, "selftest", "prove the sandbox boundaries hold (posture, egress, mounts, podman scoping)",
-            ex("ab selftest --agent claude --project web", "ab selftest --agent claude --project web --json"))
-    x.add_argument("--agent", required=True, metavar="AGENT", help="agent to run the checks as (claude or omp)")
-    x.add_argument("--project", required=True, metavar="PROJECT", help="the registered project to test")
-    x.add_argument("--json", action="store_true", help="print results as JSON instead of a table")
-    x.set_defaults(fn=cmd_selftest)
+    x = add(sub, "screen", "open the tmux workspace: agent panes (each an `ab session start`) and host shells, "
+                           "in a layout from ~/.config/agentbox/screen.toml",
+            ex("ab screen web", "ab screen web web-review --layout wide", "ab screen --list",
+               "ab screen --print-config > ~/.config/agentbox/screen.toml"))
+    from . import screen as _screen
+    _screen.add_args(x)
+    x.set_defaults(fn=cmd_screen)
 
     ks = sub.add_parser(
         "keys", help="model tokens and provider API keys", formatter_class=raw,
@@ -1378,7 +1389,7 @@ def parser(settings=None):
         dest="sub", required=True)
     x = add(ks, "rotate", "replace the Claude subscription token (from `claude setup-token`)",
             ex("ab keys rotate claude"))
-    x.add_argument("agent", help="the agent whose subscription token to replace (currently: claude)")
+    x.add_argument("agent", choices=adapters.NAMES, help="the agent whose subscription token to replace (currently: claude)")
     x.set_defaults(fn=cmd_keys_rotate)
     x = add(ks, "set", "set a provider's API key (pay-per-use: make it dedicated and spend-capped)",
             ex("ab keys set openai"))
@@ -1418,10 +1429,10 @@ def gc_once_per_boot(s):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    # `ab run ... -- <args>` passes everything after the first `--` to the agent/shell. Split it off before
-    # argparse so the positionals and flags on the left parse normally (a REMAINDER would swallow --shell).
+    # `ab session start ... -- <args>` passes everything after the first `--` to the agent/shell. Split it off
+    # before argparse so the positionals and flags on the left parse normally (a REMAINDER would swallow --shell).
     passthrough = []
-    if argv[:1] == ["run"] and "--" in argv:
+    if argv[:2] == ["session", "start"] and "--" in argv:
         i = argv.index("--")
         argv, passthrough = argv[:i], argv[i + 1:]
     try:

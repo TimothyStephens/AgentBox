@@ -87,7 +87,7 @@ class Run:
 def run_omp(env, prompt_args, timeout):
     started = time.time()
     try:
-        p = env.ab("run", "--agent", "omp", "--project", "omplive", "--no-tty", "--", *prompt_args,
+        p = env.ab("session", "start", "omp", "omplive", "--no-tty", "--", *prompt_args,
                    timeout=timeout)
         return Run(p, time.time() - started)
     except AssertionError as e:

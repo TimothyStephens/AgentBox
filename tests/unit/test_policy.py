@@ -181,7 +181,7 @@ class PresetTest(unittest.TestCase):
 
     def test_the_exec_tier_is_refused_at_validation(self):
         """F7: exec is not built. It used to be refused only when a session was being prepared, so
-        `ab project add --podman exec` registered happily and failed later, at `ab run`."""
+        `ab project add --podman exec` registered happily and failed later, at `ab session start`."""
         for value in ({"tier": "exec"}, {"tier": "none", "live": "exec"}, {"tier": "dev", "live": "exec"}):
             with self.assertRaises(AgentboxError, msg=value) as cm:
                 self.eff({"preset": "python", "podman": value})
@@ -317,7 +317,7 @@ class ExecTierRefusedEndToEnd(SettingsCase):
         self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
         from agentbox import config
         settings = config.load()
-        self.assertEqual(cli.main(["init", "pod", "--name", "x3", "--podman", "exec"]), 2)
+        self.assertEqual(cli.main(["project", "init", "pod", "x3", "--podman", "exec"]), 2)
         self.assertFalse(os.path.exists(os.path.join(repos, "x3")), "nothing written")
         self.assertNotIn("x3", registry.load(settings.registry_path))
 
@@ -487,10 +487,10 @@ class PresetChangeTest(unittest.TestCase):
 
 
 class SharedArgsTest(unittest.TestCase):
-    """Requirement 1's parity scaffolding: `ab init`, `ab project add` and `ab project set` must define the
+    """Requirement 1's parity scaffolding: `ab project init`, `ab project add` and `ab project set` must define the
     project-setting flags identically. This only exercises the shared add-arg function directly; the
     functional half (same overrides produce the same registry entry through each command) lives in
-    test_init.py once `ab init` is wired to the same function."""
+    test_init.py once `ab project init` is wired to the same function."""
 
     def _actions(self, **kw):
         p = argparse.ArgumentParser()
@@ -553,7 +553,7 @@ class PresetHelpAndOutputTest(SettingsCase):
         return code, flat(out.getvalue()), flat(err.getvalue())
 
     def test_every_preset_and_its_description_is_in_the_help(self):
-        for argv in (("project", "add"), ("project", "set"), ("init",)):
+        for argv in (("project", "add"), ("project", "set"), ("project", "init")):
             _code, out, _err = self._run(*argv, "--help")
             for name, desc in presets.DESCRIPTIONS.items():
                 self.assertIn(name, out, f"{argv}: {name}")

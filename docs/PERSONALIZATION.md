@@ -38,7 +38,7 @@ The whole host surface a session can read is short, and worth knowing by heart:
    reaches a session.
 
 **Claude: no.** `$HOME` in a session is a fresh tmpfs, `CLAUDE_CONFIG_DIR` points at the per-project state
-dir under (2), and the host's `~/.claude` is never mounted — `ab selftest` asserts it is not visible.
+dir under (2), and the host's `~/.claude` is never mounted — `ab project selftest` asserts it is not visible.
 Nothing you do to your own Claude Code install changes what a session sees.
 
 **OMP: yes, in three ways** — all of them from `~/.omp`, set by the `omp_home` setting:
@@ -65,7 +65,7 @@ What is left from `~/.omp`: **`plugins`/`repos`/`pylibs`**, which needs a decisi
 and **`bin/mags-codedev`**, which is a wrapper *into* `repos/` and so only works while that is mounted — it
 goes with the same decision rather than before it, and is gated with the plugins for the same reason.
 
-That gating gives `ab run --no-profile` a property worth knowing: **for OMP it now means a session reads
+That gating gives `ab session start --no-profile` a property worth knowing: **for OMP it now means a session reads
 nothing at all from the host's `~/.omp`.** agentbox's own `config.yml` still arrives — the flag turns off
 the profile and the plugins, not agentbox's configuration of the agent.
 
@@ -101,10 +101,10 @@ persists across sessions of that project. The host `~/.claude` is never used.
   `FROM ${BASE}`, and `ab image build claude` builds it on the harness image — for a toolchain or CLI you
   want in every session. It is checked before it is tagged (USER/ENTRYPOINT/CMD/PATH unchanged, the pinned
   agent version, `git`/`rg`/`python3`/podman present), and a failed build leaves the one you were using in
-  place. When the harness image is rebuilt, `ab run` says `personal layer out of date` and runs the plain
+  place. When the harness image is rebuilt, `ab session start` says `personal layer out of date` and runs the plain
   harness image until you build again. Only the `Containerfile` and `plugins.toml` affect the image's
-  identity — editing a skill does not. `ab run --no-profile` runs the harness image.
-- **Turning the profile off:** `ab run --no-profile` for one run, or `ab project set <p> --profile off` for
+  identity — editing a skill does not. `ab session start --no-profile` runs the harness image.
+- **Turning the profile off:** `ab session start --no-profile` for one run, or `ab project set <p> --profile off` for
   good. That drops the mounts, the copied `settings.json`, the profile text in `CLAUDE.md`, the plugins and
   the image layer; agentbox's own session notes still apply.
 - **Plugins** (9 Nov): declared in the profile's `plugins.toml` as `[[plugin]]` entries (`id`, `marketplace`,
@@ -182,12 +182,12 @@ change, and a per-project OMP tweak lives in the repo.
 
 | Layer | Edit here | Affects | Persists |
 |---|---|---|---|
-| **A. Global scaffold template** | `agentbox/initproj.py` (code today — see §3) | every *future* `ab init` project | — |
+| **A. Global scaffold template** | `agentbox/initproj.py` (code today — see §3) | every *future* `ab project init` project | — |
 | **B. Global agent seed** | `~/.config/agentbox/claude/` or `~/.config/agentbox/omp/` | every session of that agent, all projects | copied/mounted each start |
 | **C. OMP global toolchain** | host `~/.omp` (`omp-env install`, `omp plugin link`) | every OMP session, all projects | host-shared, ro |
 | **D. Per-project repo files** | files committed in the project (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`, `.omp/`, `dev/fixtures/`) | that one project | in the repo |
 | **E. Per-project agent state** | `~/.local/share/agentbox/projects/<project>/<agent>/` | that one project, across sessions | on disk, `ab project reset-state` wipes it |
-| **F. Per-project settings** (preset, egress, grants, podman tier) | `ab project set <name> …` — the same flags `ab init`/`ab project add` take; `--unset KEY` returns one to its preset value | that one project, from its **next** session | `projects.toml` (`ab project show` prints each value's source) |
+| **F. Per-project settings** (preset, egress, grants, podman tier) | `ab project set <name> …` — the same flags `ab project init`/`ab project add` take; `--unset KEY` returns one to its preset value | that one project, from its **next** session | `projects.toml` (`ab project show` prints each value's source) |
 
 A settings change applies to the next session, not a running one, and `ab project set` refuses while a
 session for that project is live (as do `rm`, `reset-state` and the `accept-*` commands) — end it with
@@ -215,7 +215,7 @@ name inherits `lockdown`'s values for anything it omits (see `docs/design.md`, P
 
 ### (c) Change the default `AGENTS.md` for **all future** projects
 
-Create `~/.config/agentbox/templates/<template>/AGENTS.md` (and/or `README.md`); `ab init` uses it verbatim,
+Create `~/.config/agentbox/templates/<template>/AGENTS.md` (and/or `README.md`); `ab project init` uses it verbatim,
 `{name}`-substituted, for every future project of that template. Only those two doc filenames are read — see
 §3. Changing an existing project's `AGENTS.md` is just editing the committed file (layer D).
 
@@ -228,7 +228,7 @@ string constants in `agentbox/initproj.py` (`_AGENTS`, `_GITIGNORE`, `_README`, 
 name and template. The `.env`/mask/compose/data-volume **structure always comes from these constants** — it is
 what keeps a fresh project grantcheck-clean, so it is not user-overridable.
 
-**The doc override (`initproj._template_overrides`, `OVERRIDABLE`):** before writing a project, `ab init`
+**The doc override (`initproj._template_overrides`, `OVERRIDABLE`):** before writing a project, `ab project init`
 reads `<config_dir>/templates/<template>/` and, for the **allowlisted doc filenames only**, uses the file
 there (verbatim, `{name}`-substituted) instead of the built-in:
 
@@ -241,7 +241,7 @@ there (verbatim, `{name}`-substituted) instead of the built-in:
 
 `OVERRIDABLE = ("AGENTS.md", "README.md")`. Any other file in that dir — a `.env`, `compose.yaml`,
 `Containerfile`, anything — is **ignored**: the built-in wins, so a template dir can never weaken the safe
-layout or slip a secret into `.env`. When the dir is absent, `ab init` behaves exactly as before. Symlinks in
+layout or slip a secret into `.env`. When the dir is absent, `ab project init` behaves exactly as before. Symlinks in
 the template dir are skipped. Tests: `test_init.TemplateOverrideTest` proves an `AGENTS.md`/`README.md`
 override is used and that a `.env`/`compose.yaml` override is ignored (the scaffold stays grantcheck-clean);
 the allowlist is mutation-checked.
@@ -265,7 +265,7 @@ for Claude it is **prepended** to `CLAUDE.md` (so it leads), and for OMP it is t
   tier, the project's own `dev_images` patterns, or that no other local image is allowed (28 Oct).
 
 These live facts stay **in the per-session notes, not baked into the committed scaffold**, because they come
-from the project's registry entry and preset at session time, not from `ab init`; writing them into the
+from the project's registry entry and preset at session time, not from `ab project init`; writing them into the
 committed `AGENTS.md` would duplicate the notes and go stale the moment a preset or `egress` override changes.
 Two improvements from the original assessment are now in place, no change to the safe layout:
 

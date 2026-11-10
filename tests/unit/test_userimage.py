@@ -8,7 +8,7 @@ skill must not invalidate a built image, and a rebuilt harness image must. The I
 to notice.
 
 **A layer built on an older harness is never run.** When the key no longer matches, nothing is tagged under
-it, so `ab run` says `personal layer out of date` and runs the plain harness image. The alternative -- run
+it, so `ab session start` says `personal layer out of date` and runs the plain harness image. The alternative -- run
 it anyway -- means the agent, the podman client and the toolchain underneath a session are whatever they
 were the last time someone remembered to rebuild.
 """
@@ -376,7 +376,7 @@ class Building(SettingsCase):
 
 
 class WhatASessionRuns(SettingsCase):
-    """`ab run`'s half: the layer when it is current, the harness image and a warning when it is not."""
+    """`ab session start`'s half: the layer when it is current, the harness image and a warning when it is not."""
 
     def setUp(self):
         super().setUp()
@@ -432,7 +432,7 @@ class WhatASessionRuns(SettingsCase):
         self.assertTrue([w for w in warnings if "ab image build claude" in w], warnings)
 
     def test_a_containerfile_that_was_never_built_says_so_instead(self):
-        """"Out of date" is only true of a layer that exists. `ab selftest` on the host reported a layer
+        """"Out of date" is only true of a layer that exists. `ab project selftest` on the host reported a layer
         out of date for a profile whose Containerfile had never been built once -- which sends the reader
         looking for an image that was never there (4 Nov)."""
         self.images({HARNESS: BASE_DOC})

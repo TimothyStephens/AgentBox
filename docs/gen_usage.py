@@ -12,12 +12,9 @@ import tempfile
 # (section heading, [(command title, argv)]) in the order the CLI presents them.
 GROUPS = [
     ("Top level", [("ab", [])]),
-    ("ab init", [("ab init", ["init"])]),
-    ("ab run", [("ab run", ["run"])]),
-    ("ab attach", [("ab attach", ["attach"])]),
-    ("ab selftest", [("ab selftest", ["selftest"])]),
     ("ab project", [
         ("ab project", ["project"]),
+        ("ab project init", ["project", "init"]),
         ("ab project add", ["project", "add"]),
         ("ab project set", ["project", "set"]),
         ("ab project show", ["project", "show"]),
@@ -28,7 +25,18 @@ GROUPS = [
         ("ab project purge", ["project", "purge"]),
         ("ab project accept-grant-exposure", ["project", "accept-grant-exposure"]),
         ("ab project accept-history-secrets", ["project", "accept-history-secrets"]),
+        ("ab project selftest", ["project", "selftest"]),
     ]),
+    ("ab session", [
+        ("ab session", ["session"]),
+        ("ab session start", ["session", "start"]),
+        ("ab session attach", ["session", "attach"]),
+        ("ab session ls", ["session", "ls"]),
+        ("ab session preview", ["session", "preview"]),
+        ("ab session kill", ["session", "kill"]),
+        ("ab session gc", ["session", "gc"]),
+    ]),
+    ("ab screen", [("ab screen", ["screen"])]),
     ("ab profile", [
         ("ab profile", ["profile"]),
         ("ab profile harvest", ["profile", "harvest"]),
@@ -38,13 +46,6 @@ GROUPS = [
     ("ab image", [
         ("ab image", ["image"]),
         ("ab image build", ["image", "build"]),
-    ]),
-    ("ab session", [
-        ("ab session", ["session"]),
-        ("ab session ls", ["session", "ls"]),
-        ("ab session preview", ["session", "preview"]),
-        ("ab session kill", ["session", "kill"]),
-        ("ab session gc", ["session", "gc"]),
     ]),
     ("ab keys", [
         ("ab keys", ["keys"]),
@@ -58,19 +59,22 @@ GROUPS = [
 
 # A one-line, high-level statement of what each command is for, shown above its --help.
 INTENT = {
-    "ab": "The launcher. `ab project` manages saved configuration; `ab session` manages live runs; "
-          "`ab run` and `ab init` create them.",
-    "ab init": "Scaffold a new project with a safe-by-construction layout (secrets masked, live data in a "
+    "ab": "The launcher. Two nouns: `ab project` is the saved configuration (init, add, set, ...), "
+          "`ab session` is the live run (start, attach, kill, ...). `ab screen` is the tmux workspace.",
+    "ab project init": "Scaffold a new project with a safe-by-construction layout (secrets masked, live data in a "
                "named volume) and register it, so a fresh project starts a session with no warnings.",
-    "ab run": "Start an agent session against a project in the foreground — build the sandbox, run the agent, "
-              "tear it down on exit.",
-    "ab selftest": "Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, "
+    "ab session start": "Start an agent session against a project in the foreground — build the sandbox, run the "
+                        "agent, tear it down on exit.",
+    "ab session attach": "Re-attach a terminal to the session already running for a project (or a session id).",
+    "ab screen": "Open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout "
+                 "from ~/.config/agentbox/screen.toml.",
+    "ab project selftest": "Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, "
                    "mounts, podman scoping).",
     "ab project": "Manage the durable registry entries — a project names a code grant, a preset and any extra "
                   "data grants. One project has many sessions over time.",
     "ab project add": "Register a project with a preset, validating it against overlap and grant exposure.",
     "ab project set": "Change a registered project's settings in place, re-validated, with the same flags "
-                      "`ab init`/`ab project add` take. Refused while a session for the project is live.",
+                      "`ab project init`/`ab project add` take. Refused while a session for the project is live.",
     "ab project show": "Print a project's effective settings and whether each came from the preset or an override.",
     "ab project check": "Read-only: run the grant scan a session runs, print the findings, and say whether "
                         "they still match what was accepted. Exits 1 if a session would refuse.",
@@ -81,7 +85,7 @@ INTENT = {
                                         "project's grant.",
     "ab project accept-history-secrets": "Record that you accept (after rotating) the masked file names in a "
                                          "project's git history.",
-    "ab session": "Manage the live instances — list, preview, kill and garbage-collect running sessions.",
+    "ab session": "The live runs — start one, attach to it, list, preview, kill and garbage-collect.",
     "ab session ls": "List sessions with their project, start time, age and idle time.",
     "ab session preview": "Publish one dev-stack service of a session on 127.0.0.1 so you can reach it over ssh -L.",
     "ab session kill": "Tear down a session and everything it created, keeping its logs and end-of-session scan.",
@@ -120,7 +124,7 @@ def main():
         "",
         "For the two command namespaces and when to reach for each, see `docs/design.md` (Usage) and "
         "`docs/PERSONALIZATION.md`. In short: **`ab project`** manages the durable registry entries "
-        "(configuration), **`ab session`** manages the live sandboxed runs, and `ab run` / `ab init` are the "
+        "(configuration), **`ab session`** manages the live sandboxed runs, and `ab session start` / `ab project init` are the "
         "verbs that create them.",
         "",
         "## Contents",

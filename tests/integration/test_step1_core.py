@@ -53,7 +53,7 @@ class Step1(unittest.TestCase):
         self.assertSelftest("locked1")
 
     def test_agent_runs_as_host_user_with_token(self):
-        p = ENV.ab("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+        p = ENV.ab("session", "start", "claude", "p2", "--shell", "--no-tty", "--",
                    "-c", 'id -u; test -n "$CLAUDE_CODE_OAUTH_TOKEN" && echo TOKEN_SET; echo "HOME=$HOME"; pwd',
                    timeout=300)
         lines = p.stdout.split()
@@ -66,7 +66,7 @@ class Step1(unittest.TestCase):
 
     def test_agent_can_commit(self):
         root = os.path.join(ENV.projects, "p2")
-        p = ENV.ab("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+        p = ENV.ab("session", "start", "claude", "p2", "--shell", "--no-tty", "--",
                    "-c", "echo change >> README.agent && git add README.agent && git commit -qm agent-commit && "
                          "git log -1 --format='%s|%cn'", timeout=300)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -76,12 +76,12 @@ class Step1(unittest.TestCase):
         self.assertFalse([h for h in hooks if not h.endswith(".sample")], "no hook was added")
 
     def test_claude_starts_in_sandbox(self):
-        p = ENV.ab("run", "--agent", "claude", "--project", "p2", "--no-tty", "--", "--version", timeout=300)
+        p = ENV.ab("session", "start", "claude", "p2", "--no-tty", "--", "--version", timeout=300)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("Claude Code", p.stdout)
 
     def test_token_not_in_podman_config_and_kill(self):
-        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+        proc = ENV.ab_bg("session", "start", "claude", "p2", "--shell", "--no-tty", "--",
                          "-c", "sleep 120")
         try:
             name = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
@@ -113,7 +113,7 @@ class Step1(unittest.TestCase):
 
     def test_sigterm_tears_the_session_down(self):
         import signal
-        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+        proc = ENV.ab_bg("session", "start", "claude", "p2", "--shell", "--no-tty", "--",
                          "-c", "sleep 300")
         try:
             up = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",
@@ -150,7 +150,7 @@ class Step1(unittest.TestCase):
     @unittest.skipUnless(harness.slice_installed(), "agentbox.slice not installed (make install-slice)")
     def test_slice_contains_the_session(self):
         # Seen from the host: inside, the private cgroup namespace shows only "0::/".
-        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "p2", "--shell", "--no-tty", "--",
+        proc = ENV.ab_bg("session", "start", "claude", "p2", "--shell", "--no-tty", "--",
                          "-c", "sleep 120")
         try:
             name = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",

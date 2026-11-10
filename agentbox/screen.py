@@ -1,37 +1,28 @@
-#!/usr/bin/env python3
-"""ab-ws: tmux workspace for agentbox.
+"""`ab screen`: a tmux workspace for agentbox.
 
-Opens a tmux session with your builder agent, an optional reviewer agent and host
-shells, laid out by a layout you pick or one chosen from your terminal width.
-Agents are only ever started with `ab run`, so all sandboxing stays in ab.
-Re-running attaches to the existing workspace instead of starting duplicates.
+Opens a tmux session with your builder agent, an optional reviewer agent and host shells, laid out by a
+layout you pick or one chosen from your terminal width. Agents are only ever started with
+`ab session start`, so all sandboxing stays in ab. Re-running attaches to the existing workspace instead
+of starting duplicates.
 
-  usage: cd ~/repos/agentbox && ab-ws [--layout NAME] <builder-project> [reviewer-project]
-         ab-ws --list               layouts available, and which one auto would pick
-         ab-ws --print-config       a commented starter config (redirect it into the file)
-         ab-ws --dry-run ...        print the tmux commands instead of running them
-
-Layouts come from ~/.config/agentbox/ab-ws.toml when that file exists, otherwise
-from the built-in defaults (the same ones --print-config shows).
+Layouts come from <config dir>/screen.toml when that file exists (AB_CONFIG_DIR moves it with the rest;
+the older name ab-ws.toml is read when screen.toml is absent), otherwise from the built-in defaults, which
+`--print-config` prints. This was contrib/ab-ws until 10 Nov 2026 (docs/decisions.md).
 """
-import argparse
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 
-try:
-    import tomllib
-except ImportError:  # Python < 3.11
-    sys.exit("ab-ws: needs Python 3.11 or newer (for tomllib)")
+from . import adapters
 
-CONFIG_PATH = os.path.expanduser(
-    os.path.join(os.environ.get("XDG_CONFIG_HOME", "~/.config"), "agentbox", "ab-ws.toml")
-)
+CONFIG_NAME = "screen.toml"
+LEGACY_CONFIG_NAME = "ab-ws.toml"
 
-DEFAULT_CONFIG = r'''# ab-ws layouts.  Save as ~/.config/agentbox/ab-ws.toml
-#   ab-ws --print-config > ~/.config/agentbox/ab-ws.toml
+DEFAULT_CONFIG = r'''# ab screen layouts.  Save as ~/.config/agentbox/screen.toml
+#   ab screen --print-config > ~/.config/agentbox/screen.toml
 #
 # When this file exists, ONLY the layouts in it are used (the built-ins are ignored),
 # so keep any of the ones below that you still want.
@@ -47,8 +38,8 @@ DEFAULT_CONFIG = r'''# ab-ws layouts.  Save as ~/.config/agentbox/ab-ws.toml
 #                           (omitted widths share what is left equally)
 #     height  percent       pane height within its column (omitted: share equally)
 #     run     what runs in the pane (required):
-#               "builder"   the builder agent:   ab run <builder-project>
-#               "reviewer"  the reviewer agent:  ab run <reviewer-project>
+#               "builder"   the builder agent:   ab session start <agent> <builder-project>
+#               "reviewer"  the reviewer agent:  ab session start <agent> <reviewer-project>
 #               "shell"     a host shell
 #     start   true/false    start the command, or only type it for you to press Enter
 #                           (default: true for builder, false for reviewer)
@@ -57,12 +48,13 @@ DEFAULT_CONFIG = r'''# ab-ws layouts.  Save as ~/.config/agentbox/ab-ws.toml
 #                           working directory (default: builder for builder and shell
 #                           panes, reviewer for reviewer panes)
 #
-#   Reviewer panes are left out when you start ab-ws without a reviewer project.
+#   Reviewer panes are left out when you start ab screen without a reviewer project.
+#     agent   "claude" | "omp"  which agent an agent pane starts (default: --agent, then "claude")
 #
 # CHOOSING A LAYOUT
 #   default = "auto" picks the layout with the largest min_cols that fits your
 #   terminal width (on a tie, the one listed first). Put a layout name instead to always use that one, or override
-#   per run with:  ab-ws --layout NAME ...
+#   per run with:  ab screen --layout NAME ...
 
 default = "auto"
 
@@ -132,7 +124,7 @@ panes = [
 # ]
 '''
 
-PANE_KEYS = {"column", "width", "height", "run", "start", "cmd", "dir"}
+PANE_KEYS = {"column", "width", "height", "run", "start", "cmd", "dir", "agent"}
 RUN_KINDS = {"builder", "reviewer", "shell"}
 
 
@@ -215,7 +207,7 @@ def pick_layout(cfg, requested, cols):
         for lay in layouts:
             if lay["name"] == name:
                 return lay
-        raise ConfigError(f"no layout named '{name}' (ab-ws --list)")
+        raise ConfigError(f"no layout named '{name}' (ab screen --list)")
     fitting = [l for l in layouts if l.get("min_cols", 0) <= cols]
     if fitting:
         return max(fitting, key=lambda l: l.get("min_cols", 0))
@@ -287,18 +279,19 @@ def pane_dir(p, builder_dir, reviewer_dir):
     return os.path.expanduser(d)
 
 
-def pane_command(p, builder, reviewer):
+def pane_command(p, builder, reviewer, agent="claude"):
     """-> (keys to type, press_enter)"""
+    a = shlex.quote(p.get("agent") or agent)
     if p["run"] == "builder":
-        return f"ab run {shlex.quote(builder)}", p.get("start", True)
+        return f"ab session start {a} {shlex.quote(builder)}", p.get("start", True)
     if p["run"] == "reviewer":
-        return f"ab run {shlex.quote(reviewer)}", p.get("start", False)
+        return f"ab session start {a} {shlex.quote(reviewer)}", p.get("start", False)
     if "cmd" in p:
         return p["cmd"], p.get("start", True)
     return None, False
 
 
-def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols, rows):
+def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols, rows, agent="claude"):
     first = True
     for wi, win in enumerate(layout["window"]):
         plan = plan_window(win, bool(reviewer),
@@ -337,7 +330,7 @@ def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols
                 remaining -= this
                 ids.append(pid)
             for (p, _), pane_id in zip(cpanes, ids):
-                keys, enter = pane_command(p, builder, reviewer)
+                keys, enter = pane_command(p, builder, reviewer, agent)
                 if keys:
                     t("send-keys", "-t", pane_id, keys, *(["Enter"] if enter else []))
     if first:
@@ -346,37 +339,48 @@ def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols
     t("select-pane", "-t", session + ":^.0")
 
 
-def main():
-    ap = argparse.ArgumentParser(prog="ab-ws", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("builder", nargs="?", help="builder project (ab project name)")
-    ap.add_argument("reviewer", nargs="?", help="reviewer project (a separate clone)")
-    ap.add_argument("--layout", help="layout name (default: from the config, usually auto)")
-    ap.add_argument("--config", default=CONFIG_PATH, help=f"config file (default {CONFIG_PATH})")
-    ap.add_argument("--list", action="store_true", help="list layouts")
-    ap.add_argument("--print-config", action="store_true", help="print a commented starter config")
-    ap.add_argument("--dry-run", action="store_true", help="print tmux commands, run nothing")
-    a = ap.parse_args()
+def add_args(x):
+    """`ab screen`'s arguments, on the subparser the CLI builds."""
+    x.add_argument("builder", nargs="?", help="builder project (a registered project name)")
+    x.add_argument("reviewer", nargs="?", help="reviewer project (a separate clone, registered too)")
+    x.add_argument("--agent", choices=adapters.NAMES, default="claude",
+                   help="the agent the agent panes start (default: claude; a pane's own `agent` key wins)")
+    x.add_argument("--layout", help="layout name (default: from the config, usually auto)")
+    x.add_argument("--config", metavar="FILE", help=f"config file (default: <config dir>/{CONFIG_NAME})")
+    x.add_argument("--list", action="store_true", help="list layouts, and which one auto would pick")
+    x.add_argument("--print-config", action="store_true", help="print a commented starter config")
+    x.add_argument("--dry-run", action="store_true", help="print the tmux commands, run nothing")
 
+
+def config_path(settings, given=None):
+    if given:
+        return os.path.expanduser(given)
+    new = os.path.join(settings.config_dir, CONFIG_NAME)
+    legacy = os.path.join(settings.config_dir, LEGACY_CONFIG_NAME)
+    return legacy if not os.path.exists(new) and os.path.exists(legacy) else new
+
+
+def run(settings, a, *, out=print, err=lambda m: print(m, file=sys.stderr)):
+    """The command. Returns an exit status (0 ok, 1 tmux failed, 2 refused)."""
     if a.print_config:
         sys.stdout.write(DEFAULT_CONFIG)
         return 0
-
+    path = config_path(settings, a.config)
     size = shutil.get_terminal_size((200, 50))
     cols, rows = size.columns, size.lines
     try:
-        cfg, source = load_config(a.config)
+        cfg, source = load_config(path)
         validate(cfg, source)
         if a.list:
             auto = pick_layout(cfg, "auto", cols)["name"]
-            print(f"layouts from {source} (terminal is {cols} columns):")
+            out(f"layouts from {source} (terminal is {cols} columns):")
             for lay in cfg["layout"]:
                 mark = "  <- auto" if lay["name"] == auto else ""
-                print(f"  {lay['name']:<16} min_cols {lay.get('min_cols', 0):<5}{mark}")
-            print(f"default: {cfg.get('default', 'auto')}")
+                out(f"  {lay['name']:<16} min_cols {lay.get('min_cols', 0):<5}{mark}")
+            out(f"default: {cfg.get('default', 'auto')}")
             return 0
         if not a.builder:
-            ap.error("give the builder project name")
+            raise ConfigError("give the builder project name (`ab screen <project>`), or --list / --print-config")
         layout = pick_layout(cfg, a.layout, cols)
         builder_dir = os.getcwd()
         reviewer_dir = builder_dir
@@ -384,31 +388,30 @@ def main():
             tmpl = cfg.get("reviewer_dir", "~/repos/{reviewer}")
             reviewer_dir = os.path.expanduser(tmpl.replace("{reviewer}", a.reviewer))
             if not os.path.isdir(reviewer_dir):
-                print(f"ab-ws: reviewer dir {reviewer_dir} not found; using {builder_dir}"
-                      f" (set reviewer_dir in {a.config})", file=sys.stderr)
+                err(f"ab screen: reviewer dir {reviewer_dir} not found; using {builder_dir}"
+                    f" (set reviewer_dir in {path})")
                 reviewer_dir = builder_dir
         session = "ab-" + a.builder
         t = Tmux(a.dry_run)
         attach = ["switch-client", "-t", session] if os.environ.get("TMUX") else ["attach", "-t", session]
+        if not a.dry_run and not shutil.which("tmux"):
+            raise ConfigError("tmux is not on PATH; `ab screen` is a tmux layout (install tmux, or use "
+                              "`ab session start` directly)")
         exists = (not a.dry_run and
                   subprocess.run(["tmux", "has-session", "-t", session],
                                  stderr=subprocess.DEVNULL).returncode == 0)
         if not exists:
             if not a.dry_run and not shutil.which("ab"):
-                print("ab-ws: `ab` is not on PATH; agent panes will fail to start", file=sys.stderr)
-            print(f"ab-ws: layout '{layout['name']}' ({source})", file=sys.stderr)
-            build(t, session, layout, a.builder, a.reviewer, builder_dir, reviewer_dir, cols, rows)
+                err("ab screen: `ab` is not on PATH; agent panes will fail to start")
+            err(f"ab screen: layout '{layout['name']}' ({source})")
+            build(t, session, layout, a.builder, a.reviewer, builder_dir, reviewer_dir, cols, rows, a.agent)
         if a.dry_run:
             t(*attach)
             return 0
         os.execvp("tmux", ["tmux", *attach])
     except ConfigError as e:
-        print(f"ab-ws: {e}", file=sys.stderr)
+        err(f"ab screen: {e}")
         return 2
     except subprocess.CalledProcessError as e:
-        print(f"ab-ws: tmux failed: {e}", file=sys.stderr)
+        err(f"ab screen: tmux failed: {e}")
         return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

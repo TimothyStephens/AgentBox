@@ -7,7 +7,7 @@ How to install the `ab` launcher on this host, and exactly where everything it u
 - **ubuntu-dev** (Ubuntu), rootless **podman 5.7.0** with netavark, `python3`, `git` and **`rsync`**.
   `vmuser` has no root. rsync is a hard requirement, not an optional extra: every session takes an
   `rsync --link-dest` snapshot of its read-write grants before starting (the session's only undo), so
-  without it `ab run` refuses. It is also needed to run agentbox's own test suite.
+  without it `ab session start` refuses. It is also needed to run agentbox's own test suite.
 - **No other image is needed.** agentbox builds its own chain — `agentbox-base` →
   `agentbox-{claude,omp}` → optionally your own layer — from `node:26-bookworm-slim` upward, and installs
   each agent CLI at a pin named in the Makefile. It no longer layers on `localhost/claudecode` or
@@ -45,11 +45,11 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    ```
    Produces `localhost/agentbox-claude:latest` and `localhost/agentbox-omp:latest` (each also tagged
    `:<date>`). Each build **asserts** that the installed binary reports its pin, and the version goes on the
-   `agentbox.cli-version` label that `ab selftest` reports — so an image cannot ship a version its label
+   `agentbox.cli-version` label that `ab project selftest` reports — so an image cannot ship a version its label
    denies. Fails loudly if `agentbox-base` is missing, and warns if it is older than `BASE_WARN_DAYS`.
 
    To move a pin, edit the Makefile variable and rebuild. Personal layers built on the old image go stale
-   and say so (`ab run` prints `personal layer out of date`); `ab image build <agent>` again.
+   and say so (`ab session start` prints `personal layer out of date`); `ab image build <agent>` again.
 
 4. **The launcher on PATH:**
    ```bash
@@ -74,9 +74,9 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
 
 8. **Register a project and check it:**
    ```bash
-   ab init pod --name demo            # scaffold + register a grantcheck-clean project, OR:
+   ab project init pod demo            # scaffold + register a grantcheck-clean project, OR:
    ab project add <name> <root> --preset python|pods|lockdown
-   ab selftest --agent claude --project <name>
+   ab project selftest claude <name>
    ```
 
 ## Where everything is installed
@@ -94,7 +94,7 @@ real config.
 | Config | `~/.config/agentbox` | `AB_CONFIG_DIR` | `projects.toml`, `agentbox.toml`, `presets/`, `keys/`, `<agent>-oauth-token`, per-agent seeds (`claude/`, `omp/`) |
 | Data | `~/.local/share/agentbox` | `AB_DATA_DIR` | `projects/<name>/` (each project's agent state `<agent>/`, `backups/`, `built-images.json`, `project.json`), `logs/`, `profiles/`, `tmp/`, `ephemeral/` |
 | Run (tmpfs) | `$XDG_RUNTIME_DIR/agentbox` | `AB_RUN_DIR` | live session metadata and generated configs under `sessions/`, podman sockets under `services/` — gone on reboot |
-| Scaffold root | `~/repos` | `AB_REPOS_DIR` | where `ab init <t> --name <n>` creates `<name>/` |
+| Scaffold root | `~/repos` | `AB_REPOS_DIR` | where `ab project init <t> <n>` creates `<name>/` |
 | podman binary | `podman` on PATH | `AB_PODMAN` | the host podman the launcher drives |
 
 Nothing is installed system-wide and nothing needs root. The host's own `~/.claude` and the real contents of

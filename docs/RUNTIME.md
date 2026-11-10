@@ -1,6 +1,6 @@
 # Runtime: where the session binaries come from
 
-`PERSONALIZATION.md` covers an agent's config, state and plugins. This covers the **executables** `ab run`
+`PERSONALIZATION.md` covers an agent's config, state and plugins. This covers the **executables** `ab session start`
 puts in a session — the agent CLI and the tools around it: which image they live in, how they are pinned, and
 how to upgrade them. All of it is read from `images/*/Containerfile`, the `Makefile`, and the adapters; no
 executable is host-mounted (only config/state are — see `PERSONALIZATION.md`).
@@ -8,7 +8,7 @@ executable is host-mounted (only config/state are — see `PERSONALIZATION.md`).
 ## The image chain
 
 `node:26-bookworm-slim` → **`agentbox-base`** → **`agentbox-{claude,omp}`** → optionally **your own layer**.
-`ab run` uses the agent image's `:latest` tag, or your layer when one is built for that exact image
+`ab session start` uses the agent image's `:latest` tag, or your layer when one is built for that exact image
 (`ab image build <agent>`; see `PERSONALIZATION.md`).
 
 | Image | Built by | On |
@@ -58,7 +58,7 @@ nothing. So:
   Containerfile cannot claim a version the image does not have;
 - that version goes on the **`agentbox.cli-version`** label, and `make` re-checks the built image against
   its own label;
-- `ab selftest` reports the label per session (`PASS  claude CLI version: 2.1.318`), and `ab image build`
+- `ab project selftest` reports the label per session (`PASS  claude CLI version: 2.1.318`), and `ab image build`
   compares a personal layer against both the label and the harness image's own answer.
 
 `tests/unit/test_images.py` holds the Containerfiles to this by reading them: no unchecksummed `ADD`, no
@@ -84,8 +84,8 @@ installed binary does not report the new pin, so a typo is caught at build time 
 make claude-image        # or: make omp-image
 ```
 
-`:latest` is retagged, and `ab run` picks it up on the next session. The image ID changes, so a personal
-layer built on the old one goes stale: `ab run` says `personal layer out of date` and runs the plain harness
+`:latest` is retagged, and `ab session start` picks it up on the next session. The image ID changes, so a personal
+layer built on the old one goes stale: `ab session start` says `personal layer out of date` and runs the plain harness
 image until `ab image build <agent>` is run again. Images agentbox built earlier are removed by
 `ab session gc` after `image_keep_days`, keeping the newest per tag.
 

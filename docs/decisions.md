@@ -2525,3 +2525,48 @@ masks -- so a project of any layout can be made to fit; `--data-ro`/`--data-rw` 
 contract); the dev-swap for directories (`dev/data` shown at `data`), which the user's question also
 touched -- a directory bind over a cover is a different mechanism and nothing asked for it yet; the spec's
 in-session errno probe as an itest. `make test`: 1203 -> 1234.
+
+## 2026-11-10 · Two nouns: `ab project` and `ab session` hold every verb; `ab screen` is the workspace
+
+**What.** The command tree is now
+
+    ab project init <template> <name> [settings]     was: ab init <template> --name <name>
+    ab project add | set | show | check | ls | rm | reset-state | purge | accept-*
+    ab project selftest <agent> <name> [--json]       was: ab selftest --agent A --project P
+    ab session start <agent> <project> [--shell] [--no-tty] [--no-profile] [--timeout] [-- ...]
+                                                      was: ab run [--agent A --project P | A P]
+    ab session attach <project | session id>          was: ab attach <project>
+    ab session ls | preview | kill | gc
+    ab screen [--layout L] [--agent A] <builder> [reviewer]   was: contrib/ab-ws
+    ab profile | image | keys                         unchanged
+
+Every session verb takes a project name or a session id through the same resolution (`attach` and
+`preview` took one or the other). Every required agent argument is a positional with the two choices
+(`session start`, `project selftest`, `keys rotate`, `image build`); the optional agent filter on the
+`profile` verbs stays a flag, because there it narrows a listing rather than naming the subject.
+`--agent`/`--project` flags are gone from `start`; the init name is a positional. No aliases: the launcher
+is still pre-release, as the 7 Oct entry said when the `session` namespace was made.
+
+**Why.** The 7 Oct entry kept `run` and `init` at the top level as "the hot-path verbs that create". Two
+things changed that reading. `attach` arrived on 29 Oct at the top level and is not a creator verb, so the
+rule was already broken; and once there is a `session` noun, "start one" is its most natural verb, with
+`add`/`rm` for the record and `start`/`kill` for the process saying something true about each noun. `init`
+is project creation and nothing else, so it sits beside `add` as the second way in. `selftest` spins up a
+throwaway session to prove one project's boundaries, so it is a check of the project's configuration,
+beside `check`. `add` was considered for sessions and rejected: a session is a foreground process, and
+`ab session add claude web` would block the terminal until the agent exits.
+
+**`ab screen`.** `contrib/ab-ws` became `agentbox/screen.py`: the same layouts, read from
+`<config dir>/screen.toml` (the old `ab-ws.toml` is read when the new name is absent, so AB_CONFIG_DIR
+moves it with the rest). Agent panes run `ab session start <agent> <project>`; the agent comes from
+`--agent` (default claude) or a pane's own `agent` key. The script had been typing `ab run <project>`
+with no agent, which `run` has refused since the positional form landed, so it was already stale. tmux
+is checked for at run time and named in the refusal; `--dry-run` prints the tmux commands, which is how
+the tests cover it without tmux. The design doc's `ab ws` (step 7) is this; `screen` is the name chosen.
+
+**Churn.** One regex sweep over the launcher, its docs and its tests (`ab run` -> `ab session start`,
+`ab attach` -> `ab session attach`, `ab init X --name Y` -> `ab project init X Y`,
+`ab selftest --agent A --project P` -> `ab project selftest A P`, `ab-ws`/`ab ws` -> `ab screen`), the
+usage generator's command tree, the Makefile's probe target, the integration and live tests' argv, and
+the two profile repos' instruction and README mentions of `ab run --no-profile`. Older entries above keep
+their spellings; they mean the forms here. `docs/USAGE.md` regenerated.

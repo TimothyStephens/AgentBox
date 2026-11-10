@@ -156,7 +156,7 @@ def tearDownModule():
 
 
 def run(agent, project, script):
-    return ENV.ab("run", "--agent", agent, "--project", project, "--shell", "--no-tty", "--", "-c", script,
+    return ENV.ab("session", "start", agent, project, "--shell", "--no-tty", "--", "-c", script,
                   timeout=600)
 
 

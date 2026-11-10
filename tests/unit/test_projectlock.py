@@ -1,7 +1,7 @@
 """One live session per project (`agentbox/projectlock.py`, `session.take_project_lock`).
 
 Two sessions of one project shared its agent state with no locking -- Claude's `.claude.json` and settings,
-OMP's `agent/`, the inbox, all last-writer-wins. `ab run` used to warn about it. The lock makes it
+OMP's `agent/`, the inbox, all last-writer-wins. `ab session start` used to warn about it. The lock makes it
 impossible instead, and the warning is gone.
 
 The hard part is not taking the lock, it is deciding that a holder is gone. SIGKILL leaves the file behind,
@@ -191,17 +191,17 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("p1 is running (session ab-claude-p1-1)", out)
-        self.assertIn("ab attach p1", out)
+        self.assertIn("ab session attach p1", out)
         self.assertIn("ab session kill p1", out)
         self.assertNotIn("may already be running", out, "the old warning is gone")
 
     def test_the_refusal_says_why_one_at_a_time(self):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
-        _code, out = self.ab("run", "claude", "p1", "--no-tty")
+        _code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertIn("agent state and inbox", out)
         self.assertIn("last writer wins", out)
 
@@ -213,7 +213,7 @@ class RunHoldsTheProject(SettingsCase):
         with open(projectlock.path(self.settings, "p1")) as f:
             before = f.read()
         os.environ["FAKE_PODMAN_PSJSON"] = ps_json("ab-claude-p1-1")
-        self.assertEqual(self.ab("run", "claude", "p1", "--no-tty")[0], 2)
+        self.assertEqual(self.ab("session", "start", "claude", "p1", "--no-tty")[0], 2)
         with open(projectlock.path(self.settings, "p1")) as f:
             self.assertEqual(f.read(), before, "someone else's lock is untouched")
 
@@ -228,7 +228,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         self.husk()
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("reaped session ab-claude-p1-9", out)
         self.assertIn("container(s)", out, "it reports what it removed")
@@ -242,7 +242,7 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         self.husk()
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("ab-claude-p1-9", out, "it says what it removed")
         self.assertTrue(any("ab-claude-p1-9-proxy" in " ".join(c) for c in self.removals()))
@@ -250,7 +250,7 @@ class RunHoldsTheProject(SettingsCase):
 
     def test_a_stale_lock_with_no_session_id_is_just_cleared(self):
         projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIn("stale session lock", out)
 
@@ -259,14 +259,14 @@ class RunHoldsTheProject(SettingsCase):
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-9")
         os.environ["FAKE_PODMAN_FAIL"] = "ps"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_FAIL", None)
-        code, _out = self.ab("run", "claude", "p1", "--no-tty")
+        code, _out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertEqual(self.lock()["session"], "ab-claude-p1-9", "still held")
 
     # --- release on every exit ---
 
     def test_the_lock_is_released_on_a_normal_run(self):
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 0, out)
         self.assertIsNone(self.lock())
         self.assertEqual(session.sessions(self.settings, Podman(self.settings.podman)), {},
@@ -281,7 +281,7 @@ class RunHoldsTheProject(SettingsCase):
             return real(self_, *a, **kw)
 
         with mock.patch.object(session.Session, "run_captured", spy):
-            self.ab("run", "claude", "p1", "--no-tty")
+            self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertTrue(seen["lock"], "held during the run")
         self.assertTrue(seen["lock"]["session"].startswith("abt-unit-claude-p1-"),
                         "and it records which session holds it")
@@ -289,15 +289,15 @@ class RunHoldsTheProject(SettingsCase):
     def test_the_lock_is_released_when_prepare_raises(self):
         with mock.patch.object(session.Session, "_prepare_reserved",
                                side_effect=AgentboxError("boom")):
-            code, out = self.ab("run", "claude", "p1", "--no-tty")
+            code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("boom", out)
         self.assertIsNone(self.lock(), "a failed start does not block the project")
 
     def test_the_lock_is_released_when_load_project_raises_before_any_session_exists(self):
-        """Nothing has been named yet, so teardown cannot release it -- `ab run`'s own handle does."""
+        """Nothing has been named yet, so teardown cannot release it -- `ab session start`'s own handle does."""
         with mock.patch.object(session, "load_project", side_effect=AgentboxError("bad entry")):
-            code, _out = self.ab("run", "claude", "p1", "--no-tty")
+            code, _out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIsNone(self.lock())
 
@@ -313,7 +313,7 @@ class RunHoldsTheProject(SettingsCase):
     # --- the unregistered path ---
 
     def test_an_unregistered_project_is_not_registered_implicitly(self):
-        code, out = self.ab("run", "claude", "nope", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "nope", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("ab project add nope", out)
         self.assertIn("--preset", out)
@@ -326,20 +326,20 @@ class RunHoldsTheProject(SettingsCase):
         os.makedirs(os.path.join(repos, "fresh"))
         os.environ["AB_REPOS_DIR"] = repos
         self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
-        _code, out = self.ab("run", "claude", "fresh", "--no-tty")
+        _code, out = self.ab("session", "start", "claude", "fresh", "--no-tty")
         self.assertIn(f"ab project add fresh {os.path.join(repos, 'fresh')} --preset", out)
 
     def test_a_placeholder_root_when_there_is_nothing_to_guess(self):
-        _code, out = self.ab("run", "claude", "nowhere", "--no-tty")
+        _code, out = self.ab("session", "start", "claude", "nowhere", "--no-tty")
         self.assertIn("ab project add nowhere <path to its code> --preset", out)
 
 
 class Attach(SettingsCase):
-    """`ab attach <project>`: the way back to the session the lock refuses to duplicate.
+    """`ab session attach <project>`: the way back to the session the lock refuses to duplicate.
 
     The agent is a container the launcher started, so attaching is `podman attach` on it -- the same stdio
     the launcher has. That is the honest shape of re-attaching to a process; the multiplexed version is
-    `ab ws` (design.md, step 7)."""
+    `ab screen` (design.md, step 7)."""
 
     def setUp(self):
         super().setUp()
@@ -351,31 +351,34 @@ class Attach(SettingsCase):
 
     def test_it_attaches_to_the_agent_container(self):
         self.running()
-        code, out = self.ab("attach", "p1")
+        code, out = self.ab("session", "attach", "p1")
         self.assertEqual(code, 0, out)
         self.assertIn(["attach", "ab-claude-p1-1"], self.podman_calls(),
                       "the agent container carries the session's own name")
         self.assertIn("attaching to p1 (session ab-claude-p1-1)", out)
         self.assertIn("ctrl-p ctrl-q", out, "and says how to detach")
 
-    def test_it_is_named_by_project_not_by_session_id(self):
-        """The id is in the logs and the provenance; a user names the project."""
+    def test_it_takes_a_project_name_or_a_session_id(self):
+        """A user names the project; the id `ab session ls` prints works too, as it does for kill and
+        preview (10 Nov: every session verb resolves the same way)."""
         self.running()
-        self.assertEqual(self.ab("attach", "p1")[0], 0)
-        self.assertEqual(self.ab("attach", "ab-claude-p1-1")[0], 2, "not an id")
+        self.assertEqual(self.ab("session", "attach", "p1")[0], 0)
+        code, out = self.ab("session", "attach", "ab-claude-p1-1")
+        self.assertEqual(code, 0, out)
+        self.assertIn("attaching to p1 (session ab-claude-p1-1)", out)
 
     def test_nothing_running_says_how_to_start_one(self):
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        code, out = self.ab("attach", "p1")
+        code, out = self.ab("session", "attach", "p1")
         self.assertEqual(code, 2)
         self.assertIn("no session of p1 is running", out)
-        self.assertIn("ab run <agent> p1", out)
+        self.assertIn("ab session start <agent> p1", out)
 
     def test_an_unregistered_project_gets_the_add_command(self):
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        code, out = self.ab("attach", "nope")
+        code, out = self.ab("session", "attach", "nope")
         self.assertEqual(code, 2)
         self.assertIn("ab project add nope", out)
 
@@ -387,7 +390,7 @@ class Attach(SettingsCase):
         with open(os.path.join(d, "session.json"), "w") as f:
             json.dump({"project": "p1", "agent": "claude", "pid": os.getpid(),
                        "pid_start": session._start_time(os.getpid())}, f)
-        code, out = self.ab("attach", "p1")
+        code, out = self.ab("session", "attach", "p1")
         self.assertEqual(code, 2)
         self.assertIn("agent container is not running", out)
         self.assertIn("ab session kill p1", out)
@@ -406,11 +409,11 @@ class ReleasedOnASignal(SettingsCase):
     REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     def launcher(self):
-        """An `ab run` in its own process, waiting inside the session (the fake podman's `run` sleeps), so a
+        """An `ab session start` in its own process, waiting inside the session (the fake podman's `run` sleeps), so a
         signal reaches a launcher that is really holding the lock."""
         env = dict(os.environ, FAKE_PODMAN_PSJSON="[]", FAKE_PODMAN_RUN_SLEEP="10")
         p = subprocess.Popen([sys.executable, "-c",
-                              "from agentbox import cli; cli.main(['run', 'claude', 'p1', '--no-tty'])"],
+                              "from agentbox import cli; cli.main(['session', 'start', 'claude', 'p1', '--no-tty'])"],
                              cwd=self.REPO, env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(400):

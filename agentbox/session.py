@@ -393,7 +393,7 @@ class Session:
         self.project = project
         self.podman = podman or Podman(settings.podman)
         self.warn = warn or (lambda m: print(m, file=sys.stderr))
-        self.no_profile = bool(no_profile)      # `ab run --no-profile`, for this run only
+        self.no_profile = bool(no_profile)      # `ab session start --no-profile`, for this run only
         self.name = None
         self.plan = None
         self.networks = []
@@ -470,7 +470,7 @@ class Session:
             return ref, ""
         # "Out of date" is only true of a layer that EXISTS and no longer matches. A Containerfile that has
         # never been built is a different thing to say, and saying the wrong one sends the reader looking
-        # for an image that was never there (seen in `ab selftest` output, 4 Nov).
+        # for an image that was never there (seen in `ab project selftest` output, 4 Nov).
         if userimage.any_built(self.podman, self.adapter.name):
             return (self.adapter.image,
                     f"personal layer out of date: `ab image build {self.adapter.name}`. "
@@ -1355,7 +1355,7 @@ def _keep_logs(settings, podman, session, started, warn):
 
 
 class ProjectLock:
-    """The project's one session slot, held for the life of an `ab run`.
+    """The project's one session slot, held for the life of an `ab session start`.
 
     Released by `teardown()` as well, keyed by session id, so every path that ends a session frees it: a
     normal exit, an exception in prepare(), SIGINT/SIGTERM/SIGHUP (`_guarded` tears down on all three), and
@@ -1411,7 +1411,7 @@ def lock_holder_state(settings, podman, holder):
 def take_project_lock(settings, podman, project, warn=lambda m: None):
     """Hold the project's one session slot, reaping a dead holder's session first.
 
-    Returns a ProjectLock. Raises AgentboxError naming `ab attach` when a live session already holds it."""
+    Returns a ProjectLock. Raises AgentboxError naming `ab session attach` when a live session already holds it."""
     pid = os.getpid()
     ok, holder = projectlock.acquire(settings, project, pid=pid, pid_start=_start_time(pid))
     if ok:
@@ -1425,7 +1425,7 @@ def take_project_lock(settings, podman, project, warn=lambda m: None):
             raise AgentboxError(
                 f"{project} is running (session {other}), although it holds no session lock -- it was "
                 f"started before agentbox enforced one, or its lock file was removed. "
-                f"`ab attach {project}` joins it, `ab session kill {project}` ends it. One session per "
+                f"`ab session attach {project}` joins it, `ab session kill {project}` ends it. One session per "
                 f"project: two would share {project}'s agent state and inbox, last writer wins.")
         return lock
     if holder.get("unreadable"):
@@ -1434,7 +1434,7 @@ def take_project_lock(settings, podman, project, warn=lambda m: None):
     if not gone:
         sid = holder.get("session") or ""
         raise AgentboxError(
-            f"{projectlock.holder_text(settings, project, holder)}; `ab attach {project}` joins it"
+            f"{projectlock.holder_text(settings, project, holder)}; `ab session attach {project}` joins it"
             + (f", `ab session kill {project}` ends it (its logs and end-of-session scan are kept)"
                if sid else "")
             + ". One session per project: two would share "
@@ -1977,7 +1977,7 @@ def gc_profile_snapshots(settings, podman, now=None, warn=lambda m: None):
     Only directories shaped like a hash are ever removed, so a `.<hash>.<pid>.tmp` another process is
     half-way through writing, and anything a person put there, are not this sweep's to touch."""
     now = time.time() if now is None else now
-    # Silently: gc runs by itself on the first `ab run`/`ab ls` after boot, and "a session is running so
+    # Silently: gc runs by itself on the first `ab session start`/`ab ls` after boot, and "a session is running so
     # I did not tidy up" is not news. (It was a warning for one test run, which `ab ls` then printed at
     # anyone with a live session -- tests/unit/test_cli.py's test_ls_does_not_flag_a_busy_session.)
     for name, info in sessions(settings, podman).items():

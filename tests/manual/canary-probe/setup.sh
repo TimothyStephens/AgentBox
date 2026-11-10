@@ -10,7 +10,7 @@ ENV_CANARY="CANARY-ENV-${STAMP}-do-not-leak"
 DATA_CANARY="CANARY-DATA-${STAMP}-do-not-leak"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-ab init pod --name "$NAME"
+ab project init pod "$NAME"
 PROJ="$(ab project ls | awk -v n="$NAME" '$1==n{print $3}')"
 [ -n "${PROJ:-}" ] || { echo "could not find project dir for $NAME (check: ab project ls)"; exit 1; }
 

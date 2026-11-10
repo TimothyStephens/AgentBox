@@ -1,5 +1,5 @@
 """`ab project set`: change a registered project in place, instead of `ab project rm` + `ab project add`
-(F5/F9). It uses the same shared flag definitions as `ab init`/`ab project add`, re-runs the same validation
+(F5/F9). It uses the same shared flag definitions as `ab project init`/`ab project add`, re-runs the same validation
 (preset/lockdown ceiling, build_memory, grantcheck, history secrets), and refuses while a session for the
 project is live. `--unset KEY` returns a setting to its preset value; `--clear-<list>` empties a list one.
 """
@@ -220,7 +220,7 @@ class SetTest(SetBase):
 
     def test_an_unknown_stored_key_is_refused_where_it_is_written(self):
         """F11: `set` validated only what the command touched, so an unknown key (a typo in a hand edit)
-        survived the save and only exploded at the next `ab run`."""
+        survived the save and only exploded at the next `ab session start`."""
         reg = registry.load(self.settings.registry_path)
         reg["p1"]["egres"] = "open"                       # typo
         registry.save(self.settings.registry_path, reg)
@@ -519,13 +519,13 @@ class SwapFromTheCommandLine(SetBase):
                 self.assertNotIn("swap", self.entry())
 
     def test_ab_init_refuses_an_exposing_swap_before_it_scaffolds(self):
-        """`ab init` validates the setting flags before writing anything, so a bad one leaves no half-made
+        """`ab project init` validates the setting flags before writing anything, so a bad one leaves no half-made
         tree behind. That check is the `_check` call in _apply_project_settings -- the registry-level
         validation in _validate_and_save happens far too late for init."""
         repos = self.mkdir("repos")
         os.environ["AB_REPOS_DIR"] = repos
         self.addCleanup(os.environ.pop, "AB_REPOS_DIR", None)
-        rc, _out = self.ab("init", "python", "--name", "fresh", "--swap", "notes.txt=.env")
+        rc, _out = self.ab("project", "init", "python", "fresh", "--swap", "notes.txt=.env")
         self.assertEqual(rc, 2)
         self.assertEqual(os.listdir(repos), [], "nothing was scaffolded")
         self.assertNotIn("fresh", registry.load(self.settings.registry_path))
@@ -537,7 +537,7 @@ class SwapFromTheCommandLine(SetBase):
 
     def test_a_custom_swap_merges_with_the_default(self):
         """It used to REPLACE it, so adding a `.env.local` mapping silently stopped `.env.dev` standing in
-        for `.env` -- the one mapping `ab init` builds every project around."""
+        for `.env` -- the one mapping `ab project init` builds every project around."""
         self.rc("project", "set", "p1", "--swap", ".env.local=.env.dev")
         self.assertEqual(session.load_project(self.settings, "p1").swap,
                          {".env": ".env.dev", ".env.local": ".env.dev"})

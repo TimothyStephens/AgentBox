@@ -72,7 +72,7 @@ def main():
 
     # --- 1: one-shot answer ---------------------------------------------------------------
     seen = set()
-    p1 = env.ab("run", "--agent", "claude", "--project", "live", "--no-tty", "--",
+    p1 = env.ab("session", "start", "claude", "live", "--no-tty", "--",
                 "-p", "Reply with exactly: AB_OK", timeout=600)
     access1, seen = proxy_log(env, seen)
     section("1. claude -p output", redact(p1.stdout + p1.stderr)[-3000:])
@@ -80,7 +80,7 @@ def main():
     section("1. denied destinations", "\n".join(denied(access1)))
 
     # --- 2: WebSearch, WebFetch, Bash ------------------------------------------------------
-    p2 = env.ab("run", "--agent", "claude", "--project", "live", "--no-tty", "--",
+    p2 = env.ab("session", "start", "claude", "live", "--no-tty", "--",
                 "-p", TOOLS_PROMPT, "--output-format", "stream-json", "--verbose", timeout=900)
     access2, seen = proxy_log(env, seen)
     outcomes = tool_outcomes(p2.stdout)

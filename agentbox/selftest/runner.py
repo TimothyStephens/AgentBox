@@ -1,4 +1,4 @@
-"""`ab selftest`: prove the boundaries hold for one agent and project.
+"""`ab project selftest`: prove the boundaries hold for one agent and project.
 
 The probe (probe.sh) runs in a container built from exactly the session's spec and only reports
 observations; every expectation lives here, where it can be unit-tested.

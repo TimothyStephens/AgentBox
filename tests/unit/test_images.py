@@ -272,7 +272,7 @@ class TheAgentLayers(unittest.TestCase):
 
     def test_claude_has_its_auto_updater_off_in_the_image(self):
         """Not only in the session environment: an updater that replaced the binary would make the label a
-        lie and `ab selftest`'s version check wrong."""
+        lie and `ab project selftest`'s version check wrong."""
         self.assertIn("DISABLE_AUTOUPDATER=1", self.layer("claude"))
 
     def test_omp_gets_bun_because_it_cannot_load_extensions_without_it(self):

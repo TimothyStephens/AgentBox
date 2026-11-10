@@ -7,7 +7,7 @@ Every path can be moved with an environment variable so tests never touch the re
   AB_DATA_DIR     default ~/.local/share/agentbox   (per-project directories, logs, profile snapshots)
   AB_RUN_DIR      default $XDG_RUNTIME_DIR/agentbox (live session metadata, generated configs; tmpfs)
   AB_PODMAN       default podman
-  AB_REPOS_DIR    default ~/repos                   (where `ab init` scaffolds new projects)
+  AB_REPOS_DIR    default ~/repos                   (where `ab project init` scaffolds new projects)
 
 The data directory (decisions.md, 9 Nov 2026):
 
@@ -79,7 +79,7 @@ DEFAULTS = {
     # one, since rollback is `podman tag` onto the previous layer) and unused profile snapshots.
     "image_keep_days": 7,
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
-    "repos_dir": "~/repos",  # where `ab init` scaffolds new projects (AB_REPOS_DIR overrides)
+    "repos_dir": "~/repos",  # where `ab project init` scaffolds new projects (AB_REPOS_DIR overrides)
     "session_idle_warn_hours": 6,  # ab session ls flags, and warns about, a running session idle longer than this
 }
 

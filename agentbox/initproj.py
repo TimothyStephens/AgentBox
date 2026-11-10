@@ -1,4 +1,4 @@
-"""`ab init <template> --name <n>`: scaffold a new project whose layout passes grantcheck with no override,
+"""`ab project init <template> <n>`: scaffold a new project whose layout passes grantcheck with no override,
 by construction. The safe shape is the only thing this can make:
 
   * real secrets live in `.env` (0600, gitignored) and are MASKED in sessions; the agent sees the committed
@@ -10,7 +10,7 @@ by construction. The safe shape is the only thing this can make:
 After writing the tree it runs `ab project add --preset {build|script}` itself (`pods`/`python` are kept as
 aliases of those two), so the project is registered and grant-checked the moment it exists. A freshly-init'd
 project with no override flags starts a session with zero warnings and zero overrides (tests assert exactly
-that). `ab init` shares its override flags (--preset, --egress, --data-ro, ...) with `ab project add`/`set`
+that). `ab project init` shares its override flags (--preset, --egress, --data-ro, ...) with `ab project add`/`set`
 (agentbox/cli.py's `_add_project_setting_args`), so a project can be fully configured at init time too.
 
 `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred. Its future
@@ -188,7 +188,7 @@ def test_data_dir_comes_from_env():
 _README = """\
 # {name}
 
-Scaffolded by `ab init {template}`. It runs as an agentbox session (the agent) and, for the `pod`
+Scaffolded by `ab project init {template}`. It runs as an agentbox session (the agent) and, for the `pod`
 template, as a live stack on the host (you, via deploy).
 
 ## The cycle
@@ -196,7 +196,7 @@ template, as a live stack on the host (you, via deploy).
 **Capture** — real samples go in `dev/fixtures/` (and private ones in `dev/fixtures/private/`, which is
 gitignored). The agent develops against these, never against live data.
 
-**Develop** — start a session (`ab run --agent <agent> --project {name}`). Inside it the agent{dev_stack}
+**Develop** — start a session (`ab session start <agent> {name}`). Inside it the agent{dev_stack}
 tests against `dev/fixtures/`, and commits. It sees `.env.dev` as `.env`; the real `.env` is masked.
 
 **Verify** — you run against live credentials and live data on the host, outside the sandbox.{deploy}
@@ -305,7 +305,7 @@ def _template_overrides(settings, template, name):
 
 
 def make(settings, a, *, out=print, warn=None):
-    """`a` is the parsed `ab init` Namespace: `.template`/`.name`/`.upstream`, plus the project-setting
+    """`a` is the parsed `ab project init` Namespace: `.template`/`.name`/`.upstream`, plus the project-setting
     override flags it shares with `ab project add`/`set` (`cli._add_project_setting_args`)."""
     warn = warn or (lambda m: None)
     template, name, upstream = a.template, a.name, a.upstream
@@ -350,7 +350,7 @@ def make(settings, a, *, out=print, warn=None):
         _git(dest, "config", "user.name", who)
         _git(dest, "config", "user.email", email)
         _git(dest, "add", "-A")
-        _git(dest, "commit", "-q", "-m", f"ab init {template}: {name} scaffold")
+        _git(dest, "commit", "-q", "-m", f"ab project init {template}: {name} scaffold")
         if upstream:
             _git(dest, "remote", "add", "origin", upstream)
             try:
@@ -364,13 +364,13 @@ def make(settings, a, *, out=print, warn=None):
         raise
 
     # Register and grant-check the project the moment it exists. `a` already carries the project-setting
-    # override flags (ab init shares their definition with ab project add/set) and its preset; only `root`
+    # override flags (ab project init shares their definition with ab project add/set) and its preset; only `root`
     # is init-specific, filled in here.
     a.root = dest
     cli.cmd_project_add(settings, a)
 
     out(f"\nscaffolded {template} project {name} at {dest}")
-    out(f"  start:  ab run --agent <agent> --project {name}")
+    out(f"  start:  ab session start <agent> {name}")
     if template == "pod":
         out(f"  data:   live data is the podman volume {name}_data (outside the repo); sessions never see it")
     out(f"  secrets: real values go in {dest}/.env (gitignored, masked); the agent sees .env.dev as .env")

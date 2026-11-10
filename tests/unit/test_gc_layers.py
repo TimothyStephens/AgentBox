@@ -79,7 +79,7 @@ class Layers(SettingsCase):
 
     def test_the_current_layer_is_never_removed_however_old_it_is(self):
         """Age is not staleness: a layer that still matches the harness image and the Containerfile is the
-        one `ab run` uses, whenever it was built."""
+        one `ab session start` uses, whenever it was built."""
         current = self.recipe()
         self.images(layer(current, "claude", self.now - 900 * DAY))
         self.assertEqual(self.sweep(), [])

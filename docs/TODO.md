@@ -11,7 +11,7 @@ decision, and what is worth doing when a change next touches the area.
 `node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
 CLI installed by agentbox at a Makefile pin the build asserts (node's major included, since a
 digest pin can silently override the tag). `make test` (1150), `make itest`,
-`make claude-live`, `make omp-live`, both `ab selftest`s and both `ab image build`s green; the unit suite
+`make claude-live`, `make omp-live`, both `ab project selftest`s and both `ab image build`s green; the unit suite
 runs with zero ResourceWarnings. Ten of eleven dead-enforcement items removed (D-E11 is a deliberate knob, and stays). The third preset/settings
 audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
 confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe, then again
@@ -27,7 +27,7 @@ checkouts linked), in one hardened container behind the session proxy, and sessi
 stand-in. About 160 lines of whitelist went with the host directory, and `omp_home` is a retired setting.
 
 **No outstanding host run.** `make test` (1150), `make itest`, `make claude-live`, `make omp-live`, both
-`ab selftest`s, both `ab image build`s and `ab profile install omp` are all green on the host as of
+`ab project selftest`s, both `ab image build`s and `ab profile install omp` are all green on the host as of
 6 November.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
@@ -123,7 +123,7 @@ smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install
 **What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
 slightly differently.
 
-**Why it matters.** Low — a cosmetic inconsistency between commits made inside a session and by `ab init`.
+**Why it matters.** Low — a cosmetic inconsistency between commits made inside a session and by `ab project init`.
 Review finding 10 (pre-real-project review, 15 Oct). Unify when next touching either.
 
 ---
@@ -136,11 +136,11 @@ authoritative; this is the *why*.
 | Feature | Why not built |
 |---|---|
 | `ab deploy` | Step 6. Would validate a compose file, check `.env` against `.env.dev`, show the diff since the last deploy, confirm, then start the live stack through a sockguard deploy profile — never the raw socket. |
-| `ab ws` (subcommand) | `contrib/ab-ws` does the workspace job from outside the CLI, starting agents only through `ab run`, so the sandboxing stays in `ab`. A subcommand would add surface for no new capability. |
+| `ab screen` (subcommand) | `agentbox/screen.py` does the workspace job from outside the CLI, starting agents only through `ab session start`, so the sandboxing stays in `ab`. A subcommand would add surface for no new capability. |
 | `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
 | podman `exec` tier | Refused in code (`session.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
-| `masked_paths` (per-project masked dir) | **Built 10 Nov** as the `mask` setting (`--mask`). What is left of the spec: the in-session errno probe (§5.1) as an itest, and `ab init --data-bind` with `--data-backup`. |
+| `masked_paths` (per-project masked dir) | **Built 10 Nov** as the `mask` setting (`--mask`). What is left of the spec: the in-session errno probe (§5.1) as an itest, and `ab project init --data-bind` with `--data-backup`. |
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | Pi / Codex adapters | Step 8. The adapter interface is the only per-agent code and has carried two agents through a restructure, so a third is mostly configuration. |
@@ -273,12 +273,12 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 | 4 Nov | `base_branch` as a project key (agentbox does not own the value — MAGS does) |
 | 4 Nov | Nine dead-enforcement items, each resting on a test of the live guard |
 | 4 Nov | The scan reports HEAD and ref movement, not only what changed on disk |
-| 4 Nov | `ab run --no-profile` / `profile = "off"` |
+| 4 Nov | `ab session start --no-profile` / `profile = "off"` |
 | 4 Nov | `AGENTBOX_SESSION` in every session |
 | 4 Nov | The profile hash/snapshot narrowed to the load paths |
 | 4 Nov | omp-live says *why* it failed; a timeout no longer costs the whole report |
 | 4 Nov | The test log runs clean — zero ResourceWarnings |
-| 29 Oct | One live session per project (`projectlock.py`) + `ab attach` |
+| 29 Oct | One live session per project (`projectlock.py`) + `ab session attach` |
 | 29 Oct | The host-owned profile, the inbox, `ab profile harvest/promote/dismiss`; OMP's load paths and autolearn harvesting |
 | 28 Oct | Third preset/settings audit, F-1 … F-12 |
 | 27 Oct | One settings table (`projectkeys.py`), retiring five parallel per-key lists |

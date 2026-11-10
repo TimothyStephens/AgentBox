@@ -53,7 +53,7 @@ def effective_swap(stored=None):
     """The dev-swap map a session uses: the project's own entries ON TOP OF the default `.env` -> `.env.dev`.
 
     A stored swap used to REPLACE the default (audit F-12), so adding one `.env.local` mapping silently
-    stopped `.env.dev` standing in for `.env` -- the mapping every `ab init` project is built around. A
+    stopped `.env.dev` standing in for `.env` -- the mapping every `ab project init` project is built around. A
     stored entry for the same target still wins. Idempotent, so it is safe at every boundary that reads a
     swap (load_project, grantcheck.preflight, the history scan, and the plan itself)."""
     return {**DEFAULT_SWAP, **(stored or {})}

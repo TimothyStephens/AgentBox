@@ -317,7 +317,7 @@ class CheckCommand(SettingsCase):
 class OnePreflight(SettingsCase):
     """F-6: `add`/`set`/`check` built their own mount plan and their own "covered" predicate (cli._mask_dsts),
     while a session used another (session._plan_covered). So the verdict `ab project check` printed was not
-    the one `ab run` reached. One plan, one covered computation, one scan entry point.
+    the one `ab session start` reached. One plan, one covered computation, one scan entry point.
 
     Unifying them also separates two senses of "covered" that shared a name. A mask reads EMPTY, so a secret
     behind one is unreachable and not a finding. A read-only cover (`.git/hooks`, `.git/config`, compose
@@ -337,7 +337,7 @@ class OnePreflight(SettingsCase):
         return grantcheck.preflight(self.settings, "p1", self.entry())
 
     def start(self):
-        """What `ab run` decides, through the real session path."""
+        """What `ab session start` decides, through the real session path."""
         warnings = []
         s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"),
                                  warn=warnings.append)

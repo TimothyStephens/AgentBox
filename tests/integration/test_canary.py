@@ -1,6 +1,6 @@
 """Permanent containment regression test (the canary test).
 
-A dummy project per `ab init` template (pod, python) is given DISTINCT real canary strings — one in the
+A dummy project per `ab project init` template (pod, python) is given DISTINCT real canary strings — one in the
 real `.env`, one in the project's live data — and a different fake value in `.env.dev`. Then, from inside
 a session (for the pod/dev-tier project, from containers the agent spawns through the gate; for the
 python/tier-none project, from the agent container itself), every known read vector is tried and the REAL
@@ -59,8 +59,8 @@ def setUpModule():
         os.environ[k] = ENV.env[k]
     os.environ["AB_REPOS_DIR"] = repos
 
-    ENV.ab("init", "pod", "--name", "canpod", check=True)
-    ENV.ab("init", "python", "--name", "canpy", check=True)
+    ENV.ab("project", "init", "pod", "canpod", check=True)
+    ENV.ab("project", "init", "python", "canpy", check=True)
     PODROOT = os.path.join(repos, "canpod")
     PYROOT = os.path.join(repos, "canpy")
 

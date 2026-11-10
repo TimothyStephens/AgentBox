@@ -50,7 +50,7 @@ class WhyItFailed(unittest.TestCase):
         self.assertIn("1 line(s)", why)
 
     def test_a_timeout_says_so_rather_than_looking_like_a_wrong_answer(self):
-        why = Run(None, 900.4, timed_out="`ab run ...` did not finish in 900s").why("AB_OK")
+        why = Run(None, 900.4, timed_out="`ab session start ...` did not finish in 900s").why("AB_OK")
         self.assertIn("did not finish in time", why)
         self.assertIn("900s", why)
 

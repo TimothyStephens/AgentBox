@@ -25,7 +25,7 @@ that will not start.
 
 The tag is `localhost/agentbox-<agent>-user:<key>`, where the key covers the harness image ID and the
 Containerfile (`profile.user_image_key`). A new harness image therefore gives a different key, nothing is
-built under it, and `ab run` says "personal layer out of date" and runs the plain harness image -- it never
+built under it, and `ab session start` says "personal layer out of date" and runs the plain harness image -- it never
 runs a layer built on an older harness.
 """
 import os
@@ -171,7 +171,7 @@ def build(settings, podman, agent, *, force=False, run_check=True, out=print):
     """Build the profile's Containerfile on top of the agent's harness image. Returns the image reference.
 
     Raises with the reason when there is nothing to build or when the result is not a usable layer; in the
-    latter case the candidate is removed, so whatever was built before is still what `ab run` would use."""
+    latter case the candidate is removed, so whatever was built before is still what `ab session start` would use."""
     adapter = adapters.get(agent)
     src = settings.profile_src(agent)
     recipe = profile.containerfile(src)
@@ -206,13 +206,13 @@ def build(settings, podman, agent, *, force=False, run_check=True, out=print):
     if bad:
         _discard(podman, candidate)
         kept = "the image you were using is untouched" if podman.image_exists(ref) else \
-               f"no personal layer is tagged, so `ab run` uses {adapter.image}"
+               f"no personal layer is tagged, so `ab session start` uses {adapter.image}"
         raise AgentboxError("the image built, but it is not a usable layer, so it was discarded:\n  - "
                             + "\n  - ".join(bad) + f"\n{kept}.")
     podman.run(["tag", candidate, ref])
     _discard(podman, candidate)
     out(f"ab: built {ref}. Every session of every project with the profile on now runs it; "
-        f"`ab run --no-profile` runs {adapter.image} instead.")
+        f"`ab session start --no-profile` runs {adapter.image} instead.")
     return ref
 
 

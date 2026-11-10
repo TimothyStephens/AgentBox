@@ -51,7 +51,7 @@ class BothAgentsGetIt(SettingsCase):
         self.assertFalse([w for w in runner.SECRET_NAME_WORDS if w in "AGENTBOX_SESSION"])
 
     def test_the_selftest_checks_it_is_set(self):
-        """So `ab selftest` catches it in a real session, not only in this argv-level test."""
+        """So `ab project selftest` catches it in a real session, not only in this argv-level test."""
         from agentbox.selftest import runner
         s = self.start()
         b = runner.Builder()

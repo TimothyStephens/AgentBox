@@ -39,7 +39,7 @@ class Adapter:
     def seed_state(self, settings, state_dir, sandbox_notes, profile_on=True):
         """Prepare the per-project state dir at session start. Default: nothing.
 
-        `profile_on` is false under `ab run --no-profile` or `profile = "off"`: nothing may be taken from the
+        `profile_on` is false under `ab session start --no-profile` or `profile = "off"`: nothing may be taken from the
         host-owned profile, including the items it would normally COPY here rather than mount."""
 
     def prepare_session(self, sess, sandbox_notes):

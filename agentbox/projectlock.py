@@ -4,7 +4,7 @@ Two sessions of one project shared its agent state with no locking: Claude's `.c
 OMP's `agent/`, and the inbox, all last-writer-wins (docs/TODO.md carried this as the real fix). The lock
 makes the overlap impossible instead of warning about it.
 
-The file is created with `O_EXCL`, so taking it is atomic between two `ab run`s racing, and it records who
+The file is created with `O_EXCL`, so taking it is atomic between two `ab session start`s racing, and it records who
 holds it -- the launcher's pid (with its start time, so a recycled pid cannot impersonate it) and, once the
 session has a name, the session id. A holder that is gone leaves the file behind; deciding whether a holder
 is gone needs podman and the session table, so that judgement lives in `session.take_project_lock` and this

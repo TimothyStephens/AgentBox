@@ -198,7 +198,7 @@ class RegistryEditsRefuseOnUnknownState(SettingsCase):
         self.assertIn("p1", self.names())
 
     def test_ab_run_refuses_a_second_session_rather_than_warning(self):
-        """`ab run` used to warn and start anyway. One live session per project is enforced now
+        """`ab session start` used to warn and start anyway. One live session per project is enforced now
         (projectlock.py, 29 Oct): the same liveness signals, but a refusal -- there is nothing left to
         warn about. The lock's own cases are in test_projectlock.py; this pins that `run` goes through it."""
         from agentbox import projectlock
@@ -207,10 +207,10 @@ class RegistryEditsRefuseOnUnknownState(SettingsCase):
         projectlock.acquire(self.settings, "p1", pid=os.getpid(),
                             pid_start=session._start_time(os.getpid()))
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
-        code, out = self.ab("run", "claude", "p1", "--no-tty")
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(code, 2)
         self.assertIn("ab-claude-p1-1", out)
-        self.assertIn("ab attach p1", out)
+        self.assertIn("ab session attach p1", out)
         self.assertFalse(hasattr(cli, "_warn_if_live"), "the warning is gone, not just unused")
 
 

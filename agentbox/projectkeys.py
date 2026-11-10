@@ -157,7 +157,7 @@ KEYS = (
     _key("build_memory", kind="project", arity="scalar", flags=("--build-memory",), dest="build_memory",
          validate="size", values=(), security=False, clears=False, unsettable=True, display="always",
          inert="not_dev_tier", inert_reason="only the dev tier builds"),
-    # Whether the host-owned profile is loaded at all (`ab run --no-profile` turns it off for one run).
+    # Whether the host-owned profile is loaded at all (`ab session start --no-profile` turns it off for one run).
     # NOT security-relevant: the profile is host-owned and trusted by design, and "off" loads strictly less
     # -- so the ceiling must not refuse `profile = "on"` under lockdown, where the profile has always
     # loaded. `values` is spelled out for the enum check; `security=False` is what keeps it out of the
@@ -507,7 +507,7 @@ def validate_entry(name, entry, *, settings=None):
     """Validate a WHOLE registry entry: no unknown keys, and every stored value through its own validator.
 
     Run before saving (`ab project add`/`set`) and when loading one (session start), so an entry can never
-    be stored that the next `ab run` would refuse, and a hand-written key or value is caught where it is
+    be stored that the next `ab session start` would refuse, and a hand-written key or value is caught where it is
     written (audit F11). `set` used to validate only the keys the command touched, so a bad stored `swap`
     or `extra_domains` survived the save and failed later. Returns the normalised entry; grants are
     resolved by the caller, which holds the protected-path context (paths.check_grant/check_overlaps)."""

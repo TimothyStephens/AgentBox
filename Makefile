@@ -54,7 +54,7 @@ omp-live:
 AB_PROBE_PROJECT ?= agentbox
 omp-plugin-probe:
 	@echo "probe: omp plugin CLI and install layout, in a session (nothing on the host changes)"
-	python3 -m agentbox run --agent omp --project $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
+	python3 -m agentbox session start omp $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
 	  < tests/manual/omp_plugin_probe.sh 2>&1 | tee /tmp/omp-plugin-probe.log
 	@echo
 	@echo "full output: /tmp/omp-plugin-probe.log"
@@ -117,7 +117,7 @@ BUN_SHA256 := bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
 # The agent CLIs, installed BY these images (they used to come from a base built outside this repo, which
 # meant the image shipped whatever that base had -- 56 and 59 days old at the last check). Each
 # Containerfile asserts the installed binary reports its pin, so a pin here cannot be a claim the image
-# does not meet; the version also goes on the agentbox.cli-version label that `ab selftest` reports.
+# does not meet; the version also goes on the agentbox.cli-version label that `ab project selftest` reports.
 CLAUDE_VERSION := 2.1.318
 OMP_VERSION := 18.13.3
 

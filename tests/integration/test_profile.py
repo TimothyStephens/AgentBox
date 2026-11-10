@@ -62,7 +62,7 @@ OMP_AGENT = "$HOME/.omp/agent"
 
 
 def shell(project, script, timeout=300):
-    return ENV.ab("run", "--agent", "claude", "--project", project, "--shell", "--no-tty", "--",
+    return ENV.ab("session", "start", "claude", project, "--shell", "--no-tty", "--",
                   "-c", script, timeout=timeout)
 
 
@@ -161,7 +161,7 @@ class Profile(unittest.TestCase):
 
     def test_a_host_profile_edit_does_not_reach_a_running_session(self):
         """The snapshot is taken at start, so what a session loaded cannot change under it."""
-        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "prof2", "--shell", "--no-tty", "--",
+        proc = ENV.ab_bg("session", "start", "claude", "prof2", "--shell", "--no-tty", "--",
                          "-c", "sleep 120")
         try:
             name = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter",
@@ -218,7 +218,7 @@ class Profile(unittest.TestCase):
     def omp_shell(self, script, project="prof1", timeout=600):
         if harness.podman("image", "exists", "localhost/agentbox-omp:latest").returncode != 0:
             self.skipTest("no OMP image on this host (make omp-image)")
-        return ENV.ab("run", "--agent", "omp", "--project", project, "--shell", "--no-tty", "--",
+        return ENV.ab("session", "start", "omp", project, "--shell", "--no-tty", "--",
                       "-c", script, timeout=timeout)
 
     def test_omp_reads_a_profile_skill(self):
@@ -263,7 +263,7 @@ class Profile(unittest.TestCase):
         """The half of the design that is wired for OMP today."""
         if harness.podman("image", "exists", "localhost/agentbox-omp:latest").returncode != 0:
             self.skipTest("no OMP image on this host (make omp-image)")
-        p = ENV.ab("run", "--agent", "omp", "--project", "prof1", "--shell", "--no-tty", "--",
+        p = ENV.ab("session", "start", "omp", "prof1", "--shell", "--no-tty", "--",
                    "-c", "mkdir -p ~/.omp/agent/inbox/omp-learned && echo note > "
                          "~/.omp/agent/inbox/omp-learned/note.md && echo WROTE=$?", timeout=600)
         self.assertIn("WROTE=0", p.stdout, p.stderr[-2000:])

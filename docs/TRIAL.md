@@ -25,15 +25,15 @@ would join at deploy (`ab deploy`, not yet built). That is a separate, future te
 - agentbox installed (see `docs/INSTALL.md`), with a Claude token (`ab keys rotate claude`). For the OMP
   parity run later, OMP set up too.
 - You reach this host over SSH, so you can port-forward the preview (`ssh -L`).
-- `tmux` (or `screen`) on the host. Today a session runs in the foreground (`ab run`); `ab ws`/`ab attach`
-  are planned but not built, so you detach/reattach with your own tmux. **Detaching tmux keeps the session
-  running; do not close the tmux window or kill its server — that ends the session.**
+- `tmux` on the host. A session runs in the foreground (`ab session start`); `ab screen` opens a tmux workspace
+  around it and `ab session attach` re-joins a running one. **Detaching tmux keeps the session running; do not
+  close the tmux window or kill its server — that ends the session.**
 
 ## Conventions worth knowing
 
-- Session verbs live under **`ab session`** (`ls`, `preview`, `kill`, `gc`); `ab run`/`ab init` create things.
+- Session verbs live under **`ab session`** (`ls`, `preview`, `kill`, `gc`); `ab session start`/`ab project init` create things.
 - The pod preset (`build`, formerly `pods`, still accepted as an alias) already includes the dev tier and
-  `packages` egress; `ab init pod` registers with it, so no overrides are needed. `ab project set <name> …`
+  `packages` egress; `ab project init pod` registers with it, so no overrides are needed. `ab project set <name> …`
   changes a registered project's settings later (it applies from the next session).
 - **Kill the session before a teardown block.** `ab project rm`, `reset-state` and the `accept-*` commands
   now *refuse* while a session for the project is live, naming the session and the `ab session kill` that
@@ -65,12 +65,12 @@ rm -rf "$PROJ"
 ## Part 1 — initialize a project
 
 ```bash
-ab init pod --name tickerlab
+ab project init pod tickerlab
 ab project show tickerlab        # preset=build, podman=dev, egress=packages
 ls -la "$PROJ"
 ```
 
-`ab init` scaffolded a safe-by-construction project at `$PROJ` and registered it. Notice the two env files:
+`ab project init` scaffolded a safe-by-construction project at `$PROJ` and registered it. Notice the two env files:
 
 - **`.env`** — real secrets, `0600`, git-ignored. **Masked** in every session: the agent cannot read it.
 - **`.env.dev`** — a committed fake twin with the same keys. In a session the agent sees *this* file *as*
@@ -92,7 +92,7 @@ Run the agent inside tmux so you can detach without stopping it:
 
 ```bash
 tmux new -s tickerlab
-ab run --agent claude --project tickerlab      # equivalently: ab run claude tickerlab
+ab session start claude tickerlab      # equivalently: ab session start claude tickerlab
 ```
 
 When the agent is ready, paste this prompt:
@@ -189,11 +189,11 @@ echo "exit=$?  (PASS = 1, i.e. no match)"
 podman ps --format '{{.Names}} {{.Ports}}' | grep -i tickerlab   # PASS = no host-mapped ports
 
 # 4. The boundaries themselves (posture, egress, mounts, podman scoping), checked not assumed:
-ab selftest --agent claude --project tickerlab   # PASS = no FAIL lines
+ab project selftest claude tickerlab   # PASS = no FAIL lines
 ```
 
 **It passed if:** `/health` says `using_real_key: false`, the real key is found nowhere (grep exits 1), no
-container maps a host port, and `ab selftest` reports no failures. `using_real_key: true` — the real key
+container maps a host port, and `ab project selftest` reports no failures. `using_real_key: true` — the real key
 reaching the app — would be a serious finding; stop and record it.
 
 > What just happened: the agent built and ran real containers, reached PyPI to install what it needed, and
@@ -208,7 +208,7 @@ cleanup.
 
 ## Part 8 — going further (optional)
 
-**Agent parity.** Repeat Parts 3–7 with `ab run --agent omp --project tickerlab` after resetting to a clean
+**Agent parity.** Repeat Parts 3–7 with `ab session start omp tickerlab` after resetting to a clean
 baseline (kill the session first, then):
 
 ```bash
@@ -261,6 +261,6 @@ Correctness held throughout; these are usability rough edges.
    **Fixed** (26 Oct): `rm`, `reset-state`, `accept-grant-exposure`, `accept-history-secrets` and the new
    `ab project set` all refuse while a session for the project is live, naming it and the `ab session kill`
    that ends it. No `--force` (decisions.md, 26 Oct).
-3. There is no `ab attach`/`ab ws` yet, so detach/reattach relies on the user's own tmux, and a new prompt to
+3. (Since resolved: `ab session attach` and `ab screen` exist.) At the time there was neither, so detach/reattach relied on the user's own tmux, and a new prompt to
    a running session means reattaching rather than a first-class command. (Planned — see `docs/design.md`
    "Planned / not built".)

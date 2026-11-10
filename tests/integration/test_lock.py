@@ -1,7 +1,7 @@
 """One live session per project, against real podman and a real terminal.
 
 The unit tests drive the lock through the fake podman. These are the cases that need the real thing: a
-session started **on a pty**, so `ab run` takes its interactive path, and then the three ways it can end.
+session started **on a pty**, so `ab session start` takes its interactive path, and then the three ways it can end.
 
 (b) is the one that matters. A closed terminal -- an ssh connection dropped, a tmux pane killed -- is how a
 session usually dies, and it arrives as SIGHUP to a launcher that is attached to a tty. If that path leaked,
@@ -57,12 +57,12 @@ def containers_of(project, role=None):
 
 
 def run_shell(project, script, timeout=300):
-    """`ab run --shell -- -c <script>`, in one place so the form cannot drift.
+    """`ab session start --shell -- -c <script>`, in one place so the form cannot drift.
 
     `--shell` is the point: without it the passthrough goes to `claude` itself, which then tries to
     authenticate with the harness's fake token and dies with a 401 -- which is what three of these tests
     did on their first real run."""
-    return ENV.ab("run", "--agent", "claude", "--project", project, "--shell", "--no-tty", "--",
+    return ENV.ab("session", "start", "claude", project, "--shell", "--no-tty", "--",
                   "-c", script, timeout=timeout)
 
 
@@ -71,7 +71,7 @@ class Lock(unittest.TestCase):
 
     def start(self, project="lk1"):
         """A session on a pty, running until it is signalled, with the lock taken."""
-        proc, master = ENV.ab_pty("run", "--agent", "claude", "--project", project, "--shell", "--",
+        proc, master = ENV.ab_pty("session", "start", "claude", project, "--shell", "--",
                                   "-c", "echo ABT_SESSION_UP; sleep 300")
         self.addCleanup(self._cleanup, proc, master, project)
         text = ENV.drain(master, until="ABT_SESSION_UP", timeout=240)
@@ -103,7 +103,7 @@ class Lock(unittest.TestCase):
         self.assertNotIn("SHOULD_NOT_RUN", p.stdout, "refused before the agent ran")
         said = p.stdout + p.stderr
         self.assertIn(sid, said, "the refusal names the session that holds it")
-        self.assertIn("ab attach lk1", said)
+        self.assertIn("ab session attach lk1", said)
         self.assertIn("ab session kill lk1", said)
         self.assertEqual(read_lock("lk1")["session"], sid, "and the holder's lock is untouched")
 
@@ -142,7 +142,7 @@ class Lock(unittest.TestCase):
     def test_sigkill_leaves_a_husk_that_the_next_run_reports(self):
         """SIGKILL cannot run a handler, so the lock stays and the session's containers stay up.
 
-        Two steps, because that is the shape of it: while the AGENT is still running the next `ab run` is
+        Two steps, because that is the shape of it: while the AGENT is still running the next `ab session start` is
         refused (a live session is never reaped out from under anyone) -- and once the agent is gone, what
         is left is a husk, which the next run reaps and reports before starting."""
         proc, master, sid = self.start()

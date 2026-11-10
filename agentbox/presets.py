@@ -112,7 +112,7 @@ def describe(presets_map, sep="; "):
 
 def materialize_open_egress(entry, presets):
     """A preset whose definition declares `egress = "open"` gets that written onto the project's own
-    registry entry when the project is registered or edited (`ab init` / `ab project add` / `ab project
+    registry entry when the project is registered or edited (`ab project init` / `ab project add` / `ab project
     set`), unless an explicit --egress was given.
 
     The invariant: open egress is never granted by live reference to a preset. effective() demotes a

@@ -6,80 +6,124 @@ The full `--help` for every `agentbox` (`ab`) command and subcommand. This file 
 python3 docs/gen_usage.py > docs/USAGE.md
 ```
 
-For the two command namespaces and when to reach for each, see `docs/design.md` (Usage) and `docs/PERSONALIZATION.md`. In short: **`ab project`** manages the durable registry entries (configuration), **`ab session`** manages the live sandboxed runs, and `ab run` / `ab init` are the verbs that create them.
+For the two command namespaces and when to reach for each, see `docs/design.md` (Usage) and `docs/PERSONALIZATION.md`. In short: **`ab project`** manages the durable registry entries (configuration), **`ab session`** manages the live sandboxed runs, and `ab session start` / `ab project init` are the verbs that create them.
 
 ## Contents
 
 - [Top level](#top-level)
-- [ab init](#ab-init)
-- [ab run](#ab-run)
-- [ab attach](#ab-attach)
-- [ab selftest](#ab-selftest)
 - [ab project](#ab-project)
+- [ab session](#ab-session)
+- [ab screen](#ab-screen)
 - [ab profile](#ab-profile)
 - [ab image](#ab-image)
-- [ab session](#ab-session)
 - [ab keys](#ab-keys)
 
 ## Top level
 
 ### `ab`
 
-The launcher. `ab project` manages saved configuration; `ab session` manages live runs; `ab run` and `ab init` create them.
+The launcher. Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the live run (start, attach, kill, ...). `ab screen` is the tmux workspace.
 
 ```text
-usage: ab [-h]
-          {init,project,run,attach,profile,image,session,selftest,keys} ...
+usage: ab [-h] {project,profile,image,session,screen,keys} ...
 
 agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session.
 
 positional arguments:
-  {init,project,run,attach,profile,image,session,selftest,keys}
-    init                scaffold a new project with a grantcheck-clean layout
-                        (secrets masked, live data in a named volume), then
-                        register it
+  {project,profile,image,session,screen,keys}
     project             manage registered projects (the saved configuration)
-    run                 start an agent session in the foreground (one per
-                        project)
-    attach              re-attach a terminal to the session already running
-                        for a project
     profile             the host-owned agent profile: what every session
                         loads, and the inbox it feeds
     image               your own image layer on top of an agent's harness
                         image
-    session             manage running sessions (the live instances)
-    selftest            prove the sandbox boundaries hold (posture, egress,
-                        mounts, podman scoping)
+    session             the live runs: start, attach, list, preview, kill, gc
+    screen              open the tmux workspace: agent panes (each an `ab
+                        session start`) and host shells, in a layout from
+                        ~/.config/agentbox/screen.toml
     keys                model tokens and provider API keys
 
 options:
   -h, --help            show this help message and exit
 
-`ab project` manages the saved configuration; `ab session` manages the live runs; `ab run` and `ab init` are the verbs that create them. Full reference: docs/USAGE.md.
+Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. Full reference: docs/USAGE.md.
 
 examples:
-  ab init pod --name web            scaffold and register a new project
-  ab run --agent claude --project web   start a session (also: ab run claude web)
+  ab project init pod web              scaffold and register a new project
+  ab session start claude web          start a session
   ab session ls                     list running sessions
   ab project show web               a project's effective settings
 ```
 
-## ab init
+## ab project
 
-### `ab init`
+### `ab project`
+
+Manage the durable registry entries — a project names a code grant, a preset and any extra data grants. One project has many sessions over time.
+
+```text
+usage: ab project [-h]
+                  {init,add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm,selftest}
+                  ...
+
+manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
+
+positional arguments:
+  {init,add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm,selftest}
+    init                scaffold a new project with a grantcheck-clean layout
+                        (secrets masked, live data in a named volume), then
+                        register it
+    add                 register a project with a preset (validated against
+                        overlap and grant exposure)
+    set                 change a registered project's settings in place (re-
+                        validated; refused while a session for it is live)
+    check               show what the grant scan finds now and whether it
+                        matches what was accepted (read-only)
+    accept-history-secrets
+                        accept (after rotating them) the masked file names now
+                        in a project's git history
+    accept-grant-exposure
+                        accept that this project's grant holds secrets or live
+                        data the agent can read
+    show                print every effective setting and whether it came from
+                        the preset or an override
+    ls                  list registered projects (name, preset, root)
+    reset-state         wipe a project's agent state (memory, settings,
+                        transcripts); asks first, keeps a copy in the backups
+                        dir
+    purge               delete a project's agent state and inbox outright
+                        (asks for --yes; the only command that deletes them)
+    rm                  remove one or more projects from the registry (files,
+                        state and backups are untouched)
+    selftest            prove the sandbox boundaries hold for a project
+                        (posture, egress, mounts, podman scoping), in a
+                        throwaway session
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  ab project add web ~/repos/web --preset build
+  ab project set web --egress open
+  ab project show web
+  ab project ls
+  ab project rm web
+```
+
+### `ab project init`
 
 Scaffold a new project with a safe-by-construction layout (secrets masked, live data in a named volume) and register it, so a fresh project starts a session with no warnings.
 
 ```text
-usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
-               [--data-ro DIR] [--data-rw DIR] [--egress MODE]
-               [--extra-domain DOMAIN] [--build-memory SIZE]
-               [--base-branch BRANCH] [--profile on|off] [--mask-skip DIR]
-               [--mask PATH] [--podman TIER] [--compose-project NAME]
-               [--dev-image PATTERN] [--swap TARGET=STANDIN]
-               [--observe-logs | --no-observe-logs] [--accept-history-secrets]
-               [--i-understand-grant-exposure] [--reattach | --fresh]
-               {pod,python}
+usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
+                       [--data-rw DIR] [--egress MODE] [--extra-domain DOMAIN]
+                       [--build-memory SIZE] [--base-branch BRANCH]
+                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
+                       [--podman TIER] [--compose-project NAME]
+                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
+                       [--observe-logs | --no-observe-logs]
+                       [--accept-history-secrets]
+                       [--i-understand-grant-exposure] [--reattach | --fresh]
+                       {pod,python} name
 
 scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named volume), then register it
 
@@ -87,11 +131,11 @@ positional arguments:
   {pod,python}          which scaffold to create: `pod` (a compose/dev-stack
                         service, live data in a named volume) or `python` (a
                         script/library, data path from DATA_DIR)
+  name                  project name; the repo is created at
+                        <repos_dir>/<name> and registered under it
 
 options:
   -h, --help            show this help message and exit
-  --name NAME           project name; the repo is created at
-                        <repos_dir>/<name> and registered under it
   --upstream URL        git URL to add as origin and push to (an off-box CODE
                         backup; it does NOT back up .env or the data volume)
   --preset PRESET       security profile (default: the template's own — pod:
@@ -136,7 +180,8 @@ options:
                         settings) and the agent's plugins (default: on). `off`
                         also means the harness image rather than any user
                         image layer; agentbox's own session notes still apply.
-                        `ab run --no-profile` does the same for one run
+                        `ab session start --no-profile` does the same for one
+                        run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -190,140 +235,8 @@ options:
                         empty
 
 examples:
-  ab init pod --name filelab
-  ab init python --name dataproc --upstream git@github.com:me/dataproc.git
-```
-
-## ab run
-
-### `ab run`
-
-Start an agent session against a project in the foreground — build the sandbox, run the agent, tear it down on exit.
-
-```text
-usage: ab run [-h] [--agent AGENT] [--project PROJECT] [--shell] [--no-tty]
-              [--no-profile] [--timeout SECONDS]
-              [[AGENT [PROJECT]] ...]
-
-start an agent session in the foreground (one per project)
-
-positional arguments:
-  [AGENT [PROJECT]]  positional AGENT and PROJECT (an alternative to
-                     --agent/--project); anything after a `--` is passed
-                     through to the agent or shell
-
-options:
-  -h, --help         show this help message and exit
-  --agent AGENT      agent to run: `claude` or `omp` (or give it positionally:
-                     `ab run <agent> <project>`)
-  --project PROJECT  the registered project to run against (or give it
-                     positionally)
-  --shell            run a bash shell in the sandbox instead of the agent
-  --no-tty           do not allocate a TTY (for non-interactive or piped runs)
-  --no-profile       for this run only: load no host-owned profile (skills,
-                     sub-agents, commands, instructions, settings) and no
-                     plugins, and use the harness image. agentbox's own
-                     session notes still apply. `ab project set <p> --profile
-                     off` makes it permanent
-  --timeout SECONDS  time limit for a non-interactive run (default 3600;
-                     ignored for interactive sessions)
-
-examples:
-  ab run --agent claude --project web
-  ab run claude web                 positional form of --agent/--project
-  ab run claude web --shell         a bash shell in the sandbox instead of the agent
-  ab run claude web -- --resume     pass everything after -- to the agent
-  ab attach web                     re-attach to the session already running
-```
-
-## ab attach
-
-### `ab attach`
-
-```text
-usage: ab attach [-h] project
-
-re-attach a terminal to the session already running for a project
-
-positional arguments:
-  project     the project whose running session to attach to (one per project)
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab attach web
-```
-
-## ab selftest
-
-### `ab selftest`
-
-Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
-
-```text
-usage: ab selftest [-h] --agent AGENT --project PROJECT [--json]
-
-prove the sandbox boundaries hold (posture, egress, mounts, podman scoping)
-
-options:
-  -h, --help         show this help message and exit
-  --agent AGENT      agent to run the checks as (claude or omp)
-  --project PROJECT  the registered project to test
-  --json             print results as JSON instead of a table
-
-examples:
-  ab selftest --agent claude --project web
-  ab selftest --agent claude --project web --json
-```
-
-## ab project
-
-### `ab project`
-
-Manage the durable registry entries — a project names a code grant, a preset and any extra data grants. One project has many sessions over time.
-
-```text
-usage: ab project [-h]
-                  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm}
-                  ...
-
-manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
-
-positional arguments:
-  {add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm}
-    add                 register a project with a preset (validated against
-                        overlap and grant exposure)
-    set                 change a registered project's settings in place (re-
-                        validated; refused while a session for it is live)
-    check               show what the grant scan finds now and whether it
-                        matches what was accepted (read-only)
-    accept-history-secrets
-                        accept (after rotating them) the masked file names now
-                        in a project's git history
-    accept-grant-exposure
-                        accept that this project's grant holds secrets or live
-                        data the agent can read
-    show                print every effective setting and whether it came from
-                        the preset or an override
-    ls                  list registered projects (name, preset, root)
-    reset-state         wipe a project's agent state (memory, settings,
-                        transcripts); asks first, keeps a copy in the backups
-                        dir
-    purge               delete a project's agent state and inbox outright
-                        (asks for --yes; the only command that deletes them)
-    rm                  remove one or more projects from the registry (files,
-                        state and backups are untouched)
-
-options:
-  -h, --help            show this help message and exit
-
-examples:
-  ab project add web ~/repos/web --preset build
-  ab project set web --egress open
-  ab project show web
-  ab project ls
-  ab project rm web
+  ab project init pod filelab
+  ab project init python dataproc --upstream git@github.com:me/dataproc.git
 ```
 
 ### `ab project add`
@@ -394,7 +307,8 @@ options:
                         settings) and the agent's plugins (default: on). `off`
                         also means the harness image rather than any user
                         image layer; agentbox's own session notes still apply.
-                        `ab run --no-profile` does the same for one run
+                        `ab session start --no-profile` does the same for one
+                        run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -456,7 +370,7 @@ examples:
 
 ### `ab project set`
 
-Change a registered project's settings in place, re-validated, with the same flags `ab init`/`ab project add` take. Refused while a session for the project is live.
+Change a registered project's settings in place, re-validated, with the same flags `ab project init`/`ab project add` take. Refused while a session for the project is live.
 
 ```text
 usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
@@ -523,7 +437,8 @@ options:
                         settings) and the agent's plugins (default: on). `off`
                         also means the harness image rather than any user
                         image layer; agentbox's own session notes still apply.
-                        `ab run --no-profile` does the same for one run
+                        `ab session start --no-profile` does the same for one
+                        run
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
@@ -743,6 +658,238 @@ examples:
   ab project accept-history-secrets web
 ```
 
+### `ab project selftest`
+
+Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
+
+```text
+usage: ab project selftest [-h] [--json] {claude,omp} name
+
+prove the sandbox boundaries hold for a project (posture, egress, mounts, podman scoping), in a throwaway session
+
+positional arguments:
+  {claude,omp}  agent to run the checks as
+  name          the registered project to test
+
+options:
+  -h, --help    show this help message and exit
+  --json        print results as JSON instead of a table
+
+examples:
+  ab project selftest claude web
+  ab project selftest claude web --json
+```
+
+## ab session
+
+### `ab session`
+
+The live runs — start one, attach to it, list, preview, kill and garbage-collect.
+
+```text
+usage: ab session [-h] {start,attach,ls,preview,kill,gc} ...
+
+the live runs. `start` creates one in the foreground (one per project); every other verb names a project or a session id.
+
+positional arguments:
+  {start,attach,ls,preview,kill,gc}
+    start               start an agent session in the foreground (one per
+                        project)
+    attach              re-attach a terminal to the session already running
+                        for a project
+    ls                  list sessions with their project, start time, age and
+                        idle time
+    preview             open a session's dev service on 127.0.0.1 (reach it
+                        from your desktop with ssh -L)
+    kill                tear down a session and everything it created (keeps
+                        its logs and end-of-session scan)
+    gc                  remove what dead sessions left (containers, networks,
+                        sockets) and storage nothing can use: session-built
+                        images, superseded personal image layers, unused
+                        profile snapshots (runs automatically after boot)
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  ab session start claude web
+  ab session attach web
+  ab session ls
+  ab session preview web web:8000
+  ab session kill web
+  ab session gc
+```
+
+### `ab session start`
+
+Start an agent session against a project in the foreground — build the sandbox, run the agent, tear it down on exit.
+
+```text
+usage: ab session start [-h] [--shell] [--no-tty] [--no-profile]
+                        [--timeout SECONDS]
+                        {claude,omp} project
+
+start an agent session in the foreground (one per project)
+
+positional arguments:
+  {claude,omp}       the agent to run
+  project            the registered project to run against; anything after a
+                     `--` is passed through to the agent or shell
+
+options:
+  -h, --help         show this help message and exit
+  --shell            run a bash shell in the sandbox instead of the agent
+  --no-tty           do not allocate a TTY (for non-interactive or piped runs)
+  --no-profile       for this run only: load no host-owned profile (skills,
+                     sub-agents, commands, instructions, settings) and no
+                     plugins, and use the harness image. agentbox's own
+                     session notes still apply. `ab project set <p> --profile
+                     off` makes it permanent
+  --timeout SECONDS  time limit for a non-interactive run (default 3600;
+                     ignored for interactive sessions)
+
+examples:
+  ab session start claude web
+  ab session start claude web --shell         a bash shell in the sandbox instead of the agent
+  ab session start claude web -- --resume     pass everything after -- to the agent
+  ab session attach web                       re-attach to the session already running
+```
+
+### `ab session attach`
+
+Re-attach a terminal to the session already running for a project (or a session id).
+
+```text
+usage: ab session attach [-h] project
+
+re-attach a terminal to the session already running for a project
+
+positional arguments:
+  project     the project whose running session to attach to (one per
+              project), or the session id itself
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab session attach web
+  ab session attach ab-claude-web-1   by session id
+```
+
+### `ab session ls`
+
+List sessions with their project, start time, age and idle time.
+
+```text
+usage: ab session ls [-h]
+
+list sessions with their project, start time, age and idle time
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab session ls
+```
+
+### `ab session preview`
+
+Publish one dev-stack service of a session on 127.0.0.1 so you can reach it over ssh -L.
+
+```text
+usage: ab session preview [-h] [--port PORT] [--stop] session [SERVICE:PORT]
+
+open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)
+
+positional arguments:
+  session       the project whose session to preview, or the session id itself
+                (`ab session ls` shows both)
+  SERVICE:PORT  the dev-stack service (or container) and the port inside it,
+                e.g. web:8000; omit with --stop
+
+options:
+  -h, --help    show this help message and exit
+  --port PORT   host port to publish on 127.0.0.1 (default: a free one,
+                printed on start)
+  --stop        remove this session's previews instead of opening one
+
+examples:
+  ab session preview web web:8000
+  ab session preview web web:8000 --port 18080
+  ab session preview web --stop
+```
+
+### `ab session kill`
+
+Tear down a session and everything it created, keeping its logs and end-of-session scan.
+
+```text
+usage: ab session kill [-h] session
+
+tear down a session and everything it created (keeps its logs and end-of-session scan)
+
+positional arguments:
+  session     the project whose session to tear down, or the session id itself
+              (`ab session ls` shows both)
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab session kill web
+  ab session kill ab-claude-web-1   by session id
+```
+
+### `ab session gc`
+
+Remove containers, networks and sockets left by dead sessions (also runs after boot).
+
+```text
+usage: ab session gc [-h]
+
+remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot)
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab session gc
+```
+
+## ab screen
+
+### `ab screen`
+
+Open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout from ~/.config/agentbox/screen.toml.
+
+```text
+usage: ab screen [-h] [--agent {claude,omp}] [--layout LAYOUT] [--config FILE]
+                 [--list] [--print-config] [--dry-run]
+                 [builder] [reviewer]
+
+open the tmux workspace: agent panes (each an `ab session start`) and host shells, in a layout from ~/.config/agentbox/screen.toml
+
+positional arguments:
+  builder               builder project (a registered project name)
+  reviewer              reviewer project (a separate clone, registered too)
+
+options:
+  -h, --help            show this help message and exit
+  --agent {claude,omp}  the agent the agent panes start (default: claude; a
+                        pane's own `agent` key wins)
+  --layout LAYOUT       layout name (default: from the config, usually auto)
+  --config FILE         config file (default: <config dir>/screen.toml)
+  --list                list layouts, and which one auto would pick
+  --print-config        print a commented starter config
+  --dry-run             print the tmux commands, run nothing
+
+examples:
+  ab screen web
+  ab screen web web-review --layout wide
+  ab screen --list
+  ab screen --print-config > ~/.config/agentbox/screen.toml
+```
+
 ## ab profile
 
 ### `ab profile`
@@ -842,7 +989,7 @@ A personal layer for what you want in every session -- a language toolchain, a l
 
 The built image is checked before it is tagged: USER, ENTRYPOINT, CMD and PATH must match the harness image, and the image must still report the pinned agent version and have git, rg, python3 and the podman client. A build that fails any of those is discarded, so what you were using stays in place.
 
-The tag covers the harness image ID and the Containerfile. When the harness image is rebuilt your layer no longer matches it, and `ab run` says `personal layer out of date` and runs the plain harness image -- it never runs a layer built on an older harness. Build it again and the next session picks it up.
+The tag covers the harness image ID and the Containerfile. When the harness image is rebuilt your layer no longer matches it, and `ab session start` says `personal layer out of date` and runs the plain harness image -- it never runs a layer built on an older harness. Build it again and the next session picks it up.
 
 positional arguments:
   {build}
@@ -875,119 +1022,6 @@ options:
 examples:
   ab image build claude
   ab image build omp --force
-```
-
-## ab session
-
-### `ab session`
-
-Manage the live instances — list, preview, kill and garbage-collect running sessions.
-
-```text
-usage: ab session [-h] {ls,preview,kill,gc} ...
-
-manage running sessions (the live instances). Start one with `ab run`.
-
-positional arguments:
-  {ls,preview,kill,gc}
-    ls                  list sessions with their project, start time, age and
-                        idle time
-    preview             open a session's dev service on 127.0.0.1 (reach it
-                        from your desktop with ssh -L)
-    kill                tear down a session and everything it created (keeps
-                        its logs and end-of-session scan)
-    gc                  remove what dead sessions left (containers, networks,
-                        sockets) and storage nothing can use: session-built
-                        images, superseded personal image layers, unused
-                        profile snapshots (runs automatically after boot)
-
-options:
-  -h, --help            show this help message and exit
-
-examples:
-  ab session ls
-  ab session preview ab-claude-web-1 web:8000
-  ab session kill ab-claude-web-1
-  ab session gc
-```
-
-### `ab session ls`
-
-List sessions with their project, start time, age and idle time.
-
-```text
-usage: ab session ls [-h]
-
-list sessions with their project, start time, age and idle time
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab session ls
-```
-
-### `ab session preview`
-
-Publish one dev-stack service of a session on 127.0.0.1 so you can reach it over ssh -L.
-
-```text
-usage: ab session preview [-h] [--port PORT] [--stop] session [SERVICE:PORT]
-
-open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)
-
-positional arguments:
-  session       the session name (from `ab session ls`)
-  SERVICE:PORT  the dev-stack service (or container) and the port inside it,
-                e.g. web:8000; omit with --stop
-
-options:
-  -h, --help    show this help message and exit
-  --port PORT   host port to publish on 127.0.0.1 (default: a free one,
-                printed on start)
-  --stop        remove this session's previews instead of opening one
-
-examples:
-  ab session preview ab-claude-web-1 web:8000
-  ab session preview ab-claude-web-1 web:8000 --port 18080
-  ab session preview ab-claude-web-1 --stop
-```
-
-### `ab session kill`
-
-Tear down a session and everything it created, keeping its logs and end-of-session scan.
-
-```text
-usage: ab session kill [-h] session
-
-tear down a session and everything it created (keeps its logs and end-of-session scan)
-
-positional arguments:
-  session     the project whose session to tear down, or the session id itself
-              (`ab session ls` shows both)
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab session kill web
-  ab session kill ab-claude-web-1   by session id
-```
-
-### `ab session gc`
-
-Remove containers, networks and sockets left by dead sessions (also runs after boot).
-
-```text
-usage: ab session gc [-h]
-
-remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot)
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab session gc
 ```
 
 ## ab keys
@@ -1026,16 +1060,16 @@ examples:
 Replace the Claude subscription token.
 
 ```text
-usage: ab keys rotate [-h] agent
+usage: ab keys rotate [-h] {claude,omp}
 
 replace the Claude subscription token (from `claude setup-token`)
 
 positional arguments:
-  agent       the agent whose subscription token to replace (currently:
-              claude)
+  {claude,omp}  the agent whose subscription token to replace (currently:
+                claude)
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help    show this help message and exit
 
 examples:
   ab keys rotate claude

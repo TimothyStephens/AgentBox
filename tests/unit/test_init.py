@@ -1,4 +1,4 @@
-"""`ab init`: the scaffold must produce a project that passes grantcheck with no override, by construction.
+"""`ab project init`: the scaffold must produce a project that passes grantcheck with no override, by construction.
 The load-bearing assertion (Tim, 6 Oct) is test_fresh_project_is_clean_by_construction: a freshly-init'd
 project starts a session with ZERO warnings and ZERO overrides, for both templates."""
 import io
@@ -23,14 +23,14 @@ class InitCase(SettingsCase):
     def init(self, template, name, *extra):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = cli.main(["init", template, "--name", name, *extra])
+            rc = cli.main(["project", "init", template, name, *extra])
         return rc, buf.getvalue()
 
     def entry(self, name):
         return registry.load(self.settings.registry_path)[name]
 
     def init_rc(self, template, name, *extra):
-        """Exit code of `ab init`, whether argparse refused it (SystemExit) or a check did."""
+        """Exit code of `ab project init`, whether argparse refused it (SystemExit) or a check did."""
         try:
             return self.init(template, name, *extra)[0]
         except SystemExit as e:
@@ -109,7 +109,7 @@ class FreshProjectTest(InitCase):
 
 
 class OverrideTest(InitCase):
-    """ab init shares the project-setting flags with ab project add/set (requirement 1); it is no longer
+    """ab project init shares the project-setting flags with ab project add/set (requirement 1); it is no longer
     limited to the template's bare default preset with zero overrides."""
 
     def test_init_accepts_override_flags(self):
@@ -169,7 +169,7 @@ class SettingsCheckedBeforeScaffoldTest(InitCase):
 
 
 class SharedArgsParityTest(InitCase):
-    """Requirement 1, functional half: the same override flags passed to `ab init` and to `ab project add`
+    """Requirement 1, functional half: the same override flags passed to `ab project init` and to `ab project add`
     produce the same registry entry, modulo root/name."""
 
     def test_init_and_add_apply_overrides_identically(self):
@@ -223,7 +223,7 @@ class RefusalTest(InitCase):
 
     def test_unknown_template_rejected_by_argparse(self):
         with self.assertRaises(SystemExit):
-            cli.main(["init", "rust", "--name", "x"])
+            cli.main(["project", "init", "rust", "x"])
 
     def test_bad_name_leaves_no_tree(self):
         rc, _ = self.init("python", "Bad Name")

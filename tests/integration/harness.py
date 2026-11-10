@@ -49,7 +49,7 @@ class Env:
     def ab(self, *args, timeout=900, check=False, input=None):
         """`ab <args>` with **stdin closed** unless a test passes `input`.
 
-        `ab run` without a TTY reads stdin, so an inherited one makes a test that goes further than
+        `ab session start` without a TTY reads stdin, so an inherited one makes a test that goes further than
         expected block on the terminal instead of failing. A timeout is a FAIL naming the command and what
         it had printed -- never a bare TimeoutExpired, and never a test that just stops."""
         kw = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
@@ -71,10 +71,10 @@ class Env:
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def ab_pty(self, *args):
-        """A background `ab` on a pty, so `ab run` takes its interactive path (a TTY on stdin).
+        """A background `ab` on a pty, so `ab session start` takes its interactive path (a TTY on stdin).
 
         Returns (process, master fd). The master is the "terminal" and the slave is the child's stdio, so
-        `ab run` sees a TTY on stdin and takes the interactive path. Read from the master or the child
+        `ab session start` sees a TTY on stdin and takes the interactive path. Read from the master or the child
         blocks once the pty buffer fills.
 
         The child gets its own session (`start_new_session`), so signals aimed at the test runner's group
@@ -127,7 +127,7 @@ class Env:
         return root
 
     def selftest(self, agent, project):
-        p = self.ab("selftest", "--agent", agent, "--project", project, "--json")
+        p = self.ab("project", "selftest", agent, project, "--json")
         try:
             results = json.loads(p.stdout)
         except ValueError:

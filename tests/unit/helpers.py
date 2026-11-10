@@ -41,7 +41,7 @@ class SettingsCase(TempCase):
     """Settings rooted in a temp dir, with a fake podman that records every call."""
 
     # Every in-process `ab` run gets a closed stdin and a deadline, because the two ways a CLI test can
-    # fail to produce a verdict are both real: `ab run` READS stdin when it has no TTY, so a test whose
+    # fail to produce a verdict are both real: `ab session start` READS stdin when it has no TTY, so a test whose
     # refusal stops working blocks on the terminal instead of failing; and anything that waits turns a red
     # test into a suite that never finishes. Both now end as a FAIL naming the command and what it printed.
     AB_TIMEOUT = 30

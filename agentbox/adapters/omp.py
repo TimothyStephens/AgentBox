@@ -78,7 +78,7 @@ def plugin_mounts(settings, warn, plugins=True):
     `omp-env install` moved something underneath a starting session. agentbox owns this tree, builds it
     itself, and replaces it whole, so none of that is needed: a session mounts two paths read-only.
 
-    `plugins=False` (`ab run --no-profile`, or `profile = "off"`) returns nothing. agentbox's own
+    `plugins=False` (`ab session start --no-profile`, or `profile = "off"`) returns nothing. agentbox's own
     `config.yml` still arrives either way -- the flag turns off the profile and its plugins, not
     agentbox's configuration of the agent."""
     from .. import installer           # local: installer imports session, which imports this package

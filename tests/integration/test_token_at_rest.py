@@ -65,7 +65,7 @@ class TokenAtRest(unittest.TestCase):
         script = (f"node {root}/stub.js & sleep 1; "
                   "ANTHROPIC_BASE_URL=http://127.0.0.1:8765 claude -p 'Reply with exactly: STUB_OK' "
                   "--model claude-sonnet-4-5; echo \"CLAUDE_EXIT=$?\"; echo '--- stub log'; cat /tmp/stub.log")
-        p = ENV.ab("run", "--agent", "claude", "--project", "rest", "--shell", "--no-tty", "--", "-c", script,
+        p = ENV.ab("session", "start", "claude", "rest", "--shell", "--no-tty", "--", "-c", script,
                    timeout=600)
         out = p.stdout.replace(FAKE_TOKEN, "[TOKEN]")
         print(f"\n{out[-2500:]}\n{p.stderr[-800:]}")

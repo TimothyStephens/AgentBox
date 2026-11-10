@@ -877,7 +877,7 @@ class RmAddAndPurge(SettingsCase):
 
 
 class ConcurrentSessionsCannotHappen(SettingsCase):
-    """The inbox and the agent state were shared by two concurrent sessions, last writer wins, and `ab run`
+    """The inbox and the agent state were shared by two concurrent sessions, last writer wins, and `ab session start`
     only warned. One session per project is enforced now (projectlock.py, 29 Oct), so the sharing is
     impossible rather than described."""
 
@@ -895,7 +895,7 @@ class ConcurrentSessionsCannotHappen(SettingsCase):
         import io
         from contextlib import redirect_stderr, redirect_stdout
         err = io.StringIO()
-        code, text = self.ab("run", "claude", "p1", "--no-tty")
+        code, text = self.ab("session", "start", "claude", "p1", "--no-tty")
         err.write(text)
         self.assertEqual(code, 2)
         joined = err.getvalue()

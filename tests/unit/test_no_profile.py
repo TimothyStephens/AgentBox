@@ -1,4 +1,4 @@
-"""Running without the host-owned profile: `ab run --no-profile` and `profile = "off"` on a project.
+"""Running without the host-owned profile: `ab session start --no-profile` and `profile = "off"` on a project.
 
 The profile is how a session gets the user's skills, sub-agents, commands, instructions and settings, and
 (for OMP) the plugins/repos/pylibs snapshot from `~/.omp`. Two reasons to turn all of it off:

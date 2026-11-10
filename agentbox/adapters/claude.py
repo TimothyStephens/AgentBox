@@ -187,7 +187,7 @@ def plugin_setup(settings, warn, image_labels, plugins=True):
     it -- an `enabledPlugins` entry pointing at a directory that is not there is a startup error Claude
     Code would report inside the sandbox, to nobody.
 
-    `plugins=False` (`ab run --no-profile`, `profile = "off"`, or lockdown) returns nothing and reads
+    `plugins=False` (`ab session start --no-profile`, `profile = "off"`, or lockdown) returns nothing and reads
     nothing, so the profile's own settings.json is what the session gets, unchanged."""
     from .. import installer, plugins as plugindecl   # local: installer imports session, which imports this package
     if not plugins:

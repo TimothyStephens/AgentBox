@@ -103,7 +103,7 @@ def mem_current_mb(cg):
 def agent_session(env, gb):
     """Start an agent session whose shell holds `gb` GB (node Buffer, pages touched). Returns (proc, name)."""
     size = int(gb * (1 << 30))
-    proc = env.ab_bg("run", "--agent", "claude", "--project", "oom", "--shell", "--no-tty", "--",
+    proc = env.ab_bg("session", "start", "claude", "oom", "--shell", "--no-tty", "--",
                      "-c", f"node -e 'const b=Buffer.alloc({size},1); console.log(\"HELD\"); "
                            f"setInterval(()=>b[0]++,1000)'")
     name = harness.wait_for(lambda: podman("ps", "--format", "{{.Names}}", "--filter", f"label={LABEL}",

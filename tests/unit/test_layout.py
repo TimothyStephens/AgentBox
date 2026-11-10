@@ -223,7 +223,7 @@ class Identity(SettingsCase):
         repos = self.mkdir("repos")
         self.ab("project", "rm", "p1")
         with mock.patch.dict(os.environ, {"AB_REPOS_DIR": repos}):
-            code, out = self.ab("init", "python", "--name", "p1")
+            code, out = self.ab("project", "init", "python", "p1")
         self.assertEqual(code, 2, out)
         self.assertIn("--fresh", out)
         self.assertFalse(os.path.exists(os.path.join(repos, "p1")), "no tree was scaffolded")

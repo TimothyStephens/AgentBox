@@ -179,7 +179,7 @@ def tearDownModule():
 
 
 def shell(project, script, timeout=900):
-    return ENV.ab("run", "--agent", "omp", "--project", project, "--shell", "--no-tty", "--", "-c", script,
+    return ENV.ab("session", "start", "omp", project, "--shell", "--no-tty", "--", "-c", script,
                   timeout=timeout)
 
 

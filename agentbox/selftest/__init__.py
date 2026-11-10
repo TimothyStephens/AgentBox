@@ -1,4 +1,4 @@
-"""Orchestrates `ab selftest`: a real session whose command is the probe."""
+"""Orchestrates `ab project selftest`: a real session whose command is the probe."""
 import os
 
 from .. import session as sessionmod

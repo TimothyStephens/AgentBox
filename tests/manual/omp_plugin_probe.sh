@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Round 2. Learn the rest of OMP's plugin mechanics, so `ab profile install` can be written from facts.
-# Run by `make omp-plugin-probe`, which pipes this into a session shell (`ab run --agent omp ... --shell`).
+# Run by `make omp-plugin-probe`, which pipes this into a session shell (`ab session start omp ... --shell`).
 #
 # WHAT ROUND 1 SETTLED (5 Nov; full reasoning in docs/decisions.md):
 #   * `omp plugin marketplace add` CANNOT be pinned -- `owner/repo@sha`, `--ref` and `--commit` are all

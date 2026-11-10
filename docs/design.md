@@ -186,13 +186,13 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Data grants (`data_ro`, `data_rw`) sit beside the code grant, so inputs can be read-only while outputs are writable.
 - One compose project per session by default. Interconnected projects get an explicit project group, never ad hoc multi-project sessions.
 
-### Scaffolding new projects (`ab init`)
+### Scaffolding new projects (`ab project init`)
 
-`ab init <pod|python> --name <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {build|script}` itself (`pods`/`python` are aliases of those two), so the project is registered and grant-checked the moment it exists; a freshly-init'd project with no setting flags starts a session with zero warnings and zero overrides. `ab init` takes the same setting flags as `ab project add`/`set` (`--preset`, `--egress`, `--data-ro`, …), all validated **before** anything is written, so one place configures a project completely and a bad flag leaves no half-made tree behind; it then prints the effective configuration with each value's source. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
+`ab project init <pod|python> <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {build|script}` itself (`pods`/`python` are aliases of those two), so the project is registered and grant-checked the moment it exists; a freshly-init'd project with no setting flags starts a session with zero warnings and zero overrides. `ab project init` takes the same setting flags as `ab project add`/`set` (`--preset`, `--egress`, `--data-ro`, …), all validated **before** anything is written, so one place configures a project completely and a bad flag leaves no half-made tree behind; it then prints the effective configuration with each value's source. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
 
 ### Filesystem policy
 
-- **The grant holds code; secrets and live data live outside it.** This is the primary rule (added 6 Oct, after a session found it could reach a repo-local database from a container it started). The masks and the gate's cover checks below are defence in depth, not the main wall. Before a session starts, and at `ab project add`, each read-write grant is scanned (`agentbox/grantcheck.py`): an uncovered non-empty `.env`/`*.pem`/`*.key` or `secrets/` file, a `.git` with credentials in a remote URL, or live data (a `*.db`/`*.sqlite`/`*.duckdb` over 1 MB, or a compose-bound path that holds a `*.db`-type file) makes the session refuse to start, naming what was found. Move it out of the grant, or add a mask; to run regardless, `ab project add --i-understand-grant-exposure` or `ab project accept-grant-exposure <name>` records an acknowledgement, re-prompted when the finding changes. `ab run`, `ab project check` and add/set all reach that verdict through **one** entry point (`grantcheck.preflight`), which `ab run` hands its already-built mount plan, so what `check` reports is what `run` decides. Only paths the session makes *unreadable* count as covered for the scan (the masks, the mask dirs and the dev-swap targets — `mounts.hidden`); a read-only cover such as `.git/hooks` is fully readable, so a secret inside one is a finding, which is separate from the wider set the gate refuses binds onto (`mounts.covered`).
+- **The grant holds code; secrets and live data live outside it.** This is the primary rule (added 6 Oct, after a session found it could reach a repo-local database from a container it started). The masks and the gate's cover checks below are defence in depth, not the main wall. Before a session starts, and at `ab project add`, each read-write grant is scanned (`agentbox/grantcheck.py`): an uncovered non-empty `.env`/`*.pem`/`*.key` or `secrets/` file, a `.git` with credentials in a remote URL, or live data (a `*.db`/`*.sqlite`/`*.duckdb` over 1 MB, or a compose-bound path that holds a `*.db`-type file) makes the session refuse to start, naming what was found. Move it out of the grant, or add a mask; to run regardless, `ab project add --i-understand-grant-exposure` or `ab project accept-grant-exposure <name>` records an acknowledgement, re-prompted when the finding changes. `ab session start`, `ab project check` and add/set all reach that verdict through **one** entry point (`grantcheck.preflight`), which `ab session start` hands its already-built mount plan, so what `check` reports is what `run` decides. Only paths the session makes *unreadable* count as covered for the scan (the masks, the mask dirs and the dev-swap targets — `mounts.hidden`); a read-only cover such as `.git/hooks` is fully readable, so a secret inside one is a finding, which is separate from the wider set the gate refuses binds onto (`mounts.covered`).
 
   The acknowledgement records the accepted findings' signatures, and `ab project show` prints their short fingerprint. On `ab project set`: findings that still match it proceed with no flag; findings that changed refuse an edit that **grants something new**, naming what is new, changed or gone; an edit that grants nothing new proceeds with the change reported, because making a project safer must never be gated on an acknowledgement. `ab project add` still needs the flag — a new project has no previous state to be safer than. The session's own check is unchanged, so an unacknowledged exposure still refuses to *run*. Masked file names in git history work the same way, over the whole found set: a name that left the history re-prompts too, and a clean history drops the record.
 - Projects mount at their real absolute path, so agent sessions and compose relative paths line up.
@@ -337,13 +337,13 @@ Without the gate, a container created with no network, or a `podman build`, runs
 
 ### Workspace UI (planned, not built)
 
-- Build step 7. The tmux layout from `omp-workspace` (agent pane, two shells, btop, monitor) would become `ab ws`, every pane entering the sandbox through the launcher. Until then, use `ab run`.
+- Build step 7, **built 10 Nov as `ab screen`** (`agentbox/screen.py`, formerly `contrib/ab-ws`): a tmux workspace of agent panes and host shells from a layout in `~/.config/agentbox/screen.toml`, every agent pane entering the sandbox through `ab session start`.
 
 ## Presets
 
 A preset is a named bundle of the settings above, so one word gives a project a known-good configuration. Presets change nothing the fixed hardening guarantees; they only choose among the per-project options.
 
-The canonical names are `build` and `script`; **`pods` and `python` are kept as aliases of those two** (the same values under their old names, so an existing registry entry resolves exactly as it always did). `ab init pod` defaults to `build`, `ab init python` to `script`. `--preset` lists every preset that exists, with a one-line description, and refuses an unknown name with that list.
+The canonical names are `build` and `script`; **`pods` and `python` are kept as aliases of those two** (the same values under their old names, so an existing registry entry resolves exactly as it always did). `ab project init pod` defaults to `build`, `ab project init python` to `script`. `--preset` lists every preset that exists, with a one-line description, and refuses an unknown name with that list.
 
 | Setting | `lockdown` | `build` (=`pods`) | `build-open` | `script` (=`python`) | `research` | `operate` | `analysis-offline` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -363,11 +363,11 @@ There is no read-only *code* grant: the project root is read-write under every p
 
 **Overrides**
 
-- Any setting written on the project, or passed as a flag to `ab init` / `ab project add` / `ab project set`, overrides the preset: e.g. `script` with `egress = "open"` for web search. `ab project show` — and the output of init/add/set themselves — prints every effective setting and where it came from.
+- Any setting written on the project, or passed as a flag to `ab project init` / `ab project add` / `ab project set`, overrides the preset: e.g. `script` with `egress = "open"` for web search. `ab project show` — and the output of init/add/set themselves — prints every effective setting and where it came from.
 - **`open` egress is never granted by a live preset reference.** A preset may *declare* `egress = "open"` (`research`, `build-open`); choosing it writes `egress = "open"` onto the project's own registry entry, where it is visible and printed as project-sourced. Resolution demotes a preset-sourced `open` to `packages`, so: editing a preset file later cannot open an already-registered project, and a hand-written entry naming an open preset with no `egress` key of its own resolves to `packages` (fail-closed).
 - **Changing a project's preset clears the overrides set against the old one** — every setting the table marks as posture (`egress`, `podman`, the data grants, `extra_domains`, `compose_project`, `observe_logs`, and the preset-resolvable settings themselves) — so a stale `egress = "open"` cannot outlive the `research` preset it came with. `mask_skip`, `swap` and `build_memory` are properties of the project's files or resources rather than its posture, and survive. Anything given in the same command is kept, and the report says what replaced each value and whether that **loosened** it: `egress: locked → open (loosened by the preset change)`.
 - Moving a project between a preset and its **alias** (`pods` ↔ `build`, `python` ↔ `script`) is a rename, not a change of posture, so it clears nothing.
-- Open egress is written **only when an open preset is newly chosen** (`ab init`, `ab project add`, or `ab project set --preset` where the preset actually changes). An unrelated `ab project set` never touches `egress`.
+- Open egress is written **only when an open preset is newly chosen** (`ab project init`, `ab project add`, or `ab project set --preset` where the preset actually changes). An unrelated `ab project set` never touches `egress`.
 - **A ceiling is an attribute of the preset** (`ceiling = true`), not a hard-coded name: overrides may only tighten it. True for `lockdown`, and true by default for any preset a user file defines or modifies unless that file sets `ceiling = false`. Every comparison runs through the settings table's looseness order, so it covers `podman` and `observe_logs` as well as the scalar settings. To loosen, switch the project to another preset.
 - **Podman access is a capability set, not a ladder.** `tier = "dev"` grants `dev-stack` (the project's own stack, inside the sandbox); `tier = "observe"` and `live = "observe"` both grant `live-observe` (reads of the live host stack); `exec` would grant `live-exec` (not built). An override is looser when its set is **not a subset** of the ceiling's, so a ceiling of `{ tier = "dev" }` refuses `{ tier = "observe" }` and an observe ceiling refuses the dev tier: neither capability contains the other.
 - **A setting that cannot act is shown, not hidden.** `ab project show` prints every stored setting with its source, marking the ones the current posture makes inert — `extra_domains` under `locked` egress, `compose_project`/`observe_logs` with no live-stack access, `dev_images`/`build_memory` off the dev tier, and `caps`/`secrets`, which are inert outright.
@@ -410,7 +410,7 @@ A power loss or reboot ends every running session, but everything written to the
 **Bringing sessions back**
 
 - `ab session gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab session kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot. It then sweeps storage nothing can use any more, all within one keep window (`image_keep_days`, 7 days): session-built images (the newest per tag stays), **superseded personal image layers** (`agentbox.user-layer`; the key a session would run right now is never removed however old it is, and the window is also the `podman tag` rollback window) and **unused profile snapshots** (`<data>/profiles/<agent>/<hash>`, only hash-shaped directories, and none at all while any session is alive -- a snapshot is a live session's mount source and `session.json` does not record which hash it took). Nothing is swept on an unknown state: no current key for an agent, or an unreadable podman, means that sweep removes nothing. `rmi` is never forced.
-- `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab run`; the agent's saved history is kept per project.
+- `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab session start`; the agent's saved history is kept per project.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
 **Bringing live stacks back**
@@ -421,7 +421,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 ## Selftest
 
-`ab selftest --agent <a> --project <p>` proves the boundaries hold, and runs on every image rebuild and every new adapter.
+`ab project selftest <a> <p>` proves the boundaries hold, and runs on every image rebuild and every new adapter.
 
 **Two classes of network test**
 
@@ -510,7 +510,7 @@ Existing stacks change one at a time, each after a hypervisor snapshot, and only
 5. **media\_server:** recreate `trashguides` with `isolate=strict`; keep the `10.0.0.103` LAN bindings; delete the orphan `media_server_trashguides`.
 6. **js-render-server:** move into a compose file with a `name:`, publish on `127.0.0.1`.
 7. **Host processes:** identify the python3 servers on `8004`/`8006`; decide whether glances on `8003` needs LAN exposure.
-8. **Register projects with presets:** life-updates as `lockdown`, or `build` when an agent should run its stack; then run `ab selftest` for each.
+8. **Register projects with presets:** life-updates as `lockdown`, or `build` when an agent should run its stack; then run `ab project selftest` for each.
 9. **Retire** `omp-workspace`, `claudeCode_start` and `podman-allow`.
 
 Every compose network change needs a `down`/`up`, so each step briefly takes that stack offline.
@@ -531,13 +531,13 @@ Build against a dummy compose project (two nginx containers) first; real stacks 
 
 ## Usage
 
-Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides. Two noun namespaces hold the management commands: **`ab project`** for the durable registry entries (the configuration), and **`ab session`** for the running instances (list, kill, gc, preview). `ab run` and `ab init` are the top-level verbs that create them. (A *project* is a persistent registry entry — a root grant, preset and grants; a *session* is one live, sandboxed run of an agent against a project, and a project can have many sessions over time.)
+Day to day you register a project once, then start sessions by agent and project; everything else comes from the project's preset and overrides. Two noun namespaces hold the management commands: **`ab project`** for the durable registry entries (the configuration), and **`ab session`** for the running instances (list, kill, gc, preview). `ab session start` and `ab project init` are the top-level verbs that create them. (A *project* is a persistent registry entry — a root grant, preset and grants; a *session* is one live, sandboxed run of an agent against a project, and a project can have many sessions over time.)
 
 **Built today**
 
 | Command | What it does |
 | --- | --- |
-| `ab init <pod\|python> --name <n> [--preset <p>] [settings] [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written; the template chooses the layout, the preset the capabilities (pod → `build`, python → `script`) |
+| `ab project init <pod\|python> <n> [--preset <p>] [settings] [--upstream <url>]` | Scaffold a new project whose layout passes grantcheck by construction, then register it. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written; the template chooses the layout, the preset the capabilities (pod → `build`, python → `script`) |
 | `ab project add <name> <root> --preset <p>` | Register a project with a preset (validated against overlap) |
 | `ab project set <name> [settings]` | Change a registered project's settings in place (same flags as `add`; re-validated; refused while the project is live — see below). `--unset KEY` returns a setting to its preset value |
 | `ab project show <name>` | Every effective setting, and whether it came from the preset or an override |
@@ -551,21 +551,21 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab profile dismiss <project>/<item>` | Mark an inbox item reviewed; deletes nothing |
 | `ab project accept-grant-exposure <name>` | Accept that the grant holds secrets or live data the agent can read (the primary rule's override) |
 | `ab project accept-history-secrets <name>` | Accept (after rotating) the masked file names found in a project's git history |
-| `ab run [--agent <a> --project <name> \| <a> <name>] [--shell] [-- …]` | Start an agent session (no workspace). **One per project**: it takes the project's session lock, and refuses if another session holds it |
-| `ab attach <name>` | Re-attach a terminal to the session already running for a project (`podman attach` on its agent container) |
+| `ab session start <a> <name> [--shell] [-- …]` | Start an agent session (no workspace; `ab screen` wraps one in tmux). **One per project**: it takes the project's session lock, and refuses if another session holds it |
+| `ab session attach <name>` | Re-attach a terminal to the session already running for a project (`podman attach` on its agent container) |
 | `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
 | `ab session kill <session>` | Tear down everything the session created |
 | `ab session gc` | Remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot) |
-| `ab selftest --agent <a> --project <name>` | Run the boundary checks |
+| `ab project selftest <a> <name>` | Run the boundary checks |
 | `ab keys set <provider>` / `ls` / `rm` | Set, list (names only) or remove a provider's API key; used from the next session |
 | `ab keys rotate claude` | Replace the Claude subscription token |
 
-**One live session per project.** `ab run` takes a lock file in the project's state dir (`session.lock`, created with `O_EXCL`, holding the launcher's pid with its start time and the session id) before it does any work, and `teardown` releases it on every path that can run code — normal exit, an exception in `prepare()`, SIGINT/SIGTERM/SIGHUP, `ab session kill`, `ab session gc`. A second `ab run` is refused and pointed at `ab attach <project>`. A **stale** lock — its launcher gone *and* nothing of its session running or starting — is reaped first, and what was removed is reported; a live launcher is never overruled even with no containers left (that is what a session in `prepare()` looks like), so a hung launcher holds its project until `ab session kill` ends it. An unreadable podman frees nothing. A running session with no lock file at all (started before this existed, or its lock removed) is refused too. Two sessions would otherwise share the project's agent state and inbox, last writer wins.
+**One live session per project.** `ab session start` takes a lock file in the project's state dir (`session.lock`, created with `O_EXCL`, holding the launcher's pid with its start time and the session id) before it does any work, and `teardown` releases it on every path that can run code — normal exit, an exception in `prepare()`, SIGINT/SIGTERM/SIGHUP, `ab session kill`, `ab session gc`. A second `ab session start` is refused and pointed at `ab session attach <project>`. A **stale** lock — its launcher gone *and* nothing of its session running or starting — is reaped first, and what was removed is reported; a live launcher is never overruled even with no containers left (that is what a session in `prepare()` looks like), so a hung launcher holds its project until `ab session kill` ends it. An unreadable podman frees nothing. A running session with no lock file at all (started before this existed, or its lock removed) is refused too. Two sessions would otherwise share the project's agent state and inbox, last writer wins.
 
-Users name **projects**: `ab attach web`, `ab session kill web` (a session id is still accepted), and `ab session ls` leads with the project. The session id keeps its `-N` suffix and stays in the logs, the container labels and the inbox provenance, where it identifies one run among several over time.
+Users name **projects**: `ab session attach web`, `ab session kill web` (a session id is still accepted), and `ab session ls` leads with the project. The session id keeps its `-N` suffix and stays in the logs, the container labels and the inbox provenance, where it identifies one run among several over time.
 
-**"Is this project live?"** — one predicate (`session.project_is_live`), used by every command that refuses a registry edit (`project set`, `rm`, `reset-state`, both `accept-*`) and by `ab run`'s already-running warning. A project is live if **any** signal says so: a running container labelled with the project, or a session whose `session.json` names it with its launcher still alive (which covers a session still in `prepare()`, before any container exists). It is **also** live when a signal cannot be read — `podman ps` failing, unparseable output, no podman binary, a session directory with no readable metadata — and the refusal names what it could not determine. Unknown state must never read as "nothing is running": three audits in a row found that question answered wrongly, each time by trusting one signal or by treating an error as an empty list. There is deliberately no `--force`: ending live work is `ab session kill`'s job.
+**"Is this project live?"** — one predicate (`session.project_is_live`), used by every command that refuses a registry edit (`project set`, `rm`, `reset-state`, both `accept-*`) and by `ab session start`'s already-running warning. A project is live if **any** signal says so: a running container labelled with the project, or a session whose `session.json` names it with its launcher still alive (which covers a session still in `prepare()`, before any container exists). It is **also** live when a signal cannot be read — `podman ps` failing, unparseable output, no podman binary, a session directory with no readable metadata — and the refusal names what it could not determine. Unknown state must never read as "nothing is running": three audits in a row found that question answered wrongly, each time by trusting one signal or by treating an error as an empty list. There is deliberately no `--force`: ending live work is `ab session kill`'s job.
 
 **The host-owned agent profile** (`profile.py`, 29 Oct). `~/.config/agentbox/<agent>/profile/` holds what
 every session LOADS — `skills/`, `agents/`, `commands/`, `rules/`, and the agent's instruction file — and
@@ -600,7 +600,7 @@ the mechanism (decisions.md, 9 Nov) also found that a `github`/`git` source decl
 registered at startup, so the pin is agentbox's, as it is for OMP. Lockdown loads no plugins (15 Oct);
 `--no-profile` loads none.
 
-**Turning it off** (4 Nov): `ab run --no-profile` for one run, or `profile = "off"` on the project for good
+**Turning it off** (4 Nov): `ab session start --no-profile` for one run, or `profile = "off"` on the project for good
 (`ab project set <p> --profile off`; the session log records `profile <agent>=off reason=flag|project`). Off
 means off at every door the profile reaches a session through — the read-only mounts, the items copied into
 state instead (`settings.json`), the profile text folded into the generated instruction file, OMP's
@@ -628,7 +628,7 @@ wants in every session without it entering agentbox's own images. Four things bo
   candidate tag and only tagged for real once it passes, so a rejected build leaves the image in use
   exactly where it was.
 - **it is never stale.** The tag is keyed on the **harness image ID** and the Containerfile, so a rebuilt
-  harness image gives a key nothing is tagged under: `ab run` says `personal layer out of date:
+  harness image gives a key nothing is tagged under: `ab session start` says `personal layer out of date:
   ab image build <agent>` and runs the plain harness image. A layer built on an older harness is never run.
   Adding a skill does not invalidate it — the profile hash is not part of the key. A `Containerfile` that
   has never been built says *that* instead, naming the file: "out of date" about an image that never
@@ -678,20 +678,20 @@ inbox items would be lost.
 
 | Command | What it would do |
 | --- | --- |
-| `ab ws --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
+| `ab screen --agent <a> --project <name>` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
 | `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
 
-The examples below and the worked example that follows show the **full intended workflow**, including commands not built yet (`ab ws`, `ab deploy`). Today, start a session with `ab run` in place of `ab ws`, and deploy by hand; `ab session preview` takes a **session** name, not a project.
+The examples below and the worked example that follows show the **full intended workflow**, including one command not built yet (`ab deploy`). Today, deploy by hand; `ab session preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
 
 ```bash
 ab project add helper ~/repos/helper --preset build
-ab ws --agent claude --project helper            # planned; today: ab run --agent claude --project helper
+ab screen helper                                 # the tmux workspace; or plain: ab session start claude helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
 ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
 ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
@@ -702,15 +702,15 @@ ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
 ```bash
 ab project add dataproc ~/repos/dataproc --preset script \
    --data-ro ~/data/raw --data-rw ~/data/processed
-ab ws --agent omp --project dataproc
-# detach tmux, come back later with: ab attach dataproc
+ab screen --agent omp --project dataproc
+# detach tmux, come back later with: ab session attach dataproc
 ```
 
 **A sensitive project (`lockdown`)**
 
 ```bash
 ab project add life-updates ~/repos/Life_Updates --preset lockdown
-ab ws --agent omp --project life-updates
+ab screen --agent omp --project life-updates
 ```
 
 ## Worked example: a new pod for the home server
@@ -725,7 +725,7 @@ mkdir -p ~/data/filelab-samples          # a few test files
 ab project add filelab ~/repos/filelab --preset build \
    --data-ro ~/data/filelab-samples
 ab project show filelab                  # confirm: build, packages egress, dev tier
-ab selftest --agent claude --project filelab
+ab project selftest claude filelab
 ```
 
 - Test with sample files; the agent sees everything its dev stack handles.
@@ -734,7 +734,7 @@ ab selftest --agent claude --project filelab
 **2. Start the agent and brief it**
 
 ```bash
-ab ws --agent claude --project filelab
+ab screen --agent claude --project filelab
 ```
 
 Example brief, given all at once:
@@ -754,7 +754,7 @@ check responses and logs. Add automated tests. Commit working steps to git.
 4. Fixes, rebuilds and repeats, installing packages as needed.
 5. Commits.
 
-Detach with `Ctrl-b d` and return with `ab attach filelab`.
+Detach with `Ctrl-b d` and return with `ab session attach filelab`.
 
 **4. Preview from your desktop**
 
@@ -787,7 +787,7 @@ ab deploy filelab --lan 10.0.0.103:8095
 
 **7. Later changes**
 
-- `ab ws --agent claude --project filelab` starts a fresh `filelab-dev` stack.
+- `ab screen --agent claude --project filelab` starts a fresh `filelab-dev` stack.
 - The agent can read the live stack's logs (observe) to chase a reported bug, but builds fixes only in `filelab-dev`.
 - Ship each change with `ab deploy filelab --lan 10.0.0.103:8095`, reviewing the diff each time.
 
@@ -795,12 +795,12 @@ ab deploy filelab --lan 10.0.0.103:8095
 
 The design above is the full target. These parts are **not built yet**; `docs/progress.md`'s Status table is the authoritative list, and this section is the prose index into it. Nothing here should be read as a current guarantee.
 
-- **Commands:** `ab ws` (workspace UI, step 7), `ab attach`, `ab allow` (loosening a *running* session; per-project settings are `ab project set`, which applies from the next session), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
+- **Commands:** `ab allow` (loosening a *running* session; per-project settings are `ab project set`, which applies from the next session), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
 - **Podman exec tier:** refused in code (the `none`, `observe` and `dev` tiers are built; `exec` is not).
 - **Per-project caps/devices opt-in:** the gate refuses `cap_add`, `devices` and security options in every preset; the `caps` preset value is inert.
 - **Model key gateway:** deferred (see Model key gateway); provider keys enter as per-provider files exported at start.
 - **Adapters:** Claude Code and OMP are built; **Pi** and **Codex** are planned (step 8).
-- **`--data-bind`** and the **`dev/data`→`data` overlay:** deferred / not built (see `ab init` and decisions.md); the pod template's named-volume default and the python template's `DATA_DIR` config are what exist. The masking half of the `--data-bind` contract is the `mask` setting (`--mask ./data`, 10 Nov); the `init` template and the `--data-backup` naming are not built.
+- **`--data-bind`** and the **`dev/data`→`data` overlay:** deferred / not built (see `ab project init` and decisions.md); the pod template's named-volume default and the python template's `DATA_DIR` config are what exist. The masking half of the `--data-bind` contract is the `mask` setting (`--mask ./data`, 10 Nov); the `init` template and the `--data-backup` naming are not built.
 - **A read-only project-root mount mode** (for a planner preset that may read the code but not edit it, optionally with one writable notes directory): not built. The root is a read-write bind under every preset, `research` and `lockdown` included; this needs a new mount mode and another pass over the gate/covers logic. Mitigation today: commit before the session, and the per-session snapshot as a within-session undo (`docs/TODO.md`).
 - **Host migration** of the real stacks: not started (gated on an independent re-review of the mount/covers area and Track 1).
 

@@ -61,7 +61,7 @@ class Step2(unittest.TestCase):
         logs = os.path.join(ENV.data, "logs")
         before = set(os.listdir(logs)) if os.path.isdir(logs) else set()
         for _ in range(2):
-            p = ENV.ab("run", "--agent", "claude", "--project", "n-open", "--shell", "--no-tty", "--",
+            p = ENV.ab("session", "start", "claude", "n-open", "--shell", "--no-tty", "--",
                        "-c", 'hp=${HTTPS_PROXY#http://}; hp=${hp%/}; exec 3<>"/dev/tcp/${hp%:*}/${hp##*:}"; '
                        "printf 'GET http://example.com/ HTTP/1.0\\r\\nHost: example.com\\r\\n\\r\\n' >&3; "
                        "head -1 <&3", timeout=300)
@@ -83,7 +83,7 @@ class Step2(unittest.TestCase):
         self.check_mode("open")
 
     def test_sessions_cannot_reach_each_other(self):
-        b = ENV.ab_bg("run", "--agent", "claude", "--project", "n-open", "--shell", "--no-tty", "--",
+        b = ENV.ab_bg("session", "start", "claude", "n-open", "--shell", "--no-tty", "--",
                       "-c", "sleep 150")
         try:
             agent_b = harness.wait_for(lambda: session_container("n-open"), timeout=120)
@@ -95,12 +95,12 @@ class Step2(unittest.TestCase):
             self.assertTrue(all(t[0] for t in targets), targets)
             script = "; ".join(f"(timeout 6 bash -c 'exec 3<>/dev/tcp/{h}/{p}' 2>/dev/null && echo LEAK {h}:{p})"
                                for h, p in targets) + "; echo DONE"
-            p = ENV.ab("run", "--agent", "claude", "--project", "n-locked", "--shell", "--no-tty", "--",
+            p = ENV.ab("session", "start", "claude", "n-locked", "--shell", "--no-tty", "--",
                        "-c", script, timeout=300)
             self.assertIn("DONE", p.stdout, p.stderr)
             self.assertNotIn("LEAK", p.stdout)
             # and B's proxy through A's proxy is refused too (a private address)
-            q = ENV.ab("run", "--agent", "claude", "--project", "n-locked", "--shell", "--no-tty", "--",
+            q = ENV.ab("session", "start", "claude", "n-locked", "--shell", "--no-tty", "--",
                        "-c", f"curl_like() {{ exec 3<>/dev/tcp/${{HTTP_PROXY#http://}}; }}; "
                              f"hp=${{HTTP_PROXY#http://}}; hp=${{hp%/}}; exec 3<>/dev/tcp/${{hp%:*}}/${{hp##*:}}; "
                              f"printf 'GET http://{targets[1][0]}:3128/ HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n' >&3; "
@@ -113,7 +113,7 @@ class Step2(unittest.TestCase):
             b.communicate()
 
     def test_agent_env_has_proxy_not_model_host(self):
-        p = ENV.ab("run", "--agent", "claude", "--project", "n-locked", "--shell", "--no-tty", "--",
+        p = ENV.ab("session", "start", "claude", "n-locked", "--shell", "--no-tty", "--",
                    "-c", 'echo "P=$HTTPS_PROXY"; echo "N=$NO_PROXY"', timeout=300)
         self.assertRegex(p.stdout, r"P=http://abt-\S+-proxy:3128")
         self.assertNotIn("10.0.0.2", p.stdout.split("N=")[1])

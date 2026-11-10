@@ -1,6 +1,6 @@
 """CLI ergonomics and the forgotten-session guards (Tim, 6 Oct):
   - ab session ls shows start time, age and idle time, and flags a long-idle running session;
-  - ab run warns when a session for that project is already running, and takes positional agent/project;
+  - ab session start warns when a session for that project is already running, and takes positional agent/project;
   - ab project rm takes several names."""
 import io
 import os
@@ -50,12 +50,12 @@ class IdleTest(SettingsCase):
 class RunParsing(SettingsCase):
     def setUp(self):
         super().setUp()
-        # `ab run` refuses an unregistered project outright now (no implicit registration), and takes the
+        # `ab session start` refuses an unregistered project outright now (no implicit registration), and takes the
         # project's session lock before anything else -- so a parsing test needs a real project to parse at.
         self.project("p1")
 
     def reaches(self, argv):
-        """Run `ab run ...` far enough to capture what parsing resolved (agent, project, shell, passthrough)."""
+        """Run `ab session start ...` far enough to capture what parsing resolved (agent, project, shell, passthrough)."""
         import types
         cap = {}
 
@@ -93,28 +93,24 @@ class RunParsing(SettingsCase):
         return cap
 
     def test_shell_flag_after_positionals(self):
-        cap = self.reaches(["run", "claude", "p1", "--shell"])
+        cap = self.reaches(["session", "start", "claude", "p1", "--shell"])
         self.assertEqual((cap["agent"], cap["project"]), ("claude", "p1"))
         self.assertTrue(cap["shell"])
 
-    def test_flag_agent_with_positional_project(self):
-        cap = self.reaches(["run", "--agent", "claude", "p1"])
-        self.assertEqual((cap["agent"], cap["project"]), ("claude", "p1"))
-
     def test_passthrough_after_double_dash(self):
-        cap = self.reaches(["run", "claude", "p1", "--", "--resume", "x"])
+        cap = self.reaches(["session", "start", "claude", "p1", "--", "--resume", "x"])
         self.assertEqual(cap["extra"], ["--resume", "x"])
         self.assertFalse(cap["shell"])
 
     def test_shell_and_passthrough_together(self):
-        cap = self.reaches(["run", "claude", "p1", "--shell", "--", "-lc", "id"])
+        cap = self.reaches(["session", "start", "claude", "p1", "--shell", "--", "-lc", "id"])
         self.assertTrue(cap["shell"])
         self.assertEqual(cap["extra"], ["-lc", "id"])
 
     def test_too_many_positionals_is_rejected(self):
-        with redirect_stderr(io.StringIO()):
-            rc = cli.main(["run", "claude", "p1", "surplus"])
-        self.assertEqual(rc, 2)
+        rc, out = self.ab("session", "start", "claude", "p1", "surplus")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("unrecognized arguments", out)
 
 
 class LsTest(SettingsCase):
@@ -166,11 +162,11 @@ class RunGuardTest(SettingsCase):
               "Labels": {"agentbox.project": "p1", "agentbox.session": "abt-old-1",
                          "agentbox.role": "agent", "agentbox-test": "1"}}])
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
-        rc, out = self.ab("run", "--agent", "claude", "--project", "p1", "--no-tty")
+        rc, out = self.ab("session", "start", "claude", "p1", "--no-tty")
         self.assertEqual(rc, 2)
         self.assertIn("abt-old-1", out)
         self.assertIn("holds no session lock", out)
-        self.assertIn("ab attach p1", out)
+        self.assertIn("ab session attach p1", out)
         from agentbox import projectlock
         self.assertIsNone(projectlock.read(self.settings, "p1"), "and it did not keep the lock it tried")
 
@@ -183,14 +179,19 @@ class RunGuardTest(SettingsCase):
 
         with unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load):
             with redirect_stderr(io.StringIO()):
-                rc = cli.main(["run", "claude", "p1"])
+                rc = cli.main(["session", "start", "claude", "p1"])
         self.assertEqual(rc, 2)
         self.assertEqual(seen["project"], "p1")
 
     def test_run_needs_both(self):
-        with redirect_stderr(io.StringIO()):
-            rc = cli.main(["run", "claude"])
-        self.assertEqual(rc, 2)
+        rc, out = self.ab("session", "start", "claude")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("project", out)
+
+    def test_the_agent_is_a_choice(self):
+        rc, out = self.ab("session", "start", "pi", "p1")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("invalid choice", out)
 
 
 class ProjectRmTest(SettingsCase):

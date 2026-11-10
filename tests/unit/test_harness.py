@@ -2,7 +2,7 @@
 
 Two ways a CLI test can fail to produce a verdict, both of which happened in this project:
 
-  * **stdin.** `ab run` reads stdin when it has no TTY. A test whose refusal stops working then reads from
+  * **stdin.** `ab session start` reads stdin when it has no TTY. A test whose refusal stops working then reads from
     whatever stdin the test runner had -- a terminal, in a developer's shell -- and blocks instead of
     failing. So every in-process `ab` gets an empty, already-at-EOF stdin unless it asks for otherwise.
   * **waiting.** A session that gets further than a test meant it to waits on something real
@@ -123,12 +123,12 @@ class TheIntegrationHarnessToo(unittest.TestCase):
         from tests.integration import harness
         env = harness.Env.__new__(harness.Env)      # no temp dirs needed: the call is mocked
         env.env, env.cfg = dict(os.environ), "/nowhere"
-        boom = subprocess.TimeoutExpired(cmd="ab run", timeout=7, output="partial out", stderr="partial err")
+        boom = subprocess.TimeoutExpired(cmd="ab session start", timeout=7, output="partial out", stderr="partial err")
         with mock.patch("subprocess.run", side_effect=boom):
             with self.assertRaises(AssertionError) as cm:
-                env.ab("run", "claude", "web", timeout=7)
+                env.ab("session", "start", "claude", "web", timeout=7)
         msg = str(cm.exception)
-        self.assertIn("ab run claude web", msg)
+        self.assertIn("ab session start claude web", msg)
         self.assertIn("did not finish in 7s", msg)
         self.assertIn("partial out", msg)
         self.assertIn("partial err", msg)

@@ -10,7 +10,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 
 | Feature | State | Notes |
 | --- | --- | --- |
-| **`ab init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written. |
+| **`ab project init` templates** (pod, python) | **built** | Scaffolds a grantcheck-clean project by construction; registers it; zero warnings/overrides on a fresh project (`test_init`). pod: data in a named volume `<n>_data`. python: data path from `DATA_DIR` in `.env`/`.env.dev`. Takes the same setting flags as `ab project add`/`set`, all validated before anything is written. |
 | **Presets** (lockdown, build/pods, build-open, script/python, research, operate, analysis-offline) | **built** | `build`/`script` canonical, `pods`/`python` true aliases (resolve exactly as before). Open egress is a preset *attribute* materialised onto the project's entry, never a live reference — a hand-written entry naming an open preset is fail-closed; changing a preset clears the security overrides set against the old one. decisions.md, 26 Oct. |
 | **One settings table** (`projectkeys.py`) | **built** | One row per registry key decides every property of it (flags, validator, looseness order, security, cleared-on-preset-change, unsettable, display, inertness); `presets.SETTINGS`/`ALLOWED`/`LOOSENESS`, `registry.PROJECT_KEYS`, the cli lists, the ceiling and `ab project show` all derive from it. A new key is a TypeError until each property is answered. Retired the five parallel lists behind five audit findings (decisions.md, 27 Oct). |
 | **`ab project set`** | **built** | Changes a registered project in place with the shared flags, re-validated (ceiling, grantcheck, history secrets); `--unset KEY`, `--clear-<list>`. Refused while a session for the project is live — as are `rm`, `reset-state` and the `accept-*` commands (no `--force`); liveness is any RUNNING container labelled `agentbox.project=<name>`, so a dead launcher no longer hides one. The whole entry (unknown keys included) is validated before anything is saved, and `load_project` is just as strict. Moving `root` is still rm + add. |
@@ -26,9 +26,9 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`ab profile install`** (OMP plugins) | **built** | The profile declares plugins in `plugins.toml` (marketplace entries pinned by a 40-char sha, npm packages at exact versions, git checkouts linked); `ab profile install omp` installs them in ONE hardened container behind the session proxy, `packages` egress and no model-host rule, into `~/.config/agentbox/omp/plugins`, which sessions mount **read-only** (proved by a real read-only bind mount in `test_step3_omp`). Pinning is agentbox's: `omp plugin marketplace add` cannot take a commit, so the catalog is cloned, checked out, verified and added by path. The tree carries a lockfile recording the image it was built against, and a session says so when that no longer matches. **`~/.omp` is not read at all** — `omp_home` is a retired setting — and ~160 lines of whitelist went with it (decisions.md, 5–6 Nov). |
 | **Adapters** | **Claude + OMP built; Pi/Codex not built** | `adapters/claude.py`, `adapters/omp.py` exist; Pi/Codex are planned (step 8). |
 | **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
-| **Forgotten-session guards** | **built** | `ab session ls` shows start/age/idle and flags long-idle sessions; `ab run` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
+| **Forgotten-session guards** | **built** | `ab session ls` shows start/age/idle and flags long-idle sessions; `ab session start` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
 | **Backups (per-session rsync)** | **built, scoped** | `--link-dest` snapshots of the grant (incl. untracked/gitignored). A within-session undo, **NOT a data backup** (same disk, only fresh as of session start) — never presented as one. |
-| **`ab ws` / `allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab run` starts a session; `ab project set` changes settings, from the next session). `ab allow` was the "loosen a *running* session" idea; `deploy` is step 6, `ws` step 7 — though `contrib/ab-ws` now does the workspace job from outside the CLI. **`ab attach` is built** (29 Oct): the way back into the one live session a project is allowed. |
+| **`allow` / `deploy` / `outbox` / `reload` / `resume`** | **not built** | No such subcommands (`ab session start` starts a session; `ab project set` changes settings, from the next session). **`ab screen` is built** (10 Nov, from `contrib/ab-ws`). `ab allow` was the "loosen a *running* session" idea; `deploy` is step 6; step 7 (the workspace) is `ab screen`. **`ab session attach` is built** (29 Oct): the way back into the one live session a project is allowed. |
 | **Model key gateway** | **deferred** | Sessions use the Claude subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) and per-provider key files; the per-model API-key gateway is not built. |
 | **`mask`** (per-project masked paths) | **built** (10 Nov) | `--mask PATH`, repeatable: a bare name masks every file or directory of that name in the grants, `./x` or a slashed path one path under the root. Empty, read-only, hidden for grantcheck, covered for the gate, out of the backup and the scan. `docs/agentbox-masked-paths.md` was the spec. decisions.md, 10 Nov. |
 | **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |
@@ -41,7 +41,7 @@ design, §4 the maintainability backlog, §5 watch-only, §6 known limitations.
 
 ## Current step
 
-**Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO. `ab init` (pod/python) now scaffolds a grantcheck-clean project by construction (data in a named volume; `--data-bind` deferred).
+**Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO. `ab project init` (pod/python) now scaffolds a grantcheck-clean project by construction (data in a named volume; `--data-bind` deferred).
 
 Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-covers2.md`, a fourth high, N1).
 - **Track 1 (primary wall):** the grant holds code; a grant with uncovered secrets or live data refuses to start (`agentbox/grantcheck.py`, `ab project accept-grant-exposure` / `--i-understand-grant-exposure`). Covers are defence in depth behind it. Documented in the design doc and the session notes.
@@ -51,15 +51,20 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Done
 
+- **Two nouns hold every verb; `ab screen`** (10 Nov): `ab project init|selftest` (were `ab init`, `ab selftest`),
+  `ab session start|attach` (were `ab run`, `ab attach`); every session verb takes a project name or a session id;
+  required agent arguments are positionals with choices. `contrib/ab-ws` became `agentbox/screen.py` as `ab screen`,
+  reading `~/.config/agentbox/screen.toml`, agent panes started only through `ab session start`. No aliases.
+  decisions.md, 10 Nov. `make test`: 1240.
 - **One project is one directory; a reused name is checked** (9 Nov): project state moved from `<data>/<name>/`,
   `<data>/backups/<name>/` and `<data>/built-images/<name>.json` to `<data>/projects/<name>/{<agent>,backups,built-images.json}`
   (a project named `logs` used to put its transcripts inside the kept logs; `purge` left the gate's build record behind). A
-  flat data dir migrates on the next `ab`. `projects/<name>/project.json` records the root; `ab project add`/`ab init`
+  flat data dir migrates on the next `ab`. `projects/<name>/project.json` records the root; `ab project add`/`ab project init`
   refuse the name for another root without `--fresh` (archive) or `--reattach`; a session start checks too. `purge`
   deletes the directory whole. decisions.md, 9 Nov.
-- **CLI: session commands grouped under `ab session`** (this commit): the session-management verbs moved from top level to `ab session ls` / `kill` / `gc` / `preview`, mirroring `ab project`; `ab run`, `ab init`, `ab selftest` stay top-level. Clean cutover, no aliases (pre-release). Two noun namespaces now: `ab project` (durable config) and `ab session` (running instances). Docs, help text, warnings and tests updated; `make test` 494 OK.
-- **Fifth-review H-series confirmed + forgotten-session guards**: H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab session ls` shows start/age/idle and flags long-idle running sessions; `ab run` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab run` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
-- **`ab init` scaffolding**: `ab init <pod|python> --name <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.
+- **CLI: session commands grouped under `ab session`** (this commit): the session-management verbs moved from top level to `ab session ls` / `kill` / `gc` / `preview`, mirroring `ab project`; `ab session start`, `ab project init`, `ab project selftest` stay top-level. Clean cutover, no aliases (pre-release). Two noun namespaces now: `ab project` (durable config) and `ab session` (running instances). Docs, help text, warnings and tests updated; `make test` 494 OK.
+- **Fifth-review H-series confirmed + forgotten-session guards**: H3/M4 confirmed with tests; H1 expensive half built (gate refuses a foreign-uid bind source). `ab session ls` shows start/age/idle and flags long-idle running sessions; `ab session start` warns on an already-running session for the same project (no auto-reap, by choice). Minor CLI: `ab project rm` takes several names, `ab session start` takes positional `<agent> <project>`. `make test`: 428 OK. See the Status table above and decisions.md (6 Oct).
+- **`ab project init` scaffolding**: `ab project init <pod|python> <n> [--upstream <url>]` writes a project whose layout passes grantcheck by construction (0600 gitignored `.env` masked, committed fake `.env.dev`, `AGENTS.md` of enforced reality, app/tests/dev skeleton; pod adds compose.yaml/compose.dev.yaml/Containerfile with **data in a named volume `<n>_data`**, not a `./data` bind), `git init`s + first commit, optionally pushes `--upstream` (code backup only), then runs `ab project add` itself. `test_init.test_fresh_project_is_clean_by_construction`: both templates register with zero findings, zero warnings, zero overrides. `--data-bind` deferred (decisions.md 6 Oct, with its contract); the per-session rsync is explicitly not a data backup.
 - **Threat model + fifth review** (`docs/reviews/2026-10-06-final.md`): threat model at the top of the design doc. H3 (`mask_skip` is a speed knob, not an exemption — scanned, and a secret there is reported "unmasked"), M4 (the exposure ack shows the findings and fingerprints their content, so a changed file re-prompts), the cheap half of H1 (the gate refuses `U`/`chown` on grant binds and SubPaths; `grantcheck` warns on a foreign-owned or unreadable grant entry), and the backup proof (untracked and gitignored files are kept; `test_untracked_and_gitignored_files_are_backed_up`). The rest (H2 secret-name shapes, M1 data shapes, M2 `data_ro`, M3 git-credential shapes, L1-L6) are known limitations in decisions.md.
 
 - **Steps 1-5** (`e35feab`), the reviews of steps 1-2 and 3-4, and Tim's decisions 1-4 after step 5 (`bbd81b6`). Live checks on 1 Oct: `claude-live` and `omp-live` pass, and `make install` works.
@@ -127,7 +132,7 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   predicate (`session.project_is_live`), fail-closed by construction, used by every command that refuses on
   a live project; podman's readers raise instead of returning `[]`; a fail-open sweep of every swallowed
   error on a safety path (six fixed, four left with the reasoning recorded). One grant preflight
-  (`grantcheck.preflight`) so `ab project check`'s verdict is `ab run`'s, which also split "covered" into
+  (`grantcheck.preflight`) so `ab project check`'s verdict is `ab session start`'s, which also split "covered" into
   `mounts.hidden` (unreadable) and `mounts.covered` (what the gate refuses binds onto) — a read-only cover
   had been hiding secrets from the scan. Acknowledgements are honoured on `ab project set`, and a tightening
   is never blocked. Podman access became a capability set, not a ladder. Plus `compose_project`
@@ -165,10 +170,10 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
   session) — the check and the one-line revert are in TODO.md.
 
 - **One live session per project** (29 Oct, decisions.md): a lock file in the project's state dir, taken by
-  `ab run` before any work and released by teardown on every path that can run code; a stale holder is
-  reaped and reported, a live one is never overruled, and an unreadable podman frees nothing. `ab attach
-  <project>` is the way back to a running session. Users name projects now (`ab attach web`,
-  `ab session kill web`); session ids keep their suffix in logs, labels and inbox provenance. `ab run` on an
+  `ab session start` before any work and released by teardown on every path that can run code; a stale holder is
+  reaped and reported, a live one is never overruled, and an unreadable podman frees nothing. `ab session attach
+  <project>` is the way back to a running session. Users name projects now (`ab session attach web`,
+  `ab session kill web`); session ids keep their suffix in logs, labels and inbox provenance. `ab session start` on an
   unregistered name prints the `ab project add` command instead of registering anything.
 
 ## Next
@@ -191,5 +196,5 @@ The one remaining step is the **first real project** — `life-updates`, with Ti
 
 ## Waiting on Tim
 
-- **The trial** (`docs/TRIAL.md`): **done** 15 Oct — `ab selftest` 105 pass / 0 fail, `make trial-check` all checks passed (the secret-leak scan clean).
+- **The trial** (`docs/TRIAL.md`): **done** 15 Oct — `ab project selftest` 105 pass / 0 fail, `make trial-check` all checks passed (the secret-leak scan clean).
 - **`make claude-live` / `make omp-live`:** re-passed 16 Oct against `563f352` (after the review fixes). claude-live egress=locked (search ok, fetch denied, bash ok, token nowhere); omp-live egress=packages (PyPI allowed, non-allowlisted hosts denied, key nowhere). `make test` (510) and `make itest` (165) green on the same tree; live-freshness clear.

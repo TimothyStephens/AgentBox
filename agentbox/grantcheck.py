@@ -187,11 +187,11 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
 
 
 def preflight(settings, name, entry, *, plan=None):
-    """The one grant scan (audit F-6). `ab run`, `ab project check` and add/set validation all come here, so
+    """The one grant scan (audit F-6). `ab session start`, `ab project check` and add/set validation all come here, so
     the verdict `check` prints is the verdict `run` reaches. Returns (findings, warnings, fingerprint); the
     fingerprint is "" when there is nothing to accept.
 
-    `plan` is the session's already-built mount plan, passed by `ab run` so there is no second plan and no
+    `plan` is the session's already-built mount plan, passed by `ab session start` so there is no second plan and no
     chance of divergence. Without one, the plan is built from the registry entry exactly as a session would
     build it: `compose` is an effective setting (a preset can set it), while `mask_skip` and `swap` are the
     project's own (see projectkeys.KEYS).

@@ -50,7 +50,7 @@ def dump(projects):
         "#",
         "# Prefer `ab project set <name> ...`: it re-runs every check (preset ceiling, grant overlap,",
         "# grantcheck, git-history secrets), refuses while a session for the project is live, and prints",
-        "# what changed. A hand edit is still validated when it is used -- `ab project show`, `ab run` and",
+        "# what changed. A hand edit is still validated when it is used -- `ab project show`, `ab session start` and",
         "# the next `ab project set` all refuse an entry with an unknown key or a bad value -- but nothing",
         "# tells you until then.",
         "",

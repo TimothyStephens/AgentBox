@@ -17,7 +17,7 @@ weakens it.
   services are never reachable.
 - The agent can run its own container stacks, install packages and use a browser — all within those bounds,
   and every container it starts is pinned to the session network and proxy.
-- Every boundary is checked by `ab selftest`, not assumed.
+- Every boundary is checked by `ab project selftest`, not assumed.
 
 ## What it does **not** do
 
@@ -26,13 +26,13 @@ weakens it.
   controls raise the cost of an **accident** and of cross-project movement, they are not a VM jail.
 - It does not stop a kernel or runtime escape (a container is not a VM boundary), nor deferred execution
   (code the agent writes and you later run executes as you).
-- Several commands and tiers are **planned, not built** (`ab ws`, `ab deploy`, `ab attach`, the key gateway,
+- Several commands and tiers are **planned, not built** (`ab deploy`, the key gateway,
   the podman `exec` tier, Pi/Codex adapters). `docs/progress.md`'s Status table is the authoritative
   built / deferred / not-built list.
 
 ## How it works, in one paragraph
 
-One launcher calls podman; nothing else does. `ab run` builds a session — its own internal network, an
+One launcher calls podman; nothing else does. `ab session start` builds a session — its own internal network, an
 allowlist squid proxy, a per-project agent container (`--cap-drop=ALL`, read-only root, keep-id, under a
 cgroup slice) — and the agent's only two ways out are the squid proxy for the network and a filtered podman
 socket for containers (the **two host-side gates**). The real `.env` is masked (the agent sees `.env.dev`),
@@ -49,7 +49,7 @@ make install-slice          # the cgroup slice
 make claude-image omp-image # the session images (bases must exist)
 make install                # ab + agentbox on PATH
 ab keys rotate claude       # a model credential
-ab init pod --name demo     # scaffold + register a project, then: ab run claude demo
+ab project init pod demo     # scaffold + register a project, then: ab session start claude demo
 ```
 
 ## Documentation

@@ -101,7 +101,7 @@ class OmpIsolation(unittest.TestCase):
     maxDiff = None
 
     def run_in_session(self):
-        p = ENV.ab("run", "--agent", "omp", "--project", "ompiso", "--shell", "--no-tty", "--", "-c", SCRIPT,
+        p = ENV.ab("session", "start", "omp", "ompiso", "--shell", "--no-tty", "--", "-c", SCRIPT,
                    timeout=900)
         print(f"\n{p.stdout[-1800:]}\n--stderr--\n{p.stderr[-500:]}")
         return {l.split("=", 1)[0]: l.split("=", 1)[1] for l in p.stdout.splitlines() if "=" in l}, p

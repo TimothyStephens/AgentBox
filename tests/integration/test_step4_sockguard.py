@@ -208,7 +208,7 @@ class Step4(unittest.TestCase):
 
     def test_f_gc_stops_what_a_crashed_session_left(self):
         import signal
-        proc = ENV.ab_bg("run", "--agent", "claude", "--project", "sgobs", "--shell", "--no-tty", "--",
+        proc = ENV.ab_bg("session", "start", "claude", "sgobs", "--shell", "--no-tty", "--",
                          "-c", "sleep 300")
         try:
             sg = harness.wait_for(lambda: harness.podman("ps", "--format", "{{.Names}}", "--filter",
