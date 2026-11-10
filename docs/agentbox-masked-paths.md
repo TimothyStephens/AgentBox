@@ -1,6 +1,6 @@
 # Spec: per-project masked paths in agentbox, and masking `data/` for life-updates
 
-> **Status: NOT IMPLEMENTED in agentbox (as of 6 Oct 2026).** This is a proposal, not a description of current behaviour. There is no `masked_paths` project setting; the only masks are the secret-name masks (`.env`, `.env.*`, `*.pem`, `*.key`) and `secrets/` tmpfs. The `--data-bind` / `data/`-masking path is deferred (see `docs/decisions.md`, 6 Oct). Read the rest of this file as a future spec.
+> **Status: IMPLEMENTED on 10 Nov 2026 as the `mask` project setting** (`ab project add/set --mask PATH`; `docs/decisions.md`, 10 Nov; `docs/design.md`, "The project's own masks"). The key is `mask`, not `masked_paths`; a bare name masks every file or directory of that name in the grants, `./data` masks that one path. The rest of this file is the spec it was built from and its measurements; §5.1's in-session errno probe is not an automated test yet.
 
 **Status:** implementation spec, for someone with access to the agentbox source.
 **Why this file is in this repo:** agentbox's source and per-project config are not

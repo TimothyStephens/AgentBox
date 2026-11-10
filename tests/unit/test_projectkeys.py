@@ -18,7 +18,7 @@ EXPECTED_KEYS = {
     "root", "preset",
     "compose", "egress", "podman", "caps", "secrets", "approvals", "data",
     "data_ro", "data_rw", "extra_domains", "compose_project", "observe_logs", "dev_images",
-    "mask_skip", "swap", "build_memory", "profile", "base_branch",
+    "mask_skip", "swap", "mask", "build_memory", "profile", "base_branch",
     "history_secrets_accepted", "grant_exposure_accepted",
 }
 
@@ -84,7 +84,7 @@ class DerivedViews(unittest.TestCase):
             self.assertIn(name, cli.SECURITY_OVERRIDES)
 
     def test_the_acks_and_tree_properties_are_not_cleared_by_a_preset_change(self):
-        for name in ("mask_skip", "swap", "build_memory", "root", "preset",
+        for name in ("mask_skip", "swap", "mask", "build_memory", "root", "preset",
                      "history_secrets_accepted", "grant_exposure_accepted"):
             self.assertFalse(projectkeys.BY_NAME[name].clears, name)
 

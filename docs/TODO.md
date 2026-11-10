@@ -140,7 +140,7 @@ authoritative; this is the *why*.
 | `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
 | podman `exec` tier | Refused in code (`session.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
-| `masked_paths` (per-project masked dir) | Only secret-name masks and the `secrets/` tmpfs exist. `docs/agentbox-masked-paths.md` is a proposal, marked as such. |
+| `masked_paths` (per-project masked dir) | **Built 10 Nov** as the `mask` setting (`--mask`). What is left of the spec: the in-session errno probe (§5.1) as an itest, and `ab init --data-bind` with `--data-backup`. |
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | Pi / Codex adapters | Step 8. The adapter interface is the only per-agent code and has carried two agents through a restructure, so a third is mostly configuration. |

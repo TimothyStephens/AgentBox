@@ -393,3 +393,25 @@ class OnePreflight(SettingsCase):
         self.assertEqual(set(s._plan_covered()), set(covered), "the session has no second computation")
         self.assertIn(hooks, s.covered_paths())
         self.assertNotIn(os.path.realpath(self.root), covered, "a grant root is not a cover")
+
+
+class MaskClearsAFinding(SettingsCase):
+    """A masked directory is unreadable in the session, so what is in it is not an exposure: the compose
+    data bind and the live database under `data/` stop being findings once `data` is masked, and the
+    foreign-uid warning for the directory goes with them."""
+
+    def test_mask_covers_a_compose_data_bind_and_live_data(self):
+        root = self.project("p1", preset="script")
+        self.write("projects/p1/data/app.db", "x" * (2 << 20))
+        self.write("projects/p1/dev/data/app.db", "x" * (2 << 20))
+        self.write("projects/p1/deploy/compose.yaml",
+                   "services:\n  web:\n    volumes:\n      - ../data:/data\n")
+        entry = {"root": root, "preset": "script"}
+        findings, _w, _fp = grantcheck.preflight(self.settings, "p1", entry)
+        self.assertEqual(len(findings), 3, texts(findings))
+        findings, warnings, fp = grantcheck.preflight(self.settings, "p1", dict(entry, mask=["data"]))
+        self.assertEqual(findings, [], texts(findings))
+        self.assertEqual(fp, "")
+        findings, _w, _fp = grantcheck.preflight(self.settings, "p1", dict(entry, mask=["./data"]))
+        self.assertEqual(len(findings), 1, "./data is root-only: dev/data is still live data")
+        self.assertIn("dev/data/app.db", texts(findings)[0])

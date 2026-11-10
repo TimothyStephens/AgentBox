@@ -75,10 +75,10 @@ usage: ab init [-h] --name NAME [--upstream URL] [--preset PRESET]
                [--data-ro DIR] [--data-rw DIR] [--egress MODE]
                [--extra-domain DOMAIN] [--build-memory SIZE]
                [--base-branch BRANCH] [--profile on|off] [--mask-skip DIR]
-               [--podman TIER] [--compose-project NAME] [--dev-image PATTERN]
-               [--swap TARGET=STANDIN] [--observe-logs | --no-observe-logs]
-               [--accept-history-secrets] [--i-understand-grant-exposure]
-               [--reattach | --fresh]
+               [--mask PATH] [--podman TIER] [--compose-project NAME]
+               [--dev-image PATTERN] [--swap TARGET=STANDIN]
+               [--observe-logs | --no-observe-logs] [--accept-history-secrets]
+               [--i-understand-grant-exposure] [--reattach | --fresh]
                {pod,python}
 
 scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named volume), then register it
@@ -140,6 +140,15 @@ options:
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
+  --mask PATH           mask a file or directory in sessions, on top of the
+                        secret masks: it exists, reads empty and is read-only,
+                        in the agent's container and in any it starts. A bare
+                        name (`data`) masks every file or directory of that
+                        name anywhere in the grants, as `.env` is; `./data` or
+                        `deploy/state` masks that one path under the root. A
+                        masked directory is left out of the pre-session backup
+                        and the end-of-session scan: it is yours to back up
+                        (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
                         `exec` is refused — not built (default: inherited from
@@ -325,9 +334,9 @@ Register a project with a preset, validating it against overlap and grant exposu
 usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--base-branch BRANCH]
-                      [--profile on|off] [--mask-skip DIR] [--podman TIER]
-                      [--compose-project NAME] [--dev-image PATTERN]
-                      [--swap TARGET=STANDIN]
+                      [--profile on|off] [--mask-skip DIR] [--mask PATH]
+                      [--podman TIER] [--compose-project NAME]
+                      [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
@@ -389,6 +398,15 @@ options:
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
+  --mask PATH           mask a file or directory in sessions, on top of the
+                        secret masks: it exists, reads empty and is read-only,
+                        in the agent's container and in any it starts. A bare
+                        name (`data`) masks every file or directory of that
+                        name anywhere in the grants, as `.env` is; `./data` or
+                        `deploy/state` masks that one path under the root. A
+                        masked directory is left out of the pre-session backup
+                        and the end-of-session scan: it is yours to back up
+                        (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
                         `exec` is refused — not built (default: inherited from
@@ -444,15 +462,15 @@ Change a registered project's settings in place, re-validated, with the same fla
 usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--egress MODE] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--base-branch BRANCH]
-                      [--profile on|off] [--mask-skip DIR] [--podman TIER]
-                      [--compose-project NAME] [--dev-image PATTERN]
-                      [--swap TARGET=STANDIN]
+                      [--profile on|off] [--mask-skip DIR] [--mask PATH]
+                      [--podman TIER] [--compose-project NAME]
+                      [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
                       [--clear-extra-domains] [--clear-dev-images]
-                      [--clear-mask-skip]
+                      [--clear-mask-skip] [--clear-mask]
                       name
 
 change a registered project's settings in place (re-validated; refused while a session for it is live)
@@ -509,6 +527,15 @@ options:
   --mask-skip DIR       a folder (relative to root) the secret-mask walk skips
                         for speed on huge trees; NOT an exemption — grantcheck
                         still scans it (repeatable)
+  --mask PATH           mask a file or directory in sessions, on top of the
+                        secret masks: it exists, reads empty and is read-only,
+                        in the agent's container and in any it starts. A bare
+                        name (`data`) masks every file or directory of that
+                        name anywhere in the grants, as `.env` is; `./data` or
+                        `deploy/state` masks that one path under the root. A
+                        masked directory is left out of the pre-session backup
+                        and the end-of-session scan: it is yours to back up
+                        (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
                         `exec` is refused — not built (default: inherited from
@@ -544,7 +571,7 @@ options:
                         again (repeatable); one of: compose, egress, podman,
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
-                        dev_images, mask_skip, swap, base_branch,
+                        dev_images, mask_skip, swap, mask, base_branch,
                         build_memory, profile
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
@@ -555,6 +582,7 @@ options:
                         dev_images)
   --clear-mask-skip     empty the mask_skip list (the same as --unset
                         mask_skip)
+  --clear-mask          empty the mask list (the same as --unset mask)
 
 examples:
   ab project set web --egress open

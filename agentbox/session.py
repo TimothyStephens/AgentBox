@@ -33,6 +33,7 @@ class Project:
     extra_domains: list
     swap: dict
     eff: dict                      # setting -> (value, source)
+    mask: list = field(default_factory=list)   # the project's own masks (names and root-relative paths)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
     # the accepted findings' signatures, or (from before those were recorded) their fingerprint string
@@ -81,6 +82,7 @@ def load_project(settings, name):
     paths.check_overlaps(name, {"root": root, "data_ro": data_ro, "data_rw": data_rw}, reg)
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
+                   mask=_check(name, "mask", p.get("mask", [])),
                    swap=mounts.effective_swap(_check(name, "swap", p.get("swap", {}))), eff=eff,
                    build_memory=cgroup.parse_size(
                        _check(name, "build_memory", p.get("build_memory", settings.build_memory),
@@ -531,10 +533,10 @@ class Session:
         fd = os.open(self.mask_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
         os.close(fd)
         self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
-                                compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap)
+                                compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap, mask=p.mask)
         exposure, warnings, exposure_fp = grantcheck.preflight(
             self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
-                                    "mask_skip": p.mask_skip, "swap": p.swap}, plan=self.plan)
+                                    "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask}, plan=self.plan)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
@@ -760,6 +762,14 @@ class Session:
         p = self.project
         grants = [p.root] + list(p.data_rw)
         skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
+        # A masked directory is not the agent's to change, and a host service may well write into it during
+        # the session (a live data dir is what masks are for): leave it out of the scan rather than report
+        # its changes as the session's.
+        for m in (self.plan.mounts if self.plan else []):
+            if m.kind == "tmpfs":
+                for g in grants:
+                    if _inside(m.dst, g) and m.dst != g:
+                        skip[g].append(os.path.relpath(m.dst, g))
         doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
                # Recorded at START, so `ab session kill` and `ab session gc` name the branch this session
                # was configured with even if the registry is edited while it runs.

@@ -501,3 +501,38 @@ class GrantExposure(SessionTest):
         self.assertEqual(rc, 0)
         self.assertIn("data/app.db", out)
         self.assertIn("more/other.sqlite", out)                 # both listed, not "2 findings"
+
+
+class UserMaskInASession(SessionTest):
+    """A masked directory (`mask`, 10 Nov) is a cover like `secrets/`: the gate refuses binds onto it, the
+    backup leaves it out, the end-of-session scan skips it, and a build context carries it empty."""
+
+    def test_masked_dir_is_covered_not_backed_up_and_not_scanned(self):
+        import glob
+        import json
+        from agentbox import registry
+        canary = "LIVE-DATA-CANARY-10nov"
+        self.write("projects/p1/data/app.db", f"{canary}\n")
+        self.write("projects/p1/dev/data/app.db", f"{canary}\n")
+        self.write("projects/p1/app.py", "print('code')\n")
+        reg = registry.load(self.settings.registry_path)
+        reg["p1"]["mask"] = ["data"]
+        registry.save(self.settings.registry_path, reg)
+        sess = self.make()
+        sess.prepare()
+        data = os.path.realpath(os.path.join(self.root, "data"))
+        dev_data = os.path.realpath(os.path.join(self.root, "dev", "data"))
+        self.assertIn(data, sess.covered_paths())
+        self.assertIn(dev_data, sess.covered_paths())
+        self.assertIn(data, sess.masked_paths())
+        argv = " ".join(sess.run_args(sess.agent_command()))
+        self.assertIn(f"type=tmpfs,dst={data},", argv)
+        self.assertIn(",ro", argv.split(f"dst={data},")[1].split(" ")[0], "read-only, not a writable tmpfs")
+        snaps = glob.glob(os.path.join(self.settings.project_backups_dir("p1"), "*", self.root.lstrip("/")))
+        self.assertTrue(snaps)
+        self.assertTrue(os.path.isfile(os.path.join(snaps[0], "app.py")))
+        self.assertFalse(os.path.exists(os.path.join(snaps[0], "data")), "a masked directory is not backed up")
+        self.assertFalse(os.path.exists(os.path.join(snaps[0], "dev", "data")))
+        with open(os.path.join(self.settings.session_run_dir(sess.name), "scan-state.json")) as f:
+            state = json.load(f)
+        self.assertEqual(sorted(state["skip"][self.root]), ["data", "dev/data"])

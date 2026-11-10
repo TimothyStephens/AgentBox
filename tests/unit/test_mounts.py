@@ -135,3 +135,74 @@ class HardLinks(MountPlanTest):
         for rel in ("keep-db.txt", "sub/copy-of-env", "gitcfg"):
             self.assertEqual(d.get(rel).kind if d.get(rel) else None, "mask", rel)
         self.assertNotIn("keep.txt", d)
+
+
+class UserMasks(TempCase):
+    """The project's own masks (`mask`, decisions.md 10 Nov): a NAME covers every file or directory of that
+    name in every grant, a PATH (`./x` or with a '/') covers one path under the root. Empty, read-only, and
+    on top of the secret masks -- never a substitution."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+        for rel in ("data/app.db", "dev/data/app.db", "sub/repo/data/x.db", "deploy/state/s.json",
+                    "data.txt", "notes/data.txt", "app.py", ".env", ".env.dev", "node_modules/data/x"):
+            self.write(os.path.join("proj", rel), "x\n")
+
+    def by_dst(self, plan):
+        return {os.path.relpath(m.dst, self.root): m for m in plan.mounts}
+
+    def test_a_name_masks_every_directory_and_file_of_that_name(self):
+        p = mounts.plan(root=self.root, mask=["data", "data.txt"])
+        m = self.by_dst(p)
+        for d in ("data", "dev/data", "sub/repo/data"):
+            self.assertEqual((m[d].kind, m[d].ro), ("tmpfs", True), d)
+        for fn in ("data.txt", "notes/data.txt"):
+            self.assertEqual(m[fn].kind, "mask", fn)
+        self.assertNotIn("node_modules/data", m, "the walk skips what the secret-mask walk skips")
+        self.assertNotIn("app.py", m)
+        self.assertEqual(p.create_dirs, [])
+
+    def test_a_path_masks_only_that_path_under_the_root(self):
+        m = self.by_dst(mounts.plan(root=self.root, mask=["./data", "deploy/state"]))
+        self.assertEqual(m["data"].kind, "tmpfs")
+        self.assertEqual(m["deploy/state"].kind, "tmpfs")
+        self.assertNotIn("dev/data", m, "./data is root-only")
+        self.assertNotIn("sub/repo/data", m)
+
+    def test_a_missing_path_is_created_and_masked(self):
+        p = mounts.plan(root=self.root, mask=["./future"])
+        full = os.path.join(self.root, "future")
+        self.assertEqual(p.create_dirs, [full])
+        self.assertEqual(self.by_dst(p)["future"].kind, "tmpfs")
+        self.assertTrue(any("does not exist yet" in n for n in p.notes), p.notes)
+        mounts.prepare(p)
+        self.assertTrue(os.path.isdir(full))
+
+    def test_a_masked_file_wins_over_the_dev_swap(self):
+        m = self.by_dst(mounts.plan(root=self.root, mask=[".env"]))
+        self.assertEqual(m[".env"].kind, "mask", "masked, not substituted by .env.dev")
+
+    def test_nothing_is_mounted_inside_a_masked_directory(self):
+        self.write("proj/data/secrets/k.txt", "x\n")
+        self.write("proj/data/.env", "x\n")
+        m = self.by_dst(mounts.plan(root=self.root, mask=["./data"]))
+        self.assertEqual([k for k in m if k.startswith("data/")], [])
+
+    def test_nested_masks_collapse_to_the_outer_one(self):
+        m = self.by_dst(mounts.plan(root=self.root, mask=["./data", "data/sub"]))
+        self.assertIn("data", m)
+        self.assertNotIn("data/sub", m)
+
+    def test_masks_apply_in_a_read_only_data_grant_too(self):
+        ro = self.mkdir("ro")
+        self.write("ro/data/live.db", "x\n")
+        m = {m.dst: m for m in mounts.plan(root=self.root, data_ro=[ro], mask=["data"]).mounts}
+        self.assertEqual(m[os.path.join(ro, "data")].kind, "tmpfs")
+
+    def test_a_grant_root_is_never_masked_and_masked_paths_are_hidden(self):
+        p = mounts.plan(root=self.root, mask=["./.", "proj"])    # "./." normalises to the root itself
+        self.assertNotIn(self.root, [m.dst for m in p.mounts if m.kind == "tmpfs"])
+        p = mounts.plan(root=self.root, mask=["data"])
+        self.assertIn(os.path.realpath(os.path.join(self.root, "data")), mounts.hidden(p))
+        self.assertIn(os.path.realpath(os.path.join(self.root, "dev", "data")), mounts.covered(p, [self.root]))

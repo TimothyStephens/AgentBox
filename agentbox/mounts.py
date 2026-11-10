@@ -114,6 +114,50 @@ def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
+def mask_is_path(entry):
+    """A `mask` entry is a root-relative PATH when it starts with `./` or contains a '/'; otherwise a NAME."""
+    return entry.startswith("./") or "/" in entry
+
+
+def user_masks(grant, *, root, mask, skip_rel=(), notes=None):
+    """The project's own masks (the `mask` setting) in one grant. Returns (mounts, dirs_to_create).
+
+    A NAME covers every file or directory of that name the walk finds -- the secret masks' own walk, so
+    `mask_skip` folders are not searched and symlinks are not followed. A PATH covers exactly that path under
+    the ROOT, when it lies in this grant. A directory becomes an empty read-only tmpfs, anything else the
+    empty mask file. A path that does not exist yet is created as a directory and covered, so a mask added
+    ahead of the data does not silently do nothing (docs/agentbox-masked-paths.md §4). A grant root itself
+    is never masked: that would hide the whole grant."""
+    notes = notes if notes is not None else []
+    names = {m for m in mask if not mask_is_path(m)}
+    out, create = [], []
+    for rel in (m for m in mask if mask_is_path(m)):
+        full = os.path.normpath(os.path.join(root, rel))
+        if not _inside(full, grant) or full == grant:
+            continue
+        if os.path.islink(full):
+            notes.append(f"{full} is a symlink; the mask covers this path, not what it points to")
+            out.append(Mount("mask", full))
+        elif os.path.isdir(full):
+            out.append(Mount("tmpfs", full, ro=True))
+        elif os.path.lexists(full):
+            out.append(Mount("mask", full))
+        else:
+            create.append(full)
+            out.append(Mount("tmpfs", full, ro=True))
+            notes.append(f"{full} does not exist yet; created empty and masked")
+    if names:
+        for dirpath, dirnames, filenames in _walk(grant, skip_rel):
+            for d in list(dirnames):
+                if d in names:
+                    out.append(Mount("tmpfs", os.path.join(dirpath, d), ro=True))
+                    dirnames.remove(d)
+            for fn in filenames:
+                if fn in names:
+                    out.append(Mount("mask", os.path.join(dirpath, fn)))
+    return out, create
+
+
 def _is_git_dir(path):
     """A git directory (a repo's .git, a separate git dir, or a bare repo): HEAD, config, objects/, refs/."""
     return all(os.path.isfile(os.path.join(path, f)) for f in ("HEAD", "config")) and \
@@ -208,8 +252,9 @@ def compose_overlays(grant, skip_rel=()):
     return out
 
 
-def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None):
-    """Build the mount plan. All paths must already be validated real paths."""
+def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None, mask=()):
+    """Build the mount plan. All paths must already be validated real paths; `mask` is the project's own
+    mask list, as projectkeys stores it."""
     mounts, dirs, files, notes = [], [], [], []
     rw_grants = [root] + list(data_rw)
     for g in rw_grants:
@@ -234,6 +279,12 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None)
         m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
         mounts += m
         files += c
+    # The project's own masks come AFTER the secret masks and the swap: one mount per destination and the
+    # later entry wins, so a masked path that is also a swap target ends up masked, never substituted.
+    for g in rw_grants + list(data_ro):
+        m, d = user_masks(g, root=root, mask=mask, skip_rel=_rel_skips(root, g, mask_skip), notes=notes)
+        mounts += m
+        dirs += d
 
     mounts += hardlink_masks(mounts, rw_grants + list(data_ro), root, mask_skip, notes)
     # One mount per destination; later (more specific) entries win.

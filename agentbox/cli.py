@@ -109,6 +109,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["base_branch"] = _check(a.name, "base_branch", a.base_branch)
     if a.mask_skip:
         entry["mask_skip"] = list(a.mask_skip)
+    if a.mask:
+        entry["mask"] = _check(a.name, "mask", list(a.mask))
     if a.podman:
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
@@ -1064,6 +1066,13 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
     x.add_argument("--mask-skip", action="append", default=[], metavar="DIR",
                    help="a folder (relative to root) the secret-mask walk skips for speed on huge trees; NOT "
                         "an exemption — grantcheck still scans it (repeatable)")
+    x.add_argument("--mask", action="append", default=[], metavar="PATH",
+                   help="mask a file or directory in sessions, on top of the secret masks: it exists, reads "
+                        "empty and is read-only, in the agent's container and in any it starts. A bare name "
+                        "(`data`) masks every file or directory of that name anywhere in the grants, as `.env` "
+                        "is; `./data` or `deploy/state` masks that one path under the root. A masked "
+                        "directory is left out of the pre-session backup and the end-of-session scan: it is "
+                        "yours to back up (repeatable)")
     x.add_argument("--podman", choices=presets.PODMAN_TIERS, metavar="TIER",
                    help="podman tier: `none`, `observe` (read the live stack), or `dev` (run the agent's own "
                         "<project>-dev stack). `exec` is refused — not built (default: inherited from the "

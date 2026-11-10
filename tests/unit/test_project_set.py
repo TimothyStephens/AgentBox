@@ -560,3 +560,27 @@ class SwapFromTheCommandLine(SetBase):
         self.assertIn(env, mounts.hidden(plan), "the default .env swap survived the custom one")
         findings, _w, _fp = grantcheck.preflight(self.settings, "p1", self.entry())
         self.assertEqual([f["text"] for f in findings], [], "and the scan agrees it is covered")
+
+
+class MaskFromTheCommandLine(SetBase):
+    """`--mask` stores the project's own masks (decisions.md, 10 Nov): names and root-relative paths only."""
+
+    def test_the_flag_stores_names_and_paths(self):
+        code, out = self.rc_out("project", "set", "p1", "--mask", "data", "--mask", "./deploy/state/")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.entry()["mask"], ["data", "./deploy/state"])
+
+    def test_absolute_paths_and_dotdot_are_refused(self):
+        for bad in ("/etc", "../other", "a/../b", "", ".", "./"):
+            with self.subTest(bad=bad):
+                code, out = self.ab("project", "set", "p1", "--mask", bad)
+                self.assertEqual(code, 2, out)
+                self.assertIn("no leading '/', no '..'", out)
+                self.assertNotIn("mask", self.entry())
+
+    def test_clear_mask_empties_it_and_a_preset_change_keeps_it(self):
+        self.rc("project", "set", "p1", "--mask", "data")
+        self.assertEqual(self.rc("project", "set", "p1", "--preset", "research"), 0)
+        self.assertEqual(self.entry()["mask"], ["data"], "a property of the files, not of the posture")
+        self.assertEqual(self.rc("project", "set", "p1", "--clear-mask"), 0)
+        self.assertNotIn("mask", self.entry())

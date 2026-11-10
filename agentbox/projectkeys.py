@@ -135,6 +135,14 @@ KEYS = (
          inert="", inert_reason=""),
     _key("swap", kind="project", arity="map", flags=("--swap",), dest="swap", validate="swap", values=(),
          security=True, clears=False, unsettable=True, display="stored", inert="", inert_reason=""),
+    # The project's own masks, on top of the secret masks (decisions.md, 10 Nov 2026): a bare name (`data`)
+    # covers every file or directory of that name anywhere in the grants, as `.env` is; `./data` or
+    # `deploy/state` covers that one path under the root. A directory reads empty and read-only in the
+    # session and in every container it starts, and is left out of the pre-session backup. A property of the
+    # project's files, like mask_skip: a preset change does not clear it.
+    _key("mask", kind="project", arity="list", flags=("--mask",), dest="mask", validate="mask_paths",
+         values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
+         inert_reason=""),
     # The branch the project's work lands on, so the end-of-session scan can name that branch's new
     # commits one by one instead of reporting a count. NOT security-relevant: it changes what the scan
     # REPORTS and grants nothing, so a ceiling preset must not refuse it.
@@ -384,6 +392,29 @@ def _rel_names(name, where, value, **_kw):
     return list(value)
 
 
+def _mask_paths(name, where, value, **_kw):
+    """`mask` entries. A bare name masks every file or directory of that name in every grant; `./x` or a path
+    with a '/' masks exactly that path under the project root (`./` is kept: it is what says "root only").
+    Absolute paths and '..' are refused here, at store time, not at mount time (docs/agentbox-masked-paths.md
+    §4); so are the characters a mount option cannot carry."""
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        raise AgentboxError(f"{where}: {name} must be a list of names or root-relative paths")
+    out = []
+    for raw in value:
+        p = raw.strip()
+        while len(p) > 1 and p.endswith("/"):
+            p = p[:-1]
+        parts = p.split("/")
+        if (not p or p in (".", "./", "..") or p.startswith("/") or ".." in parts or "" in parts[1:]
+                or "\0" in p or "," in p or "\n" in p or (p.startswith("./") and len(parts) < 2)):
+            raise AgentboxError(f"{where}: mask {raw!r}: use a plain name (masked wherever it appears in the "
+                                "grants, like .env) or a path under the root such as ./data or deploy/state "
+                                "(no leading '/', no '..')")
+        if p not in out:
+            out.append(p)
+    return out
+
+
 def _name_list(name, where, value, **_kw):
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
         raise AgentboxError(f"{where}: {name} must be a list of names")
@@ -457,6 +488,7 @@ VALIDATORS = {
     "git_branch": _git_branch,
     "image_patterns": _image_patterns,
     "rel_names": _rel_names,
+    "mask_paths": _mask_paths,
     "name_list": _name_list,
     "fingerprint": _fingerprint,
     "swap": _swap,

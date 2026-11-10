@@ -2482,3 +2482,46 @@ not-a-name cases, and that `ab` migrates before any command), the identity (same
 refused with nothing saved, `--fresh`, `--reattach`, both flags, legacy state, `ab init`, the session-start
 check both ways), purge, and `remove_everywhere`. Not verified here: a real migration of the host's data
 dir -- the sandbox has none -- so the first `ab` on the host after this is the gate; it prints what it moved.
+
+## 2026-11-10 · The `mask` setting: a project's own masks, on top of the secret names
+
+**What.** A per-project list, `mask`, set with `--mask PATH` on `ab project add`/`set`/`ab init`
+(`--clear-mask` empties it). Two forms:
+
+- a **name** (`data`, `state.json`) masks every file or directory of that name anywhere in the project's
+  grants, the way `.env` is masked -- the walk is the secret masks' own (`mask_skip` folders not searched,
+  symlinks not followed);
+- a **path** (`./data`, `deploy/state`) masks exactly that path under the root. The leading `./` is what says
+  "root only", so it is kept, not normalised away.
+
+A directory becomes an empty **read-only** tmpfs (`secrets/` is a writable one; the spec's §4 asks for
+EROFS on create, and nothing should be writable into a cover that is dropped at teardown). A file gets the
+empty mask file. A path that does not exist is created as an empty directory and masked, so a mask added
+before the data appears is not a silent no-op (spec §4). The masks are added to the plan after the secret
+masks and the swap: one mount per destination, the later wins, so a masked `.env` is masked and not
+substituted. Nested masks collapse to the outer one through the existing N2 rule. A grant root itself is
+never masked. Absolute paths, `..`, and the characters a mount option cannot carry are refused by the
+validator at store time (`projectkeys._mask_paths`).
+
+**What a mask means elsewhere, all through the existing mechanisms:** `mounts.hidden` includes it, so
+`grantcheck` treats it as unreadable -- a compose data bind to it, a database under it and the foreign-uid
+warning for it all go; `mounts.covered` includes it, so the gate refuses a spawned container's bind that
+reaches it (spec §6.2, the bypass the measurement found) and a build context must carry it empty; the
+pre-session backup excludes it with the other covers; and `_write_scan_state` adds every tmpfs cover to the
+end-of-session scan's skip list, since a host service writing into a live data directory during the session
+would otherwise be reported as the session's change. The history-secrets check is unchanged: it keys on the
+secret names.
+
+**Why now.** `ab project add` on life-updates was refused for `data/` (a compose data bind, owned by a
+container uid) with no answer short of acknowledging the exposure or moving the application's data layout.
+`docs/agentbox-masked-paths.md` had measured exactly this case on 5 Oct and `TODO.md` said the named-volume
+default would serve "until a real project forces it". The user asked for both ends -- extra mounts and extra
+masks -- so a project of any layout can be made to fit; `--data-ro`/`--data-rw` were already the mount end.
+
+**Why `mask` and not `masked_paths`.** The flag reads as the others do (`--mask data` beside `--mask-skip`,
+`--swap`), and the key names the list of what is masked. The spec said its names were not prescriptive.
+
+**Not built.** `ab init --data-bind` with the user-named `--data-backup` (the template half of the 6 Oct
+contract); the dev-swap for directories (`dev/data` shown at `data`), which the user's question also
+touched -- a directory bind over a cover is a different mechanism and nothing asked for it yet; the spec's
+in-session errno probe as an itest. `make test`: 1203 -> 1234.
