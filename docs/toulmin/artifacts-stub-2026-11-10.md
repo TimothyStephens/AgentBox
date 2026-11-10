@@ -199,9 +199,39 @@ claude
 --dangerously-skip-permissions
 ```
 
-## 3. The agent's view (partial: the host side of it)
+## 3. The agent's view
 
-Not producible here: no podman in this sandbox. What the host side determines is below; `tests/integration/test_toulmin.py` prints the in-container `ls -la`, `env | grep AGENTBOX`, `git status` and the failed `ls` on the host.
+Produced on the host by `tests/integration/test_toulmin.py` (itest run 47690e, real podman, 10 Nov 21:35), which also asserted that the token is absent from `podman inspect` of the running agent container and that `/run/agentbox/toulmin` is present in it:
+
+```
+== ls -la /run/agentbox/toulmin/
+total 8
+drwxrwxr-x 2 vmuser vmuser   60 Nov 10 21:35 .
+drwxr-xr-t 5 root   root   4096 Nov 10 21:35 ..
+-rw------- 1 vmuser vmuser   51 Nov 10 21:34 token
+== ls -la /run/agentbox/bin/
+total 12
+drwxr-xr-x 2 root   root   4096 Nov 10 21:35 .
+drwxr-xr-t 5 root   root   4096 Nov 10 21:35 ..
+-rwxr-xr-x 1 vmuser vmuser   38 Nov 10 21:34 tm-bridge
+== MCP config the harness loads (.claude.json mcpServers)
+{"toulmin": {"type": "stdio", "command": "/run/agentbox/bin/tm-bridge",
+             "args": ["/run/agentbox/toulmin/sock", "--token-file", "/run/agentbox/toulmin/token"]}}
+== env | grep AGENTBOX
+AGENTBOX_AGENT=claude
+AGENTBOX_SESSION=abt-47690e-claude-tlm-1
+== git status --short --branch
+## agentbox/abt-47690e-claude-tlm-1
+== ls of a must_not_mount path
+ls: cannot access '/tmp/abt-47690e/shared/records/proj': No such file or directory
+ls failed as expected
+== the bridge runs
+tm-bridge stub
+== token file
+51 /run/agentbox/toulmin/token
+```
+
+The confirm and end messages of that run carried `launcher: agentbox 7424f0c`, `mounts_hash: sha256:fd97125b…e3e6`, base = head = `bffd8c1f…`, `exit: agent_exit`. The MCP configs the two harnesses load, as captured in the sandbox run, follow.
 
 ### MCP config the Claude harness loads (`.claude.json` in CLAUDE_CONFIG_DIR, during the session; removed at teardown)
 ```json

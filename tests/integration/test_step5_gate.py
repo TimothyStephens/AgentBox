@@ -87,9 +87,9 @@ def in_session(project, script, *, discovery=False, before_teardown=None):
         if before_teardown:
             orig = sess.teardown
 
-            def teardown():
+            def teardown(exit_reason="error"):      # `_guarded` passes the exit reason (toulmin.EXITS)
                 hook["seen"] = before_teardown(sess)
-                orig()
+                orig(exit_reason)
             sess.teardown = teardown
         p = sess.run_captured(["bash", "-c", script], timeout=1500)
         return p, sess, hook.get("seen")
