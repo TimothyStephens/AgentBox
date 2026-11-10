@@ -2602,3 +2602,40 @@ pins the order, the split, and that every advanced command still runs.
 
 **Why.** Asked for by the user: alphabetical or accidental order makes a new user read `accept-grant-exposure`
 before `add`, and the host-setup nouns (`profile`, `image`, `keys`) are done once per machine, not per day.
+
+## 2026-11-10 · Toulmin integration (gate B) and clone mode, on branch toulmin-gate-b
+
+**What.** `docs/agentbox_toulmin_integration.md` fixed the interface; this builds its section 1 against the
+stub `tm` in `tests/toulmin/tm-stub.sh`. New module `agentbox/toulmin.py` (start, token, session mounts, MCP
+entry, must-not-mount, mount list and hash, confirm, serve, end). Two project settings: `toulmin` (bool,
+posture: cleared by a preset change, False tightest so lockdown refuses it) and `mount` (`checkout` |
+`clone`, no looseness order). `session.clone_root` makes the clone and the branch; `mounts.remap` turns the
+clone-walked plan into the agent's view at the owner's path; `_write_meta` carries the Toulmin record and
+the clone so `kill` and `gc` can send `end` without the launcher; `_guarded` names the exit reason;
+`teardown` takes `exit_reason` and sends `end` after the scan, before the lock. `AGENTBOX_AGENT` joins
+`AGENTBOX_SESSION`. Adapters gain `mcp_server`/`mcp_remove`. `ab project clean` removes old clones. The
+contract's deviations and the artifacts are in `docs/toulmin/artifacts-stub-2026-11-10.md`.
+
+**Decisions on the way.**
+- The grant scan runs over the OWNER's tree in clone mode too, so the acknowledgement recorded at `add`
+  still matches; the clone can only hold less (nothing untracked or ignored).
+- Clone mode with the dev podman tier is refused rather than half-built: the gate resolves bind sources
+  on the host, where the owner's path is the checkout, and the grant volume, cover ids, foreign-uid check
+  and unmasked-secret walk would all have to translate into the clone. Fail closed, named in TODO.md.
+- The serve child's pid file is in the session run dir, not `services/<session>/`: that directory is
+  removed early in teardown and `end` must run (after the scan) before `serve` is stopped.
+- No pre-session snapshot in clone mode: the owner's checkout is not mounted and the clone is kept.
+- The mount list is derived from the audited `podman run` argv itself (every `--mount`/`--tmpfs`), not from
+  a second computation, so the hash is over what the container is created with.
+- **Audit rules unchanged.** `hardening.py` is untouched. What changed is the allowlist fed to it: the clone
+  directory joins the allowed bind sources (the root bind's source in clone mode), and the three session
+  mounts (socket directory, bridge, token file) join it too; destinations needed nothing, `/run/agentbox`
+  was already allowed. The socket-directory mount passes the existing socket rule because the rule looks at
+  the source itself, which is a directory, not the socket in it -- which is the contract's own ask.
+- The Claude MCP entry goes into the per-project `.claude.json` (user scope) and is removed at teardown;
+  `claude --mcp-config` exists at the pinned 2.1.318 (probed in this sandbox) and would have done as the
+  fallback.
+
+**Not verified in this sandbox (no podman):** the agent's in-container view and the `podman inspect` grep;
+`tests/integration/test_toulmin.py` produces them on the host. The OMP subprocess-environment probe is
+`make omp-env-probe`. `make itest` has not run for this branch.

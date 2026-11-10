@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, paths, presets, profile, projectkeys, projectlock, registry, tokens
 from . import keys as keysmod
-from . import buildcap, builtrec, config, layout, scan, sockguard, userimage
+from . import buildcap, builtrec, config, layout, scan, sockguard, toulmin, userimage
 from .config import HOME
 from .errors import AgentboxError
 from .podman import Podman, set_log
@@ -34,6 +34,8 @@ class Project:
     swap: dict
     eff: dict                      # setting -> (value, source)
     mask: list = field(default_factory=list)   # the project's own masks (names and root-relative paths)
+    toulmin: bool = False         # the Toulmin integration (toulmin.py): tm start/confirm/serve/end around the session
+    mount: str = ""               # "checkout" | "clone" | "" (decide from toulmin and the root; see Session.mount_mode)
     build_memory: int = 2 << 30    # bytes; the gate's per-build limit (step 5)
     history_secrets_accepted: list = field(default_factory=list)
     # the accepted findings' signatures, or (from before those were recorded) their fingerprint string
@@ -57,6 +59,35 @@ def _no_commas(path, what):
 
 def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
+
+
+def clone_root(settings, project_name, session, root):
+    """Clone mode: `git clone --no-hardlinks <root> projects/<name>/clones/<session>/`, then a session branch.
+    Returns {"clone", "branch", "base"}; base is the commit the clone was made from. The clone is kept after
+    the session (`ab project clean` removes it). Nothing here touches the owner's repository: a clone reads
+    it, and no push, merge or branch deletion is ever made there."""
+    if not os.path.isdir(os.path.join(root, ".git")):
+        raise AgentboxError(f"project {project_name}: mount = clone needs a git repository at {root} (no .git); "
+                            "use mount = checkout, or `git init` it")
+    base_dir = settings.clones_dir(project_name)
+    os.makedirs(base_dir, mode=0o700, exist_ok=True)
+    clone = os.path.join(base_dir, session)
+    if os.path.lexists(clone):
+        raise AgentboxError(f"{clone} already exists; `ab project clean {project_name}` removes old clones")
+    branch = f"agentbox/{session}"
+    p = subprocess.run(["git", "clone", "-q", "--no-hardlinks", root, clone], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise AgentboxError(f"clone mode: `git clone` failed: {p.stderr.strip()[-400:]}")
+    base = toulmin.head_of(clone)
+    if not base:
+        shutil.rmtree(clone, ignore_errors=True)
+        raise AgentboxError(f"project {project_name}: {root} has no commits yet, so there is nothing to clone a "
+                            "session branch from; commit first, or use mount = checkout")
+    p = subprocess.run(["git", "-C", clone, "checkout", "-q", "-b", branch], capture_output=True, text=True)
+    if p.returncode != 0:
+        shutil.rmtree(clone, ignore_errors=True)
+        raise AgentboxError(f"clone mode: could not create branch {branch} in the clone: {p.stderr.strip()[-300:]}")
+    return {"clone": clone, "branch": branch, "base": base}
 
 
 def protected_extra(settings):
@@ -83,6 +114,8 @@ def load_project(settings, name):
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    mask=_check(name, "mask", p.get("mask", [])),
+                   toulmin=_check(name, "toulmin", p.get("toulmin", False)),
+                   mount=_check(name, "mount", p["mount"]) if p.get("mount") else "",
                    swap=mounts.effective_swap(_check(name, "swap", p.get("swap", {}))), eff=eff,
                    build_memory=cgroup.parse_size(
                        _check(name, "build_memory", p.get("build_memory", settings.build_memory),
@@ -273,13 +306,18 @@ def profile_notes(profile_loaded, inbox, inbox_kept=True, adapter=None):
 
 
 def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
-                  inbox_kept=True, adapter=None):
+                  inbox_kept=True, adapter=None, clone=None):
     logs = "logs, " if project.observe_logs else ""
     lines = [
         "# agentbox sandbox",
         "",
         "You are running inside an agentbox sandbox (a hardened rootless podman container). Facts:",
-        f"- Project `{project.name}` is mounted read-write at `{project.root}` (its real host path).",
+        (f"- Project `{project.name}` is mounted read-write at `{project.root}` (its real host path)."
+         if not clone else
+         f"- Project `{project.name}` is at `{project.root}` (the owner's real path), but what is mounted there is a "
+         f"fresh clone on branch `{clone['branch']}` (base {clone['base'][:12]}): commit on that branch; the owner "
+         f"fetches or merges it after the session. The owner's checkout, its .git and anything untracked in it are "
+         "not mounted, and nothing you do here can push to it."),
         "- The grant holds code. Secrets and live data are meant to live outside it; the session refuses to "
         "start if the grant holds an uncovered secret or live database. Masks and the gate's cover checks are "
         "a backstop, not the main wall: do not move secrets or production data into the grant.",
@@ -403,6 +441,12 @@ class Session:
         self.podman_dev = False          # the dev tier: a stack of the agent's own, through the gate
         self.started = time.time()       # reset when the session is reserved; names its kept logs
         self.egress = project.value("egress")
+        self.toulmin = None              # the start message (toulmin.start), once `tm session start` answered
+        self.clone = None                # clone mode: {"clone", "branch", "base"} (clone_root)
+        self.root_src = project.root     # the host directory bound at the project root: the clone, or the root
+        self.plan_host = None            # the mount plan in host paths (the clone's); self.plan is the agent's view
+        self.session_mounts = []         # (host src, container dst, ro): the integration's, audited like the adapter's
+        self._serve_proc = None
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
     # ---- naming -----------------------------------------------------------------
@@ -492,6 +536,16 @@ class Session:
         return self.settings.state_dir(self.project.name, self.adapter.name)
 
     @property
+    def mount_mode(self):
+        """`checkout` binds the owner's working tree; `clone` binds a per-session clone at the same path. The
+        stored `mount` wins; otherwise clone when Toulmin is on and the root is a git repository (the
+        contract's default), checkout for everything else (non-git roots, projects without the integration)."""
+        p = self.project
+        if p.mount:
+            return p.mount
+        return "clone" if p.toulmin and os.path.isdir(os.path.join(p.root, ".git")) else "checkout"
+
+    @property
     def token_file(self):
         return self.settings.token_file(self.adapter.name) if self.adapter.token_env else None
 
@@ -518,7 +572,7 @@ class Session:
         try:
             self._prepare_reserved(do_backup)
         except BaseException:
-            self.teardown()                  # nothing is running yet; remove the run dir it reserved
+            self.teardown("error")           # nothing is running yet; remove the run dir it reserved
             raise
 
     profile = None                       # set by _prepare_reserved (profile.Loaded)
@@ -532,20 +586,44 @@ class Session:
         self._write_meta()
         fd = os.open(self.mask_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
         os.close(fd)
-        self.plan = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
-                                compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap, mask=p.mask)
+        mode = self.mount_mode
+        if mode == "clone" and dev_tier(p):
+            # The gate resolves the agent's bind sources on the host, where the owner's path IS the owner's
+            # checkout: it would have to translate every path into the clone. Not built (decisions.md, 10 Nov).
+            raise AgentboxError(f"project {p.name}: mount = clone with the dev podman tier is not built; use "
+                                "`--podman none` (or observe) with clone mode, or mount = checkout")
+        if p.toulmin:
+            self.toulmin = toulmin.start(self.settings)      # before anything else of the session's (contract 1.5)
+        if mode == "clone":
+            self.clone = clone_root(self.settings, p.name, self.name, p.root)
+            self.root_src = self.clone["clone"]
+            self.warn(f"agentbox: clone mode: {self.clone['clone']} on branch {self.clone['branch']} is what the "
+                      f"session sees at {p.root}; the checkout is not mounted")
+        self._write_meta()
+        # The grant scan and its acknowledgement are about the OWNER's tree (what `ab project check` and `add`
+        # saw), so it runs there in both modes; the clone can only hold less (nothing untracked or ignored).
+        plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
+                                 compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap, mask=p.mask)
         exposure, warnings, exposure_fp = grantcheck.preflight(
             self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
-                                    "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask}, plan=self.plan)
+                                    "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask}, plan=plan_check)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
             raise AgentboxError(grantcheck.message(p.name, exposure))
+        if mode == "clone":
+            # The mounts come from the clone (host paths), and the agent sees them at the owner's path.
+            self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
+                                         compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
+                                         mask=p.mask)
+            self.plan = mounts.remap(self.plan_host, self.root_src, p.root)
+        else:
+            self.plan_host = self.plan = plan_check
         for m in self.plan.mounts:
             _no_commas(m.dst, "mount")
-        for n in self.plan.notes:
+        for n in self.plan_host.notes:
             self.warn(f"agentbox: {n}")
-        mounts.prepare(self.plan)
+        mounts.prepare(self.plan_host)
         self.podman_live = podman_access(p)
         self.podman_dev = bool(dev_tier(p))
         if self.podman_live and not p.compose_project_explicit:
@@ -556,11 +634,15 @@ class Session:
         moved = [] if off else migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
                               profile=self.profile, inbox=self.inbox_mount,
-                              inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter)
+                              inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter, clone=self.clone)
         self.adapter.seed_state(self.settings, self.state_dir, notes, profile_on=not off)
         self.setup = self.adapter.prepare_session(self, notes)
+        if self.toulmin:
+            self._toulmin_setup()
         self._check_setup()
         self._add_profile_mounts(notes)
+        if self.toulmin:
+            self._toulmin_lists()
         self._image, image_note = self._resolve_image()
         _keep(self.log_path("profile"),
               self.profile.log_line().encode() + f"image {self.adapter.name}={self._image}\n".encode())
@@ -576,9 +658,66 @@ class Session:
                          " -- nothing to load; put skills in "
                          f"{self.settings.profile_src(self.adapter.name)}")
                       + (f". Moved to the inbox: {', '.join(moved)}" if moved else ""))
-        if do_backup:
+        if do_backup and self.mount_mode == "clone":
+            self.warn("agentbox: clone mode: no pre-session snapshot (the owner's checkout is not mounted, and "
+                      "the clone is kept)")
+        elif do_backup:
             self._backup_grants()
         self._write_scan_state()             # after the agent state is seeded: its changes are the session's
+
+    # ---- the Toulmin integration (toulmin.py; docs/agentbox_toulmin_integration.md) ----------------------
+    def _toulmin_setup(self):
+        """The socket directory and the bridge as session mounts, the token in a 0600 file mounted beside the
+        socket, and the MCP entry for the harness."""
+        run_dir = self.settings.session_run_dir(self.name)
+        token_path = toulmin.write_token(run_dir, self.toulmin["token"])
+        self.session_mounts = toulmin.session_mounts(self.toulmin, token_path)
+        self.adapter.mcp_server(self, self.setup, toulmin.MCP_NAME, toulmin.mcp_server(self.toulmin))
+        for src, dst, _ro in self.session_mounts:
+            _no_commas(src, "session mount")
+            _no_commas(dst, "session mount")
+
+    def _mount_sources(self):
+        """Every host path this session binds into the container, for the must-not-mount check."""
+        p = self.project
+        out = [self.root_src] + list(p.data_ro) + list(p.data_rw) + [self.state_dir]
+        if self.token_file:
+            out.append(self.token_file)
+        out += [src for src, _dst, _ro in self.setup.mounts]
+        out += list(self.setup.keys.values())
+        out += [src for src, _dst, _ro in self.session_mounts]
+        if self.profile and self.profile.dir:
+            out.append(self.profile.dir)
+        return out
+
+    def _toulmin_lists(self):
+        """The must-not-mount list (contract 1.2): a hard refusal, naming the path, before anything is
+        confirmed. The socket directory is the one path under the list's own glob that is asked for."""
+        bad = toulmin.violations(self.toulmin["must_not_mount"], self._mount_sources(),
+                                 allowed=[self.toulmin["mount_socket_dir"]])
+        if bad:
+            lines = ", ".join(f"{src} (must_not_mount: {entry})" for src, entry in bad)
+            raise AgentboxError(f"Toulmin's must-not-mount list refuses this session's mounts: {lines}. The "
+                                "session does not start; narrow the grants or the adapter's mounts.")
+        self.toulmin["lists_applied"] = True
+        self._write_meta()
+
+    def _toulmin_before_run(self, argv):
+        """After the argv is complete and audited, before `podman run`: confirm the planned mounts (hashed
+        from that argv), then start `tm session serve` beside the session."""
+        if not self.toulmin:
+            return
+        entries = toulmin.mount_list(argv)
+        h = toulmin.mounts_hash(entries)
+        doc = toulmin.confirm_message(self.toulmin, preset=self.project.preset, network=self.egress,
+                                      mounts_hash_value=h, project_root=self.project.root,
+                                      agent=self.adapter.name, clone=self.clone)
+        run_dir = self.settings.session_run_dir(self.name)
+        toulmin.confirm(self.toulmin, doc, run_dir)
+        self.toulmin["mounts_hash"] = h
+        self.toulmin["mount_list"] = entries
+        self._write_meta()
+        self._serve_proc = toulmin.serve(self.toulmin, run_dir)
 
     def _backup_grants(self):
         """Snapshot the read-write grants before the session runs, EXCLUDING every covered/masked path.
@@ -760,12 +899,12 @@ class Session:
         """The end-of-session scan's starting point, kept in the run dir so every teardown (the launcher's,
         `ab session kill`, `ab session gc`) can report (review 2026-10-01 step 5C, M2)."""
         p = self.project
-        grants = [p.root] + list(p.data_rw)
-        skip = {g: mounts._rel_skips(p.root, g, p.mask_skip) for g in grants}
+        grants = [self.root_src] + list(p.data_rw)
+        skip = {g: mounts._rel_skips(self.root_src, g, p.mask_skip) for g in grants}
         # A masked directory is not the agent's to change, and a host service may well write into it during
         # the session (a live data dir is what masks are for): leave it out of the scan rather than report
         # its changes as the session's.
-        for m in (self.plan.mounts if self.plan else []):
+        for m in (self.plan_host.mounts if self.plan_host else []):
             if m.kind == "tmpfs":
                 for g in grants:
                     if _inside(m.dst, g) and m.dst != g:
@@ -788,9 +927,15 @@ class Session:
             json.dump(doc, f)
 
     def _write_meta(self):
-        self.started = time.time()
+        """session.json: what every teardown path (the launcher's, `kill`, `gc`) needs. Written again whenever
+        the Toulmin record or the clone changes, so a teardown without this process still has them."""
+        if not getattr(self, "_meta_written", False):
+            self.started = time.time()
+            self._meta_written = True
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
-                "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": self.started, "preset_egress": self.project.value("egress")}
+                "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": self.started,
+                "preset_egress": self.project.value("egress"), "root": self.project.root,
+                "mount": self.mount_mode, "clone": self.clone, "toulmin": self.toulmin}
         path = os.path.join(self.settings.session_run_dir(self.name), "session.json")
         fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -800,7 +945,8 @@ class Session:
     # ---- the agent container ------------------------------------------------------------
     def allowed_mount_srcs(self, extra=()):
         p = self.project
-        out = [p.root] + p.data_ro + p.data_rw + [self.state_dir, self.settings.session_run_dir(self.name)]
+        out = [p.root, self.root_src] + p.data_ro + p.data_rw + [self.state_dir, self.settings.session_run_dir(self.name)]
+        out += [os.path.realpath(src) for src, _dst, _ro in self.session_mounts]
         if self.profile and self.profile.dir:
             out.append(os.path.realpath(self.profile.dir))
         if self.adapter.state_mount:
@@ -829,8 +975,10 @@ class Session:
         # outside a grant -- can refuse in one line instead of failing halfway through. The id is already a
         # container label and is in the scan state and the inbox provenance; this just lets the session
         # itself see it. First in the dict, so an adapter or the launcher can still override it.
-        env = {"AGENTBOX_SESSION": self.name or "", "HOME": HOME, **git_identity(s, a.name), **a.env,
-               **self.setup.env, **self.env}
+        # AGENTBOX_AGENT names the harness, for anything on the host that reads a sandbox's environment
+        # (Toulmin labels owner actions "possibly agent-issued" on these two; contract 1.4).
+        env = {"AGENTBOX_SESSION": self.name or "", "AGENTBOX_AGENT": a.name, "HOME": HOME,
+               **git_identity(s, a.name), **a.env, **self.setup.env, **self.env}
         if tty and os.environ.get("TERM"):
             env["TERM"] = os.environ["TERM"]
         opts += [f"--env={k}={v}" for k, v in env.items()]
@@ -858,6 +1006,8 @@ class Session:
                         f"dst={keysmod.CONTAINER_DIR}/{provider},ro")
         for src, dst in self.agent_sockets():
             opts.append(f"--mount=type=bind,src={src},dst={dst}")
+        for src, dst, ro in self.session_mounts:          # the integration's: audited like the adapter's
+            opts.append(f"--mount=type=bind,src={os.path.realpath(src)},dst={dst}" + (",ro" if ro else ""))
         extra_srcs = []
         for src, dst in extra_mounts:
             opts.append(f"--mount=type=bind,src={src},dst={dst},ro")
@@ -943,16 +1093,22 @@ class Session:
 
         def stop(signum, frame):
             raise KeyboardInterrupt
+        reason = "error"
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN if agent_owns_ctrl_c else stop)
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGHUP, stop)
-            return body()
+            result = body()
+            reason = "agent_exit"
+            return result
+        except KeyboardInterrupt:
+            reason = "signal"
+            raise
         finally:
             for sig in sigs:
                 signal.signal(sig, signal.SIG_IGN)
             try:
-                self.teardown()
+                self.teardown(reason)
             finally:
                 for sig, h in old.items():
                     signal.signal(sig, h)
@@ -960,7 +1116,9 @@ class Session:
     def run_interactive(self, command, tty):
         def body():
             self.start_infra()
-            return self.podman.interactive(self.run_args(command, interactive=True, tty=tty))
+            argv = self.run_args(command, interactive=True, tty=tty)
+            self._toulmin_before_run(argv)
+            return self.podman.interactive(argv)
         return self._guarded(body, agent_owns_ctrl_c=True)   # Ctrl-C belongs to the agent
 
     def run_captured(self, command, stdin="", timeout=600, before=None):
@@ -968,8 +1126,9 @@ class Session:
             self.start_infra()
             if before:
                 before()
-            return self.podman.run(self.run_args(command, interactive=True, extra_mounts=self.probe_mounts),
-                                   check=False, input=stdin, timeout=timeout)
+            argv = self.run_args(command, interactive=True, extra_mounts=self.probe_mounts)
+            self._toulmin_before_run(argv)
+            return self.podman.run(argv, check=False, input=stdin, timeout=timeout)
         return self._guarded(body, agent_owns_ctrl_c=False)
 
     probe_mounts = ()
@@ -1296,13 +1455,13 @@ class Session:
                              lan_targets=list(s.lan_targets), model_domains=self.model_domains,
                              extra_domains=self.project.extra_domains)
 
-    def teardown(self):
+    def teardown(self, exit_reason="error"):
         if not self.name:
             return
-        teardown(self.settings, self.podman, self.name, warn=self.warn)
+        teardown(self.settings, self.podman, self.name, warn=self.warn, exit_reason=exit_reason)
         # the module teardown -> sockguard.stop_service reaps our service and gate Popen handles as well as
         # killing by PID; this poll is a harmless belt-and-braces.
-        for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None)):
+        for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None), self._serve_proc):
             if proc:
                 proc.poll()
 
@@ -1443,7 +1602,7 @@ def take_project_lock(settings, podman, project, warn=lambda m: None):
     if sid:
         info = sessions(settings, podman).get(sid)
         left = ((info or {}).get("containers") or []), ((info or {}).get("networks") or [])
-        teardown(settings, podman, sid, warn=warn)
+        teardown(settings, podman, sid, warn=warn, exit_reason="gc")
         warn(f"agentbox: reaped session {sid} of {project} before starting: {why}. Removed "
              f"{len(left[0])} container(s) and {len(left[1])} network(s)"
              + (f" ({', '.join([c['name'] for c in left[0]] + list(left[1]))})" if any(left) else "")
@@ -1639,10 +1798,11 @@ def _session_started(settings, session):
         return time.time()
 
 
-def teardown(settings, podman, session, warn=None):
+def teardown(settings, podman, session, warn=None, exit_reason="error"):
     """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all come here, so
     each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
-    created), the scan runs last, and no failure of either skips the removal."""
+    created), the scan runs last, and no failure of either skips the removal. `exit_reason` is what the
+    Toulmin end message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS)."""
     warn = warn or (lambda m: print(m, file=sys.stderr))
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)
@@ -1678,6 +1838,7 @@ def teardown(settings, podman, session, warn=None):
                 pass
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
         _scan(settings, session, started, warn)
+        _toulmin_end(settings, session, exit_reason, warn)
         # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` --
         # the project's slot is free again. Silently: a lock that works is not news.
         projectlock.release_for_session(settings, session)
@@ -1690,6 +1851,23 @@ def teardown(settings, podman, session, warn=None):
                 except IsADirectoryError:
                     shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
             os.rmdir(run_dir)
+
+
+def _toulmin_end(settings, session, exit_reason, warn):
+    """`tm session end` from every teardown path, with only session.json to go on; then the MCP entry the
+    session put in the per-project state is taken out again. Never raises."""
+    try:
+        with open(os.path.join(settings.session_run_dir(session), "session.json")) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not (meta or {}).get("toulmin"):
+        return
+    toulmin.end(meta, settings.session_run_dir(session), exit_reason, warn)
+    try:
+        adapters.get(meta["agent"]).mcp_remove(settings, meta["project"], toulmin.MCP_NAME)
+    except Exception as e:
+        warn(f"agentbox: could not remove the {toulmin.MCP_NAME} MCP entry from {meta.get('project')}'s state: {e!r}")
 
 
 def ephemeral_state(settings, session):
@@ -2078,7 +2256,7 @@ def gc(settings, podman, warn=lambda m: None):
                      f"(use `ab session kill {s}`)")
             kept.add(s)
             continue
-        teardown(settings, podman, s, warn=warn)
+        teardown(settings, podman, s, warn=warn, exit_reason="gc")
         removed.append(s)
     # A podman service whose session is dead, even if its run dir and containers are already gone.
     live = {s for s, info in sessions(settings, podman).items()

@@ -16,6 +16,7 @@ The data directory (decisions.md, 9 Nov 2026):
       <agent>/                the agent's state (memory, settings, transcripts) and its inbox/
       backups/                pre-session snapshots of the grants, and agent-state-<stamp>/ from reset-state
       built-images.json       the gate's record of the images this project built (builtrec.py)
+      clones/<session>/       clone mode: the session's clone of the root, on branch agentbox/<session>
       session.lock            the one-live-session lock (projectlock.py)
   logs/                       kept session logs, ab.log            (keyed by session)
   tmp/<session>/              a session's build cache              (keyed by session)
@@ -41,7 +42,8 @@ PROJECT_FILE = "project.json"
 BUILT_RECORD = "built-images.json"
 BACKUPS = "backups"
 LOCK_FILE = "session.lock"
-PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, LOCK_FILE, LOCK_FILE + ".tmp"})
+CLONES = "clones"             # per-session clones of the root (clone mode; toulmin.py, session.clone_root)
+PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, CLONES, LOCK_FILE, LOCK_FILE + ".tmp"})
 
 
 def project_dir(data_dir, project):
@@ -81,6 +83,7 @@ DEFAULTS = {
     "keys_dir": "",        # empty: <config dir>/keys. Provider API key files, one per provider.
     "repos_dir": "~/repos",  # where `ab project init` scaffolds new projects (AB_REPOS_DIR overrides)
     "session_idle_warn_hours": 6,  # ab session ls flags, and warns about, a running session idle longer than this
+    "toulmin_tm_path": "",   # Toulmin's `tm` (docs/agentbox_toulmin_integration.md); empty: `tm` on PATH
 }
 
 
@@ -124,6 +127,11 @@ class Settings:
 
     def built_record(self, project):
         return os.path.join(self.project_dir(project), BUILT_RECORD)
+
+    def clones_dir(self, project):
+        """Per-session clones of the project's root (clone mode): `<clones>/<session>/`, kept after the
+        session until `ab project clean` or the owner removes them."""
+        return os.path.join(self.project_dir(project), CLONES)
 
     def projects_on_disk(self):
         """Names of every project directory, registered or not, sorted."""

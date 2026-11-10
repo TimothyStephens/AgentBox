@@ -140,6 +140,12 @@ class ClaudeAdapter(Adapter):
         own = _NOTES_BLOCK.sub("", _read_text(md)).lstrip()
         return block + ("\n" + own if own.strip() else "")
 
+    def mcp_server(self, sess, setup, name, server):
+        mcp_merge(os.path.join(sess.state_dir, ".claude.json"), name, server)
+
+    def mcp_remove(self, settings, project, name):
+        mcp_drop(os.path.join(settings.state_dir(project, self.name), ".claude.json"), name)
+
     def prepare_session(self, sess, sandbox_notes):
         approvals_off = sess.project.value("approvals") == "off"
         _mark_onboarded(os.path.join(sess.state_dir, ".claude.json"), sess.project.root, trusted=approvals_off)
@@ -239,6 +245,31 @@ def _merge_settings(path, defaults):
         return
     doc.update(defaults)
     _write_atomic(path, json.dumps(doc, indent=2))
+
+
+def mcp_merge(path, name, server):
+    """Put one server into `mcpServers` of the user-scope config (`.claude.json` in CLAUDE_CONFIG_DIR, which
+    is the per-project state dir); the rest of the file is kept. `claude --mcp-config` exists at the pinned
+    version too (probed 10 Nov), but the file is what the spec prefers and needs no argv."""
+    doc = _read_json(path)
+    if not isinstance(doc, dict):
+        doc = {}
+    servers = doc.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    servers[name] = server
+    doc["mcpServers"] = servers
+    _write_atomic(path, json.dumps(doc, indent=2))
+
+
+def mcp_drop(path, name):
+    doc = _read_json(path)
+    servers = doc.get("mcpServers") if isinstance(doc, dict) else None
+    if isinstance(servers, dict) and name in servers:
+        del servers[name]
+        _write_atomic(path, json.dumps(doc, indent=2))
+        return True
+    return False
 
 
 def _mark_onboarded(path, project_root, trusted):

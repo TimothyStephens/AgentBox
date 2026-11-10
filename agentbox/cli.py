@@ -111,6 +111,10 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["mask_skip"] = list(a.mask_skip)
     if a.mask:
         entry["mask"] = _check(a.name, "mask", list(a.mask))
+    if getattr(a, "toulmin", None) is not None:
+        entry["toulmin"] = a.toulmin
+    if getattr(a, "mount", None):
+        entry["mount"] = _check(a.name, "mount", a.mount)
     if a.podman:
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
@@ -794,6 +798,34 @@ def cmd_project_purge(s, a):
     return 0
 
 
+def cmd_project_clean(s, a):
+    """Remove a project's per-session clones (clone mode) that no live session uses."""
+    import shutil
+    from .podman import Podman
+    base = s.clones_dir(a.name)
+    if not os.path.isdir(base):
+        print(f"{a.name} has no clones at {base}")
+        return 0
+    podman = Podman(s.podman)
+    live = session.live_session_of(s, podman, a.name)
+    gone = []
+    for n in sorted(os.listdir(base)):
+        path = os.path.join(base, n)
+        if n == live:
+            print(f"  kept {path}: session {n} is live")
+            continue
+        if not a.yes:
+            print(f"  would remove {path}")
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        gone.append(path)
+        print(f"  removed {path}")
+    if not a.yes and os.listdir(base):
+        print("nothing was removed. Add --yes to go ahead (the owner merges or fetches from a clone first).")
+        return 1
+    return 0
+
+
 def cmd_project_rm(s, a):
     reg = registry.load(s.registry_path)
     names = list(dict.fromkeys(a.name))          # de-duplicate (a repeated name would del twice -> KeyError)
@@ -978,7 +1010,7 @@ def _resolve_session(s, podman, name):
 def cmd_kill(s, a):
     podman = Podman(s.podman)
     sid = _resolve_session(s, podman, a.session)
-    session.teardown(s, podman, sid, warn=warn)
+    session.teardown(s, podman, sid, warn=warn, exit_reason="kill")
     print(f"killed {sid}")
 
 
@@ -1095,6 +1127,16 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                         "the masks cover (.env, .env.*, *.pem, *.key) and STANDIN must not be, so a swap can "
                         "never uncover a secret. Merged with the default .env=.env.dev; a mapping for the "
                         "same target replaces it")
+    x.add_argument("--toulmin", action=argparse.BooleanOptionalAction, default=None,
+                   help="the Toulmin integration: sessions ask `tm` for a socket directory and a bridge, mount "
+                        "them, hand the agent an MCP entry for the tool server, and report the session's "
+                        "clone, base and head back (docs/agentbox_toulmin_integration.md). Default: off")
+    x.add_argument("--mount", choices=projectkeys.MOUNT_MODES, metavar="MODE",
+                   help="how the root reaches a session: `checkout` binds your working tree (the default); "
+                        "`clone` binds a fresh clone on branch agentbox/<session> at the same path and never "
+                        "mounts your checkout, its .git or anything untracked (the default when --toulmin "
+                        "is on and the root is a git repository; the clone stays under the project's "
+                        "directory until `ab project clean`)")
     x.add_argument("--observe-logs", action=argparse.BooleanOptionalAction, default=None,
                    help="let the observe tier read the live stack's logs (default: off; logs can hold "
                         "secrets, and what the agent reads goes to its model provider)")
@@ -1249,6 +1291,12 @@ def parser(settings=None):
             ex("ab project check web"))
     x.add_argument("name", help="the registered project to scan")
     x.set_defaults(fn=cmd_project_check)
+    x = add(proj, "clean", "remove the per-session clones a project's clone-mode sessions left (not a live "
+                           "session's); the owner fetches or merges from a clone before removing it",
+            ex("ab project clean web", "ab project clean web --yes"))
+    x.add_argument("name", help="the project whose clones to remove")
+    x.add_argument("--yes", action="store_true", help="remove them (without it: list what would go)")
+    x.set_defaults(fn=cmd_project_clean)
     x = add(proj, "selftest", "prove the sandbox boundaries hold for a project (posture, egress, mounts, "
                               "podman scoping), in a throwaway session",
             ex("ab project selftest claude web", "ab project selftest claude web --json"))
@@ -1279,7 +1327,7 @@ def parser(settings=None):
     x.add_argument("name", help="the project whose agent state to delete (registered or not)")
     x.add_argument("--yes", action="store_true", help="go ahead and delete")
     x.set_defaults(fn=cmd_project_purge)
-    finish(proj_noun, demote(proj, ['check', 'selftest', 'accept-grant-exposure', 'accept-history-secrets', 'reset-state', 'purge']), "verbs")
+    finish(proj_noun, demote(proj, ['check', 'selftest', 'accept-grant-exposure', 'accept-history-secrets', 'reset-state', 'purge', 'clean']), "verbs")
 
     sess_noun = sub.add_parser(
         "session", help="the live runs: start, attach, list, preview, kill, gc", formatter_class=raw,

@@ -1,5 +1,5 @@
 # The loop: make test (fast, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test itest spikes clean guard install-slice claude-live itest-oom base-image omp-image claude-image omp-live omp-plugin-probe verify-sockguard install trial-snapshot trial-check egress-soak
+.PHONY: test itest spikes clean guard install-slice claude-live itest-oom base-image omp-image claude-image omp-live omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
 
 guard:
 	python3 .claude/hooks/test_guard.py
@@ -58,6 +58,15 @@ omp-plugin-probe:
 	  < tests/manual/omp_plugin_probe.sh 2>&1 | tee /tmp/omp-plugin-probe.log
 	@echo
 	@echo "full output: /tmp/omp-plugin-probe.log"
+
+# Run by Tim, not by the builder: which environment variables OMP sets in its subprocesses (Toulmin contract,
+# 3.5). Runs inside a throwaway OMP session; nothing on the host changes. AB_PROBE_PROJECT as above.
+omp-env-probe:
+	@echo "probe: OMP's subprocess environment, in a session (nothing on the host changes)"
+	python3 -m agentbox session start omp $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
+	  < tests/manual/omp_env_probe.sh 2>&1 | tee /tmp/omp-env-probe.log
+	@echo
+	@echo "full output: /tmp/omp-env-probe.log"
 
 # Run by Tim (needs cosign v3 on PATH): verifies the pinned sockguard image was signed by sockguard's release
 # workflow (identity from its docs/verification.mdx at the pinned release). Tries the pinned digest, then the

@@ -16,6 +16,7 @@ with a key file, plus the local model server) and agent/AGENTS.md. The rest of ~
 session's tmpfs home.
 """
 import ipaddress
+import json
 import os
 import re
 from urllib.parse import urlsplit
@@ -241,6 +242,33 @@ class OmpAdapter(Adapter):
                 f"and only there). It starts empty every session and is not kept: {where}. "
                 f"`{C_OMP}/agent/skills` and the other authored directories are the shared profile, "
                 f"read-only."]
+
+    def mcp_server(self, sess, setup, name, server):
+        """A generated `.mcp.json` for this session in the run dir, mounted at `agent/.mcp.json` in place of
+        the user's seed (merged in when there is one) or the empty cover. The format is the Claude-compatible
+        `{"mcpServers": {...}}` OMP reads from that path."""
+        s = sess.settings
+        dst = os.path.join(C_OMP, "agent/.mcp.json")
+        seed = os.path.join(s.seed_dir(self.name), "mcp.json")
+        doc = {}
+        if os.path.isfile(seed) and not os.path.islink(seed):
+            try:
+                with open(seed) as f:
+                    doc = json.load(f)
+            except ValueError as e:
+                raise AgentboxError(f"{seed}: not valid JSON ({e})")
+        if not isinstance(doc, dict):
+            doc = {}
+        servers = doc.get("mcpServers") if isinstance(doc.get("mcpServers"), dict) else {}
+        servers[name] = server
+        doc["mcpServers"] = servers
+        path = os.path.join(s.session_run_dir(sess.name), "omp-mcp.json")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f, indent=1)
+        setup.mounts[:] = [m for m in setup.mounts if m[1] != dst]
+        _prepare_file(os.path.join(sess.state_dir, "agent", ".mcp.json"))
+        setup.mounts.append((path, dst, True))
 
     def prepare_session(self, sess, sandbox_notes):
         s = sess.settings

@@ -300,6 +300,16 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     return Plan(kept, dirs, files, notes)
 
 
+def remap(p, src_root, dst_root):
+    """The same plan with every destination under `src_root` moved under `dst_root`: clone mode walks the
+    clone (sources stay host paths in the clone) but the agent sees the owner's path (destinations). Host
+    paths to create (`create_dirs`, `create_files`) stay where they are: they are made in the clone."""
+    def move(dst):
+        return dst_root + dst[len(src_root):] if _inside(dst, src_root) else dst
+    mounts = [Mount(m.kind, move(m.dst), m.src, m.ro) for m in p.mounts]
+    return Plan(mounts, list(p.create_dirs), list(p.create_files), list(p.notes))
+
+
 def hidden(plan):
     """Paths a session makes UNREADABLE: the secret masks, the directory masks, and the dev-swap targets
     (where the agent sees the substitute, not the real file). A secret at one of these paths cannot be read

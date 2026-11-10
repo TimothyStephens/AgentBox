@@ -95,6 +95,9 @@ advanced verbs (rarely needed; `--help` on each):
                              first, keeps a copy in the backups dir
   purge                      delete a project's agent state and inbox outright (asks for --yes; the
                              only command that deletes them)
+  clean                      remove the per-session clones a project's clone-mode sessions left (not
+                             a live session's); the owner fetches or merges from a clone before
+                             removing it
 
 examples:
   ab project add web ~/repos/web --preset build
@@ -115,6 +118,7 @@ usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
                        [--profile on|off] [--mask-skip DIR] [--mask PATH]
                        [--podman TIER] [--compose-project NAME]
                        [--dev-image PATTERN] [--swap TARGET=STANDIN]
+                       [--toulmin | --no-toulmin] [--mount MODE]
                        [--observe-logs | --no-observe-logs]
                        [--accept-history-secrets]
                        [--i-understand-grant-exposure] [--reattach | --fresh]
@@ -209,6 +213,19 @@ options:
                         uncover a secret. Merged with the default
                         .env=.env.dev; a mapping for the same target replaces
                         it
+  --toulmin, --no-toulmin
+                        the Toulmin integration: sessions ask `tm` for a
+                        socket directory and a bridge, mount them, hand the
+                        agent an MCP entry for the tool server, and report the
+                        session's clone, base and head back
+                        (docs/agentbox_toulmin_integration.md). Default: off
+  --mount MODE          how the root reaches a session: `checkout` binds your
+                        working tree (the default); `clone` binds a fresh
+                        clone on branch agentbox/<session> at the same path
+                        and never mounts your checkout, its .git or anything
+                        untracked (the default when --toulmin is on and the
+                        root is a git repository; the clone stays under the
+                        project's directory until `ab project clean`)
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -245,6 +262,7 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
+                      [--toulmin | --no-toulmin] [--mount MODE]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
@@ -336,6 +354,19 @@ options:
                         uncover a secret. Merged with the default
                         .env=.env.dev; a mapping for the same target replaces
                         it
+  --toulmin, --no-toulmin
+                        the Toulmin integration: sessions ask `tm` for a
+                        socket directory and a bridge, mount them, hand the
+                        agent an MCP entry for the tool server, and report the
+                        session's clone, base and head back
+                        (docs/agentbox_toulmin_integration.md). Default: off
+  --mount MODE          how the root reaches a session: `checkout` binds your
+                        working tree (the default); `clone` binds a fresh
+                        clone on branch agentbox/<session> at the same path
+                        and never mounts your checkout, its .git or anything
+                        untracked (the default when --toulmin is on and the
+                        root is a git repository; the clone stays under the
+                        project's directory until `ab project clean`)
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -409,6 +440,7 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
+                      [--toulmin | --no-toulmin] [--mount MODE]
                       [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
@@ -501,6 +533,19 @@ options:
                         uncover a secret. Merged with the default
                         .env=.env.dev; a mapping for the same target replaces
                         it
+  --toulmin, --no-toulmin
+                        the Toulmin integration: sessions ask `tm` for a
+                        socket directory and a bridge, mount them, hand the
+                        agent an MCP entry for the tool server, and report the
+                        session's clone, base and head back
+                        (docs/agentbox_toulmin_integration.md). Default: off
+  --mount MODE          how the root reaches a session: `checkout` binds your
+                        working tree (the default); `clone` binds a fresh
+                        clone on branch agentbox/<session> at the same path
+                        and never mounts your checkout, its .git or anything
+                        untracked (the default when --toulmin is on and the
+                        root is a git repository; the clone stays under the
+                        project's directory until `ab project clean`)
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -516,8 +561,8 @@ options:
                         again (repeatable); one of: compose, egress, podman,
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
-                        dev_images, mask_skip, swap, mask, base_branch,
-                        build_memory, profile
+                        dev_images, mask_skip, swap, mask, toulmin, mount,
+                        base_branch, build_memory, profile
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains

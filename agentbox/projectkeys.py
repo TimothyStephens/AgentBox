@@ -143,6 +143,20 @@ KEYS = (
     _key("mask", kind="project", arity="list", flags=("--mask",), dest="mask", validate="mask_paths",
          values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
          inert_reason=""),
+    # Toulmin integration (docs/agentbox_toulmin_integration.md): the session asks `tm` for a socket
+    # directory and a bridge, mounts both, and gives the harness an MCP entry. Security-relevant (a socket
+    # the agent talks through, a binary it runs) and posture: a preset change clears it, and False is the
+    # tightest value, so a ceiling preset (lockdown) refuses it.
+    _key("toulmin", kind="project", arity="bool", flags=("--toulmin",), dest="toulmin", validate="bool",
+         values=(False, True), security=True, clears=True, unsettable=True, display="stored", inert="",
+         inert_reason=""),
+    # How the root reaches the session: `checkout` binds the owner's working tree (the default), `clone`
+    # binds a fresh clone on branch agentbox/<session> at the owner's path and never mounts the checkout
+    # (the default when toulmin is on and the root is a git repository). No looseness order: a hand-set
+    # `checkout` under a ceiling preset is not a loosening, it is the mode every project had.
+    _key("mount", kind="project", arity="scalar", flags=("--mount",), dest="mount", validate="mount_mode",
+         values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
+         inert_reason=""),
     # The branch the project's work lands on, so the end-of-session scan can name that branch's new
     # commits one by one instead of reporting a count. NOT security-relevant: it changes what the scan
     # REPORTS and grants nothing, so a ceiling preset must not refuse it.
@@ -415,6 +429,15 @@ def _mask_paths(name, where, value, **_kw):
     return out
 
 
+MOUNT_MODES = ("checkout", "clone")
+
+
+def _mount_mode(name, where, value, **_kw):
+    if value not in MOUNT_MODES:
+        raise AgentboxError(f"{where}: {name} must be one of {', '.join(MOUNT_MODES)}, got {value!r}")
+    return value
+
+
 def _name_list(name, where, value, **_kw):
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
         raise AgentboxError(f"{where}: {name} must be a list of names")
@@ -489,6 +512,7 @@ VALIDATORS = {
     "image_patterns": _image_patterns,
     "rel_names": _rel_names,
     "mask_paths": _mask_paths,
+    "mount_mode": _mount_mode,
     "name_list": _name_list,
     "fingerprint": _fingerprint,
     "swap": _swap,

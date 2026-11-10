@@ -60,6 +60,16 @@ class Adapter:
         an adapter that knows how it wrote the file can say. (`session.migrate_state_to_inbox`.)"""
         return False
 
+    def mcp_server(self, sess, setup, name, server):
+        """Give the harness one MCP server for this session (Toulmin's bridge). Each adapter knows where its
+        agent reads MCP config; the default says it does not."""
+        from ..errors import AgentboxError
+        raise AgentboxError(f"agent {self.name} has no way to take a per-session MCP server")
+
+    def mcp_remove(self, settings, project, name):
+        """Undo `mcp_server` in the per-project state at teardown (nothing to do when the entry lived in a
+        per-session file). Default: nothing."""
+
     def session_instructions(self, settings, sandbox_notes, profile_on=True):
         """The instruction file to generate for this session and mount read-only, or None for an agent that
         builds its own (OMP generates AGENTS.md in prepare_session). Default: none.
