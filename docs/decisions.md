@@ -2580,3 +2580,25 @@ is one function, which is how the tests cover it without tmux. The design doc's 
 usage generator's command tree, the Makefile's probe target, the integration and live tests' argv, and
 the two profile repos' instruction and README mentions of `ab run --no-profile`. Older entries above keep
 their spellings; they mean the forms here. `docs/USAGE.md` regenerated.
+
+## 2026-11-10 · `--help` lists everyday commands first and keeps the rest under `advanced`
+
+**What.** Every `--help` now lists its commands in the order a user meets them, not the order the code
+grew in, and splits them in two. The listed block holds the everyday ones; an `advanced ... (rarely
+needed; --help on each)` section underneath holds the rest, which still parse exactly as before:
+
+    ab               project, session, screen        | advanced: profile, image, keys
+    ab project       init, add, ls, show, set, rm    | advanced: check, selftest, accept-grant-exposure,
+                                                       accept-history-secrets, reset-state, purge
+    ab session       start, attach, ls, kill         | advanced: preview, gc
+    ab screen        start, attach, ls, kill         | advanced: layouts, config
+
+argparse lists subcommands in insertion order, so the everyday order is the parser's construction order
+(`cli.parser`). The advanced ones are taken out of argparse's listed block after they are added
+(`demote`, which edits the subparsers action's own list of shown choices -- setting `help=SUPPRESS`
+after the fact prints the sentinel literally) and written into the epilog (`finish`). `docs/gen_usage.py`
+follows the same order, so `USAGE.md` reads the same way. `tests/unit/test_cli.HelpIsOrderedForPeople`
+pins the order, the split, and that every advanced command still runs.
+
+**Why.** Asked for by the user: alphabetical or accidental order makes a new user read `accept-grant-exposure`
+before `add`, and the host-setup nouns (`profile`, `image`, `keys`) are done once per machine, not per day.

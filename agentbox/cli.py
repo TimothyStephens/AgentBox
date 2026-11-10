@@ -1144,28 +1144,52 @@ def parser(settings=None):
         keeps its own line breaks."""
         return subparsers.add_parser(name, help=summary, description=summary, epilog=epilog, formatter_class=raw)
 
+    def demote(subparsers, names):
+        """Advanced verbs (or nouns): they still parse, but leave the listed block of `--help` for an
+        `advanced:` section underneath, so the everyday ones read first. Returns [(name, summary)] in the
+        order given, for `finish`."""
+        rows = {}
+        keep = []
+        for act in subparsers._choices_actions:        # argparse's own list of what `--help` shows
+            if act.dest in names:
+                rows[act.dest] = act.help
+            else:
+                keep.append(act)
+        subparsers._choices_actions[:] = keep           # the choice itself stays: it still parses
+        return [(n, rows[n]) for n in names if n in rows]
+
+    def finish(parser_obj, rows, what):
+        """Put the demoted entries into the parser's epilog, above its examples."""
+        if not rows:
+            return
+        import textwrap
+        lines = [f"advanced {what} (rarely needed; `--help` on each):"]
+        for n, h in rows:
+            lines.append(textwrap.fill(h, width=100, initial_indent=f"  {n:<26} ", subsequent_indent=" " * 29))
+        parser_obj.epilog = "\n".join(lines) + "\n\n" + (parser_obj.epilog or "")
+
     p = argparse.ArgumentParser(
         prog="ab", formatter_class=raw,
         description="agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one "
                     "project per session.",
         epilog="Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the "
-               "live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. Full reference: "
-               "docs/USAGE.md.\n\n"
+               "live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. The advanced "
+               "commands below are host setup and rare repairs. Full reference: docs/USAGE.md.\n\n"
                + ex("ab project init pod web              scaffold and register a new project",
                     "ab session start claude web          start a session",
                     "ab session ls                     list running sessions",
                     "ab project show web               a project's effective settings"))
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     from . import initproj
-    proj = sub.add_parser(
+    proj_noun = sub.add_parser(
         "project", help="manage registered projects (the saved configuration)", formatter_class=raw,
         description="manage registered projects (the saved configuration). A project names a code grant, a "
                     "preset and any extra data grants.",
         epilog=ex("ab project add web ~/repos/web --preset build",
                   "ab project set web --egress open", "ab project show web", "ab project ls",
-                  "ab project rm web")).add_subparsers(
-        dest="sub", required=True)
+                  "ab project rm web"))
+    proj = proj_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
     x = add(proj, "init",
             "scaffold a new project with a grantcheck-clean layout (secrets masked, live data in a named "
             "volume), then register it",
@@ -1196,6 +1220,12 @@ def parser(settings=None):
                               presets_map=presets_map)
     _add_identity_args(x)
     x.set_defaults(fn=cmd_project_add)
+    add(proj, "ls", "list registered projects (name, preset, root)",
+        ex("ab project ls")).set_defaults(fn=cmd_project_ls)
+    x = add(proj, "show", "print every effective setting and whether it came from the preset or an override",
+            ex("ab project show web"))
+    x.add_argument("name", help="the registered project to inspect")
+    x.set_defaults(fn=cmd_project_show)
     x = add(proj, "set", "change a registered project's settings in place (re-validated; refused while a "
                          "session for it is live)",
             ex("ab project set web --egress open",
@@ -1208,27 +1238,35 @@ def parser(settings=None):
                               preset_note=" (default: the project's current preset)")
     _add_project_unset_args(x)
     x.set_defaults(fn=cmd_project_set)
+    x = add(proj, "rm", "remove one or more projects from the registry (files, state and backups are untouched)",
+            ex("ab project rm web", "ab project rm web old-thing"))
+    x.add_argument("name", nargs="+", help="one or more registered project names (all-or-nothing: a bad name "
+                                           "removes none)")
+    x.set_defaults(fn=cmd_project_rm)
+
     x = add(proj, "check",
             "show what the grant scan finds now and whether it matches what was accepted (read-only)",
             ex("ab project check web"))
     x.add_argument("name", help="the registered project to scan")
     x.set_defaults(fn=cmd_project_check)
-    x = add(proj, "accept-history-secrets",
-            "accept (after rotating them) the masked file names now in a project's git history",
-            ex("ab project accept-history-secrets web"))
-    x.add_argument("name", help="the registered project to record the acknowledgement for")
-    x.set_defaults(fn=cmd_project_accept_history_secrets)
+    x = add(proj, "selftest", "prove the sandbox boundaries hold for a project (posture, egress, mounts, "
+                              "podman scoping), in a throwaway session",
+            ex("ab project selftest claude web", "ab project selftest claude web --json"))
+    x.add_argument("agent", choices=adapters.NAMES, help="agent to run the checks as")
+    x.add_argument("name", help="the registered project to test")
+    x.add_argument("--json", action="store_true", help="print results as JSON instead of a table")
+    x.set_defaults(fn=cmd_selftest)
+
     x = add(proj, "accept-grant-exposure",
             "accept that this project's grant holds secrets or live data the agent can read",
             ex("ab project accept-grant-exposure web"))
     x.add_argument("name", help="the registered project to record the acknowledgement for")
     x.set_defaults(fn=cmd_project_accept_grant_exposure)
-    x = add(proj, "show", "print every effective setting and whether it came from the preset or an override",
-            ex("ab project show web"))
-    x.add_argument("name", help="the registered project to inspect")
-    x.set_defaults(fn=cmd_project_show)
-    add(proj, "ls", "list registered projects (name, preset, root)",
-        ex("ab project ls")).set_defaults(fn=cmd_project_ls)
+    x = add(proj, "accept-history-secrets",
+            "accept (after rotating them) the masked file names now in a project's git history",
+            ex("ab project accept-history-secrets web"))
+    x.add_argument("name", help="the registered project to record the acknowledgement for")
+    x.set_defaults(fn=cmd_project_accept_history_secrets)
     x = add(proj, "reset-state",
             "wipe a project's agent state (memory, settings, transcripts); asks first, keeps a copy in the "
             "backups dir", ex("ab project reset-state web", "ab project reset-state web --yes"))
@@ -1241,21 +1279,83 @@ def parser(settings=None):
     x.add_argument("name", help="the project whose agent state to delete (registered or not)")
     x.add_argument("--yes", action="store_true", help="go ahead and delete")
     x.set_defaults(fn=cmd_project_purge)
-    x = add(proj, "rm", "remove one or more projects from the registry (files, state and backups are untouched)",
-            ex("ab project rm web", "ab project rm web old-thing"))
-    x.add_argument("name", nargs="+", help="one or more registered project names (all-or-nothing: a bad name "
-                                           "removes none)")
-    x.set_defaults(fn=cmd_project_rm)
+    finish(proj_noun, demote(proj, ['check', 'selftest', 'accept-grant-exposure', 'accept-history-secrets', 'reset-state', 'purge']), "verbs")
 
-    x = add(proj, "selftest", "prove the sandbox boundaries hold for a project (posture, egress, mounts, "
-                              "podman scoping), in a throwaway session",
-            ex("ab project selftest claude web", "ab project selftest claude web --json"))
-    x.add_argument("agent", choices=adapters.NAMES, help="agent to run the checks as")
-    x.add_argument("name", help="the registered project to test")
-    x.add_argument("--json", action="store_true", help="print results as JSON instead of a table")
-    x.set_defaults(fn=cmd_selftest)
+    sess_noun = sub.add_parser(
+        "session", help="the live runs: start, attach, list, preview, kill, gc", formatter_class=raw,
+        description="the live runs. `start` creates one in the foreground (one per project); every other "
+                    "verb names a project or a session id.",
+        epilog=ex("ab session start claude web", "ab session attach web", "ab session ls",
+                  "ab session preview web web:8000", "ab session kill web", "ab session gc"))
+    sess = sess_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
+    x = add(sess, "start", "start an agent session in the foreground (one per project)",
+            ex("ab session start claude web",
+               "ab session start claude web --shell         a bash shell in the sandbox instead of the agent",
+               "ab session start claude web -- --resume     pass everything after -- to the agent",
+               "ab session attach web                       re-attach to the session already running"))
+    x.add_argument("agent", choices=adapters.NAMES, help="the agent to run")
+    x.add_argument("project", help="the registered project to run against; anything after a `--` is passed "
+                                   "through to the agent or shell")
+    x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
+    x.add_argument("--no-tty", action="store_true",
+                   help="do not allocate a TTY (for non-interactive or piped runs)")
+    x.add_argument("--no-profile", action="store_true",
+                   help="for this run only: load no host-owned profile (skills, sub-agents, commands, "
+                        "instructions, settings) and no plugins, and use the harness image. agentbox's own "
+                        "session notes still apply. `ab project set <p> --profile off` makes it permanent")
+    x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
+                   help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
+    x.set_defaults(fn=cmd_run)
 
-    prof_p = sub.add_parser(
+    x = add(sess, "attach", "re-attach a terminal to the session already running for a project",
+            ex("ab session attach web", "ab session attach ab-claude-web-1   by session id"))
+    x.add_argument("project", help="the project whose running session to attach to (one per project), or the "
+                                   "session id itself")
+    x.set_defaults(fn=cmd_attach)
+    add(sess, "ls", "list sessions with their project, start time, age and idle time",
+        ex("ab session ls")).set_defaults(fn=cmd_ls)
+    x = add(sess, "kill", "tear down a session and everything it created (keeps its logs and end-of-session scan)",
+            ex("ab session kill web", "ab session kill ab-claude-web-1   by session id"))
+    x.add_argument("session", help="the project whose session to tear down, or the session id itself "
+                                   "(`ab session ls` shows both)")
+    x.set_defaults(fn=cmd_kill)
+    x = add(sess, "preview",
+            "open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)",
+            ex("ab session preview web web:8000",
+               "ab session preview web web:8000 --port 18080",
+               "ab session preview web --stop"))
+    x.add_argument("session", help="the project whose session to preview, or the session id itself "
+                                   "(`ab session ls` shows both)")
+    x.add_argument("target", nargs="?", metavar="SERVICE:PORT",
+                   help="the dev-stack service (or container) and the port inside it, e.g. web:8000; omit with "
+                        "--stop")
+    x.add_argument("--port", type=int, metavar="PORT",
+                   help="host port to publish on 127.0.0.1 (default: a free one, printed on start)")
+    x.add_argument("--stop", action="store_true", help="remove this session's previews instead of opening one")
+    x.set_defaults(fn=cmd_preview)
+    add(sess, "gc", "remove what dead sessions left (containers, networks, sockets) and storage nothing "
+                    "can use: session-built images, superseded personal image layers, unused profile "
+                    "snapshots (runs automatically after boot)",
+        ex("ab session gc")).set_defaults(fn=cmd_gc)
+    finish(sess_noun, demote(sess, ['preview', 'gc']), "verbs")
+
+    scr_noun = sub.add_parser(
+        "screen", help="tmux workspaces: one per project, agent panes and host shells in a layout",
+        formatter_class=raw,
+        description="tmux workspaces, one per project (`ab-<project>`): agent panes that enter the sandbox "
+                    "through `ab session start` and host shells, laid out from ~/.config/agentbox/screen.toml. "
+                    "Both projects must be registered; every pane opens in the project's root.",
+        epilog=ex("ab screen start web", "ab screen start web web-review --layout wide", "ab screen ls",
+                  "ab screen attach web", "ab screen kill web", "ab screen layouts",
+                  "ab screen config > ~/.config/agentbox/screen.toml"))
+    scr = scr_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
+    from . import screen as _screen
+    _screen.add_verbs(scr, add, ex)
+    for verb in _screen.VERBS:
+        scr.choices[verb].set_defaults(fn=cmd_screen)
+    finish(scr_noun, demote(scr, ["layouts", "config"]), "verbs")
+
+    prof_p_noun = sub.add_parser(
         "profile", help="the host-owned agent profile: what every session loads, and the inbox it feeds",
         formatter_class=raw,
         description="The host-owned profile (~/.config/agentbox/<agent>/profile/) holds the skills, "
@@ -1264,7 +1364,8 @@ def parser(settings=None):
                     "to the project's inbox, which nothing loads. These commands review that queue.",
         epilog=ex("ab profile harvest", "ab profile harvest --agent claude --all",
                   "ab profile promote web/skills-deploy --as skills/deploy",
-                  "ab profile dismiss web/notes.md")).add_subparsers(dest="sub", required=True)
+                  "ab profile dismiss web/notes.md"))
+    prof_p = prof_p_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
     x = add(prof_p, "harvest", "list what sessions have put in their inboxes, unreviewed first (read-only)",
             ex("ab profile harvest", "ab profile harvest --agent claude --all"))
     x.add_argument("--agent", choices=adapters.NAMES, help="only this agent's profile (default: both)")
@@ -1292,7 +1393,7 @@ def parser(settings=None):
     x.add_argument("--agent", default="claude", choices=adapters.NAMES, help="whose profile (default: claude)")
     x.set_defaults(fn=cmd_profile_dismiss)
 
-    img_p = sub.add_parser(
+    img_p_noun = sub.add_parser(
         "image", help="your own image layer on top of an agent's harness image", formatter_class=raw,
         description="A personal layer for what you want in every session -- a language toolchain, a "
                     "linter, a private CLI -- without it going into agentbox's own images, and without a "
@@ -1307,8 +1408,8 @@ def parser(settings=None):
                     "rebuilt your layer no longer matches it, and `ab session start` says `personal layer out of "
                     "date` and runs the plain harness image -- it never runs a layer built on an older "
                     "harness. Build it again and the next session picks it up.",
-        epilog=ex("ab image build claude", "ab image build omp --force")).add_subparsers(dest="sub",
-                                                                                        required=True)
+        epilog=ex("ab image build claude", "ab image build omp --force"))
+    img_p = img_p_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
     x = add(img_p, "build", "build your profile's Containerfile on top of the agent's harness image",
             ex("ab image build claude", "ab image build omp --force"))
     x.add_argument("agent", choices=adapters.NAMES, help="whose harness image to build on")
@@ -1316,83 +1417,12 @@ def parser(settings=None):
                    help="rebuild even when an image for this harness and Containerfile already exists")
     x.set_defaults(fn=cmd_image_build)
 
-    sess = sub.add_parser(
-        "session", help="the live runs: start, attach, list, preview, kill, gc", formatter_class=raw,
-        description="the live runs. `start` creates one in the foreground (one per project); every other "
-                    "verb names a project or a session id.",
-        epilog=ex("ab session start claude web", "ab session attach web", "ab session ls",
-                  "ab session preview web web:8000", "ab session kill web", "ab session gc")).add_subparsers(
-        dest="sub", required=True)
-    x = add(sess, "start", "start an agent session in the foreground (one per project)",
-            ex("ab session start claude web",
-               "ab session start claude web --shell         a bash shell in the sandbox instead of the agent",
-               "ab session start claude web -- --resume     pass everything after -- to the agent",
-               "ab session attach web                       re-attach to the session already running"))
-    x.add_argument("agent", choices=adapters.NAMES, help="the agent to run")
-    x.add_argument("project", help="the registered project to run against; anything after a `--` is passed "
-                                   "through to the agent or shell")
-    x.add_argument("--shell", action="store_true", help="run a bash shell in the sandbox instead of the agent")
-    x.add_argument("--no-tty", action="store_true",
-                   help="do not allocate a TTY (for non-interactive or piped runs)")
-    x.add_argument("--no-profile", action="store_true",
-                   help="for this run only: load no host-owned profile (skills, sub-agents, commands, "
-                        "instructions, settings) and no plugins, and use the harness image. agentbox's own "
-                        "session notes still apply. `ab project set <p> --profile off` makes it permanent")
-    x.add_argument("--timeout", type=int, default=3600, metavar="SECONDS",
-                   help="time limit for a non-interactive run (default 3600; ignored for interactive sessions)")
-    x.set_defaults(fn=cmd_run)
-
-    x = add(sess, "attach", "re-attach a terminal to the session already running for a project",
-            ex("ab session attach web", "ab session attach ab-claude-web-1   by session id"))
-    x.add_argument("project", help="the project whose running session to attach to (one per project), or the "
-                                   "session id itself")
-    x.set_defaults(fn=cmd_attach)
-    add(sess, "ls", "list sessions with their project, start time, age and idle time",
-        ex("ab session ls")).set_defaults(fn=cmd_ls)
-    x = add(sess, "preview",
-            "open a session's dev service on 127.0.0.1 (reach it from your desktop with ssh -L)",
-            ex("ab session preview web web:8000",
-               "ab session preview web web:8000 --port 18080",
-               "ab session preview web --stop"))
-    x.add_argument("session", help="the project whose session to preview, or the session id itself "
-                                   "(`ab session ls` shows both)")
-    x.add_argument("target", nargs="?", metavar="SERVICE:PORT",
-                   help="the dev-stack service (or container) and the port inside it, e.g. web:8000; omit with "
-                        "--stop")
-    x.add_argument("--port", type=int, metavar="PORT",
-                   help="host port to publish on 127.0.0.1 (default: a free one, printed on start)")
-    x.add_argument("--stop", action="store_true", help="remove this session's previews instead of opening one")
-    x.set_defaults(fn=cmd_preview)
-    x = add(sess, "kill", "tear down a session and everything it created (keeps its logs and end-of-session scan)",
-            ex("ab session kill web", "ab session kill ab-claude-web-1   by session id"))
-    x.add_argument("session", help="the project whose session to tear down, or the session id itself "
-                                   "(`ab session ls` shows both)")
-    x.set_defaults(fn=cmd_kill)
-    add(sess, "gc", "remove what dead sessions left (containers, networks, sockets) and storage nothing "
-                    "can use: session-built images, superseded personal image layers, unused profile "
-                    "snapshots (runs automatically after boot)",
-        ex("ab session gc")).set_defaults(fn=cmd_gc)
-
-    scr = sub.add_parser(
-        "screen", help="tmux workspaces: one per project, agent panes and host shells in a layout",
-        formatter_class=raw,
-        description="tmux workspaces, one per project (`ab-<project>`): agent panes that enter the sandbox "
-                    "through `ab session start` and host shells, laid out from ~/.config/agentbox/screen.toml. "
-                    "Both projects must be registered; every pane opens in the project's root.",
-        epilog=ex("ab screen start web", "ab screen start web web-review --layout wide", "ab screen ls",
-                  "ab screen attach web", "ab screen kill web", "ab screen layouts",
-                  "ab screen config > ~/.config/agentbox/screen.toml")).add_subparsers(dest="sub", required=True)
-    from . import screen as _screen
-    _screen.add_verbs(scr, add, ex)
-    for verb in _screen.VERBS:
-        scr.choices[verb].set_defaults(fn=cmd_screen)
-
-    ks = sub.add_parser(
+    ks_noun = sub.add_parser(
         "keys", help="model tokens and provider API keys", formatter_class=raw,
         description="manage model tokens and provider API keys. Keys live in ~/.config/agentbox/keys/ (0600), "
                     "outside every grant, and reach a session read-only as AB_KEY_<PROVIDER>.",
-        epilog=ex("ab keys rotate claude", "ab keys set openai", "ab keys ls", "ab keys rm openai")).add_subparsers(
-        dest="sub", required=True)
+        epilog=ex("ab keys rotate claude", "ab keys set openai", "ab keys ls", "ab keys rm openai"))
+    ks = ks_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
     x = add(ks, "rotate", "replace the Claude subscription token (from `claude setup-token`)",
             ex("ab keys rotate claude"))
     x.add_argument("agent", choices=adapters.NAMES, help="the agent whose subscription token to replace (currently: claude)")
@@ -1407,6 +1437,9 @@ def parser(settings=None):
     x = add(ks, "rm", "remove a provider's key file", ex("ab keys rm openai"))
     x.add_argument("provider", help="the provider whose key file to remove")
     x.set_defaults(fn=cmd_keys_rm)
+
+    # Everyday nouns first; the host-setup and repair nouns still parse but list under `advanced`.
+    finish(p, demote(sub, ["profile", "image", "keys"]), "commands")
     return p
 
 

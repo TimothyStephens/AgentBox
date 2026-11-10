@@ -25,26 +25,27 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 The launcher. Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the live run (start, attach, kill, ...). `ab screen` is the tmux workspace.
 
 ```text
-usage: ab [-h] {project,profile,image,session,screen,keys} ...
+usage: ab [-h] <command> ...
 
 agentbox: coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project per session.
 
 positional arguments:
-  {project,profile,image,session,screen,keys}
-    project             manage registered projects (the saved configuration)
-    profile             the host-owned agent profile: what every session
-                        loads, and the inbox it feeds
-    image               your own image layer on top of an agent's harness
-                        image
-    session             the live runs: start, attach, list, preview, kill, gc
-    screen              tmux workspaces: one per project, agent panes and host
-                        shells in a layout
-    keys                model tokens and provider API keys
+  <command>
+    project   manage registered projects (the saved configuration)
+    session   the live runs: start, attach, list, preview, kill, gc
+    screen    tmux workspaces: one per project, agent panes and host shells in
+              a layout
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit
 
-Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. Full reference: docs/USAGE.md.
+advanced commands (rarely needed; `--help` on each):
+  profile                    the host-owned agent profile: what every session loads, and the inbox
+                             it feeds
+  image                      your own image layer on top of an agent's harness image
+  keys                       model tokens and provider API keys
+
+Two nouns: `ab project` is the saved configuration (init, add, set, ...), `ab session` is the live run (start, attach, kill, ...). `ab screen` opens the tmux workspace. The advanced commands below are host setup and rare repairs. Full reference: docs/USAGE.md.
 
 examples:
   ab project init pod web              scaffold and register a new project
@@ -60,45 +61,40 @@ examples:
 Manage the durable registry entries — a project names a code grant, a preset and any extra data grants. One project has many sessions over time.
 
 ```text
-usage: ab project [-h]
-                  {init,add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm,selftest}
-                  ...
+usage: ab project [-h] <verb> ...
 
 manage registered projects (the saved configuration). A project names a code grant, a preset and any extra data grants.
 
 positional arguments:
-  {init,add,set,check,accept-history-secrets,accept-grant-exposure,show,ls,reset-state,purge,rm,selftest}
-    init                scaffold a new project with a grantcheck-clean layout
-                        (secrets masked, live data in a named volume), then
-                        register it
-    add                 register a project with a preset (validated against
-                        overlap and grant exposure)
-    set                 change a registered project's settings in place (re-
-                        validated; refused while a session for it is live)
-    check               show what the grant scan finds now and whether it
-                        matches what was accepted (read-only)
-    accept-history-secrets
-                        accept (after rotating them) the masked file names now
-                        in a project's git history
-    accept-grant-exposure
-                        accept that this project's grant holds secrets or live
-                        data the agent can read
-    show                print every effective setting and whether it came from
-                        the preset or an override
-    ls                  list registered projects (name, preset, root)
-    reset-state         wipe a project's agent state (memory, settings,
-                        transcripts); asks first, keeps a copy in the backups
-                        dir
-    purge               delete a project's agent state and inbox outright
-                        (asks for --yes; the only command that deletes them)
-    rm                  remove one or more projects from the registry (files,
-                        state and backups are untouched)
-    selftest            prove the sandbox boundaries hold for a project
-                        (posture, egress, mounts, podman scoping), in a
-                        throwaway session
+  <verb>
+    init      scaffold a new project with a grantcheck-clean layout (secrets
+              masked, live data in a named volume), then register it
+    add       register a project with a preset (validated against overlap and
+              grant exposure)
+    ls        list registered projects (name, preset, root)
+    show      print every effective setting and whether it came from the
+              preset or an override
+    set       change a registered project's settings in place (re-validated;
+              refused while a session for it is live)
+    rm        remove one or more projects from the registry (files, state and
+              backups are untouched)
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit
+
+advanced verbs (rarely needed; `--help` on each):
+  check                      show what the grant scan finds now and whether it matches what was
+                             accepted (read-only)
+  selftest                   prove the sandbox boundaries hold for a project (posture, egress,
+                             mounts, podman scoping), in a throwaway session
+  accept-grant-exposure      accept that this project's grant holds secrets or live data the agent
+                             can read
+  accept-history-secrets     accept (after rotating them) the masked file names now in a project's
+                             git history
+  reset-state                wipe a project's agent state (memory, settings, transcripts); asks
+                             first, keeps a copy in the backups dir
+  purge                      delete a project's agent state and inbox outright (asks for --yes; the
+                             only command that deletes them)
 
 examples:
   ab project add web ~/repos/web --preset build
@@ -367,6 +363,41 @@ examples:
   ab project add svc ~/repos/svc --preset build-open --podman dev
 ```
 
+### `ab project ls`
+
+List the registered projects.
+
+```text
+usage: ab project ls [-h]
+
+list registered projects (name, preset, root)
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab project ls
+```
+
+### `ab project show`
+
+Print a project's effective settings and whether each came from the preset or an override.
+
+```text
+usage: ab project show [-h] name
+
+print every effective setting and whether it came from the preset or an override
+
+positional arguments:
+  name        the registered project to inspect
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab project show web
+```
+
 ### `ab project set`
 
 Change a registered project's settings in place, re-validated, with the same flags `ab project init`/`ab project add` take. Refused while a session for the project is live.
@@ -504,23 +535,25 @@ examples:
   ab project set web --unset egress --clear-extra-domains
 ```
 
-### `ab project show`
+### `ab project rm`
 
-Print a project's effective settings and whether each came from the preset or an override.
+Remove projects from the registry; their files, state and backups are left untouched.
 
 ```text
-usage: ab project show [-h] name
+usage: ab project rm [-h] name [name ...]
 
-print every effective setting and whether it came from the preset or an override
+remove one or more projects from the registry (files, state and backups are untouched)
 
 positional arguments:
-  name        the registered project to inspect
+  name        one or more registered project names (all-or-nothing: a bad name
+              removes none)
 
 options:
   -h, --help  show this help message and exit
 
 examples:
-  ab project show web
+  ab project rm web
+  ab project rm web old-thing
 ```
 
 ### `ab project check`
@@ -542,41 +575,64 @@ examples:
   ab project check web
 ```
 
-### `ab project ls`
+### `ab project selftest`
 
-List the registered projects.
-
-```text
-usage: ab project ls [-h]
-
-list registered projects (name, preset, root)
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab project ls
-```
-
-### `ab project rm`
-
-Remove projects from the registry; their files, state and backups are left untouched.
+Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
 
 ```text
-usage: ab project rm [-h] name [name ...]
+usage: ab project selftest [-h] [--json] {claude,omp} name
 
-remove one or more projects from the registry (files, state and backups are untouched)
+prove the sandbox boundaries hold for a project (posture, egress, mounts, podman scoping), in a throwaway session
 
 positional arguments:
-  name        one or more registered project names (all-or-nothing: a bad name
-              removes none)
+  {claude,omp}  agent to run the checks as
+  name          the registered project to test
+
+options:
+  -h, --help    show this help message and exit
+  --json        print results as JSON instead of a table
+
+examples:
+  ab project selftest claude web
+  ab project selftest claude web --json
+```
+
+### `ab project accept-grant-exposure`
+
+Record that you accept the secrets/live data grantcheck found in a project's grant.
+
+```text
+usage: ab project accept-grant-exposure [-h] name
+
+accept that this project's grant holds secrets or live data the agent can read
+
+positional arguments:
+  name        the registered project to record the acknowledgement for
 
 options:
   -h, --help  show this help message and exit
 
 examples:
-  ab project rm web
-  ab project rm web old-thing
+  ab project accept-grant-exposure web
+```
+
+### `ab project accept-history-secrets`
+
+Record that you accept (after rotating) the masked file names in a project's git history.
+
+```text
+usage: ab project accept-history-secrets [-h] name
+
+accept (after rotating them) the masked file names now in a project's git history
+
+positional arguments:
+  name        the registered project to record the acknowledgement for
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab project accept-history-secrets web
 ```
 
 ### `ab project reset-state`
@@ -619,66 +675,6 @@ examples:
   ab project purge web --yes
 ```
 
-### `ab project accept-grant-exposure`
-
-Record that you accept the secrets/live data grantcheck found in a project's grant.
-
-```text
-usage: ab project accept-grant-exposure [-h] name
-
-accept that this project's grant holds secrets or live data the agent can read
-
-positional arguments:
-  name        the registered project to record the acknowledgement for
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab project accept-grant-exposure web
-```
-
-### `ab project accept-history-secrets`
-
-Record that you accept (after rotating) the masked file names in a project's git history.
-
-```text
-usage: ab project accept-history-secrets [-h] name
-
-accept (after rotating them) the masked file names now in a project's git history
-
-positional arguments:
-  name        the registered project to record the acknowledgement for
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab project accept-history-secrets web
-```
-
-### `ab project selftest`
-
-Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
-
-```text
-usage: ab project selftest [-h] [--json] {claude,omp} name
-
-prove the sandbox boundaries hold for a project (posture, egress, mounts, podman scoping), in a throwaway session
-
-positional arguments:
-  {claude,omp}  agent to run the checks as
-  name          the registered project to test
-
-options:
-  -h, --help    show this help message and exit
-  --json        print results as JSON instead of a table
-
-examples:
-  ab project selftest claude web
-  ab project selftest claude web --json
-```
-
 ## ab session
 
 ### `ab session`
@@ -686,29 +682,28 @@ examples:
 The live runs — start one, attach to it, list, preview, kill and garbage-collect.
 
 ```text
-usage: ab session [-h] {start,attach,ls,preview,kill,gc} ...
+usage: ab session [-h] <verb> ...
 
 the live runs. `start` creates one in the foreground (one per project); every other verb names a project or a session id.
 
 positional arguments:
-  {start,attach,ls,preview,kill,gc}
-    start               start an agent session in the foreground (one per
-                        project)
-    attach              re-attach a terminal to the session already running
-                        for a project
-    ls                  list sessions with their project, start time, age and
-                        idle time
-    preview             open a session's dev service on 127.0.0.1 (reach it
-                        from your desktop with ssh -L)
-    kill                tear down a session and everything it created (keeps
-                        its logs and end-of-session scan)
-    gc                  remove what dead sessions left (containers, networks,
-                        sockets) and storage nothing can use: session-built
-                        images, superseded personal image layers, unused
-                        profile snapshots (runs automatically after boot)
+  <verb>
+    start     start an agent session in the foreground (one per project)
+    attach    re-attach a terminal to the session already running for a
+              project
+    ls        list sessions with their project, start time, age and idle time
+    kill      tear down a session and everything it created (keeps its logs
+              and end-of-session scan)
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit
+
+advanced verbs (rarely needed; `--help` on each):
+  preview                    open a session's dev service on 127.0.0.1 (reach it from your desktop
+                             with ssh -L)
+  gc                         remove what dead sessions left (containers, networks, sockets) and
+                             storage nothing can use: session-built images, superseded personal
+                             image layers, unused profile snapshots (runs automatically after boot)
 
 examples:
   ab session start claude web
@@ -791,6 +786,27 @@ examples:
   ab session ls
 ```
 
+### `ab session kill`
+
+Tear down a session and everything it created, keeping its logs and end-of-session scan.
+
+```text
+usage: ab session kill [-h] session
+
+tear down a session and everything it created (keeps its logs and end-of-session scan)
+
+positional arguments:
+  session     the project whose session to tear down, or the session id itself
+              (`ab session ls` shows both)
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  ab session kill web
+  ab session kill ab-claude-web-1   by session id
+```
+
 ### `ab session preview`
 
 Publish one dev-stack service of a session on 127.0.0.1 so you can reach it over ssh -L.
@@ -818,27 +834,6 @@ examples:
   ab session preview web --stop
 ```
 
-### `ab session kill`
-
-Tear down a session and everything it created, keeping its logs and end-of-session scan.
-
-```text
-usage: ab session kill [-h] session
-
-tear down a session and everything it created (keeps its logs and end-of-session scan)
-
-positional arguments:
-  session     the project whose session to tear down, or the session id itself
-              (`ab session ls` shows both)
-
-options:
-  -h, --help  show this help message and exit
-
-examples:
-  ab session kill web
-  ab session kill ab-claude-web-1   by session id
-```
-
 ### `ab session gc`
 
 Remove containers, networks and sockets left by dead sessions (also runs after boot).
@@ -862,27 +857,25 @@ examples:
 tmux workspaces, one per project: agent panes (each an `ab session start`) and host shells in a layout from ~/.config/agentbox/screen.toml. The verbs mirror `ab session`.
 
 ```text
-usage: ab screen [-h] {start,attach,ls,kill,layouts,config} ...
+usage: ab screen [-h] <verb> ...
 
 tmux workspaces, one per project (`ab-<project>`): agent panes that enter the sandbox through `ab session start` and host shells, laid out from ~/.config/agentbox/screen.toml. Both projects must be registered; every pane opens in the project's root.
 
 positional arguments:
-  {start,attach,ls,kill,layouts,config}
-    start               open a project's workspace: agent panes (each an `ab
-                        session start`) and host shells in a layout, then
-                        attach to it
-    attach              join a project's open workspace (from inside tmux:
-                        switch to it)
-    ls                  list open workspaces with their project and its live
-                        session
-    kill                end a project's workspace; a session running in it is
-                        torn down (SIGHUP)
-    layouts             list the layouts available, and which one auto would
-                        pick here
-    config              print a commented starter config
+  <verb>
+    start     open a project's workspace: agent panes (each an `ab session
+              start`) and host shells in a layout, then attach to it
+    attach    join a project's open workspace (from inside tmux: switch to it)
+    ls        list open workspaces with their project and its live session
+    kill      end a project's workspace; a session running in it is torn down
+              (SIGHUP)
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit
+
+advanced verbs (rarely needed; `--help` on each):
+  layouts                    list the layouts available, and which one auto would pick here
+  config                     print a commented starter config
 
 examples:
   ab screen start web
@@ -1019,23 +1012,23 @@ examples:
 ### `ab profile`
 
 ```text
-usage: ab profile [-h] {harvest,promote,install,dismiss} ...
+usage: ab profile [-h] <verb> ...
 
 The host-owned profile (~/.config/agentbox/<agent>/profile/) holds the skills, sub-agents, commands and instructions every session loads, read-only, in every project and under every preset. Sessions cannot write it; what they want to keep goes to the project's inbox, which nothing loads. These commands review that queue.
 
 positional arguments:
-  {harvest,promote,install,dismiss}
-    harvest             list what sessions have put in their inboxes,
-                        unreviewed first (read-only)
-    promote             copy an inbox item into the profile and commit it,
-                        with its provenance in the commit message
-    install             install the plugins the profile declares, in a
-                        sandbox, into a tree sessions mount read-only
-    dismiss             mark an inbox item reviewed and leave it where it is
-                        (deletes nothing)
+  <verb>
+    harvest   list what sessions have put in their inboxes, unreviewed first
+              (read-only)
+    promote   copy an inbox item into the profile and commit it, with its
+              provenance in the commit message
+    install   install the plugins the profile declares, in a sandbox, into a
+              tree sessions mount read-only
+    dismiss   mark an inbox item reviewed and leave it where it is (deletes
+              nothing)
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit
 
 examples:
   ab profile harvest
@@ -1107,7 +1100,7 @@ examples:
 ### `ab image`
 
 ```text
-usage: ab image [-h] {build} ...
+usage: ab image [-h] <verb> ...
 
 A personal layer for what you want in every session -- a language toolchain, a linter, a private CLI -- without it going into agentbox's own images, and without a session being able to put it there. Write a Containerfile in your profile (~/.config/agentbox/<agent>/profile/Containerfile); it must begin `ARG BASE` then `FROM ${BASE}`, and `ab image build` supplies BASE as the current harness image.
 
@@ -1116,7 +1109,7 @@ The built image is checked before it is tagged: USER, ENTRYPOINT, CMD and PATH m
 The tag covers the harness image ID and the Containerfile. When the harness image is rebuilt your layer no longer matches it, and `ab session start` says `personal layer out of date` and runs the plain harness image -- it never runs a layer built on an older harness. Build it again and the next session picks it up.
 
 positional arguments:
-  {build}
+  <verb>
     build     build your profile's Containerfile on top of the agent's harness
               image
 
@@ -1155,22 +1148,21 @@ examples:
 Manage model tokens and provider API keys; they live outside every grant and reach a session read-only as AB_KEY_<PROVIDER>.
 
 ```text
-usage: ab keys [-h] {rotate,set,ls,rm} ...
+usage: ab keys [-h] <verb> ...
 
 manage model tokens and provider API keys. Keys live in ~/.config/agentbox/keys/ (0600), outside every grant, and reach a session read-only as AB_KEY_<PROVIDER>.
 
 positional arguments:
-  {rotate,set,ls,rm}
-    rotate            replace the Claude subscription token (from `claude
-                      setup-token`)
-    set               set a provider's API key (pay-per-use: make it dedicated
-                      and spend-capped)
-    ls                list providers that have a key (names only, never
-                      values)
-    rm                remove a provider's key file
+  <verb>
+    rotate    replace the Claude subscription token (from `claude setup-
+              token`)
+    set       set a provider's API key (pay-per-use: make it dedicated and
+              spend-capped)
+    ls        list providers that have a key (names only, never values)
+    rm        remove a provider's key file
 
 options:
-  -h, --help          show this help message and exit
+  -h, --help  show this help message and exit
 
 examples:
   ab keys rotate claude

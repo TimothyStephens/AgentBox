@@ -228,3 +228,55 @@ class ProjectRmTest(SettingsCase):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class HelpIsOrderedForPeople(SettingsCase):
+    """`--help` lists the everyday commands first, in the order a user meets them, and keeps the host-setup
+    and repair ones in an `advanced` section underneath (10 Nov). argparse lists subcommands in insertion
+    order, so the order is the parser's; the advanced ones are taken out of the listed block and still parse."""
+
+    def block(self, out):
+        """The listed-commands block of a help text: between the positional header and `options:`."""
+        return out.split("options:")[0]
+
+    def test_top_level_everyday_then_advanced(self):
+        code, out = self.ab("--help")
+        self.assertEqual(code, 0, out)
+        listed = self.block(out)
+        order = [listed.index(f"\n    {n} ") for n in ("project", "session", "screen")]
+        self.assertEqual(order, sorted(order), "project, session, screen, in that order")
+        for n in ("profile", "image", "keys"):
+            self.assertNotIn(f"\n    {n} ", listed, f"{n} is advanced, not in the everyday block")
+        adv = out.split("advanced commands")[1]
+        for n in ("profile", "image", "keys"):
+            self.assertIn(f"\n  {n} ", adv)
+        self.assertNotIn("SUPPRESS", out)
+
+    def test_project_verbs_in_the_order_a_user_meets_them(self):
+        code, out = self.ab("project", "--help")
+        self.assertEqual(code, 0, out)
+        listed = self.block(out)
+        everyday = ["init", "add", "ls", "show", "set", "rm"]
+        pos = [listed.index(f"\n    {n} ") for n in everyday]
+        self.assertEqual(pos, sorted(pos), everyday)
+        adv = out.split("advanced verbs")[1]
+        for n in ("check", "selftest", "accept-grant-exposure", "accept-history-secrets", "reset-state", "purge"):
+            self.assertNotIn(f"\n    {n} ", listed, n)
+            self.assertIn(f"\n  {n} ", adv, n)
+
+    def test_session_and_screen_verbs(self):
+        code, out = self.ab("session", "--help")
+        listed = self.block(out)
+        pos = [listed.index(f"\n    {n} ") for n in ("start", "attach", "ls", "kill")]
+        self.assertEqual(pos, sorted(pos))
+        self.assertIn("preview", out.split("advanced verbs")[1])
+        code, out = self.ab("screen", "--help")
+        self.assertIn("layouts", out.split("advanced verbs")[1])
+        self.assertNotIn("\n    layouts ", self.block(out))
+
+    def test_advanced_commands_still_parse(self):
+        for argv in (("project", "purge", "--help"), ("project", "check", "--help"), ("session", "gc", "--help"),
+                     ("screen", "config"), ("keys", "ls"), ("profile", "harvest", "--help")):
+            with self.subTest(argv=argv):
+                code, out = self.ab(*argv)
+                self.assertEqual(code, 0, out)
