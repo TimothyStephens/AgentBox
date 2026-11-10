@@ -228,7 +228,7 @@ class Step3(unittest.TestCase):
         # sessions are named after the project's real path
         encoded = root.strip("/").replace("/", "-")
         self.assertTrue(any(encoded in d for d in sessions.split()), f"{encoded!r} not in {sessions.split()}")
-        state = os.path.join(ENV.data, "o1", "omp", "agent", "sessions")
+        state = os.path.join(ENV.data, "projects", "o1", "omp", "agent", "sessions")
         self.assertTrue(any(encoded in d for d in os.listdir(state)), "session history kept on the host")
         self.assertNoKeys(p.stdout, p.stderr)
 
@@ -267,7 +267,7 @@ class Step3(unittest.TestCase):
                                 hits.append(os.path.relpath(os.path.join(dirpath, fn), harness.BASE))
                     except OSError:
                         pass
-        state_logs = os.path.join(ENV.data, "o1", "omp", "logs")
+        state_logs = os.path.join(ENV.data, "projects", "o1", "omp", "logs")
         print("omp logs kept:", sorted(os.path.relpath(os.path.join(d, f), state_logs)
                                        for d, _, fs in os.walk(state_logs) for f in fs)[:20])
         self.assertEqual(hits, [], "a key was written at rest on the error path")

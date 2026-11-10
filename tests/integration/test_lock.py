@@ -35,7 +35,7 @@ def tearDownModule():
 
 
 def lock_path(project):
-    return os.path.join(ENV.data, project, "session.lock")
+    return os.path.join(ENV.data, "projects", project, "session.lock")
 
 
 def read_lock(project):

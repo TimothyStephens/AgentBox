@@ -115,7 +115,7 @@ class OmpIsolation(unittest.TestCase):
         tree = ompfake.tree_path(ENV.cfg)
         host_hits = subprocess.run(["grep", "-rlF", LOGMARK, tree], capture_output=True, text=True).stdout.strip()
         self.assertEqual(host_hits, "", f"the log write reached the installed tree:\n{host_hits}")
-        proj_log = os.path.join(ENV.data, "ompiso", "omp", "logs", "iso-probe.txt")
+        proj_log = os.path.join(ENV.data, "projects", "ompiso", "omp", "logs", "iso-probe.txt")
         self.assertTrue(os.path.isfile(proj_log), "the write landed in the per-project state dir")
         with open(proj_log) as f:
             self.assertIn(LOGMARK, f.read())

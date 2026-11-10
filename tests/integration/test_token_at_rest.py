@@ -82,7 +82,7 @@ class TokenAtRest(unittest.TestCase):
                                 hits.append(os.path.relpath(path, harness.BASE))
                     except OSError:
                         pass
-        state = os.path.join(ENV.data, "rest", "claude")
+        state = os.path.join(ENV.data, "projects", "rest", "claude")
         print("claude state files:", sorted(os.path.relpath(os.path.join(d, f), state)
                                              for d, _, fs in os.walk(state) for f in fs)[:40])
         self.assertEqual(hits, [], "token found at rest")

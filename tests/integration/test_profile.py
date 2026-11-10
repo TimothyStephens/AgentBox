@@ -130,7 +130,7 @@ class Profile(unittest.TestCase):
         """)
         self.assertIn("WROTE=0", p.stdout, p.stderr[-1500:])
         self.assertIn("1", p.stdout.strip().splitlines()[-1], "the agent was told")
-        self.assertFalse(os.path.exists(os.path.join(ENV.data, "proflock", "claude", "inbox", "gone")))
+        self.assertFalse(os.path.exists(os.path.join(ENV.data, "projects", "proflock", "claude", "inbox", "gone")))
         self.assertFalse([n for n in os.listdir(os.path.join(ENV.data, "ephemeral"))
                           if os.path.isdir(os.path.join(ENV.data, "ephemeral", n))]
                          if os.path.isdir(os.path.join(ENV.data, "ephemeral")) else [],
@@ -150,9 +150,9 @@ class Profile(unittest.TestCase):
         """)
         self.assertIn("kept across sessions", second.stdout, "the inbox survived the session")
         self.assertNotIn("learned", second.stdout.split("\n")[-2], "and is not under a load path")
-        host = os.path.join(ENV.data, "prof1", "claude", "inbox", "learned")
+        host = os.path.join(ENV.data, "projects", "prof1", "claude", "inbox", "learned")
         self.assertTrue(os.path.isdir(host), host)
-        with open(os.path.join(ENV.data, "prof1", "claude", "inbox", "learned.provenance.json")) as f:
+        with open(os.path.join(ENV.data, "projects", "prof1", "claude", "inbox", "learned.provenance.json")) as f:
             doc = json.load(f)
         self.assertEqual((doc["project"], doc["agent"], doc["reviewed"]), ("prof1", "claude", False))
         self.assertTrue(doc["session"].startswith(f"abt-{harness.RUN}-claude-prof1-"), doc)
@@ -246,7 +246,7 @@ class Profile(unittest.TestCase):
                                f"echo 'worked this out' > {OMP_AGENT}/managed-skills/abt-learned/SKILL.md && "
                                f"echo WROTE=$?")
         self.assertIn("WROTE=0", first.stdout, first.stderr[-2000:])
-        inbox = os.path.join(ENV.data, "prof1", "omp", "inbox")
+        inbox = os.path.join(ENV.data, "projects", "prof1", "omp", "inbox")
         self.assertTrue(os.path.isdir(os.path.join(inbox, "learned-abt-learned")), os.listdir(inbox))
         with open(os.path.join(inbox, "learned-abt-learned.provenance.json")) as f:
             doc = json.load(f)
@@ -267,7 +267,7 @@ class Profile(unittest.TestCase):
                    "-c", "mkdir -p ~/.omp/agent/inbox/omp-learned && echo note > "
                          "~/.omp/agent/inbox/omp-learned/note.md && echo WROTE=$?", timeout=600)
         self.assertIn("WROTE=0", p.stdout, p.stderr[-2000:])
-        host = os.path.join(ENV.data, "prof1", "omp", "inbox", "omp-learned")
+        host = os.path.join(ENV.data, "projects", "prof1", "omp", "inbox", "omp-learned")
         self.assertTrue(os.path.isdir(host), host)
         out = ENV.ab("profile", "harvest", "--agent", "omp", check=True).stdout
         self.assertIn("omp-learned", out)
