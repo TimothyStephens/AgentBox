@@ -2652,3 +2652,35 @@ excludes. The clause is gone. `test_mounts ... test_a_dev_swap_in_a_read_only_gr
 **Why.** Found while building reviewer projects (the `review-of` branch, not merged: Tim chose a separate
 clone instead). It only ever produced warnings, because `data_ro` findings never refuse, which is likely why
 it went unnoticed. **Audit rule change:** the grant scan treats a read-only swap as covering its target.
+
+## 2026-11-11 · Reviewer projects are separate clones, synced on the host (`--reviews`, `ab project sync`)
+
+**What.** A project key `reviews = "<builder>"` and `agentbox/review.py`. `ab project add <name> --reviews
+<builder> --preset P` clones the builder's repository next to its root (`<parent of builder root>/<name>`)
+unless a root is given (the root positional is optional only with `--reviews`), puts `/reviews/` in the
+clone's `.git/info/exclude`, and registers it; if registration then fails, the clone it made is removed. An
+existing directory is reused only if it is a clone whose `origin` is the builder's root. `ab project sync
+<reviewer | builder> [--branch B]` (an everyday verb): refuse tracked changes in the clone; `git fetch
+--prune origin`; `git checkout --detach origin/<builder's current branch>`; copy the reviewer's
+`reviews/*.md` to the builder's `.review/` and note when `.review/` is not ignored there. Allowed while
+either session is live. `review.check` at add/set/sync: builder registered, not itself a reviewer, this
+project nobody's builder, root's origin is the builder's root. `ab project rm` refuses a builder with
+reviewers and prints the clone's path for a removed reviewer (rm never deletes files). Session notes tell a
+reviewer what it is, that it cannot fetch, and where reviews go. `reviews` is not security-relevant: it
+grants nothing in a session.
+
+**Why.** Tim (11 Nov) decided against the read-only shared-root design (`review_of`, branch `review-of`,
+not merged) in favour of "a review project having a separate repo which periodically syncs across", with
+reviews handed to the builder as files, and asked for the sync to be part of `ab` rather than a script.
+A separate clone needs no grant-rule exception: the two projects overlap nothing. A shared hand-over
+directory was not an option: the builder reading what the reviewer writes is the overlap F3 refuses, so the
+host copies instead. Placing clones in agentbox's data dir was not an option either (a protected path no
+grant may enter), and /tmp loses reviews at reboot, so the clone sits next to the builder. Fetch plus a
+detached checkout rather than `pull`: the reviewer never commits code, so nothing can conflict.
+
+**Host-side safety (new surface: the host now runs git in, and copies between, two agent-written trees).**
+git: `core.hooksPath=/dev/null`, `core.fsmonitor=false`, no submodule recursion, `origin` re-confirmed
+before each fetch. Copy: directory fds opened `O_NOFOLLOW|O_DIRECTORY`, files opened `O_NOFOLLOW` relative to
+them, `S_ISREG` and a 1 MB cap checked on the open fd, destination opened `O_NOFOLLOW` too; nothing deleted.
+Each is mutation-checked in tests/unit/test_review.py (the one surviving mutant, dropping `--detach`, is
+equivalent: checking out a remote-tracking ref detaches anyway).

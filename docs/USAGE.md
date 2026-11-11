@@ -78,6 +78,9 @@ positional arguments:
               refused while a session for it is live)
     rm        remove one or more projects from the registry (files, state and
               backups are untouched)
+    sync      bring a reviewer's clone to its builder's last commit and hand
+              the reviewer's reviews to the builder (host side; neither agent
+              can reach the other's tree)
 
 options:
   -h, --help  show this help message and exit
@@ -119,6 +122,7 @@ usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
                        [--podman TIER] [--compose-project NAME]
                        [--dev-image PATTERN] [--swap TARGET=STANDIN]
                        [--toulmin | --no-toulmin] [--mount MODE]
+                       [--reviews BUILDER]
                        [--observe-logs | --no-observe-logs]
                        [--accept-history-secrets]
                        [--i-understand-grant-exposure] [--reattach | --fresh]
@@ -226,6 +230,12 @@ options:
                         untracked (the default when --toulmin is on and the
                         root is a git repository; the clone stays under the
                         project's directory until `ab project clean`)
+  --reviews BUILDER     make this a reviewer of project BUILDER: its root is a
+                        clone of BUILDER's repository (`ab project add` makes
+                        one next to BUILDER's root when no root is given),
+                        which `ab project sync` brings to BUILDER's last
+                        commit, handing the reviewer's reviews/*.md to
+                        BUILDER's .review/
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -263,10 +273,10 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--toulmin | --no-toulmin] [--mount MODE]
-                      [--observe-logs | --no-observe-logs]
+                      [--reviews BUILDER] [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
-                      name root
+                      name [root]
 
 register a project with a preset (validated against overlap and grant exposure)
 
@@ -275,7 +285,8 @@ positional arguments:
                         digits, '-' or '_')
   root                  path to the project's code directory — the read-write
                         grant; must exist and not overlap another project or a
-                        protected path
+                        protected path. Optional with --reviews: a clone of
+                        the builder is made next to the builder's root
 
 options:
   -h, --help            show this help message and exit
@@ -367,6 +378,12 @@ options:
                         untracked (the default when --toulmin is on and the
                         root is a git repository; the clone stays under the
                         project's directory until `ab project clean`)
+  --reviews BUILDER     make this a reviewer of project BUILDER: its root is a
+                        clone of BUILDER's repository (`ab project add` makes
+                        one next to BUILDER's root when no root is given),
+                        which `ab project sync` brings to BUILDER's last
+                        commit, handing the reviewer's reviews/*.md to
+                        BUILDER's .review/
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -392,6 +409,7 @@ examples:
   ab project add dataproc ~/repos/dataproc --preset script --data-ro ~/data/raw --data-rw ~/data/out
   ab project add notes ~/repos/notes --preset research
   ab project add svc ~/repos/svc --preset build-open --podman dev
+  ab project add web-review --reviews web --preset script   clone web to ~/repos/web-review
 ```
 
 ### `ab project ls`
@@ -441,7 +459,7 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--toulmin | --no-toulmin] [--mount MODE]
-                      [--observe-logs | --no-observe-logs]
+                      [--reviews BUILDER] [--observe-logs | --no-observe-logs]
                       [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
@@ -546,6 +564,12 @@ options:
                         untracked (the default when --toulmin is on and the
                         root is a git repository; the clone stays under the
                         project's directory until `ab project clean`)
+  --reviews BUILDER     make this a reviewer of project BUILDER: its root is a
+                        clone of BUILDER's repository (`ab project add` makes
+                        one next to BUILDER's root when no root is given),
+                        which `ab project sync` brings to BUILDER's last
+                        commit, handing the reviewer's reviews/*.md to
+                        BUILDER's .review/
   --observe-logs, --no-observe-logs
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
@@ -562,7 +586,7 @@ options:
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
                         dev_images, mask_skip, swap, mask, toulmin, mount,
-                        base_branch, build_memory, profile
+                        reviews, base_branch, build_memory, profile
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains
@@ -945,7 +969,8 @@ open a project's workspace: agent panes (each an `ab session start`) and host sh
 
 positional arguments:
   builder               the builder project (registered)
-  reviewer              a reviewer project (registered; a separate clone)
+  reviewer              a reviewer project (registered; a separate clone: `ab
+                        project add <name> --reviews <builder>`)
 
 options:
   -h, --help            show this help message and exit

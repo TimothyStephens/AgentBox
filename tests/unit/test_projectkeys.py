@@ -18,7 +18,7 @@ EXPECTED_KEYS = {
     "root", "preset",
     "compose", "egress", "podman", "caps", "secrets", "approvals", "data",
     "data_ro", "data_rw", "extra_domains", "compose_project", "observe_logs", "dev_images",
-    "mask_skip", "swap", "mask", "toulmin", "mount", "build_memory", "profile", "base_branch",
+    "mask_skip", "swap", "mask", "toulmin", "mount", "reviews", "build_memory", "profile", "base_branch",
     "history_secrets_accepted", "grant_exposure_accepted",
 }
 

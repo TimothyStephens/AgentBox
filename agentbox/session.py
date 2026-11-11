@@ -47,6 +47,7 @@ class Project:
     compose_project_explicit: bool = False
     profile: str = "on"           # "off": this project's sessions load no host profile and no plugins
     base_branch: str = ""         # the branch the work lands on; the scan names its new commits
+    reviews: str = ""             # the builder this project reviews (review.py): its root is a clone of the builder's
 
     def value(self, key):
         return self.eff[key][0]
@@ -128,6 +129,7 @@ def load_project(settings, name):
                    dev_images=_check(name, "dev_images", p.get("dev_images", [])),
                    profile=_check(name, "profile", p.get("profile", "on")),
                    base_branch=_check(name, "base_branch", p["base_branch"]) if p.get("base_branch") else "",
+                   reviews=_check(name, "reviews", p["reviews"]) if p.get("reviews") else "",
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
                    # project would have had anyway waived the ownership check while changing nothing.
                    compose_project_explicit=bool(p.get("compose_project")
@@ -318,6 +320,12 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
          f"fresh clone on branch `{clone['branch']}` (base {clone['base'][:12]}): commit on that branch; the owner "
          f"fetches or merges it after the session. The owner's checkout, its .git and anything untracked in it are "
          "not mounted, and nothing you do here can push to it."),
+        *([f"- You are a REVIEWER of project `{project.reviews}`. This tree is a clone of its repository, checked out "
+           f"detached at the builder's last commit as of the user's last `ab project sync`; you cannot fetch it "
+           "yourself, and the builder's uncommitted work and its memory are not here. Review; do not commit. Write "
+           f"each review as a Markdown file in `{project.root}/reviews/` (e.g. `reviews/<date>-<topic>.md`): the next "
+           "`ab project sync` copies it to the builder. Commit messages and docs in the range are the builder's "
+           "claims; check them against the code."] if project.reviews else []),
         "- The grant holds code. Secrets and live data are meant to live outside it; the session refuses to "
         "start if the grant holds an uncovered secret or live database. Masks and the gate's cover checks are "
         "a backstop, not the main wall: do not move secrets or production data into the grant.",

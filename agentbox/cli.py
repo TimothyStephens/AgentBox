@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-from . import adapters, config, keys, layout, presets, projectkeys, registry, session, tokens
+from . import adapters, config, keys, layout, presets, projectkeys, registry, review, session, tokens
 from .config import HOME
 from .errors import AgentboxError
 from . import paths
@@ -115,6 +115,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["toulmin"] = a.toulmin
     if getattr(a, "mount", None):
         entry["mount"] = _check(a.name, "mount", a.mount)
+    if getattr(a, "reviews", None):
+        entry["reviews"] = _check(a.name, "reviews", a.reviews)
     if a.podman:
         entry["podman"] = {"tier": a.podman}
     if a.compose_project:
@@ -259,6 +261,7 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
             entry[key] = [check_grant(d, kind=key, **grant_kw) for d in entry[key]]
     presets.effective(name, entry, presets_map)
     paths.check_overlaps(name, entry, reg)
+    review.check(name, entry, reg)
     from . import grantcheck
     exposure, warnings, _fp = grantcheck.preflight(s, name, entry)
     for w in warnings:
@@ -276,6 +279,31 @@ def cmd_project_add(s, a):
         raise AgentboxError(f"project {a.name} already exists")
     presets_map = presets.load_presets(s.presets_dir)
     grant_kw = _grant_kw(s)
+    made_clone = None
+    if getattr(a, "reviews", None):
+        # A reviewer (review.py): its root is a clone of the builder's repository, made here when it is not
+        # there yet -- next to the builder's root unless a root is given.
+        if a.reviews not in reg:
+            raise AgentboxError(f"--reviews {a.reviews}: no project named {a.reviews}; register the builder first")
+        root = a.root or review.default_root(reg[a.reviews]["root"], a.name)
+        if review.make_clone(reg[a.reviews]["root"], root):
+            made_clone = os.path.abspath(os.path.expanduser(root))
+            print(f"cloned {a.reviews} ({reg[a.reviews]['root']}) to {made_clone}")
+        a.root = root
+    elif not a.root:
+        raise AgentboxError("ab project add: a root is required (it is optional only with --reviews, where it "
+                            "defaults to a clone next to the builder)")
+    try:
+        _add_registered(s, a, reg, presets_map, grant_kw)
+    except BaseException:
+        if made_clone:
+            import shutil
+            shutil.rmtree(made_clone, ignore_errors=True)
+            warn(f"ab: removed the clone {made_clone} made for {a.name}, since it was not registered")
+        raise
+
+
+def _add_registered(s, a, reg, presets_map, grant_kw):
     entry = {"root": check_grant(a.root, kind="root", **grant_kw)}
     cleared = _apply_project_settings(entry, a, grant_kw, presets_map)
     # `ab project rm` keeps the agent state, so adding the same name back picks it up. Right for the same
@@ -490,7 +518,8 @@ def _print_effective(s, name):
                 "mask_skip": p.mask_skip, "extra_domains": p.extra_domains, "swap": p.swap,
                 "compose_project": p.compose_project, "observe_logs": p.observe_logs,
                 "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
-                "profile": p.profile, "base_branch": p.base_branch,
+                "profile": p.profile, "base_branch": p.base_branch, "reviews": p.reviews,
+                "toulmin": p.toulmin, "mount": p.mount,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
@@ -798,6 +827,21 @@ def cmd_project_purge(s, a):
     return 0
 
 
+def cmd_project_sync(s, a):
+    """`ab project sync`: review.sync for one reviewer, or for every reviewer of a builder. Allowed while
+    either project has a live session: bringing the reviewer up to date mid-session is the point."""
+    reg = registry.load(s.registry_path)
+    if a.name not in reg:
+        raise AgentboxError(f"no project named {a.name}; `ab project ls` lists them")
+    targets = [a.name] if reg[a.name].get("reviews") else review.reviewers_of(reg, a.name)
+    if not targets:
+        raise AgentboxError(f"{a.name} is not a reviewer and has none; make one with "
+                            f"`ab project add {a.name}-review --reviews {a.name} --preset <p>`")
+    for t in targets:
+        review.sync(reg, t, branch=a.branch)
+    return 0
+
+
 def cmd_project_clean(s, a):
     """Remove a project's per-session clones (clone mode) that no live session uses."""
     import shutil
@@ -833,10 +877,19 @@ def cmd_project_rm(s, a):
     if missing:                                  # all-or-nothing: a typo in one name removes none
         raise AgentboxError(f"no project named {', '.join(missing)}")
     _refuse_if_live(s, names, f"remove {', '.join(names)}")   # all-or-nothing here too
+    orphans = sorted(f"{r} (reviews {e['reviews']})" for r, e in reg.items()
+                     if e.get("reviews") in names and r not in names)
+    if orphans:
+        raise AgentboxError(f"cannot remove {', '.join(names)}: {', '.join(orphans)} still review it. Remove the "
+                            "reviewer too, or `ab project set <reviewer> --unset reviews` first")
+    clones = [(n, reg[n]["root"]) for n in names if reg[n].get("reviews")]
     for n in names:
         del reg[n]
     registry.save(s.registry_path, reg)
     print(f"removed project {', '.join(names)} from the registry (files, state and backups are untouched)")
+    for n, root in clones:
+        print(f"  {n} was a reviewer: its clone {root} is still there, with any reviews under "
+              f"{review.REVIEWS_DIR}/. Delete it when you are done: rm -rf {root}")
     for n in names:
         lines, unreviewed = _state_summary(s, n)
         for line in lines:
@@ -1137,6 +1190,11 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                         "mounts your checkout, its .git or anything untracked (the default when --toulmin "
                         "is on and the root is a git repository; the clone stays under the project's "
                         "directory until `ab project clean`)")
+    x.add_argument("--reviews", metavar="BUILDER",
+                   help="make this a reviewer of project BUILDER: its root is a clone of BUILDER's repository "
+                        "(`ab project add` makes one next to BUILDER's root when no root is given), which "
+                        "`ab project sync` brings to BUILDER's last commit, handing the reviewer's reviews/*.md "
+                        "to BUILDER's .review/")
     x.add_argument("--observe-logs", action=argparse.BooleanOptionalAction, default=None,
                    help="let the observe tier read the live stack's logs (default: off; logs can hold "
                         "secrets, and what the agent reads goes to its model provider)")
@@ -1254,10 +1312,13 @@ def parser(settings=None):
             ex("ab project add web ~/repos/web --preset build",
                "ab project add dataproc ~/repos/dataproc --preset script --data-ro ~/data/raw --data-rw ~/data/out",
                "ab project add notes ~/repos/notes --preset research",
-               "ab project add svc ~/repos/svc --preset build-open --podman dev"))
+               "ab project add svc ~/repos/svc --preset build-open --podman dev",
+               "ab project add web-review --reviews web --preset script   clone web to ~/repos/web-review"))
     x.add_argument("name", help="a short name for the project (lower-case letters, digits, '-' or '_')")
-    x.add_argument("root", help="path to the project's code directory — the read-write grant; must exist and "
-                                "not overlap another project or a protected path")
+    x.add_argument("root", nargs="?",
+                   help="path to the project's code directory — the read-write grant; must exist and not overlap "
+                        "another project or a protected path. Optional with --reviews: a clone of the builder "
+                        "is made next to the builder's root")
     _add_project_setting_args(x, preset_required=True, preset_choices=preset_choices,
                               presets_map=presets_map)
     _add_identity_args(x)
@@ -1285,6 +1346,16 @@ def parser(settings=None):
     x.add_argument("name", nargs="+", help="one or more registered project names (all-or-nothing: a bad name "
                                            "removes none)")
     x.set_defaults(fn=cmd_project_rm)
+
+    x = add(proj, "sync", "bring a reviewer's clone to its builder's last commit and hand the reviewer's "
+                          "reviews to the builder (host side; neither agent can reach the other's tree)",
+            ex("ab project sync web-review                 fetch, check out web's branch detached, copy reviews",
+               "ab project sync web                        every reviewer of web",
+               "ab project sync web-review --branch feature-x"))
+    x.add_argument("name", help="a reviewer project (`--reviews`), or a builder to sync all its reviewers")
+    x.add_argument("--branch", metavar="BRANCH",
+                   help="the builder's branch to check out (default: the branch the builder is on)")
+    x.set_defaults(fn=cmd_project_sync)
 
     x = add(proj, "check",
             "show what the grant scan finds now and whether it matches what was accepted (read-only)",

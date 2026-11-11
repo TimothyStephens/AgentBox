@@ -556,7 +556,8 @@ def add_verbs(scr, add, ex):
             ex("ab screen start web", "ab screen start web web-review --layout wide",
                "ab screen start web --agent omp", "ab screen start web --dry-run   print the tmux commands"))
     x.add_argument("builder", help="the builder project (registered)")
-    x.add_argument("reviewer", nargs="?", help="a reviewer project (registered; a separate clone)")
+    x.add_argument("reviewer", nargs="?", help="a reviewer project (registered; a separate clone: "
+                                                "`ab project add <name> --reviews <builder>`)")
     x.add_argument("--agent", choices=adapters.NAMES, default="claude",
                    help="the agent the agent panes start (default: claude; a pane's own `agent` key wins)")
     x.add_argument("--layout", help="layout name (default: the config's `default`, usually auto)")

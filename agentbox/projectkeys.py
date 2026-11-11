@@ -157,6 +157,13 @@ KEYS = (
     _key("mount", kind="project", arity="scalar", flags=("--mount",), dest="mount", validate="mount_mode",
          values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
          inert_reason=""),
+    # A reviewer project (review.py; decisions.md, 11 Nov 2026): this project's root is a clone of the named
+    # builder's repository, which `ab project sync` brings up to date and hands the reviews back from. NOT
+    # security-relevant: it grants nothing inside a session (the clone is an ordinary root that overlaps
+    # nothing); it only tells the host-side sync where to fetch from and copy to.
+    _key("reviews", kind="project", arity="scalar", flags=("--reviews",), dest="reviews",
+         validate="project_name", values=(), security=False, clears=False, unsettable=True,
+         display="stored", inert="", inert_reason=""),
     # The branch the project's work lands on, so the end-of-session scan can name that branch's new
     # commits one by one instead of reporting a count. NOT security-relevant: it changes what the scan
     # REPORTS and grants nothing, so a ceiling preset must not refuse it.
@@ -438,6 +445,16 @@ def _mount_mode(name, where, value, **_kw):
     return value
 
 
+PROJECT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")    # registry.NAME (registry imports this module)
+
+
+def _project_name(name, where, value, **_kw):
+    """A project name; that it is a registered builder is review.check's job, with the registry in hand."""
+    if not isinstance(value, str) or not PROJECT_NAME.match(value):
+        raise AgentboxError(f"{where}: {name} {value!r}: a project name (lower-case letters, digits, '-', '_')")
+    return value
+
+
 def _name_list(name, where, value, **_kw):
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
         raise AgentboxError(f"{where}: {name} must be a list of names")
@@ -513,6 +530,7 @@ VALIDATORS = {
     "rel_names": _rel_names,
     "mask_paths": _mask_paths,
     "mount_mode": _mount_mode,
+    "project_name": _project_name,
     "name_list": _name_list,
     "fingerprint": _fingerprint,
     "swap": _swap,
