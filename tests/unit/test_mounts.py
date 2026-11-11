@@ -39,6 +39,21 @@ class MountPlanTest(TempCase):
         self.assertFalse(m[".env"].ro)
         self.assertEqual(m["sub/.env"].src, os.path.join(self.root, "sub", ".env.dev"))
 
+    def test_a_dev_swap_in_a_read_only_grant_hides_its_target(self):
+        """The agent sees the stand-in whether the swap mount is read-only or not, so the grant scan must not
+        report the real .env behind it (11 Nov: `hidden` required `not m.ro`, which no read-only cover needs --
+        they all bind a path onto itself)."""
+        ref = self.mkdir("ref")
+        self.write("ref/.env", "REAL=1\n")
+        self.write("ref/.env.dev", "DEV=1\n")
+        p = mounts.plan(root=self.root, data_ro=[ref])
+        env = os.path.join(ref, ".env")
+        swap = next(m for m in p.mounts if m.dst == env)
+        self.assertEqual((swap.kind, swap.ro), ("bind", True))
+        self.assertIn(os.path.realpath(env), mounts.hidden(p))
+        self.assertNotIn(os.path.realpath(os.path.join(self.root, ".git", "hooks")), mounts.hidden(p),
+                         "a read-only cover is still readable, so still not hidden")
+
     def test_dev_swap_creates_missing_env(self):
         root = self.mkdir("proj2")
         self.write("proj2/.env.dev", "A=1\n")

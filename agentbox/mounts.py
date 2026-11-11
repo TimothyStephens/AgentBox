@@ -320,7 +320,10 @@ def hidden(plan):
     for m in plan.mounts:
         if m.kind in ("mask", "tmpfs"):
             out.add(os.path.realpath(m.dst))
-        elif m.kind == "bind" and not m.ro and os.path.realpath(m.src) != os.path.realpath(m.dst):
+        elif m.kind == "bind" and os.path.realpath(m.src) != os.path.realpath(m.dst):
+            # A dev-swap: the agent sees the stand-in, read-only or not. (This said `not m.ro` from 28 Oct
+            # to 11 Nov, meaning to exclude the read-only covers -- but those all bind a path onto itself, so
+            # the src/dst test already does, and a swap in a data_ro grant was reported as the secret.)
             out.add(os.path.realpath(m.dst))
     return sorted(out)
 

@@ -2639,3 +2639,16 @@ contract's deviations and the artifacts are in `docs/toulmin/artifacts-stub-2026
 **Not verified in this sandbox (no podman):** the agent's in-container view and the `podman inspect` grep;
 `tests/integration/test_toulmin.py` produces them on the host. The OMP subprocess-environment probe is
 `make omp-env-probe`. `make itest` has not run for this branch.
+
+## 2026-11-11 · `mounts.hidden`: a dev-swap in a read-only grant hides its target too
+
+**What.** `mounts.hidden` counted a dev-swap bind as hiding the real file behind it only when the bind was
+writable (`not m.ro`, since 3f96aa8). A `data_ro` grant with `.env` and `.env.dev` binds the stand-in
+read-only, so the grant scan reported the real `.env` as an unmasked secret although the agent sees the
+stand-in. The clause meant to keep the read-only covers (`.git/hooks`, `.git/config`, compose files) out of
+the hidden set, but every one of them binds a path onto itself, which the `src != dst` test already
+excludes. The clause is gone. `test_mounts ... test_a_dev_swap_in_a_read_only_grant_hides_its_target`.
+
+**Why.** Found while building reviewer projects (the `review-of` branch, not merged: Tim chose a separate
+clone instead). It only ever produced warnings, because `data_ro` findings never refuse, which is likely why
+it went unnoticed. **Audit rule change:** the grant scan treats a read-only swap as covering its target.
