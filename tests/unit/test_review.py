@@ -125,7 +125,24 @@ class Sync(ReviewerCase):
             self.assertIn("scope creep", f.read())
         self.assertIn("handed to build: .review/2026-11-11-feature.md", out)
         self.assertIn(".review/ is not ignored", out)
+        self.assertNotIn("clone mode", out)
         self.assertTrue(os.path.exists(os.path.join(self.r, "reviews", "2026-11-11-feature.md")), "nothing deleted")
+
+    def test_a_clone_mode_builder_is_named_with_its_session_clones(self):
+        """Clone mode: the builder's sessions commit in per-session clones, so the root the sync fetches from
+        holds only what the owner has brought in. The note names the clones and the way to review one."""
+        code, out = self.ab("project", "set", "build", "--mount", "clone")
+        self.assertEqual(code, 0, out)
+        clones = self.settings.clones_dir("build")
+        os.makedirs(os.path.join(clones, "ab-claude-build-1", ".git"))
+        os.makedirs(os.path.join(clones, "not-a-clone"))
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"build runs in clone mode: its sessions commit on branch agentbox/<session> in {clones}/", out)
+        self.assertIn("clones there now: ab-claude-build-1", out)
+        self.assertNotIn("not-a-clone", out)
+        self.assertIn(f"git -C {self.b} fetch {clones}/<session> agentbox/<session>:agentbox/<session>", out)
+        self.assertIn("`ab project sync build-review --branch agentbox/<session>`", out)
 
     def test_a_builder_name_syncs_its_reviewers_and_branch_is_honoured(self):
         git(self.b, "checkout", "-qb", "feature-x")

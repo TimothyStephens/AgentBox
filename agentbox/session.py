@@ -62,6 +62,14 @@ def _inside(path, parent):
     return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
+def mount_mode_of(root, mount, toulmin):
+    """The rule behind Session.mount_mode, for callers that hold a registry entry rather than a session
+    (review.sync): the stored `mount` wins; otherwise clone when Toulmin is on and the root is a git repository."""
+    if mount:
+        return mount
+    return "clone" if toulmin and os.path.isdir(os.path.join(root, ".git")) else "checkout"
+
+
 def clone_root(settings, project_name, session, root):
     """Clone mode: `git clone --no-hardlinks <root> projects/<name>/clones/<session>/`, then a session branch.
     Returns {"clone", "branch", "base"}; base is the commit the clone was made from. The clone is kept after
@@ -549,9 +557,7 @@ class Session:
         stored `mount` wins; otherwise clone when Toulmin is on and the root is a git repository (the
         contract's default), checkout for everything else (non-git roots, projects without the integration)."""
         p = self.project
-        if p.mount:
-            return p.mount
-        return "clone" if p.toulmin and os.path.isdir(os.path.join(p.root, ".git")) else "checkout"
+        return mount_mode_of(p.root, p.mount, p.toulmin)
 
     @property
     def token_file(self):

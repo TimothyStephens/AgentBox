@@ -50,9 +50,13 @@ omp-live:
 # Run by Tim, not by the builder: learns OMP's plugin/marketplace CLI and WHERE an installed plugin lands,
 # which is what `ab profile install` has to drive and mount. It runs inside a throwaway session -- `~/.omp`
 # is a tmpfs there -- so nothing it installs touches the host. Reads nothing of the host's ~/.omp
-# (--no-profile). AB_PROBE_PROJECT=<registered project> to choose where it runs (default agentbox).
-AB_PROBE_PROJECT ?= agentbox
-omp-plugin-probe:
+# (--no-profile). AB_PROBE_PROJECT=<registered project with no running session> says where it runs; there is
+# no default, because the session lock refuses a project that is live and no one name is right on every host.
+AB_PROBE_PROJECT ?=
+probe-project:
+	@test -n "$(AB_PROBE_PROJECT)" || { \
+	  echo "set AB_PROBE_PROJECT=<registered project with no running session>, e.g. AB_PROBE_PROJECT=web make $(MAKECMDGOALS); \`ab project ls\` lists them"; exit 2; }
+omp-plugin-probe: probe-project
 	@echo "probe: omp plugin CLI and install layout, in a session (nothing on the host changes)"
 	python3 -m agentbox session start omp $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
 	  < tests/manual/omp_plugin_probe.sh 2>&1 | tee /tmp/omp-plugin-probe.log
@@ -61,7 +65,7 @@ omp-plugin-probe:
 
 # Run by Tim, not by the builder: which environment variables OMP sets in its subprocesses (Toulmin contract,
 # 3.5). Runs inside a throwaway OMP session; nothing on the host changes. AB_PROBE_PROJECT as above.
-omp-env-probe:
+omp-env-probe: probe-project
 	@echo "probe: OMP's subprocess environment, in a session (nothing on the host changes)"
 	python3 -m agentbox session start omp $(AB_PROBE_PROJECT) --no-profile --shell --no-tty \
 	  < tests/manual/omp_env_probe.sh 2>&1 | tee /tmp/omp-env-probe.log

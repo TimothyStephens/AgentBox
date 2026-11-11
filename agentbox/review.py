@@ -167,9 +167,29 @@ def hand_over(reviewer_root, builder_root):
     return copied, skipped
 
 
-def sync(reg, reviewer, *, branch=None, out=print):
+def _note_clone_mode(bentry, builder, broot, reviewer, clones_dir, out):
+    """A builder in clone mode (session.mount_mode_of) commits in per-session clones, not in its root, so a
+    sync of the root shows the reviewer only what the owner has fetched into it. Say so and name the clones."""
+    from . import session as sessionmod
+    if sessionmod.mount_mode_of(broot, bentry.get("mount", ""), bool(bentry.get("toulmin"))) != "clone":
+        return
+    where = clones_dir or f"<data dir>/projects/{builder}/clones"
+    names = []
+    if clones_dir and os.path.isdir(clones_dir):
+        names = sorted(n for n in os.listdir(clones_dir) if os.path.isdir(os.path.join(clones_dir, n, ".git")))
+    out(f"  note: {builder} runs in clone mode: its sessions commit on branch agentbox/<session> in "
+        f"{where}/<session>/, not in {broot}, so this sync shows only what {broot} holds")
+    if names:
+        out(f"  clones there now: {', '.join(names)}")
+    out(f"  to review one: git -C {broot} fetch {where}/<session> agentbox/<session>:agentbox/<session>, then "
+        f"`ab project sync {reviewer} --branch agentbox/<session>`")
+
+
+def sync(reg, reviewer, *, branch=None, out=print, clones_dir=None):
     """Fetch the builder's commits into the reviewer's clone, check out `branch` (default: the builder's current
-    branch) detached, and hand the reviews over. Refuses rather than overwrite tracked changes in the clone."""
+    branch) detached, and hand the reviews over. Refuses rather than overwrite tracked changes in the clone.
+    `clones_dir` is the builder's per-session clones directory (settings.clones_dir), named in the clone-mode
+    note; None when the caller has no settings."""
     entry = reg[reviewer]
     check(reviewer, entry, reg)
     builder = entry[KEY]
@@ -193,6 +213,7 @@ def sync(reg, reviewer, *, branch=None, out=print):
     _git(rroot, "checkout", "-q", "--detach", ref)
     head = _git(rroot, "log", "-1", "--format=%h %s").stdout.strip()
     out(f"{reviewer}: {rroot} is at {ref} ({head}), detached")
+    _note_clone_mode(reg[builder], builder, broot, reviewer, clones_dir, out)
     copied, skipped = hand_over(rroot, broot)
     if copied:
         out(f"  handed to {builder}: {', '.join(f'{HANDOVER_DIR}/{n}' for n in copied)} (in {broot})")

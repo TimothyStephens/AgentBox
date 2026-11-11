@@ -838,7 +838,7 @@ def cmd_project_sync(s, a):
         raise AgentboxError(f"{a.name} is not a reviewer and has none; make one with "
                             f"`ab project add {a.name}-review --reviews {a.name} --preset <p>`")
     for t in targets:
-        review.sync(reg, t, branch=a.branch)
+        review.sync(reg, t, branch=a.branch, clones_dir=s.clones_dir(reg[t]["reviews"]))
     return 0
 
 

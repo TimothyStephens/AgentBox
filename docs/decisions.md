@@ -2684,3 +2684,20 @@ before each fetch. Copy: directory fds opened `O_NOFOLLOW|O_DIRECTORY`, files op
 them, `S_ISREG` and a 1 MB cap checked on the open fd, destination opened `O_NOFOLLOW` too; nothing deleted.
 Each is mutation-checked in tests/unit/test_review.py (the one surviving mutant, dropping `--detach`, is
 equivalent: checking out a remote-tracking ref detaches anyway).
+
+## 2026-11-11 · `ab project sync` names a clone-mode builder's session clones; the OMP probes require `AB_PROBE_PROJECT`
+
+**What.** When the builder of a reviewer runs in clone mode (`session.mount_mode_of`, the rule behind
+`Session.mount_mode`, now a function so `review.sync` can apply it to a registry entry), the sync prints a
+note after the checkout line: the builder's sessions commit on `agentbox/<session>` in
+`projects/<builder>/clones/<session>/`, not in the root the clone fetches from; the clones present there; and
+the owner's fetch that brings a session branch into the root, after which `ab project sync <reviewer>
+--branch agentbox/<session>` reviews it. The sync itself does not fetch from the clones: that would create
+branches in the owner's repository from the launcher, which the clone-mode design forbids (10 Nov). The
+Makefile's `AB_PROBE_PROJECT` lost its default `agentbox`: the probe targets stop with a message asking for a
+registered project with no running session.
+
+**Why.** Without the note, a reviewer of a Toulmin project saw the owner's last fetched state and nothing of
+the session's work, with no sign that anything was missing (found when `toulmin-build` got a reviewer). The
+probe default was a project name that exists on no host but the one it was written on, and even there it was
+the live one; the run of 11 Nov failed on it twice before the right name was found.
