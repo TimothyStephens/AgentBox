@@ -2701,3 +2701,25 @@ registered project with no running session.
 the session's work, with no sign that anything was missing (found when `toulmin-build` got a reviewer). The
 probe default was a project name that exists on no host but the one it was written on, and even there it was
 the live one; the run of 11 Nov failed on it twice before the right name was found.
+
+## 2026-11-11 · The OMP env probe leaked the session's keys; it now redacts every value that could be one
+
+**What.** `tests/manual/omp_env_probe.sh` had `run \`env\` through omp` inside a double-quoted `echo`: bash
+ran `env` and printed the session shell's whole environment, `AB_KEY_*` values included, to the terminal
+and `/tmp/omp-env-probe.log`. Tim's run of 11 Nov did exactly that; the five keys were rotated. The script
+now passes every line it prints through `redact`: values are kept only for `AGENTBOX_*`, `OMP_*`, `PI_*`,
+the proxy variables and a few shell basics; secret-looking names get `<redacted, N chars>`, everything else
+`<N chars>`; the model is asked for names only and its answer is redacted too. `tests/unit/test_omp_env_probe.py`
+runs the script with a fake `omp` and a planted key, for both blocks.
+
+**What the run showed, and did not.** The session shell's environment holds every mounted key as
+`AB_KEY_<PROVIDER>` [certain: that is the leaked block]. OMP's own process inherits that shell's environment,
+so a tool subprocess it starts most likely inherits the keys too [likely, not shown: the model block ended in
+`timeout`'s SIGTERM after 120 s without an answer, so contract 3.5 is still unverified]. This is the known
+shape of env-delivered keys: the agent owns the key for the session, and the egress proxy's allowlist (model
+APIs plus package registries and GitHub) is what bounds where it could go. The fix for that is the deferred
+model-key gateway (CLAUDE.md), not a probe. A probe is also worth running only when `config.yml` names a
+default model the session can reach; without one, `omp -p` has nothing to answer with.
+
+**Why the probe prints names.** A probe's job is to say which variables exist, never what they hold; the log
+is meant to be pasted into a conversation and a decisions entry, which is where the values went.
