@@ -2723,3 +2723,37 @@ default model the session can reach; without one, `omp -p` has nothing to answer
 
 **Why the probe prints names.** A probe's job is to say which variables exist, never what they hold; the log
 is meant to be pasted into a conversation and a decisions entry, which is where the values went.
+
+## 2026-11-12 · Probe result: what OMP's subprocesses inherit (Toulmin contract, deliverable 5)
+
+**What.** `make omp-env-probe` answered on 12 Nov (OMP 18.13.3, local model `llama-cpp/Qwen3.8-27B-UD-Q4_K_XL`,
+`--no-profile`). The variable names in a shell command the agent runs, as the model pasted them (values were
+never printed), split by origin:
+
+- *Launcher, passed through unchanged:* `AGENTBOX_SESSION`, `AGENTBOX_AGENT`, `AB_KEY_<PROVIDER>` for every
+  mounted key (five in this run), `HTTP(S)_PROXY`/`NO_PROXY` in both cases, `PUPPETEER_PROXY`,
+  `PUPPETEER_EXECUTABLE_PATH`, `GIT_AUTHOR_*`/`GIT_COMMITTER_*`, `PIP_*`, `HOME`, `PATH`, `PWD`, `TERM`,
+  `container`, `NODE_VERSION`, `NO_UPDATE_NOTIFIER`.
+- *Added by OMP:* `PI_SESSION_ID`, `PI_SESSION_FILE`, `OMPCODE`, `AGENT`, `CLAUDECODE`, `CI`,
+  `__PI_NATIVE_VARIANT_CACHE`, and a block of non-interactive settings (`PAGER`/`*_PAGER`, `EDITOR`,
+  `VISUAL`, `GIT_EDITOR`, `GIT_TERMINAL_PROMPT`, `SSH_ASKPASS`, `GPG_TTY`, `DEBIAN_FRONTEND`,
+  `NO_COLOR`, `LESS`, `PYTHONUNBUFFERED`, `TF_INPUT`, `TF_IN_AUTOMATION`, `npm_config_*`, `PNPM_*`,
+  `YARN_*`, `CARGO_TERM_PROGRESS_WHEN`, `COMPOSER_NO_INTERACTION`, `CLOUDSDK_CORE_DISABLE_PROMPTS`,
+  `AWS_PAGER`, `GH_PROMPT_DISABLED`).
+- *Removed by OMP:* nothing from the launcher's set was missing.
+
+**So, for Toulmin:** a tool-run `tm` sees `AGENTBOX_SESSION` and `AGENTBOX_AGENT` (contract 1.4) and can key
+on them; OMP does not scrub or rename them. It also sees every `AB_KEY_*`: the keys are in the environment of
+every command the agent runs, which settles the 11 Nov entry's [likely] as [certain]. `CLAUDECODE` being set by
+OMP is OMP's own compatibility shim and not a sign of Claude Code; Toulmin should key on `AGENTBOX_AGENT`,
+not on that.
+
+**The same day's `make omp-live`** (`AB_LIVE_MODEL=llama-cpp/...`): step 2 passed end to end -- the model
+answered through squid (`POST 10.0.0.2:8080 200` in the proxy log), drove the browser to pypi.org and ran
+debugpy; no key in any log, state file or output. Step 1 never started: `ab: podman images --format timed
+out` (the launcher's 120 s podman timeout, on a host that was still under memory pressure), so the run is
+recorded as FAIL and is to be repeated for a clean pass. Not run, by Tim's decision: a cloud model through
+OMP (`AB_LIVE_MODEL=anthropic/...`), so whether OMP's provider SDK clients honour `HTTPS_PROXY` for chat
+calls -- the 11 Nov run's `getaddrinfo ENOTFOUND` for api.anthropic.com beside proxied discovery CONNECTs --
+stays open. OMP's startup discovery does reach api.anthropic.com, api.openai.com and openrouter.ai through
+the proxy in every run.
