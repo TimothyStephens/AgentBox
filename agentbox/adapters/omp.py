@@ -40,8 +40,17 @@ MARKETPLACES_DST = os.path.join(C_OMP, "marketplaces.json")
 # `config.yml` joined them on 4 Nov. It used to come from `~/.omp/agent/config.yml` -- the host OMP's OWN
 # config -- so changing the default model of the OMP Tim runs himself changed the default model of every
 # agentbox session with it. agentbox's copy is now the only one a session sees.
-USER_FILES = (("config.yml", "agent/config.yml"),
+#
+# Since 12 Nov it is NOT mounted over `agent/config.yml`: OMP saves its settings by write-and-rename, and a
+# rename onto a bind mount fails with EBUSY, which killed the first interactive session that saved anything.
+# It is mounted read-only at CONFIG_OVERLAY and named in PI_CONFIG_FILES, an overlay OMP ranks ABOVE its own
+# `agent/config.yml` (reference/omp/settings.md, "Precedence"), so the host's values still win over anything a
+# session writes, and `agent/config.yml` is ordinary per-project agent state OMP may write. An explicit
+# `--config` (the lockdown overlay) ranks above PI_CONFIG_FILES, so lockdown wins over the host file too.
+USER_FILES = (("config.yml", "agentbox-config.yml"),
               ("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags-codedev.yaml"))
+CONFIG_OVERLAY = f"{C_OMP}/agentbox-config.yml"
+CONFIG_FILES_ENV = "PI_CONFIG_FILES"
 # Places in the per-project agent dir OMP loads code or code-running config from. They are covered read-only
 # (empty) so one session cannot plant something every later session of the project runs (review 2026-10-01
 # #2). Prompt-only dirs (skills, rules, prompts, agents, commands) stay writable: OMP's autolearn writes there.
@@ -332,8 +341,11 @@ class OmpAdapter(Adapter):
         for fn, rel in USER_FILES:
             src = os.path.join(s.seed_dir(self.name), fn)
             if os.path.isfile(src) and not os.path.islink(src):
-                _prepare_file(os.path.join(agent_dir, os.path.basename(rel)))
+                if rel.startswith("agent/"):
+                    _prepare_file(os.path.join(agent_dir, os.path.basename(rel)))
                 setup.mounts.append((src, os.path.join(C_OMP, rel), True))
+                if fn == "config.yml":
+                    setup.env[CONFIG_FILES_ENV] = CONFIG_OVERLAY
             else:
                 missing.append(fn)
         if missing:
@@ -352,9 +364,12 @@ def _omp_notes(doc):
     return ("\n## OMP in this sandbox\n\n"
             f"- Model providers configured for this session: {names}. Other providers have no key here.\n"
             "- Provider keys go through `ab keys` (regenerated into a keyless models.yml that is never mounted). "
-            "config.yml comes from agentbox's own config, not from the host's ~/.omp; it and the plugins are "
-            "mounted read-only in every session — never put secrets in either.\n"
-            "- `~/.omp/agent/models.yml`, `config.yml` and this file are read-only and regenerated each session.\n"
+            "The host's config.yml comes from agentbox's own config, not from the host's ~/.omp; it is mounted "
+            "read-only at `~/.omp/agentbox-config.yml` and applied through `PI_CONFIG_FILES` as an overlay "
+            "ABOVE `~/.omp/agent/config.yml`, so its values win. `~/.omp/agent/config.yml` is this project's "
+            "own, writable state: OMP saves settings there. The plugins are read-only too — never put secrets "
+            "in any of them.\n"
+            "- `~/.omp/agent/models.yml` and this file are read-only and regenerated each session.\n"
             "- `~/.omp/plugins`, `repos`, `pylibs` and `versions` are read-only; install Python packages with "
             "`pip install --user` or into a project virtualenv instead.\n"
             "- The browser tool uses the system Chromium through the proxy.\n")

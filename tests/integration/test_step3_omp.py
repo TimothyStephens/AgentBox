@@ -293,9 +293,13 @@ class Step3(unittest.TestCase):
                         "( echo x >> ~/.omp/marketplaces.json ) 2>/dev/null && echo WRITABLE:marketplaces; "
                         "test -f ~/.omp/plugins/.agentbox/install.json && echo LOCKFILE_VISIBLE; "
                         "grep -q OMPCANARY ~/.omp/plugins/node_modules/pi-fake-ext/index.js && echo PLUGIN_VISIBLE; "
-                        # agentbox's own config, and the per-project state that IS writable
-                        "touch ~/.omp/agent/config.yml 2>/dev/null && echo WRITABLE:config; "
-                        "grep -q ABT_AGENTBOX_CONFIG ~/.omp/agent/config.yml && echo CONFIG_FROM_AGENTBOX; "
+                        # agentbox's own config: a read-only overlay named in PI_CONFIG_FILES (12 Nov), while
+                        # agent/config.yml is OMP's to save by write-and-rename (EBUSY when it was a mount)
+                        "touch ~/.omp/agentbox-config.yml 2>/dev/null && echo WRITABLE:config-overlay; "
+                        "grep -q ABT_AGENTBOX_CONFIG ~/.omp/agentbox-config.yml && echo CONFIG_FROM_AGENTBOX; "
+                        "test \"$PI_CONFIG_FILES\" = \"$HOME/.omp/agentbox-config.yml\" && echo CONFIG_OVERLAY_ENV; "
+                        "echo 'theme: {dark: titanium}' > ~/.omp/agent/config.yml.tmp "
+                        "&& mv ~/.omp/agent/config.yml.tmp ~/.omp/agent/config.yml && echo CONFIG_RENAME_OK; "
                         "touch ~/.omp/agent/models.yml 2>/dev/null && echo WRITABLE:models; "
                         "touch ~/.omp/agent/newfile && echo AGENT_DIR_WRITABLE; "
                         # pylibs went with omp-env: nothing declares python libraries for plugins
@@ -313,6 +317,8 @@ class Step3(unittest.TestCase):
         self.assertNotIn("VISIBLE:", p.stdout)
         self.assertIn("AGENT_DIR_WRITABLE", p.stdout, "the project's own agent state stays writable")
         self.assertIn("CONFIG_FROM_AGENTBOX", p.stdout, "agentbox's own config.yml is what is mounted")
+        self.assertIn("CONFIG_OVERLAY_ENV", p.stdout, "OMP is told to apply it as an overlay")
+        self.assertIn("CONFIG_RENAME_OK", p.stdout, "OMP's write-and-rename save of agent/config.yml works")
         self.assertIn("PLUGIN_VISIBLE", p.stdout, "the installed tree's content is readable in a session")
         self.assertIn("LOCKFILE_VISIBLE", p.stdout, "the lockfile travels with the tree")
         self.assertIn("PLUGIN_LIST_OK", p.stdout, "OMP cannot read its plugin state on a read-only tree")

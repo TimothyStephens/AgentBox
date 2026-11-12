@@ -2762,3 +2762,29 @@ the proxy in every run.
 through the proxy in 58 s (1 model request, 1780 bytes), browser and debugpy worked, no key in any log, state
 file or output (5 keys checked), sessions torn down. omp-live writes no pass record of its own (claude-live
 does); this entry is the record.
+
+## 2026-11-12 · OMP's `config.yml` is an overlay (`PI_CONFIG_FILES`), not a mount over `agent/config.yml`
+
+**What.** The host's `~/.config/agentbox/omp/config.yml` is now mounted read-only at
+`~/.omp/agentbox-config.yml` and named in `PI_CONFIG_FILES`; `~/.omp/agent/config.yml` is no longer a mount
+point but an ordinary file in the per-project agent state, which OMP may write. OMP ranks `PI_CONFIG_FILES`
+overlays above its global `config.yml` and below explicit `--config` overlays (reference/omp/settings.md,
+"Precedence"), so: host file beats what a session saves; the lockdown `--config` beats the host file. No
+seed, no overlay and no variable. `tests/unit/test_omp.py` pins the mount, the variable and the absence of a
+mount at `agent/config.yml`; `tests/integration/test_step3_omp.py` additionally does OMP's own save gesture
+(write a temp file, `mv` it over `agent/config.yml`) inside a session and requires it to succeed. The itest
+has NOT run for this change (no podman in the builder's sandbox); it is the gate, and Tim runs it.
+
+**Why.** Tim's first interactive OMP session with a `config.yml` seed (12 Nov) died at startup, right after
+OMP confirmed its settings, with `EBUSY: resource busy or locked, rename '…/agent/config.yml.<id>.tmp' ->
+'…/agent/config.yml'`. OMP saves settings atomically by write-and-rename; a rename onto a bind mount is
+EBUSY. The 11-12 Nov probes and omp-live never hit it because `omp -p` saves nothing. The 4 Nov property --
+agentbox's copy is the only authority, the host OMP's own config is never read -- is kept and strengthened:
+before, a session could not change its effective config at all; now it can write `agent/config.yml`, but
+the host overlay still wins for every key it sets. Rejected: copying the file into the state dir writable
+(the Claude `settings.json` precedent): the agent could then loosen settings the host set, and OMP reloads
+config on change. Not touched: `mcp.json` and `mags-codedev.yaml` are still mounted at OMP's own paths; if
+OMP ever saves either by rename the same failure appears there and the same fix applies.
+
+**Consequence for users.** A session's `/model` or `/settings` change persists in that project's
+`agent/config.yml` across its sessions, except for keys the host file sets, which it cannot override.

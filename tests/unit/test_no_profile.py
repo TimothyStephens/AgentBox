@@ -234,7 +234,9 @@ class OmpWithoutTheProfile(OmpSessionBase):
     def test_agentboxs_own_config_still_arrives(self):
         """`config.yml` comes from `~/.config/agentbox/omp/`, which `--no-profile` does not touch: the flag
         turns off the PROFILE and the plugins, not agentbox's own configuration of the agent."""
-        self.assertIn(f"{omp.C_OMP}/agent/config.yml", self.dsts(self.make(no_profile=True)))
+        s = self.make(no_profile=True)
+        self.assertIn(omp.CONFIG_OVERLAY, self.dsts(s))
+        self.assertEqual(s.setup.env.get(omp.CONFIG_FILES_ENV), omp.CONFIG_OVERLAY)
 
     def test_the_profile_load_paths_are_dropped_as_well(self):
         s = self.make(no_profile=True)

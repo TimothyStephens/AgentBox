@@ -342,11 +342,19 @@ class OmpSession(OmpSessionBase):
         agent_state = os.path.join(s.state_dir, "agent")
         self.assertIn(f"--mount=type=bind,src={agent_state},dst={c}/agent", mounts)
         self.assertIn(f"--mount=type=bind,src={os.path.join(s.state_dir, 'logs')},dst={c}/logs", mounts)
-        for fn in ("models.yml", "AGENTS.md", "config.yml"):
+        for fn in ("models.yml", "AGENTS.md"):
             m = [x for x in mounts if x.split("dst=")[1].split(",")[0] == f"{c}/agent/{fn}"]
             self.assertEqual(len(m), 1, fn)
             self.assertTrue(m[0].endswith(",ro"), m[0])
             self.assertTrue(os.path.isfile(os.path.join(agent_state, fn)), fn)
+        # config.yml: an overlay beside agent/, named in PI_CONFIG_FILES; agent/config.yml itself is not a
+        # mount, so OMP's write-and-rename save works (12 Nov).
+        dsts = [x.split("dst=")[1].split(",")[0] for x in mounts]
+        self.assertNotIn(f"{c}/agent/config.yml", dsts)
+        m = [x for x in mounts if x.split("dst=")[1].split(",")[0] == f"{c}/agentbox-config.yml"]
+        self.assertEqual(len(m), 1, "the host config.yml is mounted as the overlay")
+        self.assertTrue(m[0].endswith(",ro"), m[0])
+        self.assertIn(f"--env=PI_CONFIG_FILES={c}/agentbox-config.yml", argv)
         for m in mounts:
             if f"src={self.tree}" in m or f"src={os.path.realpath(self.tree)}" in m:
                 self.assertTrue(m.endswith(",ro"), m)
@@ -384,17 +392,29 @@ class OmpSession(OmpSessionBase):
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
         self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
 
-    def test_config_yml_comes_from_agentboxs_own_seed(self):
+    def test_config_yml_comes_from_agentboxs_own_seed_as_an_overlay(self):
         """The point of the 4 Nov move: it used to be mounted from `~/.omp/agent/config.yml`, the host
         OMP's OWN config, so changing the default model of the OMP Tim runs himself changed it for every
-        agentbox session. There is no host copy left to compare against -- no code path reads a host OMP
-        home at all (5 Nov) -- so what is pinned here is that it comes from the seed, read-only."""
+        agentbox session. Since 12 Nov it is an overlay (PI_CONFIG_FILES ranks above OMP's own config.yml)
+        rather than a mount over `agent/config.yml`: OMP saves settings by write-and-rename, and a rename onto
+        a bind mount is EBUSY, which killed the first interactive session that saved anything. Pinned here:
+        the overlay comes from the seed, read-only, is named in the env, and `agent/config.yml` is left as
+        writable per-project state; no seed, no overlay and no variable."""
         s = self.make()
         c = os.path.join(HOME, ".omp")
-        m = [x for x in s.setup.mounts if x[1] == f"{c}/agent/config.yml"]
-        self.assertEqual(len(m), 1, "config.yml is still mounted, from agentbox's own seed")
-        self.assertEqual(m[0][0], os.path.join(self.cfg, "omp", "config.yml"))
-        self.assertTrue(m[0][2], "read-only")
+        m = [x for x in s.setup.mounts if x[1] == f"{c}/agentbox-config.yml"]
+        self.assertEqual(m, [(os.path.join(self.cfg, "omp", "config.yml"), f"{c}/agentbox-config.yml", True)])
+        self.assertEqual(s.setup.env.get("PI_CONFIG_FILES"), f"{c}/agentbox-config.yml")
+        self.assertFalse([x for x in s.setup.mounts if x[1] == f"{c}/agent/config.yml"],
+                         "agent/config.yml is OMP's to write; a mount there makes its save EBUSY")
+        s.teardown()
+        os.remove(os.path.join(self.cfg, "omp", "config.yml"))
+        s2 = session.make_session(self.settings_now(), "omp", session.load_project(self.settings_now(), "p1"),
+                                  warn=lambda m: None)
+        s2.prepare(do_backup=False)
+        self.addCleanup(s2.teardown)
+        self.assertFalse([x for x in s2.setup.mounts if x[1] == f"{c}/agentbox-config.yml"])
+        self.assertNotIn("PI_CONFIG_FILES", s2.setup.env)
 
     def test_every_source_a_session_mounts_is_agentboxs_own(self):
         """The property the whole `~/.omp` story was working towards, and it is structural now rather
