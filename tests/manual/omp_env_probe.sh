@@ -31,10 +31,13 @@ echo "== session environment (the shell agentbox started; values shown only wher
 env | sort | redact
 echo "== omp version"
 omp --version 2>&1 | head -1
-echo "== what omp exports to a child: the model is asked to run env (names only), if one answers"
+echo "== what omp exports to a child: the model is asked to run env (names only), if one answers (up to 10 min)"
+# A tool-calling turn is several model round-trips; with a 27B local model behind a load-on-demand server
+# and OMP's own startup, 120 s was killing it mid-conversation (the proxy log of 11 Nov 2026 showed two
+# completed POSTs and a third aborted by the SIGTERM). Ten minutes: this is a manual probe.
 if omp --help 2>&1 | grep -q -- '--print\|-p,'; then
-  timeout 120 omp -p 'Run the shell command: env | cut -d= -f1 | sort   and paste its output verbatim. Names only, no values.' 2>&1 \
-    | redact | tail -60
+  timeout 600 omp -p 'Run the shell command: env | cut -d= -f1 | sort   and paste its output verbatim. Names only, no values.' 2>&1 \
+    | redact | tail -80
 else
   echo "(omp has no -p/--print mode in this version; run a session and ask the agent to run: env | cut -d= -f1 | sort)"
 fi
