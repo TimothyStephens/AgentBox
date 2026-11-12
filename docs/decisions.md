@@ -2757,3 +2757,8 @@ OMP (`AB_LIVE_MODEL=anthropic/...`), so whether OMP's provider SDK clients honou
 calls -- the 11 Nov run's `getaddrinfo ENOTFOUND` for api.anthropic.com beside proxied discovery CONNECTs --
 stays open. OMP's startup discovery does reach api.anthropic.com, api.openai.com and openrouter.ai through
 the proxy in every run.
+
+**Update, same day.** Repeated with memory free: `make omp-live` PASS at ee48c0d -- OMP answered `AB_OK`
+through the proxy in 58 s (1 model request, 1780 bytes), browser and debugpy worked, no key in any log, state
+file or output (5 keys checked), sessions torn down. omp-live writes no pass record of its own (claude-live
+does); this entry is the record.
