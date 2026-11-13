@@ -296,6 +296,22 @@ class GcOncePerBoot(SettingsCase):
             self.assertFalse(cli.gc_once_per_boot(self.settings))
         self.assertEqual(gc.call_count, 1)
 
+    def test_a_sweep_that_cannot_finish_warns_and_does_not_fail_the_command(self):
+        """12 Nov: on a 1465-image store `podman images --format json` took longer than the podman timeout,
+        and the first session of every itest run (fresh run dir, so first use) failed with it. The sweep is
+        maintenance; the command it rides on is not. The boot is still marked done, so the next command
+        does not wait through the same timeout."""
+        from agentbox import cli
+        from agentbox.errors import AgentboxError
+        warned = []
+        with mock.patch.object(session, "gc", side_effect=AgentboxError("podman images --format timed out")), \
+                mock.patch.object(cli, "warn", warned.append):
+            self.assertTrue(cli.gc_once_per_boot(self.settings))
+            self.assertFalse(cli.gc_once_per_boot(self.settings))
+        self.assertEqual(len(warned), 1)
+        self.assertIn("podman images --format timed out", warned[0])
+        self.assertIn("ab session gc", warned[0])
+
 
 class ImageGc(SettingsCase):
     """Decision 1 Oct: ab session gc removes a project's session-built images older than 7 days, keeping the newest

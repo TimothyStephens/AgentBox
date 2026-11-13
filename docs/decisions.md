@@ -2788,3 +2788,29 @@ OMP ever saves either by rename the same failure appears there and the same fix 
 
 **Consequence for users.** A session's `/model` or `/settings` change persists in that project's
 `agent/config.yml` across its sessions, except for keys the host file sets, which it cannot override.
+
+## 2026-11-13 · The boot-time storage sweep no longer fails the command it rides on
+
+**What was seen.** Three session starts failed with `ab: podman images --format timed out`: `make omp-live`
+step 1 on 12 Nov, and `test_bun_reaches_the_local_model_through_squid` in two step 3 runs the same day. All
+three were the FIRST session of a run, and the nine later tests of the same step 3 run passed. The 12 Nov
+record above called the first one memory pressure; that was wrong. Measured on the host with memory free:
+`podman images --format json --filter label=agentbox.user-layer=omp` took 3 min 28 s, then 2.3 s, then
+1 min 39 s, on a store of 1465 images (63 GB, 85 % reclaimable). The cause is `gc_once_per_boot`: the
+itest harness gives every run a fresh run dir, so the boot marker is absent and the first `ab session start`
+runs `session.gc`, whose `gc_images` and `gc_user_layers` each list images as JSON; the 120 s podman timeout
+raised out of the sweep and failed the session start with it. On the host the same thing waits for the
+first `ab` after a reboot.
+
+**What changed.** `gc_once_per_boot` catches the sweep's `AgentboxError`, warns with the error and the by-hand
+command (`ab session gc`), and still writes the boot marker: the sweep is maintenance and the session is not,
+and a marker left unwritten would make every following command pay the same wait until one got through.
+The dead-session part of `gc` runs before the image listing, so what was torn down before the timeout stays
+torn down. Unit test in `test_sockguard.GcOncePerBoot` (mutant without the guard: error).
+
+**Not changed, open.** Why the listing is slow and erratic on this host is not settled. Guessing: podman
+computes image sizes for the JSON format and the size walk is what goes cold; `--format '{{.ID}}'` answered
+in 3.9 s warm, but a cold measurement of the template form is still to be taken. If it holds, the two sweeps
+and `any_built` can list ids with a template and inspect only the matches. `podman system df` also shows
+53.6 GB reclaimable: `podman image prune` on the host would shrink the store the listing walks, which is
+Tim's call, not the launcher's.

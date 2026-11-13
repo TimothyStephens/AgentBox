@@ -1576,7 +1576,16 @@ def gc_once_per_boot(s):
     marker = os.path.join(s.run_dir, f".gc-{boot}")
     if os.path.exists(marker):
         return False
-    removed = session.gc(s, Podman(s.podman), warn=warn)
+    # The sweep is maintenance, and the command it rides on is not: a `podman images` that takes longer
+    # than the podman timeout (a 1465-image store, 12 Nov: 3.5 min cold) must not fail the session start
+    # that happened to come first. Report it, name the by-hand command, and mark the boot as done anyway,
+    # so the next command does not pay the same wait again.
+    try:
+        removed = session.gc(s, Podman(s.podman), warn=warn)
+    except AgentboxError as e:
+        warn(f"ab: first use since boot: the storage sweep did not finish ({e}); this session starts "
+             f"without it. `ab session gc` runs it by hand, with time.")
+        removed = []
     if removed:
         warn(f"ab: first use since boot: removed what dead sessions left: {' '.join(removed)}")
     os.makedirs(s.run_dir, mode=0o700, exist_ok=True)
