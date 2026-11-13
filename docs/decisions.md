@@ -2814,3 +2814,9 @@ in 3.9 s warm, but a cold measurement of the template form is still to be taken.
 and `any_built` can list ids with a template and inspect only the matches. `podman system df` also shows
 53.6 GB reclaimable: `podman image prune` on the host would shrink the store the listing walks, which is
 Tim's call, not the launcher's.
+
+**13 Nov, after the fix.** Tim ran `podman image prune`; the same JSON listing then took 27 s. The failing
+test passed on its own (`PI_PROXY_UNSET`, `STATUS 503` from squid: the local model server was not answering
+at that moment, which the test accepts; the proxy path is what it checks). With the earlier run's nine
+passes, step 3 is green at this commit and the `config.yml` overlay entry above is verified. The sweep
+warning did not need to fire; the guard stands for the next cold or large store.
