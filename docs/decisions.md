@@ -2863,3 +2863,24 @@ after the state and marketplace copies, or fail before touching the tree by chec
 cold and 27 s after the prune took 1.0 s warm, the same as the template form. The cold comparison between
 the two forms was not taken, so the size hypothesis in the entry above stays a guess; the sweep guard
 stands either way.
+
+## 2026-11-13 · After the MAGS entry went: the plugin tree builds, loads in sessions, and omp-live passes with OpenRouter
+
+**`ab profile install omp`.** The first attempt died at `podman run --rm timed out`: the install container
+ran under the launcher's default 120 s podman timeout, which is sized for `podman inspect`, not for three
+clones and six npm installs behind the proxy on a cold host. The second attempt finished inside it. The
+install run now gets `installer.RUN_TIMEOUT` (1800 s); unit test pins that the container call carries it.
+The tree reports 1 marketplace (egm@egm) and 6 npm (the four declared packages plus pi-session-stats and
+pi-content-audit, which `omp plugin link` registers the same way), and holds `install.json`,
+`marketplaces.json`, `state.json`. A session (`profile omp bd6a2ce6c6d97081`, commit 90ec8b4) lists all
+seven and has `~/.omp/marketplaces.json`; none of the "no plugins installed" / "no readable install.json"
+warnings appear.
+
+**`make omp-live`, `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash`, at 98a9287.** PASS: `AB_OK` in 40 s;
+12 TLS tunnels, 55 244 bytes; browser and debugpy worked; every session has a proxy log; no key in any log,
+state file or output (5 keys); sessions torn down. The plugin tree was brought by the new copy fallback, so
+this is the first omp-live run that ran with the installed plugins present. Not asserted by the run: that a
+plugin actually loaded (nothing in the one-turn prompt exercises one); the session listing above is the
+evidence that OMP sees them.
+
+The `probe` project is purged.

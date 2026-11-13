@@ -255,13 +255,23 @@ class TheRun(SettingsCase):
         real = pod.run
         write = self.seed_state()
 
+        self.run_kwargs = None
+
         def runner(argv, **kwargs):
             if argv[:1] == ["run"] and "--rm" in argv:
+                self.run_kwargs = kwargs
                 real(["--version"], check=False)          # keep the call log honest about ordering
                 return write(argv, **kwargs)
             return real(argv, **kwargs)
         with mock.patch.object(pod, "run", side_effect=runner):
             return installer.install(self.settings, "omp", podman=pod, warn=lambda m: None, **kw)
+
+    def test_the_install_container_gets_an_install_sized_timeout_not_the_question_sized_one(self):
+        """13 Nov: the first `ab profile install omp` on a cold host died at `podman run --rm timed out`
+        -- the launcher's 120 s default, meant for `podman inspect`, not for clones and npm installs."""
+        self.run_install()
+        self.assertEqual(self.run_kwargs.get("timeout"), installer.RUN_TIMEOUT)
+        self.assertGreaterEqual(installer.RUN_TIMEOUT, 600)
 
     def test_the_lockfile_records_what_was_declared_and_what_omp_reported(self):
         doc = self.run_install()

@@ -60,6 +60,10 @@ STATE = f"{OURS}/state.json"
 MARKETPLACES_COPY = f"{OURS}/marketplaces.json"
 LOCKFILE = f"{OURS}/install.json"
 LOCK_VERSION = 1
+# The install container clones repositories and runs npm installs behind the proxy; the launcher's 120 s
+# podman timeout is for questions, not for that (13 Nov: the first `ab profile install omp` on a cold host
+# died at "podman run --rm timed out", the second got through in time).
+RUN_TIMEOUT = 1800
 # Where the tree is mounted. Not configurable: OMP decides it, and the paths it records must resolve in a
 # session as well as in the installer.
 C_OMP = os.path.join(HOME, ".omp")
@@ -375,7 +379,7 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
          f"(against {job.adapter.image}, {pin.get('cli_version') or 'unknown version'})")
     try:
         job.start_infra()
-        p = job.podman.run(job.container_args(script), check=False)
+        p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
         if p.returncode != 0:
             tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
             raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
