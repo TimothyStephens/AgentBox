@@ -15,9 +15,12 @@ The other half: a timeout used to raise out of `main`, so the first attempt died
 the key-leak scan or the teardown check. It is still a FAIL naming the command -- the harness guarantee --
 but one the rest of the run survives.
 """
+import os
+import subprocess
+import tempfile
 import unittest
 
-from tests.live.omp_live import Run, model_calls
+from tests.live.omp_live import Run, bring_plugin_tree, model_calls, tls_tunnels
 
 # Real `make omp-live` proxy access-log lines (host, 4 Nov 2026): two model calls to the LAN server and
 # five denied CONNECTs to provider endpoints OMP probes at startup.
@@ -73,6 +76,54 @@ class ModelCalls(unittest.TestCase):
     def test_no_traffic_at_all_is_zero_not_a_crash(self):
         self.assertEqual(model_calls(""), (0, 0))
         self.assertEqual(model_calls("garbage\n-:- 0 - NONE_NONE/HIER_NONE 0 -\n"), (0, 0))
+
+    def test_a_cloud_providers_turns_are_tls_tunnels_not_plain_requests(self):
+        """13 Nov, OpenRouter: OMP answered AB_OK and the report said "0 model requests", because squid
+        sees a CONNECT tunnel, not the POST inside it. Tunnels are counted apart; denied ones are not."""
+        cloud = """\
+1794591235.368 10.89.19.3 CONNECT openrouter.ai:443 200 104.18.3.115 TCP_TUNNEL/HIER_DIRECT 5053 74
+1794591349.222 10.89.19.3 CONNECT openrouter.ai:443 200 104.18.3.115 TCP_TUNNEL/HIER_DIRECT 54690 12
+1794591348.123 10.89.19.3 CONNECT accounts.google.com:443 403 - TCP_DENIED/HIER_NONE 0 -
+"""
+        self.assertEqual(model_calls(cloud), (0, 0))
+        self.assertEqual(tls_tunnels(cloud), (2, 5053 + 54690))
+        self.assertEqual(tls_tunnels(ACCESS), (0, 0))
+
+
+class PluginTree(unittest.TestCase):
+    """The real installed tree is brought beside the temporary config dir: hard links when the two sit on
+    one filesystem, a copy when `cp -al` is refused (13 Nov: /tmp and ~/.config, "Invalid cross-device link")."""
+
+    def run_with(self, failing):
+        calls, said = [], []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            ok = argv[1] not in failing
+            return subprocess.CompletedProcess(argv, 0 if ok else 1, "", "" if ok else "cp: Invalid cross-device link")
+        with tempfile.TemporaryDirectory() as d:
+            ok = bring_plugin_tree(os.path.join(d, "real"), os.path.join(d, "cfg", "omp", "plugins"), run=run,
+                                   say=lambda m, **kw: said.append(m))
+        return ok, [c[1] for c in calls], " ".join(said)
+
+    def test_hard_links_when_they_work(self):
+        ok, flags, said = self.run_with(failing=set())
+        self.assertTrue(ok)
+        self.assertEqual(flags, ["-al"])
+        self.assertIn("linked", said)
+
+    def test_a_refused_hard_link_falls_back_to_a_copy(self):
+        ok, flags, said = self.run_with(failing={"-al"})
+        self.assertTrue(ok)
+        self.assertEqual(flags, ["-al", "-a"])
+        self.assertIn("copied", said)
+        self.assertIn("another filesystem", said)
+
+    def test_both_failing_is_reported_not_raised(self):
+        ok, flags, said = self.run_with(failing={"-al", "-a"})
+        self.assertFalse(ok)
+        self.assertIn("could not bring the plugin tree", said)
+        self.assertIn("cross-device", said)
 
 
 if __name__ == "__main__":

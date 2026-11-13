@@ -96,7 +96,10 @@ def run_omp(env, prompt_args, timeout):
 
 def model_calls(access):
     """(number of model requests, their total bytes) from a squid access log -- so "the model is slow" or
-    "the model was never reached" is visible in the report rather than inferred from a wall-clock gap."""
+    "the model was never reached" is visible in the report rather than inferred from a wall-clock gap.
+
+    Plain-HTTP requests only, which is how the LAN model is reached. A cloud provider is TLS, and squid
+    sees a CONNECT tunnel and its byte count, not the requests inside: `tls_tunnels` counts those."""
     n, size = 0, 0
     for line in access.splitlines():
         f = line.split()
@@ -104,6 +107,38 @@ def model_calls(access):
             n += 1
             size += int(f[7]) if f[7].isdigit() else 0
     return n, size
+
+
+def tls_tunnels(access):
+    """(number of CONNECT tunnels squid opened, their total bytes). OMP's startup discovery opens small
+    ones to every provider it knows; a chat turn is the large one (13 Nov, OpenRouter: 5 KB probes, a 54 KB
+    turn). Denied CONNECTs (403) are not tunnels."""
+    n, size = 0, 0
+    for line in access.splitlines():
+        f = line.split()
+        if len(f) > 7 and f[2] == "CONNECT" and f[4] == "200":
+            n += 1
+            size += int(f[7]) if f[7].isdigit() else 0
+    return n, size
+
+
+def bring_plugin_tree(real_tree, tree, run=subprocess.run, say=print):
+    """The real installed tree beside the temporary config dir. `cp -al` (hard links: the tree is
+    node_modules-sized, and the session mounts it read-only) when both sit on one filesystem; a plain copy
+    when they do not (13 Nov: `/tmp` and `~/.config` on different filesystems, "Invalid cross-device link")."""
+    os.makedirs(os.path.dirname(tree), exist_ok=True)
+    cp = run(["cp", "-al", real_tree, tree], capture_output=True, text=True)
+    if cp.returncode == 0:
+        say(f"[omp-live: plugin tree linked from {real_tree}]", flush=True)
+        return True
+    shutil.rmtree(tree, ignore_errors=True)
+    cp = run(["cp", "-a", real_tree, tree], capture_output=True, text=True)
+    if cp.returncode == 0:
+        say(f"[omp-live: plugin tree copied from {real_tree} (hard links refused: another filesystem)]",
+            flush=True)
+        return True
+    say(f"[omp-live: could not bring the plugin tree: {cp.stderr.strip()[:200]}]", flush=True)
+    return False
 
 
 def main():
@@ -122,12 +157,7 @@ def main():
     real_tree = os.path.join(REAL_CFG, "omp", "plugins")
     tree = os.path.join(env.cfg, "omp", "plugins")
     if os.path.isdir(real_tree):
-        os.makedirs(os.path.dirname(tree), exist_ok=True)
-        cp = subprocess.run(["cp", "-al", real_tree, tree], capture_output=True, text=True)
-        if cp.returncode != 0:
-            print(f"[omp-live: could not link the plugin tree: {cp.stderr.strip()[:200]}]", flush=True)
-        else:
-            print(f"[omp-live: plugin tree linked from {real_tree}]", flush=True)
+        bring_plugin_tree(real_tree, tree)
     else:
         print(f"[omp-live: no installed plugin tree at {real_tree}; OMP runs without plugins "
               "(`ab profile install omp`)]", flush=True)
@@ -193,15 +223,16 @@ def main():
     empty = empty_proxy_logs([("1", ok1, access1), ("2", p2.returncode == 0 and bool(p2.stdout.strip()), access2)])
     left = harness.leftovers()
     calls1, bytes1 = model_calls(access1)
+    tun1, tbytes1 = tls_tunnels(access1)
     print("\n--- result ---")
     print(f"{'PASS' if ok1 else 'FAIL'}  1. OMP answered AB_OK through the proxy (egress {MODE})"
           + (f": {p1.why('AB_OK')}" if not ok1 else f" ({p1.seconds:.0f}s)"))
-    print(f"INFO  1. {calls1} model request(s) through the proxy, {bytes1} byte(s) in "
-          f"{p1.seconds:.0f}s"
-          + ("  -- the model was never reached: check it is up and that its host is allowed"
-             if not calls1 else "")
+    print(f"INFO  1. through the proxy in {p1.seconds:.0f}s: {calls1} plain model request(s), {bytes1} byte(s); "
+          f"{tun1} TLS tunnel(s), {tbytes1} byte(s) (a cloud provider's turns are in these, unseen)"
+          + ("  -- nothing reached a model: check it is up and that its host is allowed"
+             if not calls1 and not tun1 else "")
           + ("  -- slow; `AB_LIVE_MODEL=<provider/model>` tries another"
-             if calls1 and p1.seconds > 120 else ""))
+             if (calls1 or tun1) and p1.seconds > 120 else ""))
     print(f"INFO  2. browser: {'worked' if re.search(r'BROWSER (?!fail)', p2.stdout) else 'failed or unclear'}; "
           f"debugpy: {'worked' if 'DEBUGPY ok' in p2.stdout or 'AB_DEBUGPY_OK' in p2.stdout else 'failed or unclear'}")
     print(f"{'PASS' if not empty else 'FAIL'}  every session that answered has a proxy access log"

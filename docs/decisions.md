@@ -2820,3 +2820,46 @@ test passed on its own (`PI_PROXY_UNSET`, `STATUS 503` from squid: the local mod
 at that moment, which the test accepts; the proxy path is what it checks). With the earlier run's nine
 passes, step 3 is green at this commit and the `config.yml` overlay entry above is verified. The sweep
 warning did not need to fire; the guard stands for the next cold or large store.
+
+## 2026-11-13 · OpenRouter through OMP goes through squid; the MAGS plugin entry was dead; two omp-live fixes
+
+**Cloud provider through the proxy: settled for the OpenAI-compatible path.** `AB_LIVE_MODEL=openrouter/
+z-ai/glm-5.3-flash make omp-live`: OMP answered `AB_OK` in 45 s and drove the browser and debugpy in step 2.
+A session has no route out but squid, and the access log shows the turns as TLS tunnels: 5 KB CONNECTs to
+openrouter.ai at startup (discovery) and a 54 690-byte one in step 2 (the tool-use turn). So OMP's
+OpenAI-compatible client honours `HTTPS_PROXY` for chat calls. The 11 Nov `getaddrinfo ENOTFOUND` for
+api.anthropic.com is therefore specific to the Anthropic SDK path and stays open; Tim does not test the
+Anthropic provider through a third-party route (ban risk, his decision, 12 Nov). No key in any log, state
+file or output (5 keys checked).
+
+**The report said "0 model request(s)" beside that PASS.** `model_calls` counted plain-HTTP requests only,
+which is how the LAN model is reached; squid cannot see inside a tunnel. `tls_tunnels` now counts
+successful CONNECTs apart, the INFO line prints both, and "nothing reached a model" needs both to be zero.
+Denied CONNECTs (403) count as neither. Unit tests on the real log lines.
+
+**`cp -al` across filesystems.** omp-live brings the real plugin tree beside its temporary config dir with
+hard links; `/tmp` and `~/.config` are different filesystems on this host, so every run printed "could not
+link the plugin tree" and ran without plugins. `bring_plugin_tree` falls back to a plain copy and says
+which it did. Unit tests with a fake `cp`.
+
+**`ab profile install omp` failed on MAGS, and the entry was wrong, not the installer.** `omp plugin link
+.../mags-codedev/mags-codedev-extension`: "package.json not found". The profile's `[[repo]]` pinned
+MAGS-CodeDev at d44fea8c (4 Nov); MAGS-CodeDev commit 3d3d8a4c (3 Nov, "chore: drop the OMP extension,
+keep its manifest-design guide") had removed that directory, and at the pinned ref there is no
+`package.json` anywhere in the repository. MAGS is a standalone Python CLI whose README says it runs as its
+own agentbox agent, not as an OMP plugin; the profile already vendors its manifest-design skill. The entry
+is removed from agentbox-profile-omp's `plugins.toml` (its status test now names pi-session-stats). The
+other two `[[repo]]` entries have a `package.json` at their refs (checked on GitHub). To be rerun by Tim:
+`ab profile install omp`, then a session should list egm, the four npm plugins and the two repos, and the
+tree should have `.agentbox/install.json` and `marketplaces.json`.
+
+**Open, from the same failure.** The install script is fail-fast (`set -eu`) and copies `marketplaces.json`
+last, so one broken `[[repo]]` also lost the marketplace file the already-installed egm needs, and the tree
+was left half-built with no lockfile (sessions warned, correctly). Either order the fragile `link` steps
+after the state and marketplace copies, or fail before touching the tree by checking each repo's
+`extension_dir` has a `package.json` at the ref. Not built today.
+
+**`podman images` after the prune.** Tim ran `podman image prune`; the JSON listing that took 3.5 min
+cold and 27 s after the prune took 1.0 s warm, the same as the template form. The cold comparison between
+the two forms was not taken, so the size hypothesis in the entry above stays a guess; the sweep guard
+stands either way.
