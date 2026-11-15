@@ -372,11 +372,11 @@ class OmpSession(OmpSessionBase):
                                  warn=warnings.append)
         s.prepare(do_backup=False)
         self.addCleanup(s.teardown)
-        self.assertEqual([w for w in warnings if "mcp.json" in w],
-                         [w for w in warnings if "mcp.json or mags-codedev.yaml" in w])
-        self.assertEqual(len([w for w in warnings if "mcp.json" in w]), 1, "one line when both are missing")
+        self.assertEqual(len([w for w in warnings if "no mcp.json in" in w]), 1, "one line when it is missing")
         c = os.path.join(HOME, ".omp")
-        self.assertFalse([m for m in s.setup.mounts if m[1] == f"{c}/agent/mags-codedev.yaml"])
+        # mags-codedev.yaml left the user files on 15 Nov (MAGS reads ~/.config/mags-codedev/config.yaml only)
+        self.assertFalse([m for m in s.setup.mounts if "mags-codedev" in m[1]])
+        self.assertFalse([w for w in warnings if "mags-codedev" in w])
         mcp = [m for m in s.setup.mounts if m[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(len(mcp), 1)
         self.assertTrue(mcp[0][0].endswith("omp-empty") and mcp[0][2], "absent: an empty read-only placeholder")
@@ -390,7 +390,6 @@ class OmpSession(OmpSessionBase):
         self.addCleanup(s2.teardown)
         m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
-        self.assertTrue(any("no mags-codedev.yaml in" in w for w in warnings))
 
     def test_config_yml_comes_from_agentboxs_own_seed_as_an_overlay(self):
         """The point of the 4 Nov move: it used to be mounted from `~/.omp/agent/config.yml`, the host

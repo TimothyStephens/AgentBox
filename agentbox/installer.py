@@ -46,6 +46,7 @@ to be agentbox's in any case.
 import json
 import os
 import shlex
+import shutil
 import time
 
 from . import adapters, egress, hardening, plugins, profile, session as sessionmod
@@ -87,6 +88,13 @@ def tree_dir(settings, agent):
     """The host-owned installed tree: `~/.config/agentbox/<agent>/plugins`, beside the agent's config.yml
     and mcp.json. One place for everything of this agent's that the host owns."""
     return os.path.join(settings.seed_dir(agent), "plugins")
+
+
+def staging_dir(settings, agent):
+    """Where an install is built: beside the tree, swapped in only when the whole install succeeded. A
+    failed install (13 Nov: one dead `[[repo]]` entry) therefore leaves the previous tree, and the plugins
+    it holds, exactly as they were, instead of an emptied directory with no lockfile."""
+    return tree_dir(settings, agent) + ".building"
 
 
 def lock_path(settings, agent):
@@ -172,11 +180,12 @@ def _script(entries, *, tree=C_TREE):
             lines.append(f"omp plugin install {q(e.name + '@' + e.version)}")
         else:
             path = f"{src}/{e.name}"
+            ext = os.path.join(path, e.extension_dir) if e.extension_dir != "." else path
             lines += [f"rm -rf {q(path)}",
                       f"git clone --quiet {q(e.url)} {q(path)}",
                       f"git -C {q(path)} checkout --quiet {q(e.ref)}",
-                      f"git -C {q(path)} rev-parse HEAD | grep -Fxq {q(e.ref)}",
-                      f"omp plugin link {q(os.path.join(path, e.extension_dir) if e.extension_dir != '.' else path)}"]
+                      f"git -C {q(path)} rev-parse HEAD | grep -Fxq {q(e.ref)}"]
+            lines += _link_lines(e, ext)
     lines += [f"omp plugin list --json > {q(f'{tree}/{STATE}')}",
               # Copied, not bind-mounted: OMP rewrites this file, and a tool that writes atomically cannot
               # rename over a bind mount. A session gets this copy read-only.
@@ -239,6 +248,18 @@ def _claude_script(entries, *, tree=C_CLAUDE_TREE):
     return "\n".join(lines) + "\n"
 
 
+def _link_lines(e, ext):
+    """`omp plugin link` needs a package.json at the path; without one it fails with a message that names
+    neither the entry nor the ref (13 Nov, MAGS-CodeDev: the extension had been deleted upstream before the
+    pinned ref). Say which `[[repo]]` and which ref before OMP gets to say less."""
+    q = shlex.quote
+    msg = (f"agentbox: [[repo]] {e.name}: no package.json at "
+           f"{e.extension_dir if e.extension_dir != '.' else 'the checkout root'} of {e.url} at {e.ref}; "
+           f"that is not an OMP extension (fix or remove the entry in plugins.toml)")
+    return [f"test -f {q(ext + '/package.json')} || {{ echo {q(msg)} >&2; exit 1; }}",
+            f"omp plugin link {q(ext)}"]
+
+
 def script_for(agent, entries):
     """The install script for an agent's declaration."""
     if agent == "claude":
@@ -260,6 +281,7 @@ class Install:
         self.warn = warn or (lambda m: None)
         self.name = f"{settings.name_prefix}install-{agent}"
         self.tree = tree_dir(settings, agent)
+        self.staging = staging_dir(settings, agent)
         self.run_dir = os.path.join(settings.run_dir, "installs", self.name)
 
     # The install is not a project, but the labels have the same shape so every sweep that looks for
@@ -314,10 +336,10 @@ class Install:
         opts += [f"--env={k}={v}" for k, v in env.items()]
         # The one thing mounted, read-write, AT THE PATH A SESSION WILL SEE IT AT.
         dst = tree_dst(self.agent)
-        opts.append(f"--mount=type=bind,src={os.path.realpath(self.tree)},dst={dst}")
+        opts.append(f"--mount=type=bind,src={os.path.realpath(self.staging)},dst={dst}")
         opts.append(f"--workdir={dst}")
         opts.append("--entrypoint=/bin/sh")
-        hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=[os.path.realpath(self.tree)],
+        hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=[os.path.realpath(self.staging)],
                         allowed_mount_dsts=[dst], networks=[self.int_net], tmpfs_dirs=tuple(tmpfs_dirs))
         return args + opts + [self.adapter.image, "-c", script]
 
@@ -374,18 +396,27 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
         return {"dry_run": True, "script": script, "entries": [_declared(e) for e in entries]}
 
     pin = _image_pin(job)
-    _fresh_tree(job.tree)
+    if os.path.islink(job.tree):
+        raise AgentboxError(f"{job.tree} is a symlink; refusing to replace it")
+    _fresh_tree(job.staging)
     warn(f"agentbox: installing {plugins.summary(entries)} into {job.tree} "
          f"(against {job.adapter.image}, {pin.get('cli_version') or 'unknown version'})")
     try:
-        job.start_infra()
-        p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
-        if p.returncode != 0:
-            tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
-            raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
-    finally:
-        job.teardown()
-    doc = _lock(settings, agent, entries, pin, job.tree)
+        try:
+            job.start_infra()
+            p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
+            if p.returncode != 0:
+                tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
+                raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
+        finally:
+            job.teardown()
+        doc = _lock(settings, agent, entries, pin, job.staging)
+    except AgentboxError as e:
+        shutil.rmtree(job.staging, ignore_errors=True)
+        kept = (f"\nThe previous tree at {job.tree} is kept as it was."
+                if os.path.isdir(job.tree) else "")
+        raise AgentboxError(f"{e}{kept}") from None
+    _swap_in(job.staging, job.tree)
     counts = ", ".join(f"{len(v or [])} {kind}" for kind, v in sorted(doc["state"].items())
                        if isinstance(v, list))
     warn(f"agentbox: installed. The tree reports {counts or 'nothing'}")
@@ -413,6 +444,17 @@ def _image_pin(job):
     return out
 
 
+def _swap_in(staging, tree):
+    """The built tree takes the tree's place; the old one goes only after the new one is in place. A session
+    that has the old tree mounted keeps it (a bind mount follows the inode, not the name)."""
+    old = tree + ".previous"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(tree):
+        os.rename(tree, old)
+    os.rename(staging, tree)
+    shutil.rmtree(old, ignore_errors=True)
+
+
 def _fresh_tree(tree):
     """An install starts from an empty tree.
 
@@ -420,7 +462,6 @@ def _fresh_tree(tree):
     installing into a tree that already has plugins in it would leave the removed ones installed and make
     the lockfile a description of something else. A symlink anywhere in the path is refused rather than
     followed -- this function deletes."""
-    import shutil
     if os.path.islink(tree):
         raise AgentboxError(f"{tree} is a symlink; refusing to replace it")
     parent = os.path.dirname(tree)

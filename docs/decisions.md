@@ -2914,3 +2914,28 @@ found the save in the project's state dir and not in the seed), `PLUGINS_RC=1`, 
 `PI_CONFIG_FILES=/home/vmuser/.omp/agentbox-config.yml`. With the 189 passes of the 24a1ddb run on code
 unchanged since, `make itest` is green at d674607 by combination; `make claude-live` passed at c62f59e. The
 config.yml overlay is now verified by both integration modules that touch it.
+
+## 2026-11-15 · A failed plugin install keeps the previous tree; `mags-codedev.yaml` is no longer a seed; MAGS stays external
+
+**Installer (Tim: yes).** The install is built in `<tree>.building`, which is what the container mounts at
+`~/.omp/plugins`; the lockfile is written there, and only then is it swapped into place (`rename` the old
+tree aside, `rename` the new one in, remove the old). A failure of any kind -- the container, no state, the
+lockfile -- removes the staging directory and leaves the previous tree and its lockfile untouched, and the
+error says so ("The previous tree at ... is kept as it was."). A first install that fails leaves nothing. A
+session that has the old tree mounted keeps it: a bind mount follows the inode. Each `omp plugin link` is
+now preceded by `test -f <ext>/package.json`, failing with a message that names the `[[repo]]` entry, the
+URL, the ref and the fix, because OMP's own message named none of those (13 Nov). Unit tests: the mount is
+the staging dir; a failed second install keeps the first's tree and lockfile; a failed first install leaves
+no tree; the guard line precedes the link and names entry and ref. Mutants: install into the tree directly
+(two tests fail); no guard (one test fails).
+
+**`mags-codedev.yaml` (Tim: yes).** Removed from the OMP adapter's user files, the unit test, design.md's
+mount table and the profile repo (`build.sh` SEEDS, README, checker docstring). Reason: MAGS-CodeDev
+f48ef34 (4 Nov) dropped the `~/.omp/agent/mags-codedev.yaml` path; its message says a config left there "is
+simply ignored". The mount could only ever have been a no-op since then. `mcp.json` stays as the one
+optional seed.
+
+**MAGS as an agentbox agent (Tim: no).** Tim keeps MAGS-CodeDev outside agentbox: it does not align exactly
+with agentbox's goals, and a separate container is more modular. Nothing of MAGS remains in the launcher
+but the `bin/mags-codedev` entry in the `~/.omp` whitelist (omp.py docstring, design.md row), which is the
+omp-env-era wrapper and is mounted only if the host has it; left as is, to be dropped with that whitelist.

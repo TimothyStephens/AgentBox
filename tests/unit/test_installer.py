@@ -82,6 +82,19 @@ class TheScript(unittest.TestCase):
             if line.startswith(("git clone", "omp plugin marketplace add", "omp plugin link")):
                 self.assertIn(f"{installer.C_TREE}/{installer.SOURCES}", line, line)
 
+    def test_a_link_is_preceded_by_a_package_json_check_that_names_the_entry_and_the_ref(self):
+        """13 Nov, MAGS-CodeDev: OMP's own message was "package.json not found at <path>" -- no entry
+        name, no ref, no hint that the upstream had deleted the extension before the pinned ref."""
+        text = self.script(DECLARED.replace(f'ref = "{REPO_SHA}"', f'ref = "{REPO_SHA}"\nextension_dir = "ext"'))
+        ext = f"{installer.C_TREE}/{installer.SOURCES}/pi-session-stats/ext"
+        lines = text.splitlines()
+        link = lines.index(f"omp plugin link {ext}")
+        guard = lines[link - 1]
+        self.assertTrue(guard.startswith(f"test -f {ext}/package.json || "), guard)
+        for must in ("[[repo]] pi-session-stats", "not an OMP extension", REPO_SHA, "plugins.toml"):
+            self.assertIn(must, guard)
+        self.assertIn("exit 1", guard)
+
     def test_a_repo_is_linked_from_its_extension_dir(self):
         text = installer._script(plugins.parse(DECLARED.replace(
             f'ref = "{REPO_SHA}"', f'ref = "{REPO_SHA}"\nextension_dir = "ext"')))
@@ -135,7 +148,8 @@ class TheContainer(SettingsCase):
         mounts = [a for a in self.args() if a.startswith("--mount=")]
         self.assertEqual(len(mounts), 1, mounts)
         self.assertIn(f"dst={installer.C_TREE}", mounts[0])
-        self.assertIn(f"src={os.path.realpath(self.job.tree)}", mounts[0])
+        self.assertIn(f"src={os.path.realpath(self.job.staging)}", mounts[0],
+                      "the staging tree is mounted; the real tree is swapped in only on success")
         self.assertNotIn(",ro", mounts[0], "the install writes the tree")
 
     def test_omp_home_is_a_tmpfs_owned_by_the_container_user(self):
@@ -239,14 +253,18 @@ class TheRun(SettingsCase):
     def seed_state(self):
         """The fake podman runs no container, so the state file the real install would write is seeded --
         and `_lock` refusing to invent one when it is missing is its own test below."""
-        tree = installer.tree_dir(self.settings, "omp")
+        # The container writes into the STAGING tree (that is what is mounted); the host swaps it in.
+        tree = installer.staging_dir(self.settings, "omp")
 
         def write(argv, **kw):
             import subprocess
             if argv[:1] == ["run"] and "--rm" in argv:
+                self.assertIn(f"src={os.path.realpath(tree)}", " ".join(argv), "the staging tree is mounted")
                 os.makedirs(os.path.join(tree, installer.OURS), exist_ok=True)
                 with open(os.path.join(tree, installer.STATE), "w") as f:
                     json.dump(STATE, f)
+                with open(os.path.join(tree, "installed-marker"), "w") as f:
+                    f.write("new")
             return subprocess.CompletedProcess(argv, 0, "", "")
         return write
 
@@ -306,6 +324,46 @@ class TheRun(SettingsCase):
             f.write("from an older install")
         self.run_install()
         self.assertFalse(os.path.exists(os.path.join(tree, "leftover")))
+        self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")), "the built tree is in place")
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")), "no staging dir left")
+        self.assertFalse(os.path.exists(tree + ".previous"), "the old tree is gone")
+
+    def test_a_failed_install_keeps_the_previous_tree_and_its_lockfile(self):
+        """13 Nov: one dead [[repo]] entry failed the install, and the tree had already been emptied, so
+        egm and the npm plugins that had installed fine were gone from sessions until plugins.toml was
+        fixed. The build happens beside the tree now; a failure leaves the tree as it was and says so."""
+        first = self.run_install()
+        tree = installer.tree_dir(self.settings, "omp")
+        pod = Podman(self.settings.podman)
+        real = pod.run
+
+        def runner(argv, **kw):
+            import subprocess
+            if argv[:1] == ["run"] and "--rm" in argv:
+                return subprocess.CompletedProcess(argv, 1, "", "✘ Failed to link: package.json not found")
+            return real(argv, **kw)
+        with mock.patch.object(pod, "run", side_effect=runner), self.assertRaises(AgentboxError) as cm:
+            installer.install(self.settings, "omp", podman=pod, warn=lambda m: None)
+        self.assertIn("package.json not found", str(cm.exception))
+        self.assertIn(f"previous tree at {tree} is kept", str(cm.exception))
+        self.assertEqual(installer.read_lock(self.settings, "omp"), first, "the lockfile is the first install's")
+        self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")))
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")), "no staging dir left")
+
+    def test_a_first_install_that_fails_leaves_no_tree_at_all(self):
+        pod = Podman(self.settings.podman)
+        real = pod.run
+
+        def runner(argv, **kw):
+            import subprocess
+            if argv[:1] == ["run"] and "--rm" in argv:
+                return subprocess.CompletedProcess(argv, 1, "", "boom")
+            return real(argv, **kw)
+        with mock.patch.object(pod, "run", side_effect=runner), self.assertRaises(AgentboxError) as cm:
+            installer.install(self.settings, "omp", podman=pod, warn=lambda m: None)
+        self.assertNotIn("previous tree", str(cm.exception))
+        self.assertFalse(os.path.exists(installer.tree_dir(self.settings, "omp")))
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")))
 
     def test_a_symlinked_tree_is_refused_rather_than_followed(self):
         tree = installer.tree_dir(self.settings, "omp")

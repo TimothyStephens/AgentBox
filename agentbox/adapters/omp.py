@@ -3,8 +3,8 @@
 Only named pieces of the host's ~/.omp are mounted, all read-only (docs/decisions.md, "What the OMP session
 mounts from ~/.omp"): plugins, repos and pylibs from their actual link targets (they may sit in different
 versions), the version directories those live in or the plugins link into, and bin/mags-codedev. Everything
-else in ~/.omp (models.yml and its backup, .mcp.json, mags-codedev.yaml, config.yml, extensions, sessions,
-databases, logs, caches, run/) never enters a session.
+else in ~/.omp (models.yml and its backup, .mcp.json, config.yml, extensions, sessions, databases, logs,
+caches, run/) never enters a session.
 
 Shrinking that list is the point: `config.yml` and the Playwright cache left it on 4 Nov, so the only
 remaining reason a session reads ~/.omp at all is the plugins/repos/pylibs snapshot -- plus
@@ -48,7 +48,9 @@ MARKETPLACES_DST = os.path.join(C_OMP, "marketplaces.json")
 # session writes, and `agent/config.yml` is ordinary per-project agent state OMP may write. An explicit
 # `--config` (the lockdown overlay) ranks above PI_CONFIG_FILES, so lockdown wins over the host file too.
 USER_FILES = (("config.yml", "agentbox-config.yml"),
-              ("mcp.json", "agent/.mcp.json"), ("mags-codedev.yaml", "agent/mags-codedev.yaml"))
+              ("mcp.json", "agent/.mcp.json"))
+# `mags-codedev.yaml` is no longer a user file (15 Nov): MAGS-CodeDev f48ef34 dropped the ~/.omp/agent path
+# and reads ~/.config/mags-codedev/config.yaml only; a file mounted at the old path was simply ignored.
 CONFIG_OVERLAY = f"{C_OMP}/agentbox-config.yml"
 CONFIG_FILES_ENV = "PI_CONFIG_FILES"
 # Places in the per-project agent dir OMP loads code or code-running config from. They are covered read-only
