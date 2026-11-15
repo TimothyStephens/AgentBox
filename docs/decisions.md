@@ -2884,3 +2884,17 @@ plugin actually loaded (nothing in the one-turn prompt exercises one); the sessi
 evidence that OMP sees them.
 
 The `probe` project is purged.
+
+## 2026-11-15 · `make itest` at 24a1ddb: 189 of 190, the one failure a test still pinning the old config.yml mount
+
+Tim's full run: 190 tests in 62 min, one failure, `test_omp_isolation.test_omp_home_is_isolated`, asserting
+`agent/config.yml` is read-only. That was the design until 12 Nov; the overlay entry above made it
+per-project writable state, and I updated the step 3 test but not this one. The test now asserts the new
+design: the overlay `~/.omp/agentbox-config.yml` refuses writes, `PI_CONFIG_FILES` names it, a write to
+`agent/config.yml` succeeds and lands in the project's state dir, and the host seed is unchanged by it.
+Unverified here (no podman in the sandbox): the module is to be rerun by Tim. Everything else in the run
+passed, including the step 5 and 6 modules, token-at-rest and Toulmin.
+
+The run ended with the Makefile's warning that token-handling files (`agentbox/adapters/omp.py`,
+`agentbox/session.py`) changed since the last passing `make claude-live` (40eba970, 10 Nov): the overlay
+and the sweep guard touched them. `make claude-live` is Tim's to run; a pass is to be recorded here.

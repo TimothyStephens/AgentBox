@@ -2,8 +2,10 @@
 the test never touches the real one):
 
   * a write to ~/.omp/logs/<f> lands in the per-project state dir, NOT the host ~/.omp/logs;
-  * the read-only mounts reject writes: `plugins/` and `bin/mags-codedev` from the host's ~/.omp, and
-    `agent/config.yml` from agentbox's own config (it moved there on 4 Nov -- see decisions.md);
+  * the read-only mounts reject writes: `plugins/` and `marketplaces.json` from the installed tree, and
+    agentbox's own config.yml, which since 12 Nov is an overlay at `~/.omp/agentbox-config.yml`
+    (PI_CONFIG_FILES), not a mount over `agent/config.yml`: that file is per-project state OMP may save to,
+    and a write to it lands in the project's state dir, not in the host seed (decisions.md, 12 Nov);
   * no key material is readable: the session's ~/.omp/agent/models.yml references AB_KEY_<NAME> variables, not
     a literal key, and no key string (the live key value, or a sentinel planted in the host's never-mounted
     models.yml) appears in any file under ~/.omp.
@@ -20,6 +22,7 @@ import secrets
 import subprocess
 import unittest
 
+from agentbox.adapters import omp
 from tests import ompfake
 
 from . import harness
@@ -62,8 +65,8 @@ def setUpModule():
     os.makedirs(os.path.join(ENV.cfg, "omp"), exist_ok=True)
     with open(os.path.join(ENV.cfg, "omp", "models.yml"), "w") as f:
         f.write(SEED)
-    # config.yml is agentbox's own since 4 Nov. Without this seed nothing mounts over agent/config.yml and
-    # the read-only check below would be probing a plain writable file in the state dir.
+    # config.yml is agentbox's own since 4 Nov, and an overlay since 12 Nov. Without this seed there is no
+    # overlay mount and the read-only check below would have nothing to probe.
     with open(os.path.join(ENV.cfg, "omp", "config.yml"), "w") as f:
         f.write("# agentbox's own config.yml\n{}\n")
     kdir = os.path.join(ENV.cfg, "keys")
@@ -84,7 +87,9 @@ SCRIPT = f"""
 set +e
 echo "{LOGMARK}" > ~/.omp/logs/iso-probe.txt; echo "LOGWRITE_RC=$?"
 ( : > ~/.omp/plugins/SHOULD_NOT_WRITE ) 2>/dev/null; echo "PLUGINS_RC=$?"
-( echo tampered > ~/.omp/agent/config.yml ) 2>/dev/null; echo "CONFIG_RC=$?"
+( echo tampered > ~/.omp/agentbox-config.yml ) 2>/dev/null; echo "OVERLAY_RC=$?"
+( echo "theme: {dark: titanium}" > ~/.omp/agent/config.yml ) 2>/dev/null; echo "CONFIG_RC=$?"
+echo "OVERLAY_ENV=$PI_CONFIG_FILES"
 ( echo tampered >> ~/.omp/marketplaces.json ) 2>/dev/null; echo "MARKETPLACES_RC=$?"
 if [ -n "$AB_KEY_STUBAI" ]; then echo KEYVAR_SET=yes; else echo KEYVAR_SET=no; fi
 HITS=""
@@ -124,9 +129,21 @@ class OmpIsolation(unittest.TestCase):
         self.assertNotEqual(out.get("PLUGINS_RC"), "0",
                             "the installed plugin tree must be read-only -- THE question this feature "
                             "left open: a session must not be able to change what the next one loads")
-        self.assertNotEqual(out.get("CONFIG_RC"), "0",
-                            "agent/config.yml must be read-only -- agentbox's own copy now, not the host's")
+        self.assertNotEqual(out.get("OVERLAY_RC"), "0",
+                            "agentbox's config.yml overlay must be read-only -- the host's settings win over "
+                            "anything a session saves")
+        self.assertEqual(out.get("OVERLAY_ENV"), omp.CONFIG_OVERLAY, "PI_CONFIG_FILES names the overlay")
         self.assertNotEqual(out.get("MARKETPLACES_RC"), "0", "marketplaces.json must be read-only")
+        # agent/config.yml is the project's own state since 12 Nov: OMP saves its settings there (by
+        # write-and-rename, which a bind mount refused with EBUSY). The write must land in the project's
+        # state dir and nowhere near the host seed.
+        self.assertEqual(out.get("CONFIG_RC"), "0", "agent/config.yml is writable per-project state")
+        saved = os.path.join(ENV.data, "projects", "ompiso", "omp", "agent", "config.yml")
+        self.assertTrue(os.path.isfile(saved), "the session's config.yml save landed in the project state dir")
+        with open(saved) as f:
+            self.assertIn("titanium", f.read())
+        with open(os.path.join(ENV.cfg, "omp", "config.yml")) as f:
+            self.assertNotIn("titanium", f.read(), "the host seed was changed by a session")
 
         # 3. no key material is readable under ~/.omp
         self.assertEqual(out.get("KEYVAR_SET"), "yes", "the provider key is exported as AB_KEY_STUBAI (env only)")
