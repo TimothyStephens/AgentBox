@@ -88,7 +88,7 @@ set +e
 echo "{LOGMARK}" > ~/.omp/logs/iso-probe.txt; echo "LOGWRITE_RC=$?"
 ( : > ~/.omp/plugins/SHOULD_NOT_WRITE ) 2>/dev/null; echo "PLUGINS_RC=$?"
 ( echo tampered > ~/.omp/agentbox-config.yml ) 2>/dev/null; echo "OVERLAY_RC=$?"
-( echo "theme: {dark: titanium}" > ~/.omp/agent/config.yml ) 2>/dev/null; echo "CONFIG_RC=$?"
+( echo "theme: {{dark: titanium}}" > ~/.omp/agent/config.yml ) 2>/dev/null; echo "CONFIG_RC=$?"
 echo "OVERLAY_ENV=$PI_CONFIG_FILES"
 ( echo tampered >> ~/.omp/marketplaces.json ) 2>/dev/null; echo "MARKETPLACES_RC=$?"
 if [ -n "$AB_KEY_STUBAI" ]; then echo KEYVAR_SET=yes; else echo KEYVAR_SET=no; fi

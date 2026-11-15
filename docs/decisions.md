@@ -2898,3 +2898,12 @@ passed, including the step 5 and 6 modules, token-at-rest and Toulmin.
 The run ended with the Makefile's warning that token-handling files (`agentbox/adapters/omp.py`,
 `agentbox/session.py`) changed since the last passing `make claude-live` (40eba970, 10 Nov): the overlay
 and the sweep guard touched them. `make claude-live` is Tim's to run; a pass is to be recorded here.
+
+**Later the same day.** The rewritten isolation test did not run on Tim's host: its probe script is an
+f-string and `{dark: titanium}` was read as a Python expression, so the module raised NameError at import
+and unittest printed no tally. Braces escaped; a new unit test (`test_itest_modules_import`) imports every
+integration module under `make test`, skipping by name only a module that needs a host binary this machine
+lacks (step 1, `systemctl`), so a broken itest module fails the fast suite instead of reaching the host.
+Mutant (the unescaped brace) fails it. `make test`: 1300, OK. `make claude-live` passed at c62f59e (AB_OK
+through the proxy, egress locked; WebSearch works, WebFetch refused, Bash works; token in no log, state
+file or output) -- the pass record is Tim's to commit.
