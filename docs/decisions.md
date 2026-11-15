@@ -2907,3 +2907,10 @@ lacks (step 1, `systemctl`), so a broken itest module fails the fast suite inste
 Mutant (the unescaped brace) fails it. `make test`: 1300, OK. `make claude-live` passed at c62f59e (AB_OK
 through the proxy, egress locked; WebSearch works, WebFetch refused, Bash works; token in no log, state
 file or output) -- the pass record is Tim's to commit.
+
+**Result, 15 Nov.** `test_omp_isolation` on Tim's host at d674607: `Ran 1 test in 36 s, OK`; the probe
+read `OVERLAY_RC=1` (the overlay refuses writes), `CONFIG_RC=0` (agent/config.yml is writable, and the test
+found the save in the project's state dir and not in the seed), `PLUGINS_RC=1`, `MARKETPLACES_RC=1`,
+`PI_CONFIG_FILES=/home/vmuser/.omp/agentbox-config.yml`. With the 189 passes of the 24a1ddb run on code
+unchanged since, `make itest` is green at d674607 by combination; `make claude-live` passed at c62f59e. The
+config.yml overlay is now verified by both integration modules that touch it.
