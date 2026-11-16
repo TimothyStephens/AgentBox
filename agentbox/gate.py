@@ -1833,11 +1833,22 @@ class Gate:
               ("labels", json.dumps(self.stamp(labels)))]
         if self.cfg.get("build_dns"):
             q.append(("dnsservers", json.dumps(self.cfg["build_dns"])))   # podman's DNS on the session network
-        # Re-check just before forwarding: the PID could have been reused between the two reads.
-        ns_again, pid_again, ns_id_again = self.holder_ns()
-        if (ns_again, pid_again, ns_id_again) != (ns_path, pid, ns_id):
-            raise Deny("the build holder changed during the build request")
+        # The holder is read again in finalize_build, which the handler calls after the context has been spooled
+        # and read, just before the build head goes upstream: the PID could be reused in between.
+        self._tls.build_holder = (ns_path, pid, ns_id)
         return parts.path + "?" + urlencode(q)
+
+    def finalize_build(self, target):
+        """Just before a build is forwarded (after the body spool, which can take a while): the holder must still
+        be the process rewrite_build pinned the build's network namespace to (review 2026-11-16, item 11: the
+        re-check used to run inside rewrite_build, before the spool, leaving the spool time unchecked)."""
+        first = getattr(self._tls, "build_holder", None)
+        self._tls.build_holder = None
+        if first is None:
+            raise Deny("build was not prepared")
+        if self.holder_ns() != first:
+            raise Deny("the build holder changed during the build request")
+        return target
 
     def slice_state(self, name):
         return buildcap.slice_state(name)
@@ -2595,6 +2606,7 @@ def make_handler(gate):
                         f.flush()
                         gate.check_build_images(f"/proc/self/fd/{f.fileno()}", target)
                         headers = hset(hset(headers, "Transfer-Encoding", None), "Content-Length", str(size))
+                        target = gate.finalize_build(target)      # holder PID re-checked after the spool (item 11)
                         upstream.sendall(build_head(method, target, version, headers))
                         f.seek(0)
                         for block in iter(lambda: f.read(1 << 20), b""):

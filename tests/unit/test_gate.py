@@ -242,8 +242,11 @@ class PullsAndBuilds(unittest.TestCase):
         g = FakeGate()
         seen = iter([("/proc/1/ns/net", 1, "net:[1]"), ("/proc/2/ns/net", 2, "net:[2]")])
         g.holder_ns = lambda: next(seen)
-        with self.assertRaises(gate.Deny):
-            g.rewrite_build("/v5/libpod/build?t=x")
+        target = g.rewrite_build("/v5/libpod/build?t=x")       # pinned to the first read
+        with self.assertRaises(gate.Deny):                     # re-read just before forwarding: changed
+            g.finalize_build(target)
+        with self.assertRaises(gate.Deny):                     # and never without a prepared build
+            g.finalize_build(target)
 
 
 class Scoping(unittest.TestCase):

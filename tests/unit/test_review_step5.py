@@ -1591,5 +1591,31 @@ class Item10RequestHead(unittest.TestCase):
                 gate.parse_head(head)
 
 
+class Item11HolderRecheckAfterSpool(unittest.TestCase):
+    """Review 2026-11-16, item 11: the holder's PID was re-read inside rewrite_build, before the build context was
+    spooled; the spool (up to 8 GiB) was time in which the PID could be reused. The second read now happens
+    after the context is spooled and read, just before the build head goes upstream."""
+
+    def test_second_holder_read_follows_the_context_check(self):
+        order = []
+        g = Fake()
+        real_holder = g.holder_ns
+        g.holder_ns = lambda: (order.append("holder"), real_holder())[1]
+
+        def serve(conn, result):
+            result["head"] = Upstream.read_head(conn)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        up = Upstream(self, serve)
+        with unittest.mock.patch.object(gate.Gate, "check_build_images",
+                                        lambda self, path, target: order.append("context")):
+            a, t = run_handler(self, g, up)
+            a.sendall(b"POST /v5/libpod/build?t=x HTTP/1.1\r\nHost: d\r\nContent-Length: 3\r\n\r\nctx")
+            t.join(10)
+        up.thread.join(5)
+        self.assertEqual(order, ["holder", "context", "holder"])
+        self.assertTrue(up.result.get("head", b"").startswith(b"POST /v5/libpod/build?"), up.result)
+        self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 200 OK"))
+
+
 if __name__ == "__main__":
     unittest.main()
