@@ -4,12 +4,14 @@ import json
 import os
 import sys
 
-from . import adapters, config, keys, layout, presets, projectkeys, registry, review, session, tokens
+from . import adapters, config, layout, presets, projectkeys, registry, review, session
 from .config import HOME
 from .errors import AgentboxError
 from . import paths
 from .paths import check_grant
 from .podman import Podman
+from . import cli_keys
+from .cli_keys import cmd_keys_ls, cmd_keys_rm, cmd_keys_rotate, cmd_keys_set  # noqa: F401
 
 
 def warn(msg):
@@ -1146,32 +1148,6 @@ def cmd_screen(s, a):
     return screen.VERBS[a.sub](s, a, out=print, err=warn)
 
 
-def cmd_keys_set(s, a):
-    if a.provider == "claude":
-        raise AgentboxError("Claude Code uses a subscription token: `ab keys rotate claude`")
-    keys.set_key(s, a.provider)
-
-
-def cmd_keys_ls(s, a):
-    found = keys.present(s)
-    for provider in found:
-        known = ", ".join(keys.PROVIDER_DOMAINS.get(provider, [])) or "domain from the model config's baseUrl"
-        print(f"{provider:<16} {keys.env_name(provider):<24} {known}")
-    tok = s.token_file("claude")
-    print(f"{'claude (token)':<16} {'CLAUDE_CODE_OAUTH_TOKEN':<24} "
-          f"{'set' if os.path.exists(tok) else 'not set'} ({tok})")
-
-
-def cmd_keys_rm(s, a):
-    keys.remove(s, a.provider)
-
-
-def cmd_keys_rotate(s, a):
-    if a.agent != "claude":
-        raise AgentboxError("only `ab keys rotate claude` is supported")
-    tokens.rotate(s.token_file(a.agent), a.agent)
-
-
 def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None,
                               preset_note="", presets_map=None):
     """The override flags shared by `ab project init`, `ab project add` and `ab project set`: same flag spellings,
@@ -1598,20 +1574,7 @@ def parser(settings=None):
                     "outside every grant, and reach a session read-only as AB_KEY_<PROVIDER>.",
         epilog=ex("ab keys rotate claude", "ab keys set openai", "ab keys ls", "ab keys rm openai"))
     ks = ks_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
-    x = add(ks, "rotate", "replace the Claude subscription token (from `claude setup-token`)",
-            ex("ab keys rotate claude"))
-    x.add_argument("agent", choices=adapters.NAMES, help="the agent whose subscription token to replace (currently: claude)")
-    x.set_defaults(fn=cmd_keys_rotate)
-    x = add(ks, "set", "set a provider's API key (pay-per-use: make it dedicated and spend-capped)",
-            ex("ab keys set openai"))
-    x.add_argument("provider", help="the provider name; its key becomes AB_KEY_<PROVIDER> in sessions "
-                                    "(you are prompted for the value, which is never on the command line)")
-    x.set_defaults(fn=cmd_keys_set)
-    add(ks, "ls", "list providers that have a key (names only, never values)",
-        ex("ab keys ls")).set_defaults(fn=cmd_keys_ls)
-    x = add(ks, "rm", "remove a provider's key file", ex("ab keys rm openai"))
-    x.add_argument("provider", help="the provider whose key file to remove")
-    x.set_defaults(fn=cmd_keys_rm)
+    cli_keys.add_verbs(ks, add, ex)
 
     # Everyday nouns first; the host-setup and repair nouns still parse but list under `advanced`.
     finish(p, demote(sub, ["profile", "image", "keys"]), "commands")
