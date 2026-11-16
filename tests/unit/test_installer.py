@@ -446,6 +446,85 @@ class TheRun(SettingsCase):
         self.assertIn("not a directory", str(cm.exception))
         self.assertEqual(os.listdir(other), [])
 
+    def test_a_second_install_of_the_same_agent_is_refused_while_one_runs(self):
+        """Two at once would build in the same staging directory and swap over each other."""
+        import fcntl
+        tree = installer.tree_dir(self.settings, "omp")
+        os.makedirs(os.path.dirname(tree), exist_ok=True)
+        fd = os.open(tree + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with self.assertRaises(AgentboxError) as cm:
+            self.run_install()
+        self.assertIn("another `ab profile install omp` is running", str(cm.exception))
+        self.assertEqual([c for c in self.podman_calls() if c[:1] == ["run"]], [], "nothing was started")
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.run_install()
+        self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")))
+        self.assertTrue(os.path.isfile(tree + ".lock"), "the lock file stays; removing it would reopen the race")
+
+    def test_an_interrupted_install_removes_its_staging_tree_too(self):
+        """Not only an AgentboxError: Ctrl-C or a traceback in the middle must not leave `.building` beside
+        the tree for the next install (or a curious session) to find."""
+        first = self.run_install()
+        tree = installer.tree_dir(self.settings, "omp")
+        pod = Podman(self.settings.podman)
+        real = pod.run
+
+        def runner(argv, **kw):
+            if argv[:1] == ["run"] and "--rm" in argv:
+                raise KeyboardInterrupt
+            return real(argv, **kw)
+        with mock.patch.object(pod, "run", side_effect=runner), self.assertRaises(KeyboardInterrupt):
+            installer.install(self.settings, "omp", podman=pod, warn=lambda m: None)
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")), "staging dir left")
+        self.assertEqual(installer.read_lock(self.settings, "omp"), first, "the previous tree is kept")
+        self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")))
+        names = [c[-1] for c in self.podman_calls() if c[:1] == ["rm"]]
+        self.assertIn(installer.Install(self.settings, "omp").proxy_name, names, "teardown did not run")
+
+    def test_a_symlinked_previous_tree_is_refused_before_anything_runs(self):
+        tree = installer.tree_dir(self.settings, "omp")
+        os.makedirs(os.path.dirname(tree), exist_ok=True)
+        os.symlink(self.mkdir("elsewhere"), tree + ".previous")
+        with self.assertRaises(AgentboxError) as cm:
+            self.run_install()
+        self.assertIn("symlink", str(cm.exception))
+        self.assertEqual([c for c in self.podman_calls() if c[:1] == ["run"]], [])
+        self.assertTrue(os.path.islink(tree + ".previous"), "the link was removed or renamed through")
+        with self.assertRaises(AgentboxError):
+            installer._swap_in(self.mkdir("staging"), tree)
+        self.assertTrue(os.path.islink(tree + ".previous"))
+
+    def test_a_leftover_previous_tree_is_put_back_when_the_tree_is_missing(self):
+        """An install interrupted between the two renames of the swap leaves the last good tree at
+        `.previous` and nothing at the tree. The next install starts by putting it back, so a failure of
+        that install still has a previous tree to keep."""
+        first = self.run_install()
+        tree = installer.tree_dir(self.settings, "omp")
+        os.rename(tree, tree + ".previous")
+        pod = Podman(self.settings.podman)
+        real = pod.run
+
+        def runner(argv, **kw):
+            import subprocess
+            if argv[:1] == ["run"] and "--rm" in argv:
+                return subprocess.CompletedProcess(argv, 1, "", "boom")
+            return real(argv, **kw)
+        warnings = []
+        with mock.patch.object(pod, "run", side_effect=runner), self.assertRaises(AgentboxError) as cm:
+            installer.install(self.settings, "omp", podman=pod, warn=warnings.append)
+        self.assertIn(f"previous tree at {tree} is kept", str(cm.exception))
+        self.assertTrue(any("interrupted" in w for w in warnings), warnings)
+        self.assertEqual(installer.read_lock(self.settings, "omp"), first)
+        self.assertFalse(os.path.lexists(tree + ".previous"))
+        # And a successful install after a leftover `.previous` ends with one tree and nothing beside it.
+        os.rename(tree, tree + ".previous")
+        self.run_install()
+        self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")))
+        self.assertFalse(os.path.lexists(tree + ".previous"))
+
     def test_no_state_means_no_lockfile_and_an_error(self):
         """An install that reported nothing is not an install that worked."""
         pod = Podman(self.settings.podman)

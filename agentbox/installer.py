@@ -43,6 +43,7 @@ the tree read-only at `/run/agentbox/claude/marketplaces` and generates the two 
 `github` or `git` source, with or without a `ref`, was silently not registered at startup, and the pin has
 to be agentbox's in any case.
 """
+import fcntl
 import json
 import os
 import shlex
@@ -397,32 +398,75 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
         return {"dry_run": True, "script": script, "entries": [_declared(e) for e in entries]}
 
     pin = _image_pin(job)
-    if os.path.islink(job.tree):
-        raise AgentboxError(f"{job.tree} is a symlink; refusing to replace it")
-    _fresh_tree(job.staging)
-    warn(f"agentbox: installing {plugins.summary(entries)} into {job.tree} "
-         f"(against {job.adapter.image}, {pin.get('cli_version') or 'unknown version'})")
+    # One install at a time per tree, for the whole of it: two at once would build in the same staging
+    # directory and swap over each other. The lock file stays (removing it would reopen the race).
+    held = _take_lock(job.tree, agent)
     try:
+        if os.path.islink(job.tree):
+            raise AgentboxError(f"{job.tree} is a symlink; refusing to replace it")
+        _recover_previous(job.tree, warn)
+        _fresh_tree(job.staging)
+        warn(f"agentbox: installing {plugins.summary(entries)} into {job.tree} "
+             f"(against {job.adapter.image}, {pin.get('cli_version') or 'unknown version'})")
         try:
-            job.start_infra()
-            p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
-            if p.returncode != 0:
-                tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
-                raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
-        finally:
-            job.teardown()
-        _check_links(job.staging)
-        doc = _lock(settings, agent, entries, pin, job.staging)
-    except AgentboxError as e:
-        shutil.rmtree(job.staging, ignore_errors=True)
-        kept = (f"\nThe previous tree at {job.tree} is kept as it was."
-                if os.path.isdir(job.tree) else "")
-        raise AgentboxError(f"{e}{kept}") from None
-    _swap_in(job.staging, job.tree)
+            try:
+                job.start_infra()
+                p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
+                if p.returncode != 0:
+                    tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
+                    raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
+            finally:
+                job.teardown()
+            _check_links(job.staging)
+            doc = _lock(settings, agent, entries, pin, job.staging)
+        except BaseException as e:
+            # Whatever went wrong -- a refusal, a traceback, Ctrl-C -- the half-built staging tree goes,
+            # or the next install would start from it, or a session would find `.building` beside the tree.
+            shutil.rmtree(job.staging, ignore_errors=True)
+            if not isinstance(e, AgentboxError):
+                raise
+            kept = (f"\nThe previous tree at {job.tree} is kept as it was."
+                    if os.path.isdir(job.tree) else "")
+            raise AgentboxError(f"{e}{kept}") from None
+        _swap_in(job.staging, job.tree)
+    finally:
+        os.close(held)
     counts = ", ".join(f"{len(v or [])} {kind}" for kind, v in sorted(doc["state"].items())
                        if isinstance(v, list))
     warn(f"agentbox: installed. The tree reports {counts or 'nothing'}")
     return doc
+
+
+def _take_lock(tree, agent):
+    """An exclusive flock on `<tree>.lock`, held until the returned fd is closed. A second install of the
+    same agent is refused at once rather than queued: the one running will leave the tree the file
+    describes, and a queued one would only rebuild the same thing."""
+    path = tree + ".lock"
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        raise AgentboxError(f"cannot open the install lock {path}: {e}")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise AgentboxError(f"another `ab profile install {agent}` is running (it holds {path}); "
+                            "wait for it, or stop it first")
+    return fd
+
+
+def _recover_previous(tree, warn):
+    """An install interrupted between the two renames of `_swap_in` leaves the last good tree at
+    `<tree>.previous` and nothing at `<tree>`. Put it back before anything else happens, so a failure of
+    this install still has a previous tree to keep, and a session started meanwhile finds one. A symlink at
+    `.previous` is not ours (the host writes a directory there and nothing else) and is refused."""
+    old = tree + ".previous"
+    if os.path.islink(old):
+        raise AgentboxError(f"{old} is a symlink; refusing to remove or rename through it")
+    if os.path.isdir(old) and not os.path.lexists(tree):
+        os.rename(old, tree)
+        warn(f"agentbox: an earlier install was interrupted while swapping trees; {old} is back at {tree}")
 
 
 def _declared(entry):
@@ -448,10 +492,16 @@ def _image_pin(job):
 
 def _swap_in(staging, tree):
     """The built tree takes the tree's place; the old one goes only after the new one is in place. A session
-    that has the old tree mounted keeps it (a bind mount follows the inode, not the name)."""
+    that has the old tree mounted keeps it (a bind mount follows the inode, not the name).
+
+    `.previous` is only ever a directory this function made. A symlink there would have `rmtree` skip it
+    (it refuses links) and the rename of a directory onto it fail, so it is refused by name instead; a
+    leftover directory (an interrupted earlier swap, with a tree already in place) is just removed."""
     old = tree + ".previous"
+    if os.path.islink(old):
+        raise AgentboxError(f"{old} is a symlink; refusing to remove or rename through it")
     shutil.rmtree(old, ignore_errors=True)
-    if os.path.exists(tree):
+    if os.path.lexists(tree):
         os.rename(tree, old)
     os.rename(staging, tree)
     shutil.rmtree(old, ignore_errors=True)
