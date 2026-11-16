@@ -52,6 +52,10 @@ class NetworkListing(SettingsCase):
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_NETJSON", None)
         os.environ["FAKE_PODMAN_PSJSON"] = "[]"
         self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+        # The fixture is the host's listing, so its networks carry the host's label (`agentbox=1`), not the
+        # unit suite's `agentbox-test=1`. The fake honours `--filter label=` (16 Nov), so the query has to
+        # ask for the label the fixture has, as the launcher on that host did.
+        self.settings.values["labels"] = {"agentbox": "1"}
         self.podman = Podman(self.settings.podman)
 
     def test_the_fake_refuses_the_template_real_podman_refuses(self):
@@ -77,8 +81,9 @@ class NetworkListing(SettingsCase):
 
     def test_a_network_with_no_labels_key_at_all_is_ignored(self):
         """podman's own default network has no `labels` key whatsoever in the real report -- not an empty
-        one. Reading it must not raise, and must not invent a session. (The fake ignores --filter, since the
-        fixture is the answer podman gives for the already-filtered query.)"""
+        one. Reading it must not raise, and must not invent a session. An unfiltered query (no labels), so
+        the label-less entry reaches the parser: a label filter would drop it before the parser saw it."""
+        self.settings.values["labels"] = {}
         nets = self.podman.networks_json(self.settings.labels)
         plain = [n for n in nets if n["name"] == "podman"]
         self.assertEqual(len(plain), 1)
@@ -87,6 +92,47 @@ class NetworkListing(SettingsCase):
         self.assertNotIn("podman", found)
         self.assertNotIn("", found)
         self.assertNotIn(None, found)
+
+    def test_the_fake_honours_label_filters(self):
+        """One label filter per listing, as real podman: the unit suite's own label matches none of the host
+        fixture, a session label matches that session's two networks, and `ps --format json` is filtered on
+        its capitalised `Labels` the same way. Until 16 Nov the fake answered every filter with the whole
+        list, so a listing that filtered on the wrong label could not be told from a right one."""
+        self.assertEqual(self.podman.networks_json({"agentbox-test": "1"}), [])
+        self.assertEqual([n["name"] for n in self.podman.networks_json({"agentbox.session": "ab-claude-agentbox-2"})],
+                         ["ab-claude-agentbox-2-egr", "ab-claude-agentbox-2-int"])
+        os.environ["FAKE_PODMAN_PSJSON"] = json.dumps([
+            {"Names": ["s1"], "Labels": {"agentbox.session": "s1", "agentbox": "1"}},
+            {"Names": ["s2"], "Labels": {"agentbox.session": "s2", "agentbox": "1"}},
+            {"Names": ["bare"]}])
+        self.assertEqual([c["Names"] for c in self.podman.containers_json({"agentbox": "1"})], [["s1"], ["s2"]])
+        self.assertEqual([c["Names"] for c in self.podman.containers_json({"agentbox.session": "s2"})], [["s2"]])
+        self.assertEqual(len(self.podman.containers_json({})), 3)
+        self.assertEqual(self.podman.ids("container", {"agentbox.session": "s2"}), [],
+                         "the name listing is its own knob (FAKE_PODMAN_PS), empty here")
+
+    def test_the_fake_filters_the_name_listings_only_when_the_lines_carry_labels(self):
+        os.environ["FAKE_PODMAN_PS"] = "bare\nlabelled agentbox.session=s1 agentbox=1\nother agentbox.session=s2\n"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PS", None)
+        self.assertEqual(self.podman.ids("container", {"agentbox.session": "s1"}), ["bare", "labelled"])
+        self.assertEqual(self.podman.ids("container", {}), ["bare", "labelled", "other"])
+
+    def test_the_fake_answers_only_the_templates_the_launcher_uses(self):
+        """`inspect` and `network inspect` dispatch on the template: the subnet question is not answered
+        with the gateway, and a template the launcher never used is refused (exit 125), not guessed."""
+        run = self.podman.run
+        self.assertEqual(run(["inspect", "-f", "{{.State.Status}}", "x"]).stdout.strip(), "running")
+        self.assertEqual(json.loads(run(["inspect", "x", "--format", "{{json .NetworkSettings.Networks}}"]).stdout),
+                         {})
+        self.assertEqual(run(["network", "inspect", "n", "--format", "{{range .Subnets}}{{.Subnet}} {{end}}"])
+                         .stdout.split(), ["10.89.9.0/24"])
+        self.assertEqual(run(["network", "inspect", "n", "--format", "{{range .Subnets}}{{.Gateway}} {{end}}"])
+                         .stdout.split(), ["10.89.9.1"])
+        for argv in (["inspect", "-f", "{{.Id}}", "x"], ["network", "inspect", "n", "--format", "{{.Name}}"],
+                     ["ps", "--format", "{{.ID}}"], ["network", "ls", "--format", "{{.ID}}"]):
+            with self.subTest(argv=argv):
+                p = run(argv, check=False)
+                self.assertEqual(p.returncode, 125, p.stderr)
 
     def test_a_failing_listing_still_raises(self):
         os.environ["FAKE_PODMAN_FAIL"] = "network"

@@ -2,10 +2,14 @@
 """A stand-in `podman` for unit tests: records argv, answers from environment knobs, never touches podman.
 
   FAKE_PODMAN_LOG       file that gets one JSON argv per line
-  FAKE_PODMAN_PS        stdout for `ps --format {{.Names}}`
-  FAKE_PODMAN_PSJSON    stdout for `ps --format json`
-  FAKE_PODMAN_NETLS     stdout for `network ls --format {{.Name}}`
-  FAKE_PODMAN_NETJSON   stdout for `network ls --format json`
+  FAKE_PODMAN_PS        stdout for `ps --format {{.Names}}`: one name per line. A line may carry labels after
+                          the name (`abt-1-proxy agentbox.session=abt-1 agentbox-test=1`); such a line is
+                          listed only when it matches every `--filter label=k=v`. A bare name matches any
+                          filter, so older fixtures keep working
+  FAKE_PODMAN_PSJSON    stdout for `ps --format json`; entries are filtered by `--filter label=k=v` against
+                          their `Labels` (podman's capitalisation). Invalid JSON is passed through verbatim
+  FAKE_PODMAN_NETLS     stdout for `network ls --format {{.Name}}`; labelled lines as for FAKE_PODMAN_PS
+  FAKE_PODMAN_NETJSON   stdout for `network ls --format json`; filtered by the lowercase `labels` key
   FAKE_PODMAN_IMAGES    stdout for `images --format json`
   FAKE_PODMAN_FAIL      substring: any call whose argv contains it exits 1
   FAKE_PODMAN_FAIL_STATUS  the status FAKE_PODMAN_FAIL exits with (default 1). 125 is podman's own "the
@@ -16,8 +20,12 @@
                           cannot tell "the layer lost a tool" from "neither has it"
   FAKE_PODMAN_RUN_SLEEP seconds `run` waits before answering, so a test can signal a launcher mid-session
   FAKE_PODMAN_LOGS      stdout for `logs` (default: squid's ready line)
-  FAKE_PODMAN_STATE     stdout for `inspect -f {{.State.Status}}`
-  FAKE_PODMAN_GATEWAY   stdout for `network inspect`
+  FAKE_PODMAN_STATE     stdout for `inspect -f {{.State.Status}}` (default: running)
+  FAKE_PODMAN_NETWORKS  stdout for `inspect --format {{json .NetworkSettings.Networks}}`: the JSON object
+                          podman gives, {network name: {"IPAddress": ...}} (default: {})
+  FAKE_PODMAN_INSPECT   stdout for a plain `inspect <name>` (default: [])
+  FAKE_PODMAN_GATEWAY   stdout for `network inspect --format {{range .Subnets}}{{.Gateway}} {{end}}`
+  FAKE_PODMAN_SUBNET    stdout for `network inspect --format {{range .Subnets}}{{.Subnet}} {{end}}`
   FAKE_PODMAN_IMAGE_JSON  {ref: inspect doc} for `image inspect <ref> --format json`; a ref that is not a
                           key answers like real podman does for a missing image (exit 125, empty stdout)
   FAKE_PODMAN_IMAGE_TAGS  space-separated refs `image exists` says yes to (default: every key of
@@ -30,6 +38,10 @@ format with the same canned string is what let `network ls --format '{{index .La
 podman 5.7 rejects outright -- live in the code for a whole build: the call was swallowed, so the feature
 had never worked, and no unit test could tell. Every entry below is a message copied from the host;
 `tests/manual/podman_formats.sh` is what finds more.
+
+For the same reason `inspect`, `network inspect`, `ps` and `network ls` answer only the templates the
+launcher is known to use (KNOWN_FORMATS) and exit 125 on any other: one canned reply for every template
+meant `network inspect` answered the subnet question with the gateway, and nothing could tell.
 """
 import json
 import os
@@ -60,6 +72,69 @@ for prefix, bad, status, message in REJECTED_FORMATS:
     if tuple(argv[:len(prefix)]) == prefix and bad.search(fmt):
         sys.stderr.write(message + "\n")
         sys.exit(status)
+
+# argv prefix -> the templates the launcher uses on it ("" is no --format at all). Anything else is an
+# unknown template: exit 125 with a podman-shaped message, never a canned answer that happens to parse.
+KNOWN_FORMATS = {
+    ("network", "inspect"): ("", "json", "{{range .Subnets}}{{.Gateway}} {{end}}",
+                             "{{range .Subnets}}{{.Subnet}} {{end}}"),
+    ("network", "ls"): ("", "json", "{{.Name}}"),
+    ("inspect",): ("", "json", "{{.State.Status}}", "{{json .NetworkSettings.Networks}}"),
+    ("ps",): ("", "json", "{{.Names}}"),
+}
+for prefix, known in KNOWN_FORMATS.items():
+    if tuple(argv[:len(prefix)]) == prefix and fmt not in known:
+        sys.stderr.write(f"Error: template: {prefix[-1]}:1:2: executing \"{prefix[-1]}\" at <{fmt}>: "
+                         f"fake podman does not answer this template (add it to KNOWN_FORMATS)\n")
+        sys.exit(125)
+
+
+def label_filters():
+    """{k: v} from every `--filter label=k=v` (or `--filter=label=k=v`) on the command line."""
+    want = {}
+    for i, a in enumerate(argv):
+        spec = None
+        if a == "--filter" and i + 1 < len(argv):
+            spec = argv[i + 1]
+        elif a.startswith("--filter="):
+            spec = a[len("--filter="):]
+        if spec and spec.startswith("label="):
+            k, _, v = spec[len("label="):].partition("=")
+            want[k] = v
+    return want
+
+
+def matches(labels, want):
+    labels = labels if isinstance(labels, dict) else {}
+    return all(labels.get(k) == v for k, v in want.items())
+
+
+def filtered_json(text, want, labels_key):
+    """`text` (a JSON list, as `--format json` prints) reduced to the entries carrying every wanted label.
+    Text that is not a JSON list is returned as it is: a test that feeds garbage wants to see the launcher
+    refuse garbage, not the fake's."""
+    if not want:
+        return text
+    try:
+        listed = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(listed, list):
+        return text
+    return json.dumps([e for e in listed if isinstance(e, dict) and matches(e.get(labels_key), want)])
+
+
+def filtered_names(text, want):
+    """Names from a line-per-entry knob. `name k=v k2=v2` lines are filtered; a bare `name` always matches."""
+    out = []
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        labels = dict(p.partition("=")[::2] for p in parts[1:] if "=" in p)
+        if not labels or matches(labels, want):
+            out.append(parts[0])
+    return "".join(n + "\n" for n in out)
 
 def image_docs():
     """The inspect docs, from the file when one is set -- a `build` or `tag` in one fake process has to be
@@ -135,10 +210,10 @@ elif argv[:1] == ["build"]:
     sys.exit(0)
 
 if argv[:1] == ["ps"]:
-    if "json" in argv:
-        sys.stdout.write(os.environ.get("FAKE_PODMAN_PSJSON", "[]"))
+    if fmt == "json":
+        sys.stdout.write(filtered_json(os.environ.get("FAKE_PODMAN_PSJSON", "[]"), label_filters(), "Labels"))
     else:
-        sys.stdout.write(os.environ.get("FAKE_PODMAN_PS", ""))
+        sys.stdout.write(filtered_names(os.environ.get("FAKE_PODMAN_PS", ""), label_filters()))
 elif argv[:1] == ["images"]:
     # --filter label=k=v is honoured, because `any_built` asks exactly that question and a fake that
     # answered every filter with the same list could not tell "no layer" from "some layer".
@@ -157,15 +232,25 @@ elif argv[:1] == ["images"]:
     sys.stdout.write(json.dumps(listed))
 elif argv[:2] == ["network", "ls"]:
     if fmt == "json":
-        sys.stdout.write(os.environ.get("FAKE_PODMAN_NETJSON", "[]"))
+        sys.stdout.write(filtered_json(os.environ.get("FAKE_PODMAN_NETJSON", "[]"), label_filters(), "labels"))
     else:
-        sys.stdout.write(os.environ.get("FAKE_PODMAN_NETLS", ""))
+        sys.stdout.write(filtered_names(os.environ.get("FAKE_PODMAN_NETLS", ""), label_filters()))
 elif argv[:2] == ["network", "inspect"]:
-    sys.stdout.write(os.environ.get("FAKE_PODMAN_GATEWAY", "10.89.9.1") + " \n")
+    if "Gateway" in fmt:
+        sys.stdout.write(os.environ.get("FAKE_PODMAN_GATEWAY", "10.89.9.1") + " \n")
+    elif "Subnet" in fmt:
+        sys.stdout.write(os.environ.get("FAKE_PODMAN_SUBNET", "10.89.9.0/24") + " \n")
+    else:
+        sys.stdout.write("[]\n")
 elif argv[:1] == ["logs"]:
     sys.stdout.write(os.environ.get("FAKE_PODMAN_LOGS", "Accepting HTTP Socket connections at local=[::]:3128\n"))
 elif argv[:1] == ["inspect"]:
-    sys.stdout.write(os.environ.get("FAKE_PODMAN_STATE", "running") + "\n")
+    if fmt == "{{.State.Status}}":
+        sys.stdout.write(os.environ.get("FAKE_PODMAN_STATE", "running") + "\n")
+    elif fmt == "{{json .NetworkSettings.Networks}}":
+        sys.stdout.write(os.environ.get("FAKE_PODMAN_NETWORKS", "{}") + "\n")
+    else:
+        sys.stdout.write(os.environ.get("FAKE_PODMAN_INSPECT", "[]") + "\n")
 elif argv[:1] == ["run"] and "-d" in argv:
     sys.stdout.write("0123456789ab\n")
 elif argv[:1] == ["run"]:
