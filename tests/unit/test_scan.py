@@ -45,6 +45,28 @@ class Scan(TempCase):
         self.assertIn("app.py", text)
         self.assertNotIn(FAKE_KEY, text, "matches are shown only by their first characters")
 
+    def test_a_nul_byte_in_an_added_line_does_not_silence_the_scan(self):
+        """Item 6: grep without -a says "Binary file matches" for the whole input, so one NUL in any added line
+        hid every secret in the session's commits."""
+        self.write("proj/.gitattributes", "blob.bin diff\n")        # git would otherwise call it binary
+        self.write("proj/blob.bin", "x\0y\n")
+        self.write("proj/app.py", f'API_KEY = "{FAKE_KEY}"\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "add key and blob")
+        summary, text = self.report()
+        self.assertTrue(any("possible secret" in s for s in summary), summary)
+        self.assertNotIn(FAKE_KEY, text)
+        self.assertEqual(scan._grep(["x\0y", FAKE_KEY], REGEX), [(1, scan._redact(FAKE_KEY))])
+
+    def test_a_failed_grep_is_reported_not_silent(self):
+        """Item 6: a pattern grep rejects (exit 2) must say so in the summary, not read as "no secrets"."""
+        self.write("proj/app.py", f'API_KEY = "{FAKE_KEY}"\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "add key")
+        summary, text = scan.report(self.state, [self.repo], regex="(")
+        self.assertTrue(any("secret scan failed" in s for s in summary), summary)
+        self.assertIn("secret scan failed", text)
+
     def test_files_that_run_later(self):
         self.write("proj/Makefile", "all:\n\techo hi\n")
         self.write("proj/web/package.json", "{}\n")
@@ -251,6 +273,15 @@ class RefMovement(TempCase):
         _summary, text = self.report(base_branch="main")
         self.assertIn("subject withheld", text)
         self.assertNotIn(FAKE_KEY, text, "held to the same rule as an added line")
+
+    def test_a_failed_grep_withholds_the_base_branch_subjects(self):
+        """Fail closed: when the pattern cannot be checked, commit subjects are not printed either."""
+        self.write("proj/y.txt", "y\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", f"wip {FAKE_KEY}")
+        summary, text = scan.report(self.state, [self.repo], regex="(", base_branch="main")
+        self.assertNotIn(FAKE_KEY, text)
+        self.assertTrue(any("secret scan failed" in s for s in summary), summary)
 
     def test_an_unmoved_base_branch_says_so_without_a_summary_line(self):
         summary, text = self.report(base_branch="main")

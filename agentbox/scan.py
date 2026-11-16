@@ -234,13 +234,21 @@ def _redact(text):
     return (text[:12] + "…") if len(text) > 12 else text
 
 
+class SecretScanError(Exception):
+    """grep could not run the host hook's pattern: the report says so, since silence would read as clean."""
+
+
 def _grep(texts, regex):
     """[(index into texts, redacted match)] for the lines the pattern matches, found with `grep -E -i` --
-    the host hook's own engine, so the scan cannot differ from the hook by a regex dialect."""
+    the host hook's own engine, so the scan cannot differ from the hook by a regex dialect. `-a`, because
+    without it one NUL byte in any line makes grep answer "Binary file matches" for the whole input and
+    every secret in it goes unreported (16 Nov). Exit 2 (a pattern grep rejects) raises: not "no secrets"."""
     if not texts or not regex:
         return []
-    p = subprocess.run(["grep", "-n", "-o", "-E", "-i", regex], input="\n".join(texts) + "\n",
+    p = subprocess.run(["grep", "-a", "-n", "-o", "-E", "-i", "-e", regex], input="\n".join(texts) + "\n",
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if p.returncode not in (0, 1):
+        raise SecretScanError(f"secret scan failed: {p.stderr.strip() or f'grep exit {p.returncode}'}")
     out = []
     for m in p.stdout.splitlines():
         n, _, match = m.partition(":")
@@ -324,8 +332,12 @@ def _base_branch_lines(work, base_branch, old_map, now_map, regex):
     if not got:
         return [f"base branch {base_branch} ({_short(new)}): no new commits this session"], []
     # The subjects are the agent's own text: held to the same rule as an added line, never printed whole
-    # when the host hook's pattern matches them.
-    withheld = {i for i, _m in _grep(got, regex)}
+    # when the host hook's pattern matches them -- or when the pattern could not be checked at all.
+    try:
+        withheld = {i for i, _m in _grep(got, regex)}
+    except SecretScanError as e:
+        return ([f"base branch {base_branch} ({_short(new)}): {len(got)} new commit(s), subjects withheld ({e})"],
+                [f"{work}: {e}"])
     shown = [(l.split(" ", 1)[0] + " <subject withheld: it matches the secret pattern>") if i in withheld else l
              for i, l in enumerate(got[:BASE_COMMITS_MAX])]
     more = len(got) > BASE_COMMITS_MAX
@@ -441,6 +453,10 @@ def report(state, grants, regex=None, skip=None, base_branch=None):
             continue
         try:
             n, hits, touched = _new_commits(work, before["refs"], regex)
+        except SecretScanError as e:
+            n, hits, touched = 0, [], set()
+            section.append(str(e))
+            summary.append(f"{work}: {e}")
         except (OSError, subprocess.SubprocessError) as e:
             n, hits, touched = 0, [], set()
             section.append(f"could not read the commits: {e}")
