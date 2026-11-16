@@ -11,6 +11,7 @@ import subprocess
 from dataclasses import dataclass
 
 from .errors import AgentboxError
+from .fsutil import inside
 
 # The one list of secret file NAMES: the masks hide them, grantcheck (SECRET_FILES) and the history check look
 # for them, and a swap target must be one. Widened 16 Nov (review item 28) from `.env`/`.env.*`/`*.pem`/`*.key`:
@@ -129,10 +130,6 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
     return mounts, create
 
 
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
-
-
 def mask_is_path(entry):
     """A `mask` entry is a root-relative PATH when it starts with `./` or contains a '/'; otherwise a NAME."""
     return entry.startswith("./") or "/" in entry
@@ -152,7 +149,7 @@ def user_masks(grant, *, root, mask, skip_rel=(), notes=None):
     out, create = [], []
     for rel in (m for m in mask if mask_is_path(m)):
         full = os.path.normpath(os.path.join(root, rel))
-        if not _inside(full, grant) or full == grant:
+        if not inside(full, grant) or full == grant:
             continue
         if os.path.islink(full):
             notes.append(f"{full} is a symlink; the mask covers this path, not what it points to")
@@ -229,7 +226,7 @@ def find_git_dirs(grant, skip_rel=()):
             target = _gitfile_target(dot)
             if target:
                 add(target)
-                if not _inside(target, grant):
+                if not inside(target, grant):
                     outside.append((dirpath, target))
         if dirpath != grant and _is_git_dir(dirpath):
             add(dirpath)                                    # a bare repo or separate git dir
@@ -313,7 +310,7 @@ def git_overlays(git_dirs, grants):
     is not mounted, so the agent cannot reach it at all."""
     mounts, create_dirs, create_files = [], [], []
     for g in sorted(git_dirs):
-        if not any(_inside(g, gr) for gr in grants):
+        if not any(inside(g, gr) for gr in grants):
             continue
         hooks = os.path.join(g, "hooks")
         if not os.path.isdir(hooks):
@@ -324,7 +321,7 @@ def git_overlays(git_dirs, grants):
             if os.path.isfile(cfg) and not os.path.islink(cfg):
                 mounts.append(Mount("bind", cfg, cfg, ro=True))
         for _cfg, key, target in git_config_targets(g):
-            if not any(_inside(target, gr) for gr in grants) or target in grants or os.path.islink(target):
+            if not any(inside(target, gr) for gr in grants) or target in grants or os.path.islink(target):
                 continue                     # grantcheck's to report, not ours to cover
             if not os.path.lexists(target):
                 (create_dirs if key == "core.hookspath" else create_files).append(target)
@@ -357,7 +354,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
         git_dirs |= found
         # a .git file in one grant may point into another grant: protected there; otherwise not mounted
         for checkout, target in outside:
-            if not any(_inside(target, gr) for gr in rw_grants):
+            if not any(inside(target, gr) for gr in rw_grants):
                 notes.append(f"{checkout}: .git points to {target}, which is not mounted (git will not work "
                              "there, and its hooks are out of the agent's reach)")
     m, d, f = git_overlays(git_dirs, rw_grants)
@@ -385,9 +382,9 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     # Nothing is mounted inside a directory mask (audit 6 Oct, N2): a git dir or compose file under
     # secrets/ would otherwise get a real bind on top of the empty cover, showing the real file.
     covers = [d for d, m in by_dst.items() if m.kind == "tmpfs"]
-    kept = [m for d, m in by_dst.items() if not any(_inside(d, c) and d != c for c in covers)]
-    dirs = [d for d in dirs if not any(_inside(d, c) and d != c for c in covers)]
-    files = [f for f in files if not any(_inside(f, c) for c in covers)]
+    kept = [m for d, m in by_dst.items() if not any(inside(d, c) and d != c for c in covers)]
+    dirs = [d for d in dirs if not any(inside(d, c) and d != c for c in covers)]
+    files = [f for f in files if not any(inside(f, c) for c in covers)]
     return Plan(kept, dirs, files, notes)
 
 
@@ -396,7 +393,7 @@ def remap(p, src_root, dst_root):
     clone (sources stay host paths in the clone) but the agent sees the owner's path (destinations). Host
     paths to create (`create_dirs`, `create_files`) stay where they are: they are made in the clone."""
     def move(dst):
-        return dst_root + dst[len(src_root):] if _inside(dst, src_root) else dst
+        return dst_root + dst[len(src_root):] if inside(dst, src_root) else dst
     mounts = [Mount(m.kind, move(m.dst), m.src, m.ro) for m in p.mounts]
     return Plan(mounts, list(p.create_dirs), list(p.create_files), list(p.notes))
 
@@ -466,7 +463,7 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
         for dirpath, _dirnames, filenames in _walk(g, _rel_skips(root, g, mask_skip)):
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
-                if p in covered_files or any(_inside(p, d) for d in cover_dirs):
+                if p in covered_files or any(inside(p, d) for d in cover_dirs):
                     continue
                 try:
                     st = os.lstat(p)
@@ -487,7 +484,7 @@ def _rel_skips(root, grant, mask_skip):
     out = []
     for s in mask_skip:
         full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
-        if full == grant or full.startswith(grant.rstrip("/") + "/"):
+        if inside(full, grant):
             out.append(os.path.relpath(full, grant))
     return out
 

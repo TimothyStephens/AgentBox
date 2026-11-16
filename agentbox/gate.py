@@ -74,6 +74,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 from . import buildcap, builtrec
 from .errors import AgentboxError
+from .fsutil import inside
 
 V = r"(?:/v[0-9][0-9.]*)?"
 LIB = r"(?:/libpod)?"
@@ -569,7 +570,7 @@ class Gate:
         if not isinstance(src, str) or not src.startswith("/"):
             return False
         real = os.path.realpath(src)
-        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self._roots())
+        return any(inside(real, r) for r in self._roots())
 
     def _is_root(self, src):
         """Only a grant root itself may be bind-mounted (Tim, 1 Oct): podman resolves a bind source again when
@@ -596,7 +597,7 @@ class Gate:
 
     def is_ro_root(self, real):
         """`real` is a read-only grant, or inside one."""
-        return any(real == r or real.startswith(r.rstrip("/") + "/") for r in self.cfg.get("ro_roots") or [])
+        return any(inside(real, r) for r in self.cfg.get("ro_roots") or [])
 
     def covers_overlap(self, real):
         """A covered path (a mask or a read-only cover in the agent's own container) that `real` overlaps: the
@@ -604,7 +605,7 @@ class Gate:
         not exist in a container it spawns through the gate, so a bind that reaches a covered path would expose
         or let it write the real data (crit 5 Oct). Returns the covered path, or None."""
         for c in self._covered():
-            if real == c or real.startswith(c.rstrip("/") + "/") or c.startswith(real.rstrip("/") + "/"):
+            if inside(real, c) or inside(c, real):
                 return c
         return None
 
@@ -666,7 +667,7 @@ class Gate:
                     st = os.lstat(p)
                 except OSError:
                     continue
-                if st.st_size and not any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered):
+                if st.st_size and not any(inside(p, c) for c in covered):
                     return p
         return None
 
@@ -822,11 +823,11 @@ class Gate:
         if not isinstance(src, str) or not src.startswith("/"):
             return None
         real = os.path.realpath(src)
-        inside = [r for r in self._roots() if real.startswith(r.rstrip("/") + "/")]
-        if not inside or self._is_root(real):
+        holders = [r for r in self._roots() if real.startswith(r.rstrip("/") + "/")]
+        if not holders or self._is_root(real):
             return None
         self._refuse_if_covered(real, src)           # the sub-path (via a grant-volume SubPath) must miss covers
-        root = max(inside, key=len)
+        root = max(holders, key=len)
         try:
             crosses = os.stat(real).st_dev != os.stat(root).st_dev
         except OSError:
@@ -1053,7 +1054,7 @@ class Gate:
         for real in self._roots():
             best = None
             for mp, dev, root in mounts:
-                if real == mp or real.startswith(mp.rstrip("/") + "/") or mp == "/":
+                if inside(real, mp) or mp == "/":
                     if best is None or len(mp) >= len(best[0]):
                         best = (mp, dev, root)
             if best:
@@ -1113,7 +1114,7 @@ class Gate:
                 bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
                 continue
             dev, root, opts = got
-            if not (dev == want[0] and (root == want[1] or root.startswith(want[1].rstrip("/") + "/"))):
+            if not (dev == want[0] and inside(root, want[1])):
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}), outside its grant root {groot}")
                 continue
             host = groot if root == want[1] else os.path.join(groot, os.path.relpath(root, want[1]))

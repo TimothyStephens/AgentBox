@@ -5,6 +5,7 @@ import stat
 from .. import session as sessionmod
 from .. import sockguard
 from ..config import HOME
+from ..fsutil import inside
 from ..registry import load as load_registry
 from . import runner
 from .runner import Result
@@ -24,11 +25,7 @@ def _secret_values(sess):
 def _state_mounts(sess):
     if sess.adapter.state_mount:
         return [sess.adapter.state_mount]
-    return [dst for src, dst, ro in sess.setup.mounts if not ro and _inside(src, sess.state_dir)]
-
-
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
+    return [dst for src, dst, ro in sess.setup.mounts if not ro and inside(src, sess.state_dir)]
 
 
 def _grep_tree(root, needle):

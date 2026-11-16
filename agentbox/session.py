@@ -15,6 +15,7 @@ from . import keys as keysmod
 from . import buildcap, builtrec, config, layout, scan, sockguard, toulmin, userimage
 from .config import HOME
 from .errors import AgentboxError
+from .fsutil import inside
 from .podman import Podman, set_log
 
 TOKEN_PATH = "/run/agentbox/token"
@@ -56,10 +57,6 @@ class Project:
 def _no_commas(path, what):
     if "," in path or "\n" in path:
         raise AgentboxError(f"{what} {path!r}: paths with commas or newlines cannot be mounted safely")
-
-
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
 def mount_mode_of(root, mount, toulmin):
@@ -205,7 +202,7 @@ def history_secrets(root, grants, mask_skip=(), timeout=120):
     for g in grants:
         dirs, _outside = mounts.find_git_dirs(g, mounts._rel_skips(root, g, mask_skip))
         for gd in dirs:
-            if not any(gd == x or gd.startswith(x.rstrip("/") + "/") for x in grants):
+            if not any(inside(gd, x) for x in grants):
                 continue                                    # not mounted, so not readable
             work = os.path.dirname(gd) if os.path.basename(gd) == ".git" else gd
             prefix = os.path.relpath(work, root)
@@ -804,7 +801,7 @@ class Session:
 
         def check(dst, what):
             _no_commas(dst, what)
-            if not any(_inside(dst, r) and dst != r for r in roots):
+            if not any(inside(dst, r) and dst != r for r in roots):
                 raise AgentboxError(f"{what} {dst} is not under the agent's own root ({', '.join(roots) or 'none'})")
 
         for src, dst, ro in self.profile.mounts:
@@ -841,7 +838,7 @@ class Session:
         the whole config dir is, for OMP it is `~/.omp/agent`. Anything else -- a tmpfs, another adapter
         mount, a path outside -- is not ours to create or interpret."""
         for prefix, rel in sorted(self.adapter.state_mirrors.items(), key=lambda kv: -len(kv[0])):
-            if dst == prefix or not _inside(dst, prefix):
+            if dst == prefix or not inside(dst, prefix):
                 continue
             return os.path.join(self.state_dir, rel, os.path.relpath(dst, prefix))
         return None
@@ -878,7 +875,7 @@ class Session:
         st = self.setup
         for dst in st.tmpfs + st.ro_empty_dirs:
             _no_commas(dst, "adapter tmpfs")
-            if not st.mount_root or not _inside(dst, st.mount_root):
+            if not st.mount_root or not inside(dst, st.mount_root):
                 raise AgentboxError(f"adapter tmpfs {dst} is not under the adapter's root {st.mount_root!r}")
         # The same pair of roots `_add_profile_mounts` allows: the adapter's declared root and the agent's
         # own config dir. Claude's plugin tree goes under the second (its root is /etc/claude-code, and
@@ -887,12 +884,12 @@ class Session:
         for src, dst, _ro in st.mounts:
             _no_commas(src, "adapter mount")
             _no_commas(dst, "adapter mount")
-            if not any(_inside(dst, r) and dst != r for r in roots):
+            if not any(inside(dst, r) and dst != r for r in roots):
                 raise AgentboxError(f"adapter mount {dst} is not under the adapter's root "
                                     f"({', '.join(roots) or 'none'})")
         for path in st.project_covers:
             _no_commas(path, "project cover")
-            if not _inside(path, self.project.root) or path == self.project.root:
+            if not inside(path, self.project.root) or path == self.project.root:
                 raise AgentboxError(f"adapter cover {path} is not inside the project")
         for provider, path in st.keys.items():
             keysmod.env_name(provider)
@@ -919,7 +916,7 @@ class Session:
         for c in containers:
             wd = (c.get("Labels") or {}).get("com.docker.compose.project.working_dir", "")
             real = os.path.realpath(wd) if wd else ""
-            if not real or not _inside(real, p.root):
+            if not real or not inside(real, p.root):
                 name = (c.get("Names") or ["?"])[0]
                 raise AgentboxError(
                     f"project {p.name}: compose project {p.compose_project!r} has container {name} from "
@@ -941,7 +938,7 @@ class Session:
         for m in (self.plan_host.mounts if self.plan_host else []):
             if m.kind == "tmpfs":
                 for g in grants:
-                    if _inside(m.dst, g) and m.dst != g:
+                    if inside(m.dst, g) and m.dst != g:
                         skip[g].append(os.path.relpath(m.dst, g))
         doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
                # Recorded at START, so `ab session kill` and `ab session gc` name the branch this session
@@ -1294,13 +1291,13 @@ class Session:
         pins = {}
         covered = self.covered_paths()
         for c in covered:
-            inside = [r for r in roots if c.startswith(r.rstrip("/") + "/")]
-            if not inside:
+            holders = [r for r in roots if c.startswith(r.rstrip("/") + "/")]
+            if not holders:
                 continue
-            root = max(inside, key=len)
+            root = max(holders, key=len)
             d = os.path.dirname(c)
             while d != root and d.startswith(root + "/"):
-                if not any(d == x or d.startswith(x.rstrip("/") + "/") for x in covered):   # N2
+                if not any(inside(d, x) for x in covered):   # N2
                     pins[d] = root in ro_roots
                 d = os.path.dirname(d)
         return [f"--mount=type=bind,src={d},dst={d}" + (",ro" if ro else "")

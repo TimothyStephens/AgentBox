@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from . import cgroup, mounts
 from .egress import check_domains
 from .errors import AgentboxError
+from .fsutil import inside
 
 IMAGE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/:@*?-]*$")
 SWAP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -241,7 +242,7 @@ GRANT_KEYS = ("root", "data_ro", "data_rw")
 
 
 def _covers(parent, child):
-    return child == parent or child.startswith(parent.rstrip("/") + "/")
+    return inside(child, parent)
 
 
 def _grant_loosenings(before, after):

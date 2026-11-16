@@ -2,6 +2,7 @@
 import os
 
 from .errors import AgentboxError
+from .fsutil import inside
 
 SYSTEM = ("/etc", "/var", "/usr", "/boot", "/dev", "/run", "/proc", "/sys", "/bin", "/sbin",
           "/lib", "/lib32", "/lib64", "/libx32", "/opt", "/root", "/srv", "/snap", "/mnt", "/media")
@@ -12,10 +13,6 @@ HOME_PROTECTED = (".ssh", ".gnupg", ".local/share/containers", ".config/containe
                   ".config/autostart", ".local/bin", ".claude", ".claude.json", ".omp",
                   ".config/claude-container", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout",
                   ".bash_aliases", ".profile", ".zshrc", ".zprofile", ".config/fish")
-
-
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
 def protected_paths(home, extra=()):
@@ -52,7 +49,7 @@ def _check_within_one_project(name, mine):
         if not mine_rw:
             continue
         for ro_real, ro_rw in mine:
-            if ro_rw or not _inside(mine_real, ro_real):
+            if ro_rw or not inside(mine_real, ro_real):
                 continue
             same = mine_real == ro_real
             raise AgentboxError(
@@ -80,7 +77,7 @@ def check_overlaps(name, entry, reg):
         for their_path, their_rw in grants_of(other):
             their_real = os.path.realpath(os.path.expanduser(their_path))
             for my_real, my_rw in mine:
-                if not (_inside(my_real, their_real) or _inside(their_real, my_real)):
+                if not (inside(my_real, their_real) or inside(their_real, my_real)):
                     continue
                 if not my_rw and not their_rw:
                     continue                      # read-only vs read-only: shared reference data
@@ -102,15 +99,15 @@ def check_grant(path, *, home, extra_protected=(), kind="grant"):
     home = os.path.realpath(home)
 
     # `/`, $HOME and every ancestor of $HOME
-    if real == "/" or _inside(home, real):
+    if real == "/" or inside(home, real):
         raise AgentboxError(f"{kind} {path}: {real} is / or $HOME or one of its ancestors")
     for s in SYSTEM:
-        if _inside(real, s):
+        if inside(real, s):
             raise AgentboxError(f"{kind} {path}: {real} is a system directory")
     if real in SHARED_SCRATCH:
         raise AgentboxError(f"{kind} {path}: {real} is the shared scratch directory of every user; grant a "
                             "directory of your own below it instead")
     for p in protected_paths(home, extra_protected):
-        if _inside(real, p) or _inside(p, real):
+        if inside(real, p) or inside(p, real):
             raise AgentboxError(f"{kind} {path}: {real} overlaps protected path {p}")
     return real

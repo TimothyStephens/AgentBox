@@ -28,6 +28,7 @@ import stat
 
 from . import mounts
 from .errors import AgentboxError
+from .fsutil import inside
 
 LIVE_DATA_MB = 1
 SECRET_FILES = mounts.MASK_FILES          # one list: the scan looks for exactly what the masks would hide (item 28)
@@ -65,7 +66,7 @@ def _git_config_escapes(git_dir, grants):
         if os.path.islink(target):
             yield (f"git config {key} is a symlink, which the read-only cover would not pin: {target} "
                    f"(set in {cfg})"), f"gitcfg:{target}"
-        elif not any(target == g or target.startswith(g.rstrip("/") + "/") for g in grants):
+        elif not any(inside(target, g) for g in grants):
             yield (f"git config {key} points outside the grant, so it is not covered read-only: {target} "
                    f"(set in {cfg}); the host's git runs or reads what a session writes there"), f"gitcfg:{target}"
 
@@ -91,8 +92,7 @@ def _compose_data_binds(path, grant):
         if not src or src.startswith("$"):
             continue
         real = os.path.realpath(os.path.join(base, os.path.expanduser(src)))
-        inside = real == grant or real.startswith(grant.rstrip("/") + "/")
-        if os.path.exists(real) and inside and _looks_like_data(real):
+        if os.path.exists(real) and inside(real, grant) and _looks_like_data(real):
             out.add(real)
     return out
 
@@ -117,7 +117,7 @@ def _sig(path, st):
 def _under_mask_skip(root, path, mask_skip):
     for s in mask_skip:
         full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
-        if path == full or path.startswith(full.rstrip("/") + "/"):
+        if inside(path, full):
             return True
     return False
 
@@ -138,7 +138,7 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
     limit = LIVE_DATA_MB << 20
 
     def is_covered(p):
-        return any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered)
+        return any(inside(p, c) for c in covered)
 
     found, ro_found, warn = {}, {}, set()
     all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants)]   # a target in any is covered

@@ -7,6 +7,7 @@ import os
 import stat
 
 from .errors import AgentboxError
+from .fsutil import inside
 
 
 def fixed_flags(settings, *, cgroup_parent):
@@ -43,10 +44,6 @@ FORBIDDEN_EXACT = {"--privileged", "-P", "--publish-all", "-v", "--volume", "--d
 FORBIDDEN_PREFIX = ("--privileged=", "--cap-add=", "--device=", "--volume=", "-v=", "--publish=",
                     "--volumes-from=", "--pod=", "--group-add=", "--env-file=", "--pid=", "--ipc=",
                     "--uts=", "--cgroupns=", "--env-host", "--systemd=", "--userns=")
-
-
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
 
 
 def audit(argv, *, allowed_mount_srcs, allowed_mount_dsts, networks, tmpfs_dirs=("/tmp",), allowed_sockets=(),
@@ -99,7 +96,7 @@ def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=(), mask_file=None
     dst = fields.get("dst") or fields.get("destination") or fields.get("target") or ""
     if not dst.startswith("/") or os.path.normpath(dst) != dst or "/../" in dst + "/":
         raise AgentboxError(f"audit: mount destination {dst!r} is not a clean absolute path")
-    if not any(_inside(dst, a) for a in allowed_dsts):
+    if not any(inside(dst, a) for a in allowed_dsts):
         raise AgentboxError(f"audit: mount destination {dst} is outside the session's grants")
     if kind == "tmpfs":
         # podman copies what is under a tmpfs into it by default, which would un-hide a masked directory
@@ -116,7 +113,7 @@ def _audit_mount(spec, allowed, allowed_dsts, allowed_sockets=(), mask_file=None
         if "ro" not in fields:
             raise AgentboxError("audit: masks must be read-only")
     real = os.path.realpath(src)
-    if not any(_inside(real, a) for a in allowed):
+    if not any(inside(real, a) for a in allowed):
         raise AgentboxError(f"audit: bind source {src} is outside the session's grants")
     # The only socket a sandbox may get is sockguard's; a raw podman socket would bypass it (review #6).
     try:

@@ -37,6 +37,8 @@ import os
 import stat
 import subprocess
 
+from .fsutil import inside
+
 RUN_LATER_NAMES = {"Makefile", "makefile", "GNUmakefile", "package.json", "pyproject.toml", "setup.py",
                    "setup.cfg", ".pre-commit-config.yaml", ".envrc", "conftest.py", "tox.ini", "noxfile.py",
                    "justfile", "Justfile", "Taskfile.yml", "docker-compose.yml", "docker-compose.yaml",
@@ -90,7 +92,7 @@ def host_secret_regex():
 
 
 def _skipped(rel, skip):
-    return any(rel == s or rel.startswith(s.rstrip("/") + "/") for s in skip)
+    return any(inside(rel, s) for s in skip)
 
 
 def worktrees(grants, skip=None):

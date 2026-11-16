@@ -22,6 +22,7 @@ import subprocess
 import time
 
 from .errors import AgentboxError
+from .fsutil import inside
 from .scan import GIT_SAFE
 
 HANDSHAKE = 1
@@ -157,10 +158,6 @@ def _is_glob(entry):
     return any(ch in entry for ch in "*?[")
 
 
-def _inside(path, parent):
-    return path == parent or path.startswith(parent.rstrip("/") + "/")
-
-
 def violations(must_not_mount, sources, allowed=()):
     """[(source, entry)] for every mount SOURCE that would expose a must-not-mount entry. An entry is an
     absolute host path or a glob. A literal entry is violated by a source that is it, is inside it, or
@@ -180,11 +177,11 @@ def violations(must_not_mount, sources, allowed=()):
                     ancestors.append(os.path.dirname(ancestors[-1]))
                 hit = any(fnmatch.fnmatchcase(a, entry) for a in ancestors)
                 prefix = entry[:min(entry.index(c) for c in "*?[" if c in entry)].rstrip("/") or "/"
-                if hit or (prefix != "/" and _inside(prefix, real)):
+                if hit or (prefix != "/" and inside(prefix, real)):
                     out.append((src, entry))
             else:
                 lit = os.path.realpath(entry)
-                if _inside(real, lit) or _inside(lit, real):
+                if inside(real, lit) or inside(lit, real):
                     out.append((src, entry))
     return out
 
