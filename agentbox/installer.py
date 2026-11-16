@@ -523,9 +523,13 @@ def _fresh_tree(tree):
     os.makedirs(os.path.join(tree, SOURCES), mode=0o700)
 
 
-def _check_links(root):
+def _check_links(root, mounted_at=C_TREE):
     """Refuse a symlink in the staging tree that points out of it: an absolute target, or a relative one
-    that resolves above `root`.
+    that resolves above `root`. One exception: `omp plugin link` writes `node_modules/<pkg>` as an ABSOLUTE
+    link to `<mounted_at>/.agentbox/sources/<name>` (the tree as the container and every session see it).
+    Under `node_modules/` an absolute target below `mounted_at` is judged as the same path inside `root`, so
+    it is kept when it stays in the tree (review 16 Nov, R-4: refusing it broke every `[[repo]]` install).
+    Nowhere else: the host reads `.agentbox/`, and on the host that absolute path is not the staging tree.
 
     The tree is the output of a container that ran plugin install scripts, so nothing in it is trusted.
     The host is about to read `state.json` from it, write the lockfile into it, and mount it into every
@@ -540,8 +544,15 @@ def _check_links(root):
             if not os.path.islink(path):
                 continue
             target = os.readlink(path)
-            resolved = os.path.normpath(os.path.join(dirpath, target))
-            if os.path.isabs(target) or not (resolved == root or resolved.startswith(root + os.sep)):
+            rel = os.path.relpath(path, root).split(os.sep)
+            if (os.path.isabs(target) and rel[0] == "node_modules"
+                    and os.path.normpath(target).startswith(mounted_at.rstrip("/") + "/")):
+                resolved = os.path.join(root, os.path.relpath(os.path.normpath(target), mounted_at))
+            elif os.path.isabs(target):
+                resolved = None
+            else:
+                resolved = os.path.normpath(os.path.join(dirpath, target))
+            if resolved is None or not (resolved == root or resolved.startswith(root + os.sep)):
                 raise AgentboxError(f"the install left a symlink pointing out of the tree: "
                                     f"{os.path.relpath(path, root)} -> {target}; refusing to keep it")
 

@@ -401,6 +401,32 @@ class TheRun(SettingsCase):
                 self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")))
                 self.assertFalse(os.path.islink(os.path.join(tree, name)), "the planted link reached the tree")
 
+    def test_the_absolute_link_omp_plugin_link_writes_is_kept(self):
+        """Review 16 Nov, R-4: `omp plugin link` writes `node_modules/<pkg>` as an absolute link to the
+        tree's container path, and refusing every absolute link refused every `[[repo]]` install."""
+        def plant(staging):
+            os.makedirs(os.path.join(staging, "node_modules"), exist_ok=True)
+            os.makedirs(os.path.join(staging, ".agentbox", "sources", "pi-x"), exist_ok=True)
+            os.symlink(os.path.join(installer.C_TREE, ".agentbox", "sources", "pi-x"),
+                       os.path.join(staging, "node_modules", "pi-x"))
+        self.run_install(plant=plant)
+        tree = installer.tree_dir(self.settings, "omp")
+        self.assertTrue(os.path.islink(os.path.join(tree, "node_modules", "pi-x")))
+
+    def test_absolute_links_are_only_kept_under_node_modules_and_inside_the_tree(self):
+        c = installer.C_TREE
+        for name, target in (("node_modules/up", os.path.join(c, "..", "..", ".ssh")),   # leaves the tree
+                             ("node_modules/near", c + "-evil/x"),                       # a prefix, not inside
+                             (".agentbox/state.json", os.path.join(c, ".agentbox", "x")),  # the host reads it
+                             ("lib/x", os.path.join(c, "node_modules"))):                # not node_modules
+            with self.subTest(link=name):
+                root = self.mkdir(f"chk-{name.replace('/', '_')}")
+                path = os.path.join(root, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                os.symlink(target, path)
+                with self.assertRaises(AgentboxError):
+                    installer._check_links(root)
+
     def test_a_relative_symlink_inside_the_tree_is_kept(self):
         """npm writes `node_modules/.bin/<cmd> -> ../<pkg>/bin.js`; that is the tree working as intended."""
         def plant(staging):
