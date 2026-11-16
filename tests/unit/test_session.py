@@ -765,3 +765,25 @@ class SessionNamesSkipKeptClones(SessionBase):
         os.makedirs(os.path.join(self.settings.clones_dir("p1"), "abt-unit-claude-p1-1"))
         s = self.make()
         self.assertEqual(s.reserve_name(), "abt-unit-claude-p1-2")
+
+
+class LongStepsSayWhatTheyDo(SessionBase):
+    """A session start that takes minutes (a 65 GB tree's backup, 16 Nov) printed nothing until the agent
+    came up, so it looked hung. Every step that can be long now says what it is doing once it has run past
+    progress.DELAY; here the delay is 0, so each one shows."""
+
+    def test_start_and_teardown_name_their_long_steps(self):
+        from unittest import mock
+        out = []
+        p = session.load_project(self.settings, "p1")
+        s = session.make_session(self.settings, "claude", p, warn=out.append)
+        with mock.patch("agentbox.progress.DELAY", 0.0):
+            s.prepare()
+            s.teardown()
+        text = "\n".join(out)
+        for label in ("reading the git history under", f"checking {self.root} for secrets and live data",
+                      f"backing up {self.root} (the pre-session snapshot)", "removing old pre-session snapshots",
+                      "recording the state of", "keeping the session's logs",
+                      "removing the session's containers and networks", "running the end-of-session scan"):
+            self.assertIn(f"agentbox: {label}", text)
+        self.assertGreaterEqual(text.count(": done in "), 8, text)

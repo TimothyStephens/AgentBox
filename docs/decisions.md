@@ -3150,3 +3150,24 @@ earlier round (`20261116-164058`) took 105.8 s with the page cache cold after `b
 scan 26 s (0.3 s warm), grant backup 12 s (2 s), git-dir walk 7.6 s (0.2 s), the build 30.6 s; Python's
 own time stayed small, so it was disk reads, not code. A large repo's first session after its files leave
 the cache costs about a minute more before the agent starts. Noted, not acted on.
+
+## 2026-11-16 · Long session steps say what they are doing, the backup with a percentage
+
+**What.** A `toulmin-build` session sat for 18+ minutes with no output: its pre-session backup was rsyncing a
+65 GB, 147k-file tree (much of it `.local-tools/` toolchains and three distro rootfs). Every start and end
+step that can be long now prints a line once it passes 2 s, a heartbeat every 15 s, and its duration
+(`progress.py`). The backup's heartbeat carries a percentage: the share of rsync's file list done
+(`--info=progress2 --no-inc-recursive`, reading `to-chk=N/total`), not rsync's byte percentage, which leaves
+out hard-linked files and so ends a mostly-unchanged `--link-dest` backup at about 33%. A single very large
+file holds the percentage still while it copies. The walks (grant check, masks, scan state, history) get
+elapsed time only: a percentage needs the total, which is a second walk.
+
+**Why this way.** Lines, not a redrawn terminal line: the steps print their own warnings, and runs are captured
+by `ab run` and the perf kit. Overhead measured on 20 000 files: none above noise (3.3-4.0 s either way).
+
+**Also fixed.** Ctrl-C during the backup left `<snapshot>.incomplete` behind (only an rsync error removed it);
+any interruption now removes it.
+
+**Not done.** `.local-tools`-style trees remain expensive to back up. `mask_skip` cannot be used for one that
+holds `.pem` CA bundles (grantcheck refuses them as unmasked); moving such toolchains out of the root, as a
+`data_ro` grant, is the advice.

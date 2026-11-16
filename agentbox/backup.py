@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from .errors import AgentboxError
 
@@ -34,6 +35,53 @@ def rsync_argv(src, dst, *, link_dest=None, skip_rel=(), exclude_rel=()):
     return argv
 
 
+_TO_CHK = re.compile(rb"to-chk=(\d+)/(\d+)")
+_PROGRESS_LINE = re.compile(rb"^\s*[\d,]+\s+\d+%")
+
+
+def _run_rsync(argv, progress=None):
+    """(returncode, stdout, stderr) of one rsync. With `progress`, rsync also reports as it goes and
+    `progress(fraction, detail)` gets the share of the file list done.
+
+    The share is of files and folders, not bytes: with --link-dest an unchanged file is hard-linked rather
+    than copied, and rsync's own byte percentage leaves those out, so a mostly-unchanged tree would finish at
+    "33%". --no-inc-recursive makes rsync list the whole tree first, so the total is known from the start
+    (one file list in memory, about 100 bytes a file). The progress lines are dropped from the returned
+    output; `--stats` still parses."""
+    if progress is None:
+        p = subprocess.run(argv, capture_output=True, text=True)
+        return p.returncode, p.stdout, p.stderr
+    argv = argv[:1] + ["--info=progress2", "--no-inc-recursive"] + argv[1:]
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=err)
+        kept, buf = [], b""
+        try:
+            while True:
+                chunk = proc.stdout.read1(65536)
+                if not chunk:
+                    break
+                *parts, buf = re.split(rb"[\r\n]", buf + chunk)
+                for part in parts:
+                    m = _TO_CHK.search(part)
+                    if m:
+                        left, total = int(m[1]), int(m[2])
+                        if total:
+                            progress(1 - left / total, f"{total - left:,} of {total:,} files and folders")
+                    elif not _PROGRESS_LINE.match(part):
+                        kept.append(part)
+            kept.append(buf)
+            proc.wait()
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        err.seek(0)
+        return (proc.returncode, b"\n".join(kept).decode(errors="replace"),
+                err.read().decode(errors="replace"))
+
+
 def _snapshots(backups):
     if not os.path.isdir(backups):
         return []
@@ -47,11 +95,15 @@ def _total_size(stats):
 
 def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
              exclude_rel_for=lambda g: (), warn_mb=0, now=None,
-             warn=lambda msg: print(msg, file=sys.stderr)):
+             warn=lambda msg: print(msg, file=sys.stderr), step=None):
     """Back up every grant into one snapshot directory under `backups` (the project's own backups directory,
     `settings.project_backups_dir`). Returns the snapshot path. `exclude_rel_for(g)` gives paths (files or
     dirs, relative to the grant) to leave out: the masks and covers, so the backup never holds a plaintext
-    copy of a secret the agent cannot damage anyway."""
+    copy of a secret the agent cannot damage anyway.
+
+    `step(grant)`, when given, returns the context manager that reports on the copy of that grant (a
+    progress.Step); its `progress` gets rsync's share done. An interrupted copy (Ctrl-C) removes its
+    half-written snapshot as a failed one does, so no `.incomplete` directory is left behind."""
     now = now or datetime.datetime.now()
     os.makedirs(backups, mode=0o700, exist_ok=True)
     prev = _snapshots(backups)
@@ -78,10 +130,13 @@ def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
             cand = os.path.join(backups, prev[-1], g.lstrip("/"))
             if os.path.isdir(cand):
                 link = cand
+        argv = rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g), exclude_rel=exclude_rel_for(g))
         try:
-            p = subprocess.run(rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g),
-                                          exclude_rel=exclude_rel_for(g)),
-                               capture_output=True, text=True)
+            if step is None:
+                rc, out, err = _run_rsync(argv)
+            else:
+                with step(g) as st:
+                    rc, out, err = _run_rsync(argv, st.progress)
         except OSError as e:
             # The pre-session snapshot is the session's only undo, so a missing rsync has to stop the
             # session -- but as a condition with a fix in it, not a traceback (the same shape as a missing
@@ -89,11 +144,14 @@ def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
             shutil.rmtree(work, ignore_errors=True)
             raise AgentboxError(f"cannot run rsync ({e}); agentbox needs it for the pre-session snapshot of "
                                 f"{g}. Install it (`apt-get install rsync`) -- see docs/INSTALL.md.")
-        # 24 = some files vanished during the copy; the snapshot is still usable.
-        if p.returncode not in (0, 24):
+        except BaseException:
             shutil.rmtree(work, ignore_errors=True)
-            raise AgentboxError(f"backup of {g} failed (rsync {p.returncode}): {p.stderr.strip()[-300:]}")
-        total += _total_size(p.stdout)
+            raise
+        # 24 = some files vanished during the copy; the snapshot is still usable.
+        if rc not in (0, 24):
+            shutil.rmtree(work, ignore_errors=True)
+            raise AgentboxError(f"backup of {g} failed (rsync {rc}): {err.strip()[-300:]}")
+        total += _total_size(out)
     os.rename(work, final)
     if warn_mb and total > warn_mb * 1024 * 1024:
         warn(f"agentbox: backup {final} is {total // (1024 * 1024)} MB (over backup_warn_mb={warn_mb}); "

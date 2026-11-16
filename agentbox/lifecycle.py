@@ -13,6 +13,7 @@ from .errors import AgentboxError
 from .fsutil import write_private
 from .liveness import session_is_alive, sessions
 from .podman import label_filters
+from .progress import Step
 from .state import _free_name, ephemeral_state, service_tmp
 
 
@@ -166,39 +167,41 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
         sockguard.stop_service(settings.service_dir(session))
     finally:
         try:
-            _keep_logs(settings, podman, session, started, warn)
+            with Step("keeping the session's logs", warn):
+                _keep_logs(settings, podman, session, started, warn)
         except Exception as e:
             warn(f"agentbox: could not keep the session's logs: {e!r}")
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
         # A listing that cannot be read must not look like "nothing to remove": warn per kind, keep going
         # with the others, and never let a failed listing pass for a clean teardown (audit F-2/F-10).
-        quick = {f"{session}-{k}" for k in SIDECARS}
-        for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
-                           ("pod", ["pod", "rm", "-f"]),
-                           ("volume", ["volume", "rm", "-f"]),
-                           ("network", ["network", "rm", "-f"])):
-            try:
-                found = podman.ids(kind, sel)
-            except AgentboxError as e:
-                warn(f"agentbox: could not list this session's {kind}s, so some may be left behind: {e}. "
-                     f"Check with `podman {kind if kind != 'container' else 'ps -a'} --filter "
-                     f"label=agentbox.session={session}`.")
-                continue
-            for target in found:
-                # a removal that fails leaves a container or network behind under a name the next session
-                # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
-                if kind == "container" and target in quick:
-                    argv = ["rm", "-f", "-v", "-t", "0"]
-                elif kind == "container":
-                    argv = ["rm", "-f", "-v", "-t", "5"]
+        with Step("removing the session's containers and networks", warn):
+            quick = {f"{session}-{k}" for k in SIDECARS}
+            for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
+                               ("pod", ["pod", "rm", "-f"]),
+                               ("volume", ["volume", "rm", "-f"]),
+                               ("network", ["network", "rm", "-f"])):
                 try:
-                    r = podman.run(argv + [target], check=False)
-                    why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
+                    found = podman.ids(kind, sel)
                 except AgentboxError as e:
-                    why = str(e)
-                if why:
-                    warn(f"agentbox: could not remove {kind} {target} of session {session} ({why}); remove it "
-                         f"with `podman {' '.join(argv)} {target}`")
+                    warn(f"agentbox: could not list this session's {kind}s, so some may be left behind: {e}. "
+                         f"Check with `podman {kind if kind != 'container' else 'ps -a'} --filter "
+                         f"label=agentbox.session={session}`.")
+                    continue
+                for target in found:
+                    # a removal that fails leaves a container or network behind under a name the next session
+                    # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
+                    if kind == "container" and target in quick:
+                        argv = ["rm", "-f", "-v", "-t", "0"]
+                    elif kind == "container":
+                        argv = ["rm", "-f", "-v", "-t", "5"]
+                    try:
+                        r = podman.run(argv + [target], check=False)
+                        why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
+                    except AgentboxError as e:
+                        why = str(e)
+                    if why:
+                        warn(f"agentbox: could not remove {kind} {target} of session {session} ({why}); remove it "
+                             f"with `podman {' '.join(argv)} {target}`")
         if settings.cgroup_parent:
             # the per-session build cgroup the gate names; empty once the builds are gone
             build_cg = "/sys/fs/cgroup" + buildcap.slice_cgroup_path(settings.cgroup_parent) + f"/{session}-build"
@@ -207,7 +210,8 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
             except OSError:
                 pass
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
-        _scan(settings, session, started, warn)
+        with Step("running the end-of-session scan", warn):
+            _scan(settings, session, started, warn)
         _toulmin_end(settings, session, exit_reason, warn)
         # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` --
         # the project's slot is free again. Silently: a lock that works is not news.

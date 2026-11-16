@@ -15,6 +15,7 @@ from .config import HOME
 from .errors import AgentboxError
 from .fsutil import inside, write_private
 from .podman import Podman, set_log
+from .progress import Step
 from .project import (  # noqa: F401
     clone_root, dev_tier, load_project, mount_mode_of, podman_access, Project, protected_extra, _check, _git_env,
     _no_commas
@@ -231,7 +232,8 @@ class Session:
         if self.token_file:
             tokens.check_token_file(self.token_file)
         p = self.project
-        found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.mask_skip)
+        with Step(f"reading the git history under {p.root} for secret file names", self.warn):
+            found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.mask_skip)
         # The whole found set, not just the additions (audit F-11): a name that left the history means the
         # acknowledgement no longer describes it, and `ab project show` was still listing it to rotate.
         new = found if grantcheck.fingerprint(found) != grantcheck.fingerprint(
@@ -270,32 +272,38 @@ class Session:
             raise AgentboxError(f"project {p.name}: mount = clone with the dev podman tier is not built; use "
                                 "`--podman none` (or observe) with clone mode, or mount = checkout")
         if p.toulmin:
-            self.toulmin = toulmin.start(self.settings)      # before anything else of the session's (contract 1.5)
+            with Step("starting the toulmin session", self.warn):
+                self.toulmin = toulmin.start(self.settings)  # before anything else of the session's (contract 1.5)
             # recorded at once: a clone_root that fails next must still reach `tm session end` in teardown,
             # which knows only session.json (review 16 Nov, item 18)
             self._write_meta()
         if mode == "clone":
-            self.clone = clone_root(self.settings, p.name, self.name, p.root)
+            with Step(f"making this session's clone of {p.root}", self.warn):
+                self.clone = clone_root(self.settings, p.name, self.name, p.root)
             self.root_src = self.clone["clone"]
             self.warn(f"agentbox: clone mode: {self.clone['clone']} on branch {self.clone['branch']} is what the "
                       f"session sees at {p.root}; the checkout is not mounted")
         self._write_meta()
         # The grant scan and its acknowledgement are about the OWNER's tree (what `ab project check` and `add`
         # saw), so it runs there in both modes; the clone can only hold less (nothing untracked or ignored).
-        plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
-                                 compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap, mask=p.mask)
-        exposure, warnings, exposure_fp = grantcheck.preflight(
-            self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
-                                    "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask}, plan=plan_check)
+        with Step(f"checking {p.root} for secrets and live data", self.warn):
+            plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
+                                     compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
+                                     mask=p.mask)
+            exposure, warnings, exposure_fp = grantcheck.preflight(
+                self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
+                                        "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask},
+                plan=plan_check)
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
             raise AgentboxError(grantcheck.message(p.name, exposure))
         if mode == "clone":
             # The mounts come from the clone (host paths), and the agent sees them at the owner's path.
-            self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
-                                         compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
-                                         mask=p.mask)
+            with Step(f"finding the masks in the clone {self.root_src}", self.warn):
+                self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
+                                             compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
+                                             mask=p.mask)
             self.plan = mounts.remap(self.plan_host, self.root_src, p.root)
         else:
             self.plan_host = self.plan = plan_check
@@ -344,7 +352,8 @@ class Session:
                       "the clone is kept)")
         elif do_backup:
             self._backup_grants()
-        self._write_scan_state()             # after the agent state is seeded: its changes are the session's
+        with Step(f"recording the state of {self.root_src} for the end-of-session scan", self.warn):
+            self._write_scan_state()         # after the agent state is seeded: its changes are the session's
 
     # ---- the Toulmin integration (toulmin.py; docs/agentbox_toulmin_integration.md) ----------------------
     def _toulmin_setup(self):
@@ -415,9 +424,11 @@ class Session:
         backup.snapshot(self.settings.project_backups_dir(p.name), self.name, [p.root] + p.data_rw,
                         skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
                         exclude_rel_for=covers_rel,
-                        warn_mb=int(self.settings.backup_warn_mb), warn=self.warn)
-        backup.retain(self.settings.project_backups_dir(p.name), keep=int(self.settings.backup_keep),
-                      daily_days=int(self.settings.backup_daily_days))
+                        warn_mb=int(self.settings.backup_warn_mb), warn=self.warn,
+                        step=lambda g: Step(f"backing up {g} (the pre-session snapshot)", self.warn))
+        with Step("removing old pre-session snapshots", self.warn):
+            backup.retain(self.settings.project_backups_dir(p.name), keep=int(self.settings.backup_keep),
+                          daily_days=int(self.settings.backup_daily_days))
 
     @property
     def inbox(self):
@@ -859,6 +870,10 @@ class Session:
                               self.proxy_name, conf_path=conf_path, networks=[self.egr_net, self.int_net])
 
     def start_infra(self):
+        with Step("starting the session's network, proxy and sidecars", self.warn):
+            self._start_infra()
+
+    def _start_infra(self):
         pm, s = self.podman, self.settings
         pm.run(self.net_create_args(self.int_net, internal=True))
         pm.run(self.net_create_args(self.egr_net, internal=False))
