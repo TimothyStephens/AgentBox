@@ -57,8 +57,11 @@ VENV_DIRS = {".venv", "venv"}           # only their .pth files are looked at
 HOOK_VAR = "SECRETS_REGEX"          # the variable in the host hook that holds its pattern
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
            "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat", "PAGER": "cat"}
+# The one list of flags for host-side git in a repository an agent can write (review.py, toulmin.py and
+# session.py take it from here): nothing in the repo's config may run a command, recurse or page.
 GIT_SAFE = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
-            "-c", "diff.external=", "-c", "log.showSignature=false", "-c", "core.untrackedCache=false"]
+            "-c", "diff.external=", "-c", "log.showSignature=false", "-c", "core.untrackedCache=false",
+            "-c", "submodule.recurse=false"]
 
 
 def git(work, *args, timeout=60, input=None):

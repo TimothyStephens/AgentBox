@@ -532,3 +532,22 @@ class NoHook(TempCase):
             regex, why = scan.host_secret_regex()
         self.assertIsNone(regex)
         self.assertIn("no host pre-commit hook", why)
+
+
+class GitSafeIsShared(TempCase):
+    """Item 56: one list of safe-git flags. review.py and toulmin.head_of ran their own (toulmin's had none),
+    so a hook or fsmonitor set in an agent-writable repo's config could run on the host from those paths."""
+
+    def test_review_and_toulmin_use_scan_git_safe(self):
+        from agentbox import review, toulmin
+        self.assertEqual(review.SAFE_GIT, ["git", *scan.GIT_SAFE])
+        for flag in ("core.hooksPath=/dev/null", "core.fsmonitor=false", "submodule.recurse=false"):
+            self.assertIn(flag, scan.GIT_SAFE)
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="abc123\n", stderr="")
+        with mock.patch.object(toulmin.subprocess, "run", fake_run):
+            self.assertEqual(toulmin.head_of("/nowhere"), "abc123")
+        self.assertEqual(seen[0][:1 + len(scan.GIT_SAFE)], ["git", *scan.GIT_SAFE], seen[0])

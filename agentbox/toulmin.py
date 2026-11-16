@@ -22,6 +22,7 @@ import subprocess
 import time
 
 from .errors import AgentboxError
+from .scan import GIT_SAFE
 
 HANDSHAKE = 1
 ROLE = "writer"
@@ -311,7 +312,7 @@ def head_of(repo, ref=None):
     """A commit id, or "" when the repo or ref cannot be read (a message with head == base is still valid)."""
     for candidate in ([ref] if ref else []) + ["HEAD"]:
         try:
-            p = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", candidate],
+            p = subprocess.run(["git", *GIT_SAFE, "-C", repo, "rev-parse", "--verify", "--quiet", candidate],
                                capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError):
             return ""

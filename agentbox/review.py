@@ -23,16 +23,17 @@ import stat
 import subprocess
 
 from .errors import AgentboxError
+from .scan import GIT_SAFE
 
 KEY = "reviews"
 REVIEWS_DIR = "reviews"          # in the reviewer's clone; listed in its .git/info/exclude
 HANDOVER_DIR = ".review"         # in the builder's root
 MAX_REVIEW_BYTES = 1 << 20
 BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")
-# Host-side git in a repository an agent can write: no hooks, no fsmonitor command, no submodule recursion.
-# (.git/hooks and .git/config are read-only inside sessions too; this does not rely on that.)
-SAFE_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-            "-c", "submodule.recurse=false"]
+# Host-side git in a repository an agent can write: no hooks, no fsmonitor command, no submodule recursion
+# (scan.GIT_SAFE is the one list). .git/hooks and .git/config are read-only inside sessions too; this does
+# not rely on that.
+SAFE_GIT = ["git", *GIT_SAFE]
 
 
 def _git(repo, *args, check=True):
