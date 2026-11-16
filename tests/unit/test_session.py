@@ -14,7 +14,10 @@ def _read(path):
         return f.read()
 
 
-class SessionTest(SettingsCase):
+class SessionBase(SettingsCase):
+    """Fixture only: a project with a .env/.env.dev pair, a token and a seeded profile. Test classes subclass
+    this, not SessionTest, so the SessionTest cases run once instead of once per subclass."""
+
     def setUp(self):
         super().setUp()
         self.root = self.project("p1")
@@ -30,6 +33,8 @@ class SessionTest(SettingsCase):
         p = session.load_project(self.settings, name, **kw)
         return session.make_session(self.settings, "claude", p, warn=lambda m: None)
 
+
+class SessionTest(SessionBase):
     def test_argv(self):
         s = self.make()
         s.prepare()
@@ -271,7 +276,7 @@ class ScoreTest(SettingsCase):
         self.assertEqual(runner.scrub("a TOK b", ["TOK"]), "a [REDACTED] b")
 
 
-class CoveredPaths(SessionTest):
+class CoveredPaths(SessionBase):
     """Critical (5 Oct): the gate needs the set of paths the agent container masks/covers, so it can refuse a
     spawned container's bind that reaches them."""
 
@@ -297,7 +302,7 @@ class CoveredPaths(SessionTest):
         self.assertEqual(s.covered_paths(), sorted(covered), "a sorted plain list for the gate config")
 
 
-class CoverPins(SessionTest):
+class CoverPins(SessionBase):
     """Audit 5 Oct, H1: every directory between a grant root and a cover is a mount point in the agent's
     container, so a cover's parent cannot be renamed away from the path the gate checks."""
 
@@ -347,7 +352,7 @@ class CoverPins(SessionTest):
         self.assertEqual(s.pin_args(), [])
 
 
-class CheckSetup(SessionTest):
+class CheckSetup(SessionBase):
     """E13: _check_setup audits what an adapter asks the launcher to mount. None of its refusals had a test:
     an adapter mount or tmpfs outside the adapter's own root, a cover outside the project, a bad env name,
     and a comma/newline in a path."""
@@ -400,7 +405,7 @@ class CheckSetup(SessionTest):
         s._check_setup()                                    # no raise
 
 
-class BackupExcludesCovers(SessionTest):
+class BackupExcludesCovers(SessionBase):
     """The per-session backup must not copy covered/masked paths (Tim, 7 Oct): the agent cannot damage the
     real .env or secrets/ (they are masked), so backing them up only leaves plaintext secret copies in the
     backups dir. Back up code, not secrets."""
@@ -438,7 +443,7 @@ class BackupExcludesCovers(SessionTest):
         self.assertEqual(hits, "", f"a covered path was copied into the backups dir:\n{hits}")
 
 
-class GrantExposure(SessionTest):
+class GrantExposure(SessionBase):
     """Track 1 (6 Oct): a session refuses to start when the grant holds uncovered secrets or live data."""
 
     def test_refuses_then_accepts(self):
@@ -503,7 +508,7 @@ class GrantExposure(SessionTest):
         self.assertIn("more/other.sqlite", out)                 # both listed, not "2 findings"
 
 
-class UserMaskInASession(SessionTest):
+class UserMaskInASession(SessionBase):
     """A masked directory (`mask`, 10 Nov) is a cover like `secrets/`: the gate refuses binds onto it, the
     backup leaves it out, the end-of-session scan skips it, and a build context carries it empty."""
 
