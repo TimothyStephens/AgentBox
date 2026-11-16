@@ -1443,5 +1443,32 @@ class ContainerfileParsing(unittest.TestCase):
         self.assertEqual(w("\t <<-EOF\t"), ["<<-EOF"])
 
 
+class Item8FieldNamesAndImageMounts(unittest.TestCase):
+    """Review 2026-11-16, item 8."""
+
+    def test_non_ascii_field_names_refused_outside_data_maps(self):
+        # Go's JSON decoder folds the long s and the Kelvin sign onto ASCII; str.lower does not
+        for body in ({"image": "x", "netn\u017f": {"nsmode": "host"}}, {"image": "x", "netns": {"n\u017fmode": "host"}},
+                     {"image": "x", "mounts": [{"type": "bind", "\u212aind": "x"}]},
+                     {"image": "x", "privileged\u00e9": True}):
+            with self.subTest(body=body), self.assertRaises(gate.Deny) as e:
+                gate.strict_loads(json.dumps(body).encode(), "libpod")
+            self.assertIn("not ASCII", str(e.exception))
+        with self.assertRaises(gate.Deny):
+            gate.strict_loads(json.dumps({"Image": "x", "HostConfig": {"NetworkMode\u017f": "host"}}).encode(), "compat")
+        # env, labels and annotations are the client's data: any key
+        doc = gate.strict_loads(json.dumps({"image": "x", "env": {"GR\u00dcSSE": "1"}, "labels": {"caf\u00e9": "1"},
+                                            "annotations": {"\u00f1": "1"}}).encode(), "libpod")
+        self.assertEqual(doc["env"], {"GR\u00dcSSE": "1"})
+
+    def test_image_mount_source_checked_after_create(self):
+        g = Fake({"images/localhost/live-app:latest": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}}})
+        doc = container("c1", Mounts=[{"Type": "image", "Source": "localhost/live-app:latest", "Destination": "/i"}])
+        bad = g.container_violations(doc)
+        self.assertTrue(any("live-app" in b for b in bad), bad)
+        doc = container("c1", Mounts=[{"Type": "image", "Source": "docker.io/library/busybox:1.36", "Destination": "/i"}])
+        self.assertEqual(g.container_violations(doc), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -334,6 +334,11 @@ def strict_loads(body, kind=None):
                 a, b = obj.case_dups[0]
                 raise Deny(f"ambiguous request: keys {a!r} and {b!r} differ only in case")
             for k, v in obj.items():
+                # Field names are ASCII. Go's decoder folds U+017F (long s) onto s and U+212A (Kelvin) onto k,
+                # which str.lower does not, so a field spelt that way would reach podman unread by the gate
+                # (review 2026-11-16, item 8). Data maps keep their keys as they are.
+                if not data and not k.isascii():
+                    raise Deny(f"request field {k!r} is not ASCII; refused")
                 walk(v, path + ("*",) if data else path + (k.lower(),))
         elif isinstance(obj, list):
             for v in obj:
@@ -745,7 +750,14 @@ class Gate:
                 if labels is None or not (self.is_dev(labels) or self.anonymous_volume(name, labels)
                                           or self.grant_volume_root(vdoc)):
                     bad.append(f"volume {name or m.get('Source')} is not this session's")
-            elif t not in ("tmpfs", "image"):
+            elif t == "image":
+                # the image the mount serves must be one the dev tier may use (item 8): the create's
+                # image_volumes are checked, but what podman stored is what counts
+                try:
+                    self.check_image(m.get("Source") or "", "image mount")
+                except Deny as e:
+                    bad.append(str(e))
+            elif t != "tmpfs":
                 bad.append(f"{t} mount")
         return bad
 
