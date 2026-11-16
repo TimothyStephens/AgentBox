@@ -64,15 +64,22 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    - Pay-per-use providers: `ab keys set <provider>`, once each. Use dedicated, spend-capped keys.
    - A local model server that needs a key: `ab keys set llama-cpp`.
 
-6. **OMP model list** (or keep a keyless copy in your OMP profile repo's `seed/`, which its `./build.sh deploy` installs when missing): copy `~/.omp/agent/models.yml` to `~/.config/agentbox/omp/models.yml` with every
-   `apiKey` line removed. Only providers that have a key (step 5) are offered in a session; keys are injected
-   as `AB_KEY_<PROVIDER>`, never written into this file.
+6. **OMP model list:** a keyless `~/.config/agentbox/omp/models.yml` (the OMP profile repo's `seed/` ships
+   one, which its `./build.sh deploy` installs when missing; or write your own, with every `apiKey` line
+   removed). Only providers that have a key (step 5) are offered in a session; keys are injected as
+   `AB_KEY_<PROVIDER>`, never written into this file. Nothing is read from a host OMP install.
 
-7. **Optional OMP MCP / MAGS config:** create `~/.config/agentbox/omp/mcp.json` or `mags-codedev.yaml`
-   yourself; they are mounted read-only as written. See `docs/PERSONALIZATION.md` for the full map of what to
-   edit to personalize Claude or OMP, and whether a change affects one project or all.
+7. **Optional OMP config and MCP:** create `~/.config/agentbox/omp/config.yml` (mounted read-only as an
+   overlay OMP ranks above its own settings) and/or `mcp.json` (mounted read-only at `agent/.mcp.json`)
+   yourself; the `seed/` above ships keyless copies. See `docs/PERSONALIZATION.md` for the full map of what
+   to edit to personalize Claude or OMP, and whether a change affects one project or all.
 
-8. **Register a project and check it:**
+8. **Plugins** (both agents): `ab profile install <agent>` installs what the deployed profile's
+   `plugins.toml` declares, in a sandbox, into `~/.config/agentbox/<agent>/plugins/`, which sessions mount
+   read-only. Rerun it after the profile's `plugins.toml` or the agent image changes; a session says so when
+   the tree is stale.
+
+9. **Register a project and check it:**
    ```bash
    ab project init pod demo            # scaffold + register a grantcheck-clean project, OR:
    ab project add <name> <root> --preset python|pods|lockdown
@@ -91,14 +98,15 @@ real config.
 | Base image | `localhost/agentbox-base:latest` (+`:<date>`) | — | the shared toolchain the agent images build on |
 | Agent images | `localhost/agentbox-{claude,omp}:latest` (+`:<date>`) | — | the session images (podman storage) |
 | Your own layer | `localhost/agentbox-<agent>-user:<key>` | — | optional, built by `ab image build <agent>` from a `Containerfile` in your profile; the key covers the harness image and that file |
-| Config | `~/.config/agentbox` | `AB_CONFIG_DIR` | `projects.toml`, `agentbox.toml`, `presets/`, `keys/`, `<agent>-oauth-token`, per-agent seeds (`claude/`, `omp/`) |
+| Config | `~/.config/agentbox` | `AB_CONFIG_DIR` | `projects.toml`, `agentbox.toml`, `presets/`, `keys/`, `<agent>-oauth-token`, per agent `<agent>/profile/` (deployed profile clone), `<agent>/plugins/` (installed tree), OMP's seed files (`omp/{config.yml,models.yml,mcp.json}`) |
 | Data | `~/.local/share/agentbox` | `AB_DATA_DIR` | `projects/<name>/` (each project's agent state `<agent>/`, `backups/`, `built-images.json`, `project.json`), `logs/`, `profiles/`, `tmp/`, `ephemeral/` |
 | Run (tmpfs) | `$XDG_RUNTIME_DIR/agentbox` | `AB_RUN_DIR` | live session metadata and generated configs under `sessions/`, podman sockets under `services/` — gone on reboot |
 | Scaffold root | `~/repos` | `AB_REPOS_DIR` | where `ab project init <t> <n>` creates `<name>/` |
 | podman binary | `podman` on PATH | `AB_PODMAN` | the host podman the launcher drives |
 
-Nothing is installed system-wide and nothing needs root. The host's own `~/.claude` and the real contents of
-`~/.omp` outside the whitelisted pieces are never used in a session (see `docs/PERSONALIZATION.md`).
+Nothing is installed system-wide and nothing needs root. The host's own `~/.claude` and `~/.omp` are never
+used in a session: what an agent loads comes from `~/.config/agentbox/<agent>/` only (see
+`docs/PERSONALIZATION.md`).
 
 ## Updating and uninstalling
 
@@ -114,5 +122,5 @@ Nothing is installed system-wide and nothing needs root. The host's own `~/.clau
 - `make test` — fast unit checks, no podman.
 - `make itest` — real podman, `abt-` names, cleans up after itself; ends with a warning if `make claude-live`
   needs rerunning.
-- `make claude-live`, `make omp-live` — run by you, with your real token, keys and `~/.omp`.
+- `make claude-live`, `make omp-live` — run by you, with your real token, keys and installed plugin tree.
 - `make verify-sockguard` — checks the pinned sockguard image's signature (needs cosign).

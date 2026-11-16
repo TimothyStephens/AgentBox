@@ -203,7 +203,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory that exists inside a read-write grant when the session starts: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. Folders in `mask_skip` are not searched. A repo the agent creates during a session has writable hooks and config: the end-of-session report names it (NEW GIT REPO) and never runs git in it; check its `.git/config` and hooks before you use git there.
 - Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
-- Read-write grants are rsynced to `~/.local/share/agentbox/backups/<project>/<timestamp>-<session>/` before the session starts, as `--link-dest` snapshots (unchanged files shared). Excluded are exactly the gate's covered paths — the secret masks and the read-only covers (`.git/config`, `.git/hooks`, the compose files) — so a snapshot never holds a plaintext copy of a secret the agent could not damage (`.git/config` can hold credentials); the rest of `.git` is kept. Also not copied: `.venv`, `venv`, `node_modules`, `__pycache__`, build caches and the project's `mask_skip` folders. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory. **Restore** by copying a snapshot's grant back over the project *without* `rsync --delete` (e.g. `rsync -a <snapshot>/<grant>/ <project>/`), so the excluded covered files already in place (`.git/config`, hooks, compose, the real `.env`) are preserved, not removed (decisions.md, 2026-10-15).
+- Read-write grants are rsynced to `~/.local/share/agentbox/projects/<project>/backups/<timestamp>-<session>/` before the session starts (`config.project_backups_dir`), as `--link-dest` snapshots (unchanged files shared). Excluded are exactly the gate's covered paths — the secret masks and the read-only covers (`.git/config`, `.git/hooks`, the compose files) — so a snapshot never holds a plaintext copy of a secret the agent could not damage (`.git/config` can hold credentials); the rest of `.git` is kept. Also not copied: `.venv`, `venv`, `node_modules`, `__pycache__`, build caches and the project's `mask_skip` folders. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory. **Restore** by copying a snapshot's grant back over the project *without* `rsync --delete` (e.g. `rsync -a <snapshot>/<grant>/ <project>/`), so the excluded covered files already in place (`.git/config`, hooks, compose, the real `.env`) are preserved, not removed (decisions.md, 2026-10-15).
 
 ### Network and egress
 
@@ -280,7 +280,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 **Model credentials**
 
-- One file per provider, `~/.config/agentbox/keys/<provider>` (0600), set with `ab keys set <provider>`, which warns that a pay-per-use key should be dedicated to agentbox and spend-capped at the provider. Keys are removed from `~/.omp/agent/models.yml` so there is one place to update.
+- One file per provider, `~/.config/agentbox/keys/<provider>` (0600), set with `ab keys set <provider>`, which warns that a pay-per-use key should be dedicated to agentbox and spend-capped at the provider. The OMP model list is a keyless seed, `~/.config/agentbox/omp/models.yml`, so there is one place to update; nothing is read from a host OMP install.
 - A key enters a session like the Claude token: its file is mounted read-only and exported as `AB_KEY_<PROVIDER>` just before the agent starts, so it is never on a command line or in podman's config; the generated model config names the variable. Only providers with a key are offered, and their API domains are allowed in every egress mode (decisions.md lists them). The agent can read the keys it holds; with a dedicated, capped key that is bounded by the cap, so the key gateway below stays deferred.
 - Claude Code uses a dedicated subscription token from `claude setup-token`, kept in `~/.config/agentbox/claude-oauth-token` (0600) and rotated with `ab keys rotate claude`. It is mounted read-only into the session and exported as `CLAUDE_CODE_OAUTH_TOKEN` just before the agent starts, so it is never in podman's container config. The agent can read it; that is accepted because it only makes model requests and is revocable. It never lands in session directories, logs, backups or selftest output: `make itest` checks what the launcher writes with a fake token, and runs Claude against a local stub API that accepts that token, so Claude's own post-authentication writes are checked too; `make claude-live` repeats the check with the real token and API. The host's own login (`~/.claude`) is never mounted.
 
@@ -289,7 +289,8 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 | How a piece arrives | Edit on the host |
 | --- | --- |
 | Directory bind mount (install dirs, session history) | Visible immediately |
-| Single-file bind mount (`config.yml`, `settings.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. (`ab reload` is planned; today, restart the session.) |
+| Single-file bind mount (OMP's `config.yml` overlay, `mcp.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. (`ab reload` is planned; today, restart the session.) |
+| Copied at session start (Claude's `settings.json`, from the profile) | Next session |
 | Generated at session start (`models.yml`, `AGENTS.md`, squid rules) | Next session, or `ab reload <session>` |
 | Key files | Next session (they are read at start) |
 
@@ -469,15 +470,15 @@ A power loss or reboot ends every running session, but everything written to the
 
 ## Adapters
 
-The OMP adapter needs nothing beyond the fixed hardening; its work is in splitting `~/.omp` and fixing the image.
+The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.omp` tmpfs with named pieces mounted on it, and the image.
 
 **OMP**
 
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening only |
-| Image | `localhost/agentbox-omp`, derived from `omp-env` (`make omp-image`): `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`, plus `python-is-python3`, `debugpy`, Chromium, podman-remote 5.7.0 (pinned, checksum-verified, first on PATH) and the compose tool 1.5.0 |
-| What comes from the host's `~/.omp` | A whitelist, all read-only: `plugins`, `repos`, `pylibs` from their actual link targets, each of which must be exactly `versions/<v>/<name>` (they may be in different versions); the `versions/<v>/` directories those live in or the plugins link into; refused if a credential file in `~/.omp` is hard-linked or a mounted repo's git config has credentials in a URL; `bin/mags-codedev`; `.cache/ms-playwright`. Nothing else (decisions.md lists what is left out and why). `config.yml` stopped coming from there on 4 Nov (next rows) |
+| Image | `localhost/agentbox-omp` (`make omp-image`, `images/omp/Containerfile`): `agentbox-base` (node 26, git, rsync, python3, the checksum-pinned podman-remote 5.7.0 client ahead of `/usr/bin` on PATH, the compose tool 1.5.0) plus Bun (pinned, checksum-verified, first on PATH), the OMP CLI at the Makefile's `OMP_VERSION` (asserted by the build), `python-is-python3`, `debugpy` and Chromium; `/root` opened for the keep-id user, `/root/.omp` linked to `~/.omp`. Since 4 Nov 2026 it no longer derives from `omp-env` (docs/RUNTIME.md) |
+| Plugins | Nothing comes from a host OMP install: the host's `~/.omp` is not read at all (5-6 Nov 2026; `omp_home` is a retired setting). `ab profile install omp` builds `~/.config/agentbox/omp/plugins/` from the profile's `plugins.toml` (marketplace plugins pinned by sha, npm packages at exact versions, git checkouts linked) in one hardened container against the image's own OMP, and a session mounts that tree read-only at `~/.omp/plugins` with its `marketplaces.json` beside it (`adapters/omp.plugin_mounts`); the tree's lockfile names the image it was built against and the session warns when that no longer matches. `--no-profile`, `profile = "off"` and lockdown load none |
 | MCP config | Only if Tim creates `~/.config/agentbox/omp/mcp.json` himself: mounted read-only at `agent/.mcp.json`, never copied from `~/.omp` (the credential rule in decisions.md). MAGS-CodeDev has no OMP-side config any more (15 Nov): it runs outside agentbox's agents, as its own container, by Tim's decision |
 | OMP settings (`config.yml`) | Only if Tim creates `~/.config/agentbox/omp/config.yml`: mounted read-only at `~/.omp/agentbox-config.yml` and named in `PI_CONFIG_FILES`, an overlay OMP ranks above its own `agent/config.yml`, so the host's values win over anything a session saves; the lockdown `--config` overlay ranks above it in turn. `agent/config.yml` itself is ordinary per-project agent state that OMP writes (its write-and-rename save was EBUSY while that path was a mount; decisions.md, 12 Nov) |
 | `~/.omp` in the session | A tmpfs owned by the agent, with the pieces above mounted on it; `run/` and caches live there and vanish with the session |
@@ -494,9 +495,9 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is in splitti
 | Piece | Setting |
 | --- | --- |
 | Security flags | Fixed hardening (the existing script's flags) |
-| Image | `localhost/agentbox-claude`, derived from `claudecode` (`make claude-image`): podman-remote 5.7.0 (pinned, checksum-verified, first on PATH), python3 and the compose tool 1.5.0 |
+| Image | `localhost/agentbox-claude` (`make claude-image`, `images/claude/Containerfile`): `agentbox-base` (node 26, git, rsync, python3, the checksum-pinned podman-remote 5.7.0 client, the compose tool 1.5.0) plus the Claude Code CLI at the Makefile's `CLAUDE_VERSION`, asserted by the build; auto-update off in the image. Since 4 Nov 2026 it no longer derives from `claudecode` (docs/RUNTIME.md) |
 | Model access | Dedicated `claude setup-token` token, mounted read-only and exported as `CLAUDE_CODE_OAUTH_TOKEN` at start; the host's `~/.claude` is never mounted |
-| Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/projects/<project>/claude/`, read-write and persistent (history, `--resume`); `settings.json`, `CLAUDE.md` and `commands/` copied in from `~/.config/agentbox/claude/` at each start |
+| Per-project state | The whole `CLAUDE_CONFIG_DIR` per project at `~/.local/share/agentbox/projects/<project>/claude/`, read-write and persistent (history, `--resume`). What the agent loads comes from the host-owned profile `~/.config/agentbox/claude/profile/`: `skills/`, `agents/` and `commands/` mounted read-only from a content-hashed snapshot, `CLAUDE.md` generated per session (sandbox notes, then the profile's own) and mounted read-only, `settings.json` copied in at each start because Claude Code writes it (`profile.copy_into_state`); the plugin tree from `ab profile install claude` read-only at `/run/agentbox/claude/marketplaces` |
 | User | `vmuser` via `keep-id` (Claude Code refuses to skip permissions as root) |
 | Network settings | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`; model domain `api.anthropic.com` |
 | Approval prompts | Follow the preset: `--dangerously-skip-permissions` and a pre-trusted folder when off; when on, no pre-trust and a read-only managed policy (`/etc/claude-code/managed-settings.json`: bypass mode disabled, only managed hooks and permission rules), so a repo's own settings cannot switch approvals off |
@@ -613,12 +614,11 @@ registered at startup, so the pin is agentbox's, as it is for OMP. Lockdown load
 **Turning it off** (4 Nov): `ab session start --no-profile` for one run, or `profile = "off"` on the project for good
 (`ab project set <p> --profile off`; the session log records `profile <agent>=off reason=flag|project`). Off
 means off at every door the profile reaches a session through — the read-only mounts, the items copied into
-state instead (`settings.json`), the profile text folded into the generated instruction file, OMP's
-`plugins`/`repos`/`pylibs` snapshot, and the image, which is the harness image and never a user layer
+state instead (`settings.json`), the profile text folded into the generated instruction file, the installed plugin tree (both agents), and the image, which is the harness image and never a user layer
 (`profile.user_image`, the hook point for the planned user layer, consulted only when the profile is on).
 Nothing is read at all, so no snapshot is taken and no run with the profile off can decide what the next run
 with it on will load. agentbox's own session notes still apply, as does whatever the agent needs in order to
-start (for OMP, the `config.yml` overlay, the MAGS-CodeDev wrapper and the Playwright cache — not extensions).
+start (for OMP, the `config.yml` overlay and `mcp.json` from `~/.config/agentbox/omp/` — not plugins).
 `profile` is deliberately *not* security-relevant, so a ceiling preset does not refuse `profile = "on"`:
 see decisions.md.
 
@@ -853,8 +853,8 @@ are `busybox:1.36` (decisions.md, 29 Sep).
 - [x] OMP's session directory naming follows the real project path once mounted there (step 3).
 - [x] Claude Code's config splits cleanly into a read-only token plus per-project state (step 1: token mounted read-only and exported at start; whole `CLAUDE_CONFIG_DIR` per project, seeded by copy).
 - [ ] Identify the python3 servers on `8004`/`8006`.
-- [x] OMP's flag for turning its approval prompts off: `--approval-mode=yolo|write|always-ask` (step 3). The third-party `pi-permission-system` extension in `~/.omp/agent/extensions/` is a separate policy layer; not mounted, Tim to decide.
-- [ ] OMP with the real `~/.omp`, keys and local model: `make omp-live`, run by Tim.
+- [x] OMP's flag for turning its approval prompts off: `--approval-mode=yolo|write|always-ask` (step 3). The third-party `pi-permission-system` extension is a separate policy layer; not installed (it would be a `plugins.toml` entry in the profile), Tim to decide.
+- [x] OMP with the real keys, the installed plugin tree and the local model: `make omp-live`, run by Tim (passes; last recorded 13 Nov 2026 with the installed plugins present, decisions.md).
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.
 - [ ] Live stacks restart on boot: check lingering and `podman-restart.service` for vmuser; enabling lingering may need an admin.
 - [x] Gate strips restart policies from agent-created containers (step 5).

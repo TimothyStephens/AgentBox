@@ -8,7 +8,8 @@ host and in-session paths are given so there is no guessing.
 
 Three roots hold agentbox's own state (each movable by env var):
 
-- `~/.config/agentbox` (`AB_CONFIG_DIR`) — the registry, per-agent **seeds**, keys.
+- `~/.config/agentbox` (`AB_CONFIG_DIR`) — the registry, the per-agent **profiles** (`<agent>/profile/`), the
+  installed **plugin trees** (`<agent>/plugins/`), OMP's seed files, keys.
 - `~/.local/share/agentbox` (`AB_DATA_DIR`) — `projects/<name>/` (per-project **agent state**, inboxes, backups), logs.
 - `$XDG_RUNTIME_DIR/agentbox` (`AB_RUN_DIR`) — live, per-session generated files (tmpfs).
 
@@ -20,54 +21,47 @@ not the host directory — see OMP below.
 
 ## 1. How Claude and OMP load config / plugins / MCP
 
-The two adapters are deliberately different. **Claude's whole config dir is per-project. OMP's plugins and
-`config.yml` are a host-shared, read-only global; only its `agent/` working dir and your `config/omp` seed
-are per-project.**
+The two adapters differ in where the agent's own writable state sits, but what either agent **loads** is
+the same shape: the host-owned profile `~/.config/agentbox/<agent>/profile/` (read-only) plus the plugin
+tree `ab profile install <agent>` builds from that profile's `plugins.toml` (read-only). **Claude's whole
+config dir is per-project. OMP's `agent/` working dir is per-project; its plugins, `config.yml` overlay and
+`mcp.json` are global, from `~/.config/agentbox/omp/`, never from a host OMP install.**
 
 ### Does your own installed agent reach into a session?
 
-The whole host surface a session can read is short, and worth knowing by heart:
+**No, for either agent.** The whole host surface a session can read is short, and worth knowing by heart:
 
-1. `~/.config/agentbox/` — the profiles, the per-agent seeds, `keys/`, `<agent>-oauth-token`, `presets/`,
-   `projects.toml`;
+1. `~/.config/agentbox/` — the profiles, the installed plugin trees, OMP's seed files, `keys/`,
+   `<agent>-oauth-token`, `presets/`, `projects.toml`;
 2. `~/.local/share/agentbox/` — `projects/<name>/` (agent state, inboxes, backups, built-image record), `logs/`, `profiles/` snapshots;
 3. `$XDG_RUNTIME_DIR/agentbox/` — this session's generated files and sockets;
 4. **the grants** — the project root and any `data_ro`/`data_rw`, at their real paths;
-5. the agent image;
-6. **`~/.omp` — OMP only.** The one exception, and the only way a host-installed agent's own config
-   reaches a session.
+5. the agent image.
 
-**Claude: no.** `$HOME` in a session is a fresh tmpfs, `CLAUDE_CONFIG_DIR` points at the per-project state
-dir under (2), and the host's `~/.claude` is never mounted — `ab project selftest` asserts it is not visible.
+**Claude.** `$HOME` in a session is a fresh tmpfs, `CLAUDE_CONFIG_DIR` points at the per-project state dir
+under (2), and the host's `~/.claude` is never mounted — `ab project selftest` asserts it is not visible.
 Nothing you do to your own Claude Code install changes what a session sees.
 
-**OMP: yes, in three ways** — all of them from `~/.omp`, set by the `omp_home` setting:
+**OMP.** The host's `~/.omp` is not read at all (5-6 Nov 2026; `omp_home` is a retired setting). Until then
+a session mounted the host OMP's `plugins`/`repos`/`pylibs`, so `omp-env install` on the host silently
+changed the next session's plugins (which is what made `make omp-live` fail on 4 Nov). Each of those inputs
+has an agentbox-owned replacement:
 
-- `omp-env install` on the host rewrites `~/.omp/plugins`, so the next session silently gets different
-  plugins. This is not hypothetical: it is what made `make omp-live` fail on 4 Nov.
-- A host OMP upgrade changes which `versions/<v>/` directories exist. `provisioned_targets` validates the
-  *shape* of the links (each must be exactly `versions/<v>/<name>`), not which version they point at.
-- `agent/config.yml` is your host OMP's own config, mounted read-only. Change your host OMP's default
-  model and every agentbox session's default model changes with it.
-
-**Two of those six left `~/.omp` on 4 November**, so the list above is already shorter than it was:
-
-- **`agent/config.yml` is agentbox's own now** — `~/.config/agentbox/omp/config.yml`, beside `models.yml`,
-  `mcp.json` and `mags-codedev.yaml`, which were always read from there. It is the third bullet above that
-  this closes: your host OMP's default model is no longer every session's default model. There is no
-  migration, by design — if you want what you had, `cp ~/.omp/agent/config.yml ~/.config/agentbox/omp/`,
-  and the session says so by name when the file is absent.
+- **Plugins** come from `~/.config/agentbox/omp/plugins/`, which `ab profile install omp` builds from the
+  profile's `plugins.toml` against the image's own OMP (see the table below). Installing a plugin into your
+  own OMP changes nothing in a session.
+- **`config.yml` is agentbox's own** — `~/.config/agentbox/omp/config.yml`, beside `models.yml` and
+  `mcp.json`. Your host OMP's default model is not every session's default model. There is no migration,
+  by design: if you want what you had, `cp ~/.omp/agent/config.yml ~/.config/agentbox/omp/`, and the
+  session says so by name when the file is absent (the OMP profile repo's `seed/` ships keyless copies that
+  its `./build.sh deploy` installs when missing).
 - **`.cache/ms-playwright` is gone entirely.** The image carries chromium and OMP's browser tool uses
   `PUPPETEER_EXECUTABLE_PATH`, so the host cache was a second copy nothing read. The image no longer sets
   `PLAYWRIGHT_BROWSERS_PATH` either — it pointed into `~/.omp`, which is a tmpfs in a session.
 
-What is left from `~/.omp`: **`plugins`/`repos`/`pylibs`**, which needs a decision (`docs/TODO.md` §1.1),
-and **`bin/mags-codedev`**, which is a wrapper *into* `repos/` and so only works while that is mounted — it
-goes with the same decision rather than before it, and is gated with the plugins for the same reason.
-
-That gating gives `ab session start --no-profile` a property worth knowing: **for OMP it now means a session reads
-nothing at all from the host's `~/.omp`.** agentbox's own `config.yml` still arrives — the flag turns off
-the profile and the plugins, not agentbox's configuration of the agent.
+`ab session start --no-profile` (or `profile = "off"`) drops the profile mounts **and** the plugin tree for
+either agent; agentbox's own `config.yml` overlay and `mcp.json` still arrive for OMP — the flag turns off
+the profile, not agentbox's configuration of the agent.
 
 ### Claude Code (`adapters/claude.py`)
 
@@ -79,7 +73,7 @@ persists across sessions of that project. The host `~/.claude` is never used.
 | Config dir (`CLAUDE_CONFIG_DIR`) | `~/.local/share/agentbox/projects/<project>/claude/` | `/run/agentbox/claude/` | per-project, persistent | rw |
 | `skills/`, `agents/`, `commands/` | `~/.config/agentbox/claude/profile/` (the **profile**) | `/run/agentbox/claude/{skills,agents,commands}` | **global** (every project, every preset) | **ro** |
 | `CLAUDE.md` | the profile's own, with the sandbox notes prepended | `/run/agentbox/claude/CLAUDE.md`, generated per session | **global** | **ro** |
-| `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start, then the plugin keys below are merged in | **global** | rw copy |
+| `settings.json` | `~/.config/agentbox/claude/profile/settings.json` | copied into the config dir at every start (`profile.copy_into_state`), then the plugin keys below are merged in | **global** | rw copy |
 | Plugins (marketplace catalogs) | `~/.config/agentbox/claude/plugins/<marketplace>/`, built by `ab profile install claude` from the profile's `plugins.toml` | `/run/agentbox/claude/marketplaces/<marketplace>`, declared to Claude Code in the copied `settings.json` (`extraKnownMarketplaces`, `enabledPlugins`) | **global**, except lockdown (none) | **ro** |
 | Inbox (what a session wants to keep) | `~/.local/share/agentbox/projects/<project>/<agent>/inbox/` (under `ephemeral/<session>/` in lockdown) | `/run/agentbox/claude/inbox/` | per-project, persistent, **never loaded** (lockdown: deleted at teardown) | rw |
 | Managed policy (lockdown / approvals on) | generated in `<run>/sessions/<s>/claude-managed-settings.json` | `/etc/claude-code/managed-settings.json` | per-session | ro |
@@ -133,29 +127,35 @@ persists across sessions of that project. The host `~/.claude` is never used.
 ### OMP (`adapters/omp.py`)
 
 In a session `~/.omp` is a fresh **tmpfs** owned by you; named pieces are mounted on top. Writable state is
-per-project; the toolchain is a host-shared read-only global.
+per-project; the plugins and the `config.yml` overlay are agentbox-owned read-only globals.
 
 | What | Host source | In-session path | Scope | Mode |
 |---|---|---|---|---|
-| Plugins | `~/.omp/versions/<v>/plugins` | `~/.omp/plugins` (+ `~/.omp/versions/<v>`) | **global, host-shared** | **ro** |
-| Repos / pylibs | `~/.omp/versions/<v>/{repos,pylibs}` | `~/.omp/{repos,pylibs}` | **global, host-shared** | **ro** |
-| `agent/config.yml` | `~/.config/agentbox/omp/config.yml` | `~/.omp/agent/config.yml` | **global** | **ro** |
-| `bin/mags-codedev` | `~/.omp/bin/mags-codedev` | same | global, host-shared | ro |
+| Plugins (the installed tree) | `~/.config/agentbox/omp/plugins/`, built by `ab profile install omp` from the profile's `plugins.toml` (`[[plugin]]` marketplace entries pinned by sha, `[[npm]]` packages at exact versions, `[[repo]]` checkouts linked) | `~/.omp/plugins`, plus the tree's `marketplaces.json` at `~/.omp/marketplaces.json` | **global** (lockdown runs OMP with `--no-extensions`, so none load) | **ro** |
+| `config.yml` overlay | `~/.config/agentbox/omp/config.yml` | `~/.omp/agentbox-config.yml`, named in `PI_CONFIG_FILES` (ranks above `agent/config.yml`; the lockdown `--config` overlay ranks above it) | **global** | **ro** |
+| `agent/config.yml` | per-project state: OMP writes it (its write-and-rename save failed with EBUSY while this path was a mount, 12 Nov) | `~/.omp/agent/config.yml` | per-project, persistent | rw |
 | Working dir (sessions, databases) | `~/.local/share/agentbox/projects/<project>/omp/agent/` | `~/.omp/agent` | per-project, persistent | rw |
 | Logs | `~/.local/share/agentbox/projects/<project>/omp/logs/` | `~/.omp/logs` | per-project, persistent | rw |
 | `models.yml` | generated from the keyless seed `~/.config/agentbox/omp/models.yml` | `~/.omp/agent/models.yml` | per-session | ro |
 | `AGENTS.md` | generated (see §4) | `~/.omp/agent/AGENTS.md` | per-session | ro |
-| MCP / MAGS (if you create them) | `~/.config/agentbox/omp/mcp.json`, `mags-codedev.yaml` | `~/.omp/agent/.mcp.json`, `~/.omp/agent/mags-codedev.yaml` | **global** | ro |
+| MCP (if you create it) | `~/.config/agentbox/omp/mcp.json` (`mags-codedev.yaml` is no longer read: MAGS-CodeDev dropped that path, 15 Nov) | `~/.omp/agent/.mcp.json` | **global** | ro |
 | Chromium for the browser tool | the image (`/usr/bin/chromium`, `PUPPETEER_EXECUTABLE_PATH`) | — | global | — |
 | Repo config (`.omp/`, `.mcp.json`) | the project repo | the grant | per-project (committed) | rw (ro in lockdown) |
 | Inbox (what a session wants to keep) | `~/.local/share/agentbox/projects/<project>/omp/inbox/` | `~/.omp/agent/inbox/` | per-project, persistent, **never loaded** | rw |
 | Profile (`skills`, `rules`, `prompts`, `agents`, `commands`) | `~/.config/agentbox/omp/profile/` | `~/.omp/agent/<same>` | **global** (every project, every preset) | **ro** |
 | Autolearn's output | `<run>/sessions/<s>/omp-managed-skills` | `~/.omp/agent/managed-skills` | **per session**, harvested into the inbox at teardown | rw |
 
-- The writable `agent/` dir has the read-only files above (`config.yml`, `models.yml`, `.mcp.json`,
-  `mags-codedev.yaml`, `AGENTS.md`) mounted on top of it, and `agent/extensions`, `agent/hooks`,
-  `agent/tools` are covered empty read-only (so one session cannot plant code the next runs). Prompt dirs
-  (`skills`, `rules`, `prompts`, `agents`, `commands`) stay writable for OMP's autolearn.
+- The writable `agent/` dir has the read-only files above (`models.yml`, `.mcp.json`, `AGENTS.md`)
+  mounted on top of it, and `agent/extensions`, `agent/hooks`, `agent/tools` are covered empty read-only
+  (so one session cannot plant code the next runs). `agent/config.yml` is left writable on purpose: the
+  host's values reach the session as the `PI_CONFIG_FILES` overlay instead.
+- **Plugins are installed by agentbox, not mounted from a host OMP** (5-6 Nov): declare them in the
+  profile's `plugins.toml`, deploy the profile, run `ab profile install omp`. The install runs in one
+  hardened container behind the session proxy (`packages` egress, no model-host rule) against the image's
+  own OMP, node and Bun, into a tree sessions mount **read-only** — OMP tolerates a read-only
+  `~/.omp/plugins` (proved by a real read-only bind in `test_step3_omp`). The tree carries a lockfile naming
+  the image it was built against; a session warns when that no longer matches, or when the tree no longer
+  matches `plugins.toml`. A failed install keeps the previous tree (15 Nov).
 - **OMP loads the host profile too** (29 Oct), read-only at `agent/{skills,rules,prompts,agents,commands}`
   from `~/.config/agentbox/omp/profile/`. Safe because **autolearn writes only to
   `agent/managed-skills`**, never to `agent/skills` (oh-my-pi: `autolearn/managed-skills.ts`,
@@ -165,16 +165,17 @@ per-project; the toolchain is a host-shared read-only global.
   waits for `ab profile harvest` instead of becoming something every later session loads. A lockdown
   session keeps none of it.
 - **Keys never enter via these files.** `models.yml` is regenerated per session from the keyless seed and
-  references `AB_KEY_<PROVIDER>` variables; `config.yml` and `plugins/` are mounted read-only and are *not*
-  scanned, so never put a secret in them (see the OMP note in `docs/design.md`).
+  references `AB_KEY_<PROVIDER>` variables; the `config.yml` overlay and `plugins/` are mounted read-only
+  and are *not* scanned, so never put a secret in them (see the OMP note in `docs/design.md`).
 
 ### The asymmetry in one line
 
 Claude: the config dir is per-project, but what the agent *loads* is **global and read-only** — the host
-profile `~/.config/agentbox/claude/profile/`; a session's own additions go to the per-project inbox, which
-nothing loads until you promote it. OMP: plugins and `config.yml` are a **global, read-only** toolchain shared by
-every project; only `agent/` (per-project working state) and your `~/.config/agentbox/omp/` seed are yours to
-change, and a per-project OMP tweak lives in the repo.
+profile `~/.config/agentbox/claude/profile/` and the plugin tree built from it; a session's own additions go
+to the per-project inbox, which nothing loads until you promote it. OMP: the same profile-plus-plugin-tree
+shape, plus the `config.yml` overlay and `mcp.json` from `~/.config/agentbox/omp/`, all **global and
+read-only**; only `agent/` (per-project working state) is the session's to write, and a per-project OMP
+tweak lives in the repo.
 
 ---
 
@@ -183,8 +184,8 @@ change, and a per-project OMP tweak lives in the repo.
 | Layer | Edit here | Affects | Persists |
 |---|---|---|---|
 | **A. Global scaffold template** | `agentbox/initproj.py` (code today — see §3) | every *future* `ab project init` project | — |
-| **B. Global agent seed** | `~/.config/agentbox/claude/` or `~/.config/agentbox/omp/` | every session of that agent, all projects | copied/mounted each start |
-| **C. OMP global toolchain** | host `~/.omp` (`omp-env install`, `omp plugin link`) | every OMP session, all projects | host-shared, ro |
+| **B. Global profile and seed** | `~/.config/agentbox/<agent>/profile/` (a deployed clone of the profile repo), plus OMP's `~/.config/agentbox/omp/{config.yml,models.yml,mcp.json}` | every session of that agent, all projects | mounted ro each start (`settings.json` copied) |
+| **C. Plugins** | the profile's `plugins.toml`, installed by `ab profile install <agent>` into `~/.config/agentbox/<agent>/plugins/` | every session of that agent, all projects (none with `--no-profile`; lockdown loads none) | host-owned tree, ro |
 | **D. Per-project repo files** | files committed in the project (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`, `.omp/`, `dev/fixtures/`) | that one project | in the repo |
 | **E. Per-project agent state** | `~/.local/share/agentbox/projects/<project>/<agent>/` | that one project, across sessions | on disk, `ab project reset-state` wipes it |
 | **F. Per-project settings** (preset, egress, grants, podman tier) | `ab project set <name> …` — the same flags `ab project init`/`ab project add` take; `--unset KEY` returns one to its preset value | that one project, from its **next** session | `projects.toml` (`ab project show` prints each value's source) |
@@ -198,16 +199,17 @@ name inherits `lockdown`'s values for anything it omits (see `docs/design.md`, P
 
 - **MCP server:** create `.mcp.json` in the project repo (layer D) and commit it. Claude reads it from the
   project root in the session.
-- **Slash command:** add it to the repo's `.claude/commands/` (layer D), or to the per-project config dir
-  `~/.local/share/agentbox/projects/<project>/claude/commands/` (layer E) if you don't want it committed.
+- **Slash command:** add it to the repo's `.claude/commands/` (layer D). The per-project config dir's
+  `commands/` is shadowed by the profile's read-only mount, so a command there is not seen.
 - These affect only this project. (In a `lockdown` project, repo `.claude/` hooks/rules are covered off; use
   it on a `pods`/`python` project.)
 
 ### (b) Add an OMP plugin (**global**) and an OMP MCP server (**per-project**)
 
-- **Plugin (global):** install it into the host `~/.omp` outside agentbox (`omp-env install` / `omp plugin
-  link`, layer C). It then mounts read-only into **every** OMP session. agentbox does not install plugins;
-  it mounts the host toolchain as-is.
+- **Plugin (global):** add a `[[plugin]]` (marketplace, `ref` a 40-char sha), `[[npm]]` (exact version) or
+  `[[repo]]` (git checkout at a sha) entry to the OMP profile repo's `plugins.toml`, commit, push and
+  `./build.sh deploy`, then `ab profile install omp` (layer C). The tree then mounts read-only into **every**
+  OMP session. Nothing you install into your own OMP reaches a session.
 - **MCP server (per-project):** commit a `.mcp.json` (or `.omp/`) to the project repo (layer D); OMP reads it
   from the project root alongside `~/.omp/agent`. A *global* OMP MCP server instead goes in
   `~/.config/agentbox/omp/mcp.json` (layer B), mounted read-only at `~/.omp/agent/.mcp.json` in every OMP
