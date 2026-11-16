@@ -3042,3 +3042,22 @@ intention. The decisions the fixes carried, by package:
   moved to `docs/reviews/2026-09-29-kickoff.md`, and `tests/fixtures/omp/tree.txt` removed (`tests/ompfake.py`
   builds the tree; the 30 Sep entry above cites it, git history keeps it). No LICENSE was added: the owner
   has to choose one.
+- **Duplication consolidated (item 56).** One path-containment helper (`fsutil.inside`), one private-file
+  writer (`fsutil.write_private`: fresh temp, `O_EXCL|O_NOFOLLOW`, exact mode, fsync, rename), one
+  `mask_skip` resolver (`mounts.mask_skip_paths`), one git-author lookup (`session.git_user`), one podman
+  label-filter builder (`podman.label_filters`). Two copies were weaker and their behaviour changed:
+  `ab project init` reads the git author as sessions do (settings, else `git config --global`, 10 s timeout,
+  a value with a newline ignored), so an identity set only in the system config or in the repository it was
+  run from is no longer used (TODO §2.2); and the generated session files that were truncated in place
+  (squid.conf, the sockguard yaml, gate.json, Claude's managed settings, OMP's generated files, the Toulmin
+  token and confirm/end JSON) are now written atomically, never through a link. Each is written before the
+  container that reads it starts.
+- **Modules split along their seams (item 54), no behaviour change.** `gate.py` keeps the `Gate` class and the
+  handler; its schema tables, Containerfile reader, mountinfo parsers and HTTP framing moved to `gate_schema`,
+  `gate_dockerfile`, `gate_mounts` and `gate_http`. `session.py` keeps the `Session` class; `project`,
+  `historysecrets`, `notes`, `infra`, `state`, `liveness`, `lifecycle` and `sessionlock` took the rest (the
+  lock went to its own module, not into `liveness`, because taking it reaps through `teardown` and `gc` needs
+  `liveness`: one module would be a cycle). `cli.py` keeps `main()` and the parser scaffolding; each noun has
+  its module (`cli_project`, `cli_session`, `cli_profile`, `cli_keys`), and `warn` lives in `cli_common` so
+  they need not import `cli` back. Every moved name is re-exported from its old module. `gate.py` stays over
+  1000 lines because the `Gate` class alone is about 1600 and was not cut across files.

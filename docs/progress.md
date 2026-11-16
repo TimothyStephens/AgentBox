@@ -22,7 +22,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **M4 (ack shows findings, tracks content)** | **built** | Full findings printed; fingerprint over content, so a byte change re-prompts. |
 | **Egress (locked/packages/open, squid)** | **built** | Modes behave as designed; private-address refusal; an occasional upstream latency flake is the host's uplink, not agentbox (watch items below; `make egress-soak`). |
 | **Preview** (`ab session preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
-| **Podman tiers** | **none/observe/dev built; exec NOT built** | `exec` is refused in code (`session.py`: "exec on the live stack is not built"). The built tiers scope to the session's own dev stack; builds via the holder-netns path. |
+| **Podman tiers** | **none/observe/dev built; exec NOT built** | `exec` is refused in code (`project.py`, `podman_access`: "exec on the live stack is not built"). The built tiers scope to the session's own dev stack; builds via the holder-netns path. |
 | **`ab profile install <agent>`** (plugins, both agents) | **built** | Claude (9 Nov): each marketplace catalog cloned at its sha into `~/.config/agentbox/claude/plugins/<marketplace>`, mounted read-only at `/run/agentbox/claude/marketplaces` and declared through the copied `settings.json`. OMP (6 Nov): the profile declares plugins in `plugins.toml` (marketplace entries pinned by a 40-char sha, npm packages at exact versions, git checkouts linked); `ab profile install omp` installs them in ONE hardened container behind the session proxy, `packages` egress and no model-host rule, into `~/.config/agentbox/omp/plugins`, which sessions mount **read-only** (proved by a real read-only bind mount in `test_step3_omp`). Pinning is agentbox's: `omp plugin marketplace add` cannot take a commit, so the catalog is cloned, checked out, verified and added by path. The tree carries a lockfile recording the image it was built against, and a session says so when that no longer matches. **`~/.omp` is not read at all** — `omp_home` is a retired setting — and ~160 lines of whitelist went with it (decisions.md, 5–6 Nov). |
 | **Adapters** | **Claude + OMP built; Pi/Codex not built** | `adapters/claude.py`, `adapters/omp.py` exist; Pi/Codex are planned (step 8). |
 | **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
@@ -136,7 +136,7 @@ malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant 
 - **Third preset/settings audit** (28 Oct, F-1 … F-12; decisions.md 28 Oct): the model held — the
   open-egress invariant intact, all eleven previous findings closed — but both highs were the same defect:
   unknown state read as "nothing running". Fixed as two structural changes plus the rest. One liveness
-  predicate (`session.project_is_live`), fail-closed by construction, used by every command that refuses on
+  predicate (`liveness.project_is_live`), fail-closed by construction, used by every command that refuses on
   a live project; podman's readers raise instead of returning `[]`; a fail-open sweep of every swallowed
   error on a safety path (six fixed, four left with the reasoning recorded). One grant preflight
   (`grantcheck.preflight`) so `ab project check`'s verdict is `ab session start`'s, which also split "covered" into
