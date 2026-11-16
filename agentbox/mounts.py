@@ -479,14 +479,15 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
     return out
 
 
+def mask_skip_paths(root, mask_skip):
+    """mask_skip entries as absolute, normalised paths: each is relative to the project root, or absolute.
+    The one resolver, for the mask walk here and grantcheck's "(under mask_skip: unmasked)" tag."""
+    return [os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s)) for s in mask_skip]
+
+
 def _rel_skips(root, grant, mask_skip):
-    """mask_skip entries are relative to the project root, or absolute. Return those under `grant`."""
-    out = []
-    for s in mask_skip:
-        full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
-        if inside(full, grant):
-            out.append(os.path.relpath(full, grant))
-    return out
+    """The mask_skip entries under `grant`, relative to it."""
+    return [os.path.relpath(full, grant) for full in mask_skip_paths(root, mask_skip) if inside(full, grant)]
 
 
 def prepare(p):

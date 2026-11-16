@@ -115,11 +115,7 @@ def _sig(path, st):
 
 
 def _under_mask_skip(root, path, mask_skip):
-    for s in mask_skip:
-        full = os.path.normpath(s if os.path.isabs(s) else os.path.join(root, s))
-        if inside(path, full):
-            return True
-    return False
+    return any(inside(path, full) for full in mounts.mask_skip_paths(root, mask_skip))
 
 
 def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
