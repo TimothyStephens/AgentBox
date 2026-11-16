@@ -195,6 +195,14 @@ class SwapNeverExposesASecret(unittest.TestCase):
             with self.assertRaises(AgentboxError, msg=bad):
                 self.check(bad)
 
+    def test_the_refusal_names_every_masked_name(self):
+        """The message once listed four names by hand and went stale when the mask list widened."""
+        from agentbox import mounts
+        with self.assertRaises(AgentboxError) as cm:
+            self.check({"notes.txt": ".env.dev"})
+        for name in mounts.MASK_FILES:
+            self.assertIn(name, str(cm.exception))
+
     def test_a_masked_destination_with_a_plain_stand_in_is_allowed(self):
         self.check({".env.local": ".env.dev"})
         self.check({"server.pem": "dev-cert.txt"})

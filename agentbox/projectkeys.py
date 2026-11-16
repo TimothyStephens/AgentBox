@@ -501,7 +501,7 @@ def _swap(_name, where, value, **_kw):
                                 "at a dev file (e.g. .env.dev)")
         if not masked_name(target):
             raise AgentboxError(f"{where}: swap {target!r} = {dev!r}: {target!r} is not a masked name "
-                                "(.env, .env.*, *.pem, *.key), so there is no secret for it to stand in "
+                                f"({', '.join(mounts.MASK_FILES)}), so there is no secret for it to stand in "
                                 "for; a swap only replaces a file the masks hide")
     return dict(value)
 
