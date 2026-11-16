@@ -10,6 +10,18 @@ from agentbox import screen
 
 from .helpers import SettingsCase
 
+# The layout is picked from the terminal width, so a wide host terminal picked "wide" and broke tests that
+# expect the 200x50 fallback a test run without a terminal gets. Pin the size for every test here.
+_size = mock.patch("agentbox.screen.shutil.get_terminal_size", return_value=os.terminal_size((200, 50)))
+
+
+def setUpModule():
+    _size.start()
+
+
+def tearDownModule():
+    _size.stop()
+
 
 def ps_running(session, project, role="agent"):
     return json.dumps([{"Names": [f"{session}-{role}"], "State": "running",

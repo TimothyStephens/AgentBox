@@ -13,8 +13,10 @@ REGEX = r"sk-[a-zA-Z0-9_-]{20,}"         # one of the host hook's patterns
 
 
 def git(repo, *args):
-    subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
-                   capture_output=True)
+    # No hooks: these throwaway repos commit fake keys on purpose, and the host user's global pre-commit
+    # secret hook (core.hooksPath) refused them, so the tests failed on the host only.
+    subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "core.hooksPath=/dev/null", *args], check=True, capture_output=True)
 
 
 class Scan(TempCase):
