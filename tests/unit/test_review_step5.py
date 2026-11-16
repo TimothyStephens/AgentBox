@@ -574,7 +574,7 @@ class Item9OneRequestPerConnection(unittest.TestCase):
             conn.settimeout(1.0)
             try:
                 result["extra"] = conn.recv(65536)       # the smuggled request, if it is relayed
-            except socket.timeout:
+            except TimeoutError:
                 result["extra"] = b""
             conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
         up = Upstream(self, serve)

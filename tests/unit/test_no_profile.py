@@ -16,7 +16,6 @@ What stays: agentbox's own session notes, which describe the sandbox and are not
 """
 import os
 import unittest
-from unittest import mock
 
 from agentbox import profile, session
 from agentbox.adapters import omp

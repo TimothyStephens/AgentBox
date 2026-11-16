@@ -19,8 +19,8 @@ import os
 import sys
 import tarfile
 import unittest
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass
+from collections.abc import Callable
 
 from agentbox import config, gate, session
 
@@ -39,13 +39,13 @@ class Case:
     area: str                    # "mounts" or "privilege"
     kind: str                    # container | compat | pod | volume | network | compat_network | build | custom
     field: str
-    bad: Optional[Callable] = None        # ctx -> request fragment (or query for builds)
-    good: Optional[Callable] = None
-    stored: Optional[Callable] = None     # doc -> None: puts the disallowed value where podman stores it
+    bad: Callable | None = None        # ctx -> request fragment (or query for builds)
+    good: Callable | None = None
+    stored: Callable | None = None     # doc -> None: puts the disallowed value where podman stores it
     stored_in: str = "container"          # which document `stored` edits: container | pod | infra | volume | network
-    check: Optional[Callable] = None      # (doc, ctx) -> bool: the allowed value as stored
+    check: Callable | None = None      # (doc, ctx) -> bool: the allowed value as stored
     after: str = ""                       # table text for "checked after create" when `stored` is None
-    custom: Optional[Callable] = None     # (test, ctx) -> None: the whole case, for builds and starts
+    custom: Callable | None = None     # (test, ctx) -> None: the whole case, for builds and starts
     note: str = ""
 
 

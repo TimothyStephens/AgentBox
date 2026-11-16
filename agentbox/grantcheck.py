@@ -101,7 +101,7 @@ def _looks_like_data(path):
     """A compose-bound path that is, or contains, a data file (so a code bind like ./app is not flagged)."""
     if os.path.isfile(path):
         return path.lower().endswith(DATA_SUFFIXES)
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+    for _dirpath, dirnames, filenames in os.walk(path, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in WALK_SKIP]
         if any(f.lower().endswith(DATA_SUFFIXES) for f in filenames):
             return True

@@ -22,7 +22,6 @@ rolled back to.
 import json
 import os
 import time
-import unittest
 
 from agentbox import adapters, profile, session
 from agentbox.errors import AgentboxError

@@ -6,7 +6,6 @@ and can answer with an `eval` tool call that uses OMP's `browser`, driving OMP's
 `make omp-live` (Tim) repeats the boot with the real ~/.omp and the real local model.
 """
 import os
-import re
 import secrets
 import subprocess
 import unittest

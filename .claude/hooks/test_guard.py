@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Checks the guard hook: python3 .claude/hooks/test_guard.py"""
-import json, os, subprocess, sys
+import json
+import os
+import subprocess
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -154,15 +157,17 @@ bad = 0
 for c in BLOCK:
     rc, err = run(c)
     if rc != 2:
-        bad += 1; print("SHOULD BLOCK:", c)
+        bad += 1
+        print("SHOULD BLOCK:", c)
 for c in ALLOW:
     rc, err = run(c)
     if rc != 0:
-        bad += 1; print("SHOULD ALLOW:", c, "->", err)
-rc, _ = run.__wrapped__ if False else (0, "")
+        bad += 1
+        print("SHOULD ALLOW:", c, "->", err)
 p = subprocess.run([sys.executable, GUARD], input=json.dumps({"tool_name": "Read", "tool_input": {"file_path": "x"}}), capture_output=True, text=True)
 if p.returncode != 0:
-    bad += 1; print("non-Bash tool should pass")
+    bad += 1
+    print("non-Bash tool should pass")
 total = len(BLOCK) + len(ALLOW) + 1
 print("%d/%d guard checks passed" % (total - bad, total))
 sys.exit(1 if bad else 0)

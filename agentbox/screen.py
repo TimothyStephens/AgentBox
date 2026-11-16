@@ -331,7 +331,7 @@ def build(t, session, layout, builder, reviewer, builder_dir, reviewer_dir, cols
             remaining -= this
             col_tops.append(pid)
         # Rows inside each column, top to bottom.
-        for (cw, cpanes), ctop in zip(plan, col_tops):
+        for (_cw, cpanes), ctop in zip(plan, col_tops):
             ids = [ctop]
             remaining = 100.0
             for j in range(1, len(cpanes)):

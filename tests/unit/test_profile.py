@@ -16,7 +16,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from agentbox import cli, profile, registry, session
+from agentbox import profile, session
 from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase, TempCase, read_json, read_file
@@ -447,7 +447,6 @@ class TheMountPointsAreOurs(SettingsCase):
 
     def test_a_real_state_change_is_still_reported(self):
         """The point of pre-creating is to silence the artefact, not the report."""
-        from agentbox import scan
         s, warnings = self.start()
         with open(os.path.join(self.state, "settings.json"), "w") as f:
             f.write('{"theme": "light", "somethingNew": true}')
@@ -893,7 +892,6 @@ class ConcurrentSessionsCannotHappen(SettingsCase):
                             pid_start=session._start_time(os.getpid()))
         projectlock.note_session(self.settings, "p1", "ab-claude-p1-1")
         import io
-        from contextlib import redirect_stderr, redirect_stdout
         err = io.StringIO()
         code, text = self.ab("session", "start", "claude", "p1", "--no-tty")
         err.write(text)

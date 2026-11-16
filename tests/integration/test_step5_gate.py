@@ -21,7 +21,6 @@ live stack). Checked, in the OMP image (it has the podman client, the compose to
 import json
 import os
 import re
-import shutil
 import subprocess
 import unittest
 

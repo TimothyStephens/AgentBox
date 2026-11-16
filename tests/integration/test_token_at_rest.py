@@ -73,7 +73,7 @@ class TokenAtRest(unittest.TestCase):
         self.assertIn("TOKEN", p.stdout.split("--- stub log")[1], "Claude sent the session token to the API")
         hits = []
         for where in (ENV.data, ENV.run_dir, root):
-            for dirpath, dirnames, files in os.walk(where):
+            for dirpath, _dirnames, files in os.walk(where):
                 for fn in files:
                     path = os.path.join(dirpath, fn)
                     try:

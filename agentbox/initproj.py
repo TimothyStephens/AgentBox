@@ -242,14 +242,13 @@ def _files(template, name):
             "dev/data/.gitkeep": ("", None),
             "README.md": (_README.format(
                 name=name, template=template,
-                dev_stack=" brings up the dev stack (`compose.dev.yaml`, its own `{name}-dev` project),"
-                          .format(name=name),
-                deploy=" Deploy the live stack with the real `.env`; uploads land in the `{name}_data`"
-                       " volume, which no session is granted.".format(name=name),
-                data_doc="Live data in the `{name}_data` podman volume (outside the repo tree).".format(name=name),
+                dev_stack=f" brings up the dev stack (`compose.dev.yaml`, its own `{name}-dev` project),",
+                deploy=f" Deploy the live stack with the real `.env`; uploads land in the `{name}_data`"
+                       " volume, which no session is granted.",
+                data_doc=f"Live data in the `{name}_data` podman volume (outside the repo tree).",
                 upstream_doc=" (and the upstream, if set)",
-                data_backup="Live data lives in the `{name}_data` volume. agentbox does not back it up; "
-                            "snapshot the volume yourself.".format(name=name)), None),
+                data_backup=f"Live data lives in the `{name}_data` volume. agentbox does not back it up; "
+                            "snapshot the volume yourself."), None),
         })
     else:
         files.update({

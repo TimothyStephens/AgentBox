@@ -14,7 +14,7 @@ extend-exclude = [".venv"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "W", "B", "UP"]
-ignore = ["E741", "E731", "B904", "B905", "B023", "E501"]
+ignore = ["E741", "E731", "B904", "B905", "B023", "E501", "UP031"]   # UP031: %-formatting is style, not a defect
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["F841"]

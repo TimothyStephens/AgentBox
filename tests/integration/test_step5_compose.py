@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir six==1.16.0 && python -c "import six; print('PIP_
 WORKDIR /srv
 """,
     "app/index.html": "compose-web-ok\n",
-    "compose.yml": f"""services:
+    "compose.yml": """services:
   web:
     build: ./web
     command: ["python", "-m", "http.server", "8000", "--directory", "/app"]
@@ -51,7 +51,7 @@ WORKDIR /srv
     labels:
       - agentbox-test=1
 volumes:
-  data: {{}}
+  data: {}
 """,
 }
 

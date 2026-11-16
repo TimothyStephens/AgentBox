@@ -50,7 +50,7 @@ class SquidConfTest(SettingsCase):
     def test_a_model_host_that_is_not_an_address_is_still_refused(self):
         """Optional does not mean unchecked: anything non-empty must be an IP."""
         for bad in ("api.example.com", "10.0.0", "1.2.3.4.5", " "):
-            with self.subTest(model_host=bad), self.assertRaises(Exception):
+            with self.subTest(model_host=bad), self.assertRaises(ValueError):
                 egress.squid_conf("packages", model_domains=[], model_host=bad, model_port=8080,
                                   host_addrs=["10.0.0.103"])
 

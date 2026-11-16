@@ -12,7 +12,6 @@ Two ways a CLI test can fail to produce a verdict, both of which happened in thi
 
 The tests below pin both, because a harness guarantee nothing checks is a guarantee that quietly lapses.
 """
-import io
 import os
 import time
 import unittest

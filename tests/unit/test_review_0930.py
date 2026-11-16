@@ -5,7 +5,7 @@ import os
 import subprocess
 from unittest import mock
 
-from agentbox import egress, hardening, mounts, registry, session
+from agentbox import egress, hardening, mounts, session
 from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase, TempCase

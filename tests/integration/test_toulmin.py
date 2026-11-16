@@ -8,8 +8,6 @@ the three files, the five exit traces.
 """
 import json
 import os
-import subprocess
-import time
 import unittest
 
 from . import harness

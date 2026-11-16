@@ -15,9 +15,7 @@ Scenario 3 (INFO): agent ~3.6 GB, dev grows to ~0.8 GB -> the slice fills with t
 Every scenario also checks the kill stayed inside agentbox.slice; the run checks that no live-stack container
 (or any other container outside the tests) restarted.
 """
-import json
 import os
-import re
 import subprocess
 import sys
 import time
