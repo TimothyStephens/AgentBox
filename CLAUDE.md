@@ -31,7 +31,7 @@ working *on* agentbox, on the host or inside an agentbox session.
 
 | | Host (`vmuser`, real podman) | Inside an agentbox session |
 | --- | --- | --- |
-| `make test` (unit tests, fake podman) and `make guard` | yes | yes |
+| `make test` (unit tests, fake podman), `make guard`, `make check` (both) | yes | yes |
 | Profile repos' `bash tests/run.sh` and `tools/check.py` | yes | yes |
 | `make itest`, `make *-image`, `make *-live`, `make install`, `ab profile install`, `./build.sh deploy` | yes (the user runs `*-live` and `install`) | no: no podman socket, no LAN |
 
@@ -42,9 +42,10 @@ The grant `agentbox-dev/` holds three sibling repos: `agentbox/` (the launcher) 
 
 ## Working loop
 
-- Run the tests yourself and read the output. `make test` runs `.claude/hooks/test_guard.py` first, then
-  `tests/unit`; one module: `python3 -m unittest tests.unit.test_gate -q`. `make itest` needs real podman,
-  names everything `abt-<run>-*`, and cleans up after itself even on failure.
+- Run the tests yourself and read the output. `make test` runs `tests/unit`, `make guard` the guard
+  hook's own checks, and `make check` both; one module: `python3 -m unittest tests.unit.test_gate -q`.
+  `make itest` needs real podman, names everything `abt-<run>-*`, and cleans up after itself even on
+  failure.
 - Every behavioural fix gets a unit test that fails before and passes after.
 - Commit after each green step, with a message that says what now works. A run with an excused failure is
   not green: say "unverified" and name what did not run.

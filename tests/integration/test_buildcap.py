@@ -42,6 +42,7 @@ class UnixHTTP(http.client.HTTPConnection):
 
 def setUpModule():
     global API, API_PROC
+    harness.arm_cleanup()       # a setUpModule that raises skips tearDownModule; the exit hook still cleans up
     if not harness.slice_installed():
         raise unittest.SkipTest("agentbox.slice not installed")
     os.makedirs(harness.BASE, exist_ok=True)
@@ -49,6 +50,8 @@ def setUpModule():
     API_PROC = subprocess.Popen(["podman", "system", "service", "--time=0", f"unix://{API}"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not harness.wait_for(lambda: os.path.exists(API), timeout=60):
+        API_PROC.terminate()    # tearDownModule does not run after a failed setUpModule
+        API_PROC.wait(timeout=30)
         raise RuntimeError("podman API service did not start")
 
 

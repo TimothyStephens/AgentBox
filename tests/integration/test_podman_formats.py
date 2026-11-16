@@ -28,6 +28,7 @@ CTR = f"abt-{harness.RUN}-fmt"
 
 
 def setUpModule():
+    harness.arm_cleanup()       # a setUpModule that raises skips tearDownModule; the exit hook still cleans up
     if harness.podman("image", "exists", IMG).returncode != 0:
         raise unittest.SkipTest(f"{IMG} not present")
     label = f"agentbox-test-run={harness.RUN}"

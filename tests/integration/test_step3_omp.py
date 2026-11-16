@@ -1,6 +1,6 @@
 """Step 3 gate: OMP boots, the debugger and the browser work through the proxy; keys stay out of everything.
 
-Uses a fake ~/.omp built from tests/fixtures/omp/tree.txt (every file a canary), fake provider keys, and a
+Uses a fake installed plugin tree built by tests/ompfake.py (every file a canary), fake provider keys, and a
 stub OpenAI-compatible model on 127.0.0.1 inside the sandbox. The stub checks OMP sends the session's key,
 and can answer with an `eval` tool call that uses OMP's `browser`, driving OMP's own browser through the proxy.
 `make omp-live` (Tim) repeats the boot with the real ~/.omp and the real local model.
