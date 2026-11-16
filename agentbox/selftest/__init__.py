@@ -97,6 +97,16 @@ def make_canary(sess, settings):
     return name if p.returncode == 0 else None
 
 
+def canary_result(canary):
+    """None when the canary exists, else the FAIL line: with podman access on, the cross-project refusals are
+    guarantees of the design, and a run that could not check them has not passed (was a SKIP that exited 0)."""
+    if canary:
+        return None
+    return Result("canary container in another project", "FAIL",
+                  f"could not create it ({CANARY_IMAGE} not present? pull it on the host); "
+                  "the cross-project cases were not checked")
+
+
 def live_containers(sess):
     p = sess.podman.run(["ps", "-a", "--format", "{{.Names}}", "--filter",
                          f"label={sockguard.COMPOSE_LABEL}={sess.podman_live}"], check=False)
@@ -121,9 +131,7 @@ def run(settings, agent, project_name, *, podman=None, warn=None):
     if sess.podman_live or sess.podman_dev:
         sess.live_containers = live_containers(sess) if sess.podman_live else []
         sess.canary = make_canary(sess, settings)
-        if not sess.canary:
-            extra.append(Result("canary container in another project", "SKIP",
-                                f"could not create it ({CANARY_IMAGE} not present?); cross-project cases skipped"))
+        extra += [r for r in [canary_result(sess.canary)] if r]
     b = build_cases(sess, settings)
     sess.probe_mounts = ((runner.PROBE, sessionmod.PROBE_PATH),)
     config_check = []

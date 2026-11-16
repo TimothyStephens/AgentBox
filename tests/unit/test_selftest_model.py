@@ -101,3 +101,47 @@ class GrepTree(unittest.TestCase):
         t.join(5)
         self.assertTrue(box, "_grep_tree blocked on the FIFO")
         self.assertEqual(box[0], [os.path.join(d, "hit.txt")])
+
+
+class ProbeProtocol(unittest.TestCase):
+    """Item 27: the probe used to read its arguments with `read -r id op a b c d`, so a path with a space was
+    two arguments and the case probed the wrong path. Each argument now travels base64-encoded (no spaces,
+    no shell metacharacters) and probe.sh decodes it. Runs probe.sh locally on ops that need no network."""
+
+    def test_a_path_with_a_space_reaches_the_op_whole(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        sub = os.path.join(d, "dir with space")
+        os.mkdir(sub)
+        target = os.path.join(sub, "file name.txt")
+        b = runner.Builder()
+        b.add("write", [target], "write into a spaced path", runner.expect("ok"))
+        b.add("exists", [target], "the spaced path exists afterwards", runner.expect("yes"))
+        b.add("size", [target], "its size is 0", runner.expect("0"))
+        b.add("exists", [os.path.join(d, "dir")], "no file was made at the first word", runner.expect("no"))
+        for line in b.script().splitlines():
+            self.assertNotIn(d, line, "arguments are encoded, not sent raw")
+        p = subprocess.run(["bash", runner.PROBE], input=b.script(), capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        results = runner.score(b.cases, p.stdout)
+        self.assertEqual([(r.label, r.verdict) for r in results if r.verdict != "PASS"], [], p.stdout)
+        self.assertTrue(os.path.isfile(target))
+
+
+class CanaryLine(unittest.TestCase):
+    """Item 27: with podman access on, the cross-project cases are a guarantee of the design (design.md
+    Selftest: every guarantee is checked). A canary that could not be made is a FAIL, not a SKIP that exits 0."""
+
+    def test_missing_canary_fails(self):
+        from agentbox import selftest
+        r = selftest.canary_result(None)
+        self.assertEqual((r.label, r.verdict), ("canary container in another project", "FAIL"))
+        self.assertIn(selftest.CANARY_IMAGE, r.detail)
+
+    def test_present_canary_is_no_line(self):
+        from agentbox import selftest
+        self.assertIsNone(selftest.canary_result("ab-x-canary"))

@@ -1,8 +1,15 @@
 #!/bin/bash
 # agentbox selftest probe. Runs inside the sandbox with the session's exact spec.
-# Reads "<id> <op> [args...]" lines on stdin, prints "<id> <observation>" lines.
+# Reads "<id> <op> [args...]" lines on stdin, each argument base64-encoded (a path with a space arrives whole),
+# and prints "<id> <observation>" lines.
 # It only observes: pass/fail is decided on the host. It never prints environment values.
 set -u
+
+# dec B64 -> the argument the host encoded (runner.Builder.script); empty stays empty.
+dec() {
+  [ -n "$1" ] && printf '%s' "$1" | base64 -d 2>/dev/null
+  return 0
+}
 
 proxy_hostport() {
   local p="${HTTP_PROXY:-${http_proxy:-}}"
@@ -67,7 +74,7 @@ direct() {
 }
 
 while read -r id op a b c d; do
-  a="${a:-}"; b="${b:-}"; c="${c:-}"; d="${d:-}"
+  a=$(dec "${a:-}"); b=$(dec "${b:-}"); c=$(dec "${c:-}"); d=$(dec "${d:-}")
   case "$op" in
     status)   r=$(grep -E '^(CapEff|NoNewPrivs|Seccomp):' /proc/self/status | tr -d ' \t' | tr '\n' ' ') ;;
     write)    if ( : >>"$a" ) 2>/dev/null; then r=ok; else r=fail; fi ;;

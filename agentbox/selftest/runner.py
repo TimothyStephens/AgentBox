@@ -3,6 +3,7 @@
 The probe (probe.sh) runs in a container built from exactly the session's spec and only reports
 observations; every expectation lives here, where it can be unit-tested.
 """
+import base64
 import os
 import secrets as _secrets
 import socket
@@ -49,7 +50,13 @@ class Builder:
         self.cases.append(Case(cid, op, [str(a) for a in args], label, check, after))
 
     def script(self):
-        return "".join(f"{c.id} {c.op} {' '.join(c.args)}\n" for c in self.cases if c.op != "skip")
+        """The probe's stdin: one `<id> <op> <arg>...` line per case, each argument base64-encoded so a path
+        with a space (or any shell metacharacter) arrives whole; probe.sh decodes with `base64 -d` (16 Nov)."""
+        return "".join(f"{c.id} {c.op} {' '.join(_b64(a) for a in c.args)}\n" for c in self.cases if c.op != "skip")
+
+
+def _b64(arg):
+    return base64.b64encode(arg.encode()).decode("ascii")
 
 
 def posture_check(obs):
