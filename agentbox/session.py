@@ -23,7 +23,7 @@ from .historysecrets import (  # noqa: F401
     history_secrets, history_secrets_changes, history_secrets_message, _history_masked
 )
 from .notes import dev_notes, profile_notes, sandbox_notes  # noqa: F401
-from .infra import net_create_argv, proxy_run_argv, SQUID_READY  # noqa: F401
+from .infra import net_create_argv, proxy_run_argv, SIDECAR_LOG_DRIVER, SQUID_READY  # noqa: F401
 from .state import ephemeral_state, migrate_state_to_inbox, reset_state, service_tmp, _free_name  # noqa: F401
 from .liveness import (  # noqa: F401
     idle_seconds, INFRA_ROLES, project_is_live, session_is_alive, session_metas, sessions, _alive, _newest_mtime,
@@ -131,6 +131,10 @@ class Session:
         for n in range(1, 1000):
             cand = f"{base}{n}"
             if any(t == cand or t.startswith(cand + "-") for t in taken):
+                continue
+            # a clone-mode session's clone outlives it (the owner merges from it), and clone_root refuses an
+            # existing one; skipping the number lets the next session start without `ab project clean`
+            if os.path.lexists(os.path.join(self.settings.clones_dir(self.project.name), cand)):
                 continue
             try:
                 os.mkdir(self.settings.session_run_dir(cand), 0o700)
@@ -894,7 +898,7 @@ class Session:
         s = self.settings
         name = name or self.sockguard_name
         socket_path = socket_path or self.sockguard_socket
-        args = ["run", "-d", f"--name={name}", f"--hostname={name}"]
+        args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER]
         args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, role).items()]
         args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
                  "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
@@ -1016,7 +1020,7 @@ class Session:
     def holder_run_args(self):
         """A container that only sleeps on the session network: builds join its network namespace."""
         s = self.settings
-        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}"]
+        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}", SIDECAR_LOG_DRIVER]
         args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "holder").items()]
         args += [f"--network={self.int_net}", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
                  "--memory=32m", "--memory-swap=32m", "--pids-limit=16", f"--oom-score-adj={int(s.oom_score_adj)}"]

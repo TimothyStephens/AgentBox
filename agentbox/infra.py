@@ -27,6 +27,13 @@ def net_create_argv(settings, labels, name, *, internal, dev_owner=""):
     return args + [name]
 
 
+# Every sidecar agentbox runs (proxy, sockguard, holder) logs to a file in podman's own container directory
+# instead of the host's default driver. With journald (Ubuntu's default), each `podman logs` searched the whole
+# journal: 3-11 s a call, paid once while waiting for squid and once per sidecar at teardown (tests/perf,
+# 16 Nov). The file goes when the container is removed, after teardown has kept what it needs.
+SIDECAR_LOG_DRIVER = "--log-driver=k8s-file"
+
+
 def proxy_run_argv(settings, labels, name, *, conf_path, networks):
     """`podman run -d` for the egress proxy: capabilities dropped to what squid needs to drop privileges,
     read-only root with tmpfs for its spool and logs, and on both networks so it is the only route out."""
@@ -41,5 +48,5 @@ def proxy_run_argv(settings, labels, name, *, conf_path, networks):
     if s.cgroup_parent:
         args.append(f"--cgroup-parent={s.cgroup_parent}")
     args += [f"--network={n}" for n in networks]
-    args += [f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
+    args += [SIDECAR_LOG_DRIVER, f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
     return args

@@ -20,6 +20,11 @@ SCAN_STATE = "scan-state.json"
 
 
 SIDECAR_LOGS = ("proxy", "sockguard", "sockguard-dev")      # container `<session>-<name>`, kept as <name>
+# agentbox's own containers, removed without a stop timeout: their logs are kept before the removal and none
+# holds state. `-t 5` sat out the full 5 s on the proxy and the holder (sleep as PID 1 ignores SIGTERM), 16 Nov.
+# Every other container of the session -- the agent's, and whatever the agent ran in the dev tier (a
+# database, say) -- keeps a graceful stop.
+SIDECARS = SIDECAR_LOGS + ("holder",)
 
 
 def log_path(settings, session, started, kind):
@@ -167,6 +172,7 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
         # A listing that cannot be read must not look like "nothing to remove": warn per kind, keep going
         # with the others, and never let a failed listing pass for a clean teardown (audit F-2/F-10).
+        quick = {f"{session}-{k}" for k in SIDECARS}
         for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
                            ("pod", ["pod", "rm", "-f"]),
                            ("volume", ["volume", "rm", "-f"]),
@@ -181,6 +187,10 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
             for target in found:
                 # a removal that fails leaves a container or network behind under a name the next session
                 # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
+                if kind == "container" and target in quick:
+                    argv = ["rm", "-f", "-v", "-t", "0"]
+                elif kind == "container":
+                    argv = ["rm", "-f", "-v", "-t", "5"]
                 try:
                     r = podman.run(argv + [target], check=False)
                     why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"

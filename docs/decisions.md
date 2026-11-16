@@ -3074,3 +3074,38 @@ debugpy worked; every session has a proxy log; no key in any log, state file or 
 torn down. Both runs warned "plugins.toml has changed since the last install": the omp profile commits are
 not deployed yet, so `ab profile install omp` is still Tim's. The missing-seed note's "Create they there
 yourself" now reads "Create them".
+
+## 2026-11-16 · Profiling `ab`: podman waits, not Python; sidecars log to files and stop at once
+
+**How it was measured.** `ab.log` now times every podman call (ms start line, end line with elapsed ms and
+exit code). `tests/perf/` builds five projects (40 files or 20 000 files + 100 MiB of git-ignored blobs +
+100 commits; script and build presets; clone mode) and runs each `ab` command under cProfile, with the
+session running `bash -c` instead of an agent. Tim's run, 5 rounds at 542a15c
+(`perf-results/20261116-135454`): a script-preset session took 19 s (small) / 29 s (big), a dev-tier one
+66 s / 81 s. `ab`'s own Python was under 1 s on the small tree; cProfile charged the 20 000-file walks about
+7 s, but it inflates call-heavy Python roughly tenfold (the mask matcher measured 0.1 s unprofiled against
+1.2-1.7 s profiled), so the real figure is nearer 1-2 s.
+
+**What the time was.** (1) `podman logs` on this host's journald driver: 6.6-11 s for the one call that
+waits for squid, 3.4-8.7 s for each sidecar log kept at a dev-tier teardown, on logs of 5-50 KB. (2)
+`podman rm -t 5` sat out its whole timeout on the proxy and the holder (`/bin/sleep` as PID 1 ignores
+SIGTERM): 6 s per session, 14-15 s in the dev tier. Together about 14 of 19 s and 42 of 66 s.
+
+**Changes.** Every sidecar (proxy, sockguard, sockguard-dev, holder) runs with `--log-driver=k8s-file`, so
+`podman logs` reads a file in podman's container directory; it is removed with the container, after
+teardown has kept the logs. Teardown removes those four with `-t 0`; their logs are already kept and none
+holds state. Every other container of the session keeps `-t 5`: the agent's own, and what the agent ran in
+the dev tier, which may be a database. The secret-name matcher is one compiled regex, and the gate's N6
+check calls it instead of its own copy of the loop (TODO 4.2's second matcher).
+
+**A bug the run found.** Clone mode could not start a second session without `ab project clean`: the clone is
+kept after the session, the next session took the same number, and `clone_root` refused "already exists".
+Session numbering now skips a number whose clone directory exists.
+
+**Not measured, kit bugs since fixed.** The 140 MiB build context through the gate (both dev projects
+tagged `localhost/abperf:1`; the gate rightly refused the second project's build of the first's name) and
+clone mode's steady state (the bug above). cProfile also swallows `ab`'s exit status, so every run read
+`rc=0`; run.sh now classifies a run from its output and analyze.py leaves failed runs out of the medians.
+
+**Also seen.** In-session `podman images` 7.4 s, with the gate passing the request in milliseconds: the
+host's podman listing (13 Nov). Sockguard's `podman run -d` varied 0.8-6.6 s with no pattern; watch.

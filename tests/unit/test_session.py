@@ -658,7 +658,7 @@ class TeardownReportsFailedRemovals(SettingsCase):
         session.teardown(self.settings, Failing(self.settings.podman), "abt-unit-x-1", warn=warned.append)
         text = "\n".join(warned)
         self.assertIn("could not remove container abt-unit-x-1-proxy", text)
-        self.assertIn("`podman rm -f -v -t 5 abt-unit-x-1-proxy`", text)
+        self.assertIn("`podman rm -f -v -t 0 abt-unit-x-1-proxy`", text)   # a sidecar: no stop timeout (16 Nov)
         self.assertIn("could not remove network abt-unit-x-1-int", text)
         self.assertIn("container is busy", text)
 
@@ -722,3 +722,46 @@ class PluginTreeInTheSessionLog(SessionBase):
         s.prepare()
         want = f"plugins agent=claude installed_at=1763251200 state={hashlib.sha256(body.encode()).hexdigest()}\n"
         self.assertIn(want, self.log(s))
+
+
+class SidecarsAreQuickToReadAndStop(SessionBase):
+    """The 16 Nov profile (tests/perf): on a journald host `podman logs` searched the whole journal, 3-11 s a
+    call -- once while waiting for squid, three times at a dev-tier teardown -- and `rm -t 5` sat out its
+    full timeout on the proxy and the holder (PID 1 there ignores SIGTERM). Together about 14 s of a 19 s
+    session and 42 s of a 67 s dev-tier one."""
+
+    def test_every_sidecar_logs_to_a_file_not_the_journal(self):
+        from agentbox.infra import SIDECAR_LOG_DRIVER
+        s = self.make()
+        self.assertEqual(SIDECAR_LOG_DRIVER, "--log-driver=k8s-file")
+        proxy = session.proxy_run_argv(self.settings, {}, "x-proxy", conf_path="/c", networks=["n"])
+        self.assertIn(SIDECAR_LOG_DRIVER, proxy)
+        self.assertLess(proxy.index(SIDECAR_LOG_DRIVER), proxy.index(self.settings.squid_image),
+                        "a run option, not an argument to the image")
+        s.name = "abt-unit-claude-p1-1"
+        self.assertIn(SIDECAR_LOG_DRIVER, s.sockguard_run_args("/run/x/podman.sock", "/run/x/sg.yaml"))
+        self.assertIn(SIDECAR_LOG_DRIVER, s.holder_run_args())
+
+    def test_sidecars_are_removed_without_a_stop_timeout_and_other_containers_keep_theirs(self):
+        name = "abt-unit-x-1"
+        os.environ["FAKE_PODMAN_PS"] = "\n".join([f"{name}-proxy", f"{name}-holder", f"{name}-sockguard",
+                                                  f"{name}-sockguard-dev", f"{name}-db", name]) + "\n"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PS", None)
+        from agentbox.podman import Podman
+        session.teardown(self.settings, Podman(self.settings.podman), name, warn=lambda m: None)
+        rms = {c[-1]: c[:-1] for c in self.podman_calls() if c[:1] == ["rm"]}
+        for side in ("proxy", "holder", "sockguard", "sockguard-dev"):
+            self.assertEqual(rms[f"{name}-{side}"], ["rm", "-f", "-v", "-t", "0"], side)
+        # the agent's own dev containers (a database, say) and the agent container keep a graceful stop
+        self.assertEqual(rms[f"{name}-db"], ["rm", "-f", "-v", "-t", "5"])
+        self.assertEqual(rms[name], ["rm", "-f", "-v", "-t", "5"])
+
+
+class SessionNamesSkipKeptClones(SessionBase):
+    """The 16 Nov profile: a clone-mode session's clone is kept after it ends, and the next session took the
+    same number, so clone_root refused with "already exists" until `ab project clean`."""
+
+    def test_a_number_whose_clone_is_still_there_is_skipped(self):
+        os.makedirs(os.path.join(self.settings.clones_dir("p1"), "abt-unit-claude-p1-1"))
+        s = self.make()
+        self.assertEqual(s.reserve_name(), "abt-unit-claude-p1-2")
