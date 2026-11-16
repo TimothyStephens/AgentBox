@@ -275,8 +275,8 @@ class Wiring(SettingsCase):
     def test_gc_sweeps_both_kinds(self):
         """`ab session gc` must actually call them: a sweep nothing invokes is the dead-code class."""
         from unittest import mock
-        with mock.patch.object(session, "gc_user_layers", return_value=["layer x"]) as layers, \
-             mock.patch.object(session, "gc_profile_snapshots", return_value=["snapshot y"]) as snaps:
+        with mock.patch("agentbox.lifecycle.gc_user_layers", return_value=["layer x"]) as layers, \
+             mock.patch("agentbox.lifecycle.gc_profile_snapshots", return_value=["snapshot y"]) as snaps:
             removed = session.gc(self.settings, Podman(self.settings.podman), warn=lambda m: None)
         self.assertEqual(layers.call_count, 1)
         self.assertEqual(snaps.call_count, 1)
