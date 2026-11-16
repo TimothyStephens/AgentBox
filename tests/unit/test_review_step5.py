@@ -1401,6 +1401,47 @@ class ContainerfileParsing(unittest.TestCase):
                                      "ARG\tBASE=localhost/y\nFROM\t$BASE\n")
         self.assertEqual(out, [("FROM", "busybox"), ("COPY", "localhost/x"), ("FROM", "localhost/y")])
 
+    def test_item2_a_quoted_or_partial_heredoc_marker_opens_no_heredoc(self):
+        """`<<` inside a word that is not exactly [fd]<<[-]name is shell text to buildkit; before, it opened a
+        heredoc the gate never saw closed, and the FROM after it was never checked."""
+        for run in ('RUN echo "<<EOF"', "RUN echo '<<EOF' > x", 'RUN echo ""<<EOF', 'RUN echo \\"<<EOF',
+                    "RUN a<<EOF", 'RUN ["sh", "-c", "<<EOF"]', "RUN echo <<<EOF", "RUN echo << EOF",
+                    "ARG X=<<EOF", "ENV X=<<EOF"):
+            with self.subTest(run=run):
+                out = gate.dockerfile_images(f"FROM alpine\n{run}\nFROM localhost/live-app\nEOF\n")
+                self.assertEqual(out, [("FROM", "alpine"), ("FROM", "localhost/live-app")])
+
+    def test_item2_heredoc_bodies_end_exactly_where_buildkit_ends_them(self):
+        hidden = "FROM localhost/hidden\n"
+        for cf in (f"RUN <<EOF.1\n{hidden}EOF\nEOF.1\n",                 # the name is EOF.1, not EOF
+                   f"RUN <<-EOF\n\t{hidden}\tEOF\n",                      # <<- strips leading tabs only
+                   f"RUN <<EOF\n  EOF\n{hidden}EOF\n",                     # an indented EOF is body
+                   f"RUN <<\"EOF\" cat\n{hidden}EOF\n",                     # quoted name
+                   f"RUN 0<<EOF cat\n{hidden}EOF\n",                        # fd prefix
+                   f"RUN <<\"A B\"\n{hidden}A B\n",                           # a quoted name may hold a space
+                   f"COPY <<A <<B /dst\n{hidden}A\n{hidden}B\n",           # two heredocs, in order
+                   f"RUN --mount=type=cache,target=/c <<EOF\n{hidden}EOF\n",
+                   f"RUN echo start \\\n  <<EOF\n{hidden}EOF\n"):           # marker on a continued line
+            with self.subTest(cf=cf):
+                out = gate.dockerfile_images(f"FROM alpine\n{cf}FROM localhost/live-app\n")
+                self.assertEqual(out, [("FROM", "alpine"), ("FROM", "localhost/live-app")], cf)
+
+    def test_item2_unterminated_or_unreadable_heredoc_refused(self):
+        for cf in ("RUN <<EOF\nFROM localhost/hidden\n", "RUN <<EOF\nFROM x\n  EOF\n",
+                   "COPY <<A <<B /d\nA\n", "RUN <<'EOF\nEOF\n", "RUN <<A\"B\nAB\n"):
+            with self.subTest(cf=cf), self.assertRaises(gate.Deny):
+                gate.dockerfile_images(f"FROM alpine\n{cf}")
+
+    def test_item2_words_split_as_buildkit_splits_them(self):
+        w = gate.instruction_words
+        self.assertEqual(w('echo ""<<EOF'), ["echo", '""<<EOF'])
+        self.assertEqual(w('echo "a  b" c'), ["echo", '"a  b"', "c"])
+        self.assertEqual(w("a\\ b <<EOF"), ["a\\ b", "<<EOF"])
+        self.assertEqual(w('echo "unclosed <<EOF'), ["echo", '"unclosed <<EOF'])
+        self.assertEqual(w('x `"<<EOF', escape="`"), ["x", '`"<<EOF'])
+        self.assertEqual(w("x \\"), ["x"])
+        self.assertEqual(w("\t <<-EOF\t"), ["<<-EOF"])
+
 
 if __name__ == "__main__":
     unittest.main()

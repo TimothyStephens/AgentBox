@@ -62,6 +62,7 @@ import io
 import json
 import os
 import re
+import shlex
 import socket
 import socketserver
 import sys
@@ -1969,11 +1970,12 @@ def dockerfile_images(text, buildargs=None):
         m = re.match(r"^#\s*escape\s*=\s*(\S)\s*$", line, re.I)
         if m:
             escape = m.group(1)
-    logical, cur, heredoc = [], "", None
+    logical, cur, heredocs = [], "", []
     for line in lines:
-        if heredoc is not None:
-            if line.strip() == heredoc:
-                heredoc = None
+        if heredocs:
+            name, chomp = heredocs[0]
+            if (line.lstrip("\t") if chomp else line) == name:
+                heredocs.pop(0)
             continue
         if not cur and line.lstrip().startswith("#"):
             continue
@@ -1981,11 +1983,11 @@ def dockerfile_images(text, buildargs=None):
             cur += line.rstrip()[:-1] + " "
             continue
         cur += line
-        m = re.search(r"<<-?[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?", cur)
-        if m and cur.split(None, 1)[0].upper() in ("RUN", "COPY", "ADD"):
-            heredoc = m.group(1)
+        heredocs = heredoc_markers(cur, escape)
         logical.append(cur.strip())
         cur = ""
+    if heredocs:
+        raise Deny(f"build: unterminated heredoc {heredocs[0][0]!r}")
     if cur.strip():
         logical.append(cur.strip())
     args = {k: v for k, v in (buildargs or {}).items()}
@@ -2027,6 +2029,75 @@ def dockerfile_images(text, buildargs=None):
                     ref = _subst(ref.strip("\"'"), env)
                     if ref.lower() not in stages and not ref.isdigit() and ref.lower() != "scratch":
                         out.append((instr, ref))
+    return out
+
+
+# buildkit's heredoc word: [fd]<<[-]name, nothing else in the word (reHeredoc in its parser).
+_HEREDOC = re.compile(r"^\d*<<(-?)([^<]+)$")
+
+
+def instruction_words(rest, escape="\\"):
+    """An instruction's arguments split into words as buildkit's parseWords does: on whitespace; a quote
+    anywhere in a word opens a span that may hold spaces and is kept in the word, quotes included; the escape
+    char keeps the next char (a quote too); an unclosed quote runs to the end of the line. Not shlex: shlex
+    ends a word at a closing quote, so `echo ""<<EOF` would give the gate a `<<EOF` word buildkit never sees."""
+    words, word, quote, blank, i, n = [], "", "", False, 0, len(rest)
+    while i < n:
+        ch = rest[i]
+        if not quote:
+            if ch.isspace():
+                if blank or word:
+                    words.append(word)
+                word, blank = "", False
+                i += 1
+                continue
+            if ch in "'\"":
+                quote, blank = ch, True
+            elif ch == escape:
+                if i + 1 == n:
+                    break                              # a trailing escape is dropped
+                word += ch
+                i += 1
+                ch = rest[i]
+        else:
+            if ch == quote:
+                quote = ""
+            elif ch == escape and quote != "'":
+                if i + 1 == n:
+                    break
+                word += ch
+                i += 1
+                ch = rest[i]
+        word += ch
+        i += 1
+    if blank or word:
+        words.append(word)
+    return words
+
+
+def heredoc_markers(cur, escape="\\"):
+    """[(terminator, chomp)] of the heredocs one RUN, COPY or ADD instruction opens, found the way buildkit finds
+    them: among the instruction's words (quotes kept), a word is a heredoc marker only when the whole word is
+    `[fd]<<[-]name`; the name is then unquoted and must be one word. So `echo "<<EOF"` opens none, `<<EOF.1`
+    opens one closed by `EOF.1`, and `<<"EOF"` by `EOF` (review 2026-11-16, item 2: the old search matched
+    `<<` anywhere, so a quoted one opened a heredoc buildkit never closed and every later FROM went unchecked).
+    A marker the gate cannot read is refused rather than guessed at: the two parsers must agree on which
+    lines are instructions."""
+    instr, rest = (_WS.split(cur.strip(), 1) + [""])[:2]
+    if instr.upper() not in ("RUN", "COPY", "ADD") or not rest:
+        return []
+    out = []
+    for word in instruction_words(rest, escape):
+        m = _HEREDOC.match(word)
+        if not m:
+            continue
+        try:
+            names = shlex.split(m.group(2))
+        except ValueError as e:
+            raise Deny(f"build: cannot read heredoc marker {word!r} ({e})")
+        if len(names) != 1:
+            raise Deny(f"build: heredoc marker {word!r} names more than one word")
+        out.append((names[0], m.group(1) == "-"))
     return out
 
 
