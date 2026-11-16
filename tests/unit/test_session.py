@@ -604,3 +604,34 @@ class LauncherGitRunsSafe(SettingsCase):
         self.assertEqual(len(git), 2, [c[0] for c in git])
         for argv, kw in git:
             self.assert_safe(argv, kw)
+
+
+from .test_toulmin import ToulminCase  # noqa: E402  (new classes only below; see item 52's restructure above)
+
+
+class ToulminRecordInSessionJson(ToulminCase):
+    def make(self):
+        p = session.load_project(self.settings, "p1")
+        return session.make_session(self.settings, "claude", p, warn=lambda m: None)
+
+    def test_the_token_is_not_in_session_json(self):
+        """Item 35: session.json is read by every teardown path and by `ab session ls`; the token is not needed
+        there and lives only in its 0600 file."""
+        s = self.make()
+        s.prepare()
+        self.addCleanup(s.teardown)
+        meta = json.loads(_read(os.path.join(self.settings.session_run_dir(s.name), "session.json")))
+        self.assertEqual(meta["toulmin"]["session"], "S4")
+        self.assertNotIn("token", meta["toulmin"])
+        self.assertNotIn(self.start_msg["token"], json.dumps(meta))
+
+    def test_a_failed_clone_still_ends_the_toulmin_session(self):
+        """Item 18: Toulmin starts before clone_root; if the clone fails, teardown only has session.json."""
+        from unittest import mock
+        s = self.make()
+        with mock.patch.object(session, "clone_root", side_effect=AgentboxError("clone failed")), \
+                mock.patch.object(session.toulmin, "end") as end:
+            with self.assertRaises(AgentboxError):
+                s.prepare()
+        self.assertTrue(end.called, "teardown reached `tm session end`")
+        self.assertEqual(end.call_args[0][0]["toulmin"]["session"], "S4")

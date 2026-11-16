@@ -619,6 +619,9 @@ class Session:
                                 "`--podman none` (or observe) with clone mode, or mount = checkout")
         if p.toulmin:
             self.toulmin = toulmin.start(self.settings)      # before anything else of the session's (contract 1.5)
+            # recorded at once: a clone_root that fails next must still reach `tm session end` in teardown,
+            # which knows only session.json (review 16 Nov, item 18)
+            self._write_meta()
         if mode == "clone":
             self.clone = clone_root(self.settings, p.name, self.name, p.root)
             self.root_src = self.clone["clone"]
@@ -960,7 +963,10 @@ class Session:
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
                 "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": self.started,
                 "preset_egress": self.project.value("egress"), "root": self.project.root,
-                "mount": self.mount_mode, "clone": self.clone, "toulmin": self.toulmin}
+                "mount": self.mount_mode, "clone": self.clone,
+                # never the token (item 35): teardown needs tm, session and project_root, and the token's one
+                # copy on disk is the 0600 file toulmin.write_token makes for the container
+                "toulmin": ({k: v for k, v in self.toulmin.items() if k != "token"} if self.toulmin else None)}
         path = os.path.join(self.settings.session_run_dir(self.name), "session.json")
         fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
