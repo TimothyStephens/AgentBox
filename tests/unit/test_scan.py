@@ -67,6 +67,25 @@ class Scan(TempCase):
         self.assertTrue(any("secret scan failed" in s for s in summary), summary)
         self.assertIn("secret scan failed", text)
 
+    def test_an_added_line_starting_with_plus_plus_is_not_a_file_header(self):
+        """Item 45: a content line `++ Makefile` shows in the patch as `+++ Makefile`, which the parser took for
+        a header: later secrets were attributed to "Makefile" and Makefile was reported as changed."""
+        self.write("proj/app.py", f'++ Makefile\nAPI_KEY = "{FAKE_KEY}"\n-- conftest.py\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "odd lines")
+        summary, text = self.report()
+        self.assertTrue(any("possible secret" in s for s in summary), summary)
+        self.assertIn("  app.py: ", text)
+        self.assertFalse(any("Makefile" in s or "conftest" in s for s in summary), summary)
+
+    def test_a_short_match_is_never_printed_whole(self):
+        """Item 45: the first-12-characters rule printed a match of 12 characters or fewer in full."""
+        for secret in ("sk-short1234", "pw=abc", "sk-" + "Abc123" * 5):
+            shown = scan._redact(secret)
+            self.assertNotIn(secret, shown, shown)
+            self.assertTrue(shown.startswith(secret[:4]), shown)
+        self.assertNotEqual(scan._redact("sk-short1234"), scan._redact("sk-short1235"), "distinct matches stay distinct")
+
     def test_files_that_run_later(self):
         self.write("proj/Makefile", "all:\n\techo hi\n")
         self.write("proj/web/package.json", "{}\n")

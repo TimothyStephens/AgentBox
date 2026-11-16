@@ -234,8 +234,11 @@ def snapshot(grants, skip=None):
 
 
 def _redact(text):
+    """A match as it may be printed: its first four characters, its length and a short hash, so two findings
+    can be told apart without either being readable (the first-12-characters rule printed a match of 12
+    characters or fewer whole, 16 Nov)."""
     text = text.strip()
-    return (text[:12] + "…") if len(text) > 12 else text
+    return f"{text[:4]}…({len(text)} chars, {hashlib.sha256(text.encode()).hexdigest()[:8]})"
 
 
 class SecretScanError(Exception):
@@ -413,9 +416,16 @@ def _new_commits(work, start_refs, regex):
         return 0, [], set()
     log = git(work, "log", "-p", "-U0", "--no-color", "--no-textconv", "--no-ext-diff", "--no-show-signature",
               "--diff-merges=first-parent", "--format=%x00%H", "--all", "--stdin", input=neg, timeout=600).stdout
-    current, added, touched = None, [], set()
+    # `--- a/x` / `+++ b/x` are headers only between a `diff --git` line and its first hunk (`@@`): inside a
+    # hunk an added line `++ x` prints as `+++ x`, and a removed `-- x` as `--- x`, and both read as headers
+    # before (a secret was then attributed to the wrong path, and that path reported as changed; 16 Nov).
+    current, added, touched, in_header = None, [], set(), False
     for line in log.splitlines():
-        if line.startswith("+++ ") or line.startswith("--- "):
+        if line.startswith("diff --git ") or line.startswith("\0"):
+            in_header, current = True, None
+        elif line.startswith("@@"):
+            in_header = False
+        elif in_header and (line.startswith("+++ ") or line.startswith("--- ")):
             name = line[4:]
             if name.startswith(("a/", "b/")):
                 name = name[2:]
@@ -423,7 +433,7 @@ def _new_commits(work, start_refs, regex):
                 touched.add(name)
             if line.startswith("+++ "):
                 current = name if name != "/dev/null" else None
-        elif line.startswith("+") and current:
+        elif not in_header and line.startswith("+") and current:
             added.append((current, line[1:]))
     hits = [(added[i][0], m) for i, m in _grep([t for _, t in added], regex)]
     return len(commits), hits, touched
