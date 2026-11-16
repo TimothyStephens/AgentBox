@@ -47,6 +47,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import time
 
 from . import adapters, egress, hardening, plugins, profile, session as sessionmod
@@ -410,6 +411,7 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
                 raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
         finally:
             job.teardown()
+        _check_links(job.staging)
         doc = _lock(settings, agent, entries, pin, job.staging)
     except AgentboxError as e:
         shutil.rmtree(job.staging, ignore_errors=True)
@@ -472,20 +474,77 @@ def _fresh_tree(tree):
     os.makedirs(os.path.join(tree, SOURCES), mode=0o700)
 
 
+def _check_links(root):
+    """Refuse a symlink in the staging tree that points out of it: an absolute target, or a relative one
+    that resolves above `root`.
+
+    The tree is the output of a container that ran plugin install scripts, so nothing in it is trusted.
+    The host is about to read `state.json` from it, write the lockfile into it, and mount it into every
+    later session; a link that leaves the tree would make the first read a host file and the last show it
+    to every session. Relative links that stay inside are what npm writes in `node_modules/.bin`, so they
+    are kept. Every link is judged by its own target (not followed), so a chain through a second link is
+    caught at that link."""
+    root = os.path.realpath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.islink(path):
+                continue
+            target = os.readlink(path)
+            resolved = os.path.normpath(os.path.join(dirpath, target))
+            if os.path.isabs(target) or not (resolved == root or resolved.startswith(root + os.sep)):
+                raise AgentboxError(f"the install left a symlink pointing out of the tree: "
+                                    f"{os.path.relpath(path, root)} -> {target}; refusing to keep it")
+
+
+def _own_dir(path):
+    """`<tree>/.agentbox` must be the directory `_fresh_tree` made, not something the container put in its
+    place: O_NOFOLLOW guards only the last path component, so the directory above it is checked here."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        raise AgentboxError(f"the install left no {path} ({e}); nothing is recorded, so the tree cannot be "
+                            "trusted")
+    if not stat.S_ISDIR(st.st_mode):
+        raise AgentboxError(f"{path} is not a directory (the install replaced it); refusing to write the "
+                            "lockfile through it")
+
+
+def _clear(path):
+    """Remove what the container may have left at a path only the host writes. A symlink or a file is
+    unlinked (the write below creates the file afresh, O_EXCL|O_NOFOLLOW); a directory is refused."""
+    if not os.path.lexists(path):
+        return
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.unlink(path)
+    else:
+        raise AgentboxError(f"{path} is a directory; the install put it there, and the lockfile goes here")
+
+
 def _lock(settings, agent, entries, pin, tree):
-    """Write `<tree>/.agentbox/install.json` from what was declared and what OMP reported."""
+    """Write `<tree>/.agentbox/install.json` from what was declared and what OMP reported.
+
+    Both the read and the write refuse to follow a symlink: the tree was written by the install container,
+    and a `state.json` pointing at a host file would be read as the state, a `install.json.tmp` pointing at
+    one would be truncated."""
+    _own_dir(os.path.join(tree, OURS))
     state_path = os.path.join(tree, STATE)
     try:
-        with open(state_path) as f:
+        if os.path.islink(state_path) or not stat.S_ISREG(os.lstat(state_path).st_mode):
+            raise AgentboxError(f"{state_path} is not a regular file")
+        fd = os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as f:
             state = json.load(f)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, AgentboxError) as e:
         raise AgentboxError(f"the install produced no readable state at {state_path} ({e}); "
                             "nothing is recorded, so the tree cannot be trusted")
     doc = {"version": LOCK_VERSION, "agent": agent, "installed_at": int(time.time()),
            "profile_hash": profile.tree_hash(settings.profile_src(agent)),
            "image": pin, "declared": [_declared(e) for e in entries], "state": state}
     path = os.path.join(tree, LOCKFILE)
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    _clear(path + ".tmp")
+    _clear(path)
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
     os.replace(path + ".tmp", path)

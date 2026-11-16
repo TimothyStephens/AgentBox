@@ -59,7 +59,7 @@ class TheScript(unittest.TestCase):
     def test_a_marketplace_is_cloned_and_checked_out_before_it_is_added(self):
         """The pin, in three lines: clone, check out the sha, then `marketplace add <that path>`. The
         order is the assertion -- adding the source before the checkout would install whatever HEAD was."""
-        lines = [l for l in self.script().splitlines() if "egm" in l or "elephant" in l]
+        lines = [ln for ln in self.script().splitlines() if "egm" in ln or "elephant" in ln]
         self.assertRegex(lines[0], r"^rm -rf ")
         self.assertIn("git clone --quiet https://github.com/google/elephant-goldfish-model.git", lines[1])
         self.assertIn(f"checkout --quiet {SHA}", lines[2])
@@ -250,9 +250,10 @@ class TheRun(SettingsCase):
         with open(os.path.join(src, "plugins.toml"), "w") as f:
             f.write(text)
 
-    def seed_state(self):
+    def seed_state(self, plant=None):
         """The fake podman runs no container, so the state file the real install would write is seeded --
-        and `_lock` refusing to invent one when it is missing is its own test below."""
+        and `_lock` refusing to invent one when it is missing is its own test below. `plant(tree)` is what
+        else the container left in the tree, for the tests about an install that wrote something hostile."""
         # The container writes into the STAGING tree (that is what is mounted); the host swaps it in.
         tree = installer.staging_dir(self.settings, "omp")
 
@@ -265,13 +266,15 @@ class TheRun(SettingsCase):
                     json.dump(STATE, f)
                 with open(os.path.join(tree, "installed-marker"), "w") as f:
                     f.write("new")
+                if plant is not None:
+                    plant(tree)
             return subprocess.CompletedProcess(argv, 0, "", "")
         return write
 
-    def run_install(self, **kw):
+    def run_install(self, plant=None, **kw):
         pod = Podman(self.settings.podman)
         real = pod.run
-        write = self.seed_state()
+        write = self.seed_state(plant)
 
         self.run_kwargs = None
 
@@ -372,6 +375,76 @@ class TheRun(SettingsCase):
         with self.assertRaises(AgentboxError) as cm:
             self.run_install()
         self.assertIn("symlink", str(cm.exception))
+
+    def test_a_symlink_out_of_the_staging_tree_is_refused_and_the_tree_is_not_kept(self):
+        """The staging tree is the output of a container that ran plugin install scripts. A link that
+        leaves it would be read by the host (state.json), written through by the host (the lockfile), and
+        mounted into every later session; so the whole install is refused, and the previous tree stays."""
+        first = self.run_install()
+        tree = installer.tree_dir(self.settings, "omp")
+        outside = self.write("outside/secret", "host file")
+        for name, target in (("node_modules/evil", outside),                 # absolute
+                             ("node_modules/.bin/up", "../../../../outside"),   # relative, out of the tree
+                             (".agentbox/state.json", outside)):               # the file the host reads
+            with self.subTest(link=name):
+                def plant(staging, name=name, target=target):
+                    path = os.path.join(staging, name)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    if os.path.lexists(path):
+                        os.unlink(path)
+                    os.symlink(target, path)
+                with self.assertRaises(AgentboxError) as cm:
+                    self.run_install(plant=plant)
+                self.assertIn("symlink", str(cm.exception))
+                self.assertIn("previous tree", str(cm.exception))
+                self.assertEqual(installer.read_lock(self.settings, "omp"), first)
+                self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")))
+                self.assertFalse(os.path.islink(os.path.join(tree, name)), "the planted link reached the tree")
+
+    def test_a_relative_symlink_inside_the_tree_is_kept(self):
+        """npm writes `node_modules/.bin/<cmd> -> ../<pkg>/bin.js`; that is the tree working as intended."""
+        def plant(staging):
+            os.makedirs(os.path.join(staging, "node_modules", ".bin"))
+            os.makedirs(os.path.join(staging, "node_modules", "pi-lens"))
+            os.symlink("../pi-lens/cli.js", os.path.join(staging, "node_modules", ".bin", "pi-lens"))
+            os.symlink(".", os.path.join(staging, "node_modules", "self"))
+        self.run_install(plant=plant)
+        tree = installer.tree_dir(self.settings, "omp")
+        self.assertTrue(os.path.islink(os.path.join(tree, "node_modules", ".bin", "pi-lens")))
+
+    def test_the_lockfile_is_read_and_written_without_following_links(self):
+        """`_lock` on its own: the walk above is the first wall, this is the second. A state.json that is a
+        link is not read; a planted install.json.tmp or install.json that is a link is not written
+        through -- the host file behind it keeps its content, and the lockfile is a fresh regular file."""
+        staging = self.mkdir("staging")
+        os.makedirs(os.path.join(staging, installer.OURS))
+        victim = self.write("victim.json", json.dumps(STATE))
+        entries = plugins.parse(DECLARED)
+        pin = {"ref": "x", "id": "", "cli_version": "", "node_major": ""}
+        os.symlink(victim, os.path.join(staging, installer.STATE))
+        with self.assertRaises(AgentboxError) as cm:
+            installer._lock(self.settings, "omp", entries, pin, staging)
+        self.assertIn("no readable state", str(cm.exception))
+        os.unlink(os.path.join(staging, installer.STATE))
+        with open(os.path.join(staging, installer.STATE), "w") as f:
+            json.dump(STATE, f)
+        lock = os.path.join(staging, installer.LOCKFILE)
+        os.symlink(victim, lock + ".tmp")
+        os.symlink(victim, lock)
+        doc = installer._lock(self.settings, "omp", entries, pin, staging)
+        self.assertEqual(read_json(victim), STATE, "the file behind the planted link was written through")
+        self.assertFalse(os.path.islink(lock))
+        self.assertEqual(read_json(lock), doc)
+        self.assertFalse(os.path.lexists(lock + ".tmp"))
+        # And `.agentbox` itself replaced by a link: O_NOFOLLOW guards the last component only.
+        other = self.mkdir("elsewhere")
+        import shutil
+        shutil.rmtree(os.path.join(staging, installer.OURS))
+        os.symlink(other, os.path.join(staging, installer.OURS))
+        with self.assertRaises(AgentboxError) as cm:
+            installer._lock(self.settings, "omp", entries, pin, staging)
+        self.assertIn("not a directory", str(cm.exception))
+        self.assertEqual(os.listdir(other), [])
 
     def test_no_state_means_no_lockfile_and_an_error(self):
         """An install that reported nothing is not an install that worked."""
