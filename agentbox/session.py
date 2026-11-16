@@ -1595,7 +1595,14 @@ def lock_holder_state(settings, podman, holder):
 def take_project_lock(settings, podman, project, warn=lambda m: None):
     """Hold the project's one session slot, reaping a dead holder's session first.
 
-    Returns a ProjectLock. Raises AgentboxError naming `ab session attach` when a live session already holds it."""
+    Returns a ProjectLock. Raises AgentboxError naming `ab session attach` when a live session already holds it.
+    The whole judgement runs under projectlock.guard, so two launchers cannot both find the same stale lock,
+    clear it, and each take a fresh one (item 16)."""
+    with projectlock.guard(settings, project):
+        return _take_project_lock(settings, podman, project, warn)
+
+
+def _take_project_lock(settings, podman, project, warn):
     pid = os.getpid()
     ok, holder = projectlock.acquire(settings, project, pid=pid, pid_start=_start_time(pid))
     if ok:
@@ -1634,7 +1641,7 @@ def take_project_lock(settings, podman, project, warn=lambda m: None):
              + ". Its logs and end-of-session scan were kept.")
     else:
         warn(f"agentbox: cleared a stale session lock on {project}: {why}.")
-    projectlock.force_release(settings, project)
+    projectlock.force_release(settings, project, holder=holder)
     ok, holder = projectlock.acquire(settings, project, pid=pid, pid_start=_start_time(pid))
     if not ok:
         raise AgentboxError(f"{projectlock.holder_text(settings, project, holder)} (it was taken while the "

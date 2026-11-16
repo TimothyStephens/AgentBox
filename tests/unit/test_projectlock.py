@@ -458,3 +458,59 @@ class ReleasedOnASignal(SettingsCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForceReleaseIsConditional(SettingsCase):
+    """Item 16: clearing a stale lock is a check-then-act. The act re-checks the holder it was judged on."""
+
+    def setUp(self):
+        super().setUp()
+        self.project("p1", preset="script")
+
+    def test_it_removes_only_the_holder_it_was_judged_on(self):
+        _ok, stale = projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
+        projectlock.force_release(self.settings, "p1")                      # the stale one goes (unconditional)
+        ok, fresh = projectlock.acquire(self.settings, "p1", pid=os.getpid(), pid_start=5)
+        self.assertTrue(ok)
+        self.assertFalse(projectlock.force_release(self.settings, "p1", holder=stale),
+                         "a lock taken by someone else since the judgement is not removed")
+        self.assertEqual(projectlock.read(self.settings, "p1")["pid"], os.getpid())
+        self.assertTrue(projectlock.force_release(self.settings, "p1", holder=fresh))
+        self.assertIsNone(projectlock.read(self.settings, "p1"))
+
+    def test_the_session_id_is_part_of_the_identity(self):
+        _ok, before = projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)
+        projectlock.note_session(self.settings, "p1", "ab-claude-p1-7")
+        self.assertFalse(projectlock.force_release(self.settings, "p1", holder=before),
+                         "named since the judgement: not the same record")
+        self.assertIsNotNone(projectlock.read(self.settings, "p1"))
+
+
+class TakingIsSerialised(SettingsCase):
+    """Item 16: take_project_lock's judge-clear-take runs under a flock, so a second launcher waits."""
+
+    def setUp(self):
+        super().setUp()
+        self.project("p1", preset="script")
+        os.environ["FAKE_PODMAN_PSJSON"] = "[]"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PSJSON", None)
+
+    def test_a_held_guard_makes_take_wait(self):
+        import fcntl
+        import threading
+        projectlock.acquire(self.settings, "p1", pid=DEAD_PID, pid_start=1)     # stale: will be cleared
+        gpath = projectlock.path(self.settings, "p1") + ".guard"
+        fd = os.open(gpath, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        got = []
+        t = threading.Thread(target=lambda: got.append(
+            session.take_project_lock(self.settings, Podman(self.settings.podman), "p1")))
+        t.start()
+        t.join(0.5)
+        self.assertTrue(t.is_alive(), "it waits while another launcher holds the guard")
+        self.assertEqual(projectlock.read(self.settings, "p1")["pid"], DEAD_PID, "and touches nothing")
+        os.close(fd)
+        t.join(10)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(projectlock.read(self.settings, "p1")["pid"], os.getpid())
+        got[0].release()

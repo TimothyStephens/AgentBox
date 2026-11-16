@@ -10,15 +10,32 @@ session has a name, the session id. A holder that is gone leaves the file behind
 is gone needs podman and the session table, so that judgement lives in `session.take_project_lock` and this
 module stays pure file mechanics.
 """
+import contextlib
+import fcntl
 import json
 import os
 
 from . import config
-from .errors import AgentboxError
 
 
 def path(settings, project):
     return os.path.join(settings.project_dir(project), config.LOCK_FILE)
+
+
+@contextlib.contextmanager
+def guard(settings, project):
+    """An exclusive flock on `<lock>.guard` for as long as the block runs. The O_EXCL file stays the record
+    of who holds the project; this only serialises the launchers that are deciding about it, so "the holder
+    is gone, clear it, take it" happens as one step (review 16 Nov, item 16). flock is released by the kernel
+    when the process dies, so a crashed launcher cannot leave it held."""
+    p = path(settings, project) + ".guard"
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def read(settings, project):
@@ -85,8 +102,20 @@ def release(settings, project, *, pid=None, session_id=None):
     return True
 
 
-def force_release(settings, project):
-    """Remove the lock whoever holds it. Only for a holder already judged gone (and for its teardown)."""
+def _identity(doc):
+    return (doc.get("pid"), doc.get("pid_start"), doc.get("session") or "")
+
+
+def force_release(settings, project, holder=None):
+    """Remove the lock of a holder already judged gone. With `holder` (the record that judgement was made
+    about), the file is removed only while it still records THAT holder: between the judgement and here
+    another launcher may have cleared the stale lock and taken its own, and removing that one would hand the
+    project to two sessions (review 16 Nov, item 16; `session.take_project_lock` also serialises the whole
+    judge-and-clear under a flock, this is the check that makes the window harmless if it is ever reached)."""
+    if holder is not None:
+        now = read(settings, project)
+        if not now or now.get("unreadable") or _identity(now) != _identity(holder):
+            return False
     try:
         os.unlink(path(settings, project))
         return True
