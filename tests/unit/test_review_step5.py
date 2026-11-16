@@ -1943,3 +1943,33 @@ class BuildContextCutOffUpstream(unittest.TestCase):
         reply = a.recv(65536)
         self.assertTrue(reply.startswith(b"HTTP/1.1 200 OK"), reply[:200])
         self.assertEqual(up.result.get("got"), size)
+
+
+class BuildContextMemberNames(unittest.TestCase):
+    """Review 16 Nov, R-3: the Containerfile the gate checks must be the one that unpacks. A second member
+    that cleans to the same path (`././Containerfile`, `x/../Containerfile`, `/Containerfile`) comes later in
+    the tar, so it is the one on disk; it was keyed apart and never checked."""
+
+    setUp = CoversAudit.setUp          # the fixture only: subclassing would run CoversAudit's tests again
+    gate = CoversAudit.gate
+
+    def test_a_later_duplicate_containerfile_is_the_one_checked(self):
+        import io
+        import tarfile
+        g = self.gate()
+        q = "/v5/libpod/build?dockerfile=%5B%22Containerfile%22%5D"
+        for dup in ("././Containerfile", "x/../Containerfile", "/Containerfile", ".//Containerfile"):
+            with self.subTest(dup):
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w") as t:
+                    for name, text in (("Containerfile", b"FROM busybox\n"),
+                                       (dup, b"FROM localhost/abt-not-checked\n")):
+                        info = tarfile.TarInfo(name)
+                        info.size = len(text)
+                        t.addfile(info, io.BytesIO(text))
+                path = os.path.join(self.tmp, "dup.tar")
+                with open(path, "wb") as f:
+                    f.write(buf.getvalue())
+                with self.assertRaises(gate.Deny) as cm:
+                    g.check_build_images(path, q)
+                self.assertIn("abt-not-checked", str(cm.exception))

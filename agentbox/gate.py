@@ -60,6 +60,7 @@ import fnmatch
 import http.client
 import json
 import os
+import posixpath
 import re
 import socket
 import socketserver
@@ -231,6 +232,12 @@ def canonical_path(target):
         out.append(d)
     return "/" + "/".join(out)
 
+
+
+def _member_key(name):
+    """A build-context tar member's name as the path it unpacks to, relative to the context: "." for the root."""
+    n = posixpath.normpath("/" + name).lstrip("/")
+    return n or "."
 
 class Gate:
     def __init__(self, cfg):
@@ -1163,8 +1170,11 @@ class Gate:
             args = {}
         try:
             with tarfile.open(context_path, "r:*") as tar:
-                # "./" is a prefix, not a set of characters: lstrip("./") turned "./.env" into "env" (item 42)
-                members = {m.name[2:].lstrip("/") if m.name.startswith("./") else m.name: m for m in tar.getmembers()}
+                # Keyed by the path the member unpacks to, as extraction cleans it: `./x`, `././x`, `a/../x`
+                # and `/x` are all `x`, and the last of them wins, as it does on disk. Keying on the raw name
+                # let a second `././Containerfile` replace the one checked here (review 16 Nov, R-3). Not
+                # lstrip("./"): that is a set of characters, and turned "./.env" into "env" (item 42).
+                members = {_member_key(m.name): m for m in tar.getmembers()}
                 if not files:
                     files = [n for n in ("Containerfile", "Dockerfile") if n in members][:1]
                 if not files:
@@ -1172,7 +1182,7 @@ class Gate:
                 for name in files:
                     if not isinstance(name, str) or name.startswith("/") or ".." in name.split("/"):
                         raise Deny(f"build dockerfile {name!r} must be inside the context")
-                    m = members.get(name[2:] if name.startswith("./") else name)
+                    m = members.get(_member_key(name))
                     if m is None or not m.isfile():
                         raise Deny(f"build dockerfile {name!r} is not a file in the build context")
                     text = tar.extractfile(m).read(1 << 20).decode("utf-8", errors="replace")
