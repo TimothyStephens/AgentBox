@@ -225,6 +225,51 @@ class ProjectRmTest(SettingsCase):
         self.assertNotIn("web", registry.load(self.settings.registry_path))
 
 
+class BrokenConfigFiles(SettingsCase):
+    """A malformed or mistyped config file is a refusal naming the file, exit 2, never a traceback (item 29).
+    Every run goes through cli.main so the message is what the terminal would show."""
+
+    def broken(self, *argv):
+        code, out = self.ab(*argv)
+        self.assertEqual(code, 2, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("ab: ", out)
+        return out
+
+    def test_malformed_agentbox_toml(self):
+        path = os.path.join(self.cfg, "agentbox.toml")
+        with open(path, "a") as f:
+            f.write("this is = not toml = at all\n")
+        self.assertIn(path, self.broken("project", "ls"))
+
+    def test_unknown_setting_in_agentbox_toml(self):
+        path = os.path.join(self.cfg, "agentbox.toml")
+        with open(path, "a") as f:
+            f.write('name_prefx = "typo"\n')
+        out = self.broken("project", "ls")
+        self.assertIn(path, out)
+        self.assertIn("name_prefx", out)
+
+    def test_malformed_projects_toml(self):
+        with open(self.settings.registry_path, "w") as f:
+            f.write("[project.p1\nroot = \n")
+        self.assertIn(self.settings.registry_path, self.broken("project", "ls"))
+
+    def test_a_registry_entry_that_is_not_a_table(self):
+        with open(self.settings.registry_path, "w") as f:
+            f.write('[project]\np1 = "/some/root"\n')
+        out = self.broken("project", "ls")
+        self.assertIn(self.settings.registry_path, out)
+        self.assertIn("p1", out)
+
+    def test_malformed_preset_file(self):
+        os.makedirs(self.settings.presets_dir)
+        path = os.path.join(self.settings.presets_dir, "mine.toml")
+        with open(path, "w") as f:
+            f.write("egress = \n")
+        self.assertIn(path, self.broken("project", "ls"))
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

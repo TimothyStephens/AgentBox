@@ -10,9 +10,9 @@ Rules beyond a plain merge:
   * a user preset file under a new name inherits lockdown's restrictive values for every key it omits.
 """
 import os
-import tomllib
 
 from . import projectkeys
+from .config import load_toml
 from .errors import AgentboxError
 
 # Every one of these is derived from projectkeys.KEYS, the single settings table: which keys a preset may
@@ -138,8 +138,7 @@ def load_presets(presets_dir):
             if not fn.endswith(".toml"):
                 continue
             name = fn[:-5]
-            with open(os.path.join(presets_dir, fn), "rb") as f:
-                custom = tomllib.load(f)
+            custom = load_toml(os.path.join(presets_dir, fn))
             if name == "lockdown":
                 raise AgentboxError("the lockdown preset cannot be redefined")
             # A brand-new preset name inherits lockdown's restrictive values for every key it omits, so a

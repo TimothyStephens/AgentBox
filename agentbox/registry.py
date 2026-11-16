@@ -1,9 +1,9 @@
 """The project registry: projects.toml, read with tomllib and written by a small emitter."""
 import os
 import re
-import tomllib
 
 from . import projectkeys
+from .config import load_toml
 from .errors import AgentboxError
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
@@ -17,9 +17,17 @@ PROJECT_KEYS = projectkeys.PROJECT_KEYS
 def load(path):
     if not os.path.exists(path):
         return {}
-    with open(path, "rb") as f:
-        doc = tomllib.load(f)
-    return dict(doc.get("project", {}))
+    doc = load_toml(path)
+    projects = doc.get("project", {})
+    # A hand edit can make `project` a scalar, or an entry a bare value; every reader then dies on `.get`
+    # somewhere far from the file. Refuse here, naming the file and the entry.
+    if not isinstance(projects, dict):
+        raise AgentboxError(f"{path}: `project` must be a table of projects ([project.<name>] sections)")
+    for name, entry in projects.items():
+        if not isinstance(entry, dict):
+            raise AgentboxError(f"{path}: project {name!r} is not a table; write it as a "
+                                f"[project.{name}] section")
+    return dict(projects)
 
 
 def _quote(s):

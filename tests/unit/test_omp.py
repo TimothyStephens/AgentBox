@@ -107,6 +107,17 @@ class BuildModels(TempCase):
         self.assertEqual(domains, ["llm.acme.example"])
         self.assertIn("acme", used)
 
+    def test_credentials_or_a_query_in_a_base_url_are_refused(self):
+        """The baseUrl goes into the mounted models.yml verbatim, and `.hostname` used to drop the userinfo
+        from the check while leaving it in the file."""
+        for bad in ("https://tim:tok@llm.acme.example/v1", "https://tok@llm.acme.example/v1",
+                    "https://llm.acme.example/v1?api_key=x", "https://llm.acme.example/v1#frag",
+                    "http://u:p@10.0.0.2:8080/v1"):
+            with self.subTest(url=bad), self.assertRaises(AgentboxError) as cm:
+                self.build(["acme"], seed={"providers": {
+                    "acme": {"api": "openai-completions", "baseUrl": bad}}})
+            self.assertIn("baseUrl", str(cm.exception))
+
     def test_no_seed(self):
         doc, domains, _used = self.build(seed={})
         self.assertEqual(doc["providers"]["llama-cpp"]["baseUrl"], "http://10.0.0.2:8080/v1")
@@ -478,7 +489,7 @@ class OmpSession(OmpSessionBase):
         self.assertEqual(s.name_prefix, "abt-unit-", "the rest of the file still applied")
         with open(os.path.join(self.cfg, "agentbox.toml"), "a") as f:
             f.write('ompp_home = "/typo"\n')
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AgentboxError):     # item 29: a refusal with the file's path, not a traceback
             config.load()
 
     def test_code_paths_in_agent_state_are_read_only(self):

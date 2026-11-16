@@ -24,6 +24,18 @@ class RegistryTest(TempCase):
     def test_missing_file_is_empty(self):
         self.assertEqual(registry.load(os.path.join(self.tmp, "nope.toml")), {})
 
+    def test_malformed_and_mistyped_files_are_refused_naming_the_file(self):
+        """A hand edit gone wrong is a refusal naming the file, not a tomllib or AttributeError traceback
+        (item 29): bad syntax, a `project` that is not a table, and an entry that is not a table."""
+        path = os.path.join(self.tmp, "projects.toml")
+        for text in ("[project.p1\n", "project = 3\n", '[project]\np1 = "/root"\n',
+                     '[project.p1]\nroot = "/r"\n[project.p2]\nroot = "/r"\n[project]\np3 = 1\n'):
+            with open(path, "w") as f:
+                f.write(text)
+            with self.subTest(text=text), self.assertRaises(AgentboxError) as cm:
+                registry.load(path)
+            self.assertIn(path, str(cm.exception))
+
     def test_names(self):
         for bad in ("", "A", "has space", "../x", "x" * 41, "-lead"):
             with self.assertRaises(AgentboxError, msg=bad):
@@ -549,7 +561,8 @@ class PresetHelpAndOutputTest(SettingsCase):
             except SystemExit as e:
                 code = e.code
         # argparse may wrap a line after a hyphen ("build- open"), so undo that for substring checks
-        flat = lambda t: " ".join(t.split()).replace("- ", "-")
+        def flat(t):
+            return " ".join(t.split()).replace("- ", "-")
         return code, flat(out.getvalue()), flat(err.getvalue())
 
     def test_every_preset_and_its_description_is_in_the_help(self):

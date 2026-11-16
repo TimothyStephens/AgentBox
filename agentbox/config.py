@@ -31,6 +31,8 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 
+from .errors import AgentboxError
+
 HOME = os.path.expanduser("~")
 
 PROJECTS = "projects"
@@ -194,6 +196,16 @@ RETIRED = {
 }
 
 
+def load_toml(path):
+    """A TOML file as a dict, or a refusal that names the file: the launcher's three config files are hand
+    editable, and a typo in one is the user's mistake to fix, not a tomllib traceback (item 29)."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise AgentboxError(f"{path}: {e}")
+
+
 def load():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     config_dir = os.environ.get("AB_CONFIG_DIR") or os.path.join(HOME, ".config", "agentbox")
@@ -203,8 +215,7 @@ def load():
     values["labels"] = dict(DEFAULTS["labels"])
     path = os.path.join(config_dir, "agentbox.toml")
     if os.path.exists(path):
-        with open(path, "rb") as f:
-            user = tomllib.load(f)
+        user = load_toml(path)
         for k, v in user.items():
             if k in RETIRED:
                 # A setting that used to exist is not an unknown setting. Refusing to start over one would
@@ -214,7 +225,7 @@ def load():
                       file=sys.stderr)
                 continue
             if k not in DEFAULTS:
-                raise ValueError(f"{path}: unknown setting {k!r}")
+                raise AgentboxError(f"{path}: unknown setting {k!r}")
             values[k] = v
     if os.environ.get("AB_REPOS_DIR"):
         values["repos_dir"] = os.environ["AB_REPOS_DIR"]
