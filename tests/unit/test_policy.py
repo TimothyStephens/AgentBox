@@ -363,6 +363,31 @@ class PathTest(TempCase):
             with self.assertRaises(AgentboxError, msg=p):
                 self.check(os.path.join(self.home, p))
 
+    def test_a_symlinked_protected_path_is_refused_where_it_really_is(self):
+        """~/.gnupg -> ~/vault/gpg: the grant is realpath'd, so it never equals the literal ~/.gnupg; the
+        protected entry must be realpath'd too, or the real key directory is one grant away (item 5)."""
+        real = self.mkdir("home", "u", "vault", "gpg")
+        os.symlink(real, os.path.join(self.home, ".gnupg"))
+        for p in (real, os.path.join(self.home, "vault")):
+            with self.assertRaises(AgentboxError, msg=p) as cm:
+                self.check(p)
+            self.assertIn("protected path", str(cm.exception))
+        other = self.mkdir("home", "u", "vault", "other")
+        self.assertEqual(self.check(other), other, "a sibling of the link target is fine")
+
+    def test_refuses_the_shared_scratch_directories_themselves(self):
+        """/tmp and /var/tmp hold every user's files; a private directory below them is a normal grant
+        (this suite's own fixtures live there). The home here is placed outside /tmp so the refusal is
+        the scratch rule's, not the $HOME-ancestor rule's."""
+        home = "/nonexistent/home/u"
+        for p in ("/tmp", "/tmp/", "/var/tmp"):
+            if os.path.isdir(p):
+                with self.assertRaises(AgentboxError, msg=p) as cm:
+                    check_grant(p, home=home)
+                if not p.startswith("/var"):          # /var/tmp is already a system directory
+                    self.assertIn("shared scratch", str(cm.exception))
+        self.assertEqual(check_grant(self.tmp, home=home), self.tmp)
+
     def test_extra_protected(self):
         with self.assertRaises(AgentboxError):
             self.check(os.path.join(self.home, "data"), extra_protected=[os.path.join(self.home, "data")])

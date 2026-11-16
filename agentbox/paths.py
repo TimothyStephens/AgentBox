@@ -5,6 +5,9 @@ from .errors import AgentboxError
 
 SYSTEM = ("/etc", "/var", "/usr", "/boot", "/dev", "/run", "/proc", "/sys", "/bin", "/sbin",
           "/lib", "/lib32", "/lib64", "/libx32", "/opt", "/root", "/srv", "/snap", "/mnt", "/media")
+# Every user's scratch space. Refused as a grant in itself (the whole of it is other people's files too);
+# a private directory below one is an ordinary grant, which is why these are not in SYSTEM (item 5).
+SHARED_SCRATCH = ("/tmp", "/var/tmp")
 HOME_PROTECTED = (".ssh", ".gnupg", ".local/share/containers", ".config/containers", ".config/systemd",
                   ".config/autostart", ".local/bin", ".claude", ".claude.json", ".omp",
                   ".config/claude-container", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout",
@@ -16,8 +19,18 @@ def _inside(path, parent):
 
 
 def protected_paths(home, extra=()):
-    """Paths no grant may equal, sit inside, or contain."""
-    return [os.path.join(home, p) for p in HOME_PROTECTED] + [os.path.realpath(p) for p in extra]
+    """Paths no grant may equal, sit inside, or contain: each home entry as written and, where it exists
+    and is a link, where it really is. The grant is realpath'd before the comparison, so a `~/.gnupg` that
+    links to `~/vault/gpg` protected nothing until the target was listed too (item 5)."""
+    out = []
+    for p in HOME_PROTECTED:
+        literal = os.path.join(home, p)
+        out.append(literal)
+        if os.path.lexists(literal):
+            real = os.path.realpath(literal)
+            if real != literal:
+                out.append(real)
+    return out + [os.path.realpath(p) for p in extra]
 
 
 def grants_of(entry):
@@ -94,6 +107,9 @@ def check_grant(path, *, home, extra_protected=(), kind="grant"):
     for s in SYSTEM:
         if _inside(real, s):
             raise AgentboxError(f"{kind} {path}: {real} is a system directory")
+    if real in SHARED_SCRATCH:
+        raise AgentboxError(f"{kind} {path}: {real} is the shared scratch directory of every user; grant a "
+                            "directory of your own below it instead")
     for p in protected_paths(home, extra_protected):
         if _inside(real, p) or _inside(p, real):
             raise AgentboxError(f"{kind} {path}: {real} overlaps protected path {p}")
