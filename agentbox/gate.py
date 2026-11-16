@@ -1350,7 +1350,8 @@ class Gate:
             args = {}
         try:
             with tarfile.open(context_path, "r:*") as tar:
-                members = {m.name.lstrip("./") if m.name.startswith("./") else m.name: m for m in tar.getmembers()}
+                # "./" is a prefix, not a set of characters: lstrip("./") turned "./.env" into "env" (item 42)
+                members = {m.name[2:].lstrip("/") if m.name.startswith("./") else m.name: m for m in tar.getmembers()}
                 if not files:
                     files = [n for n in ("Containerfile", "Dockerfile") if n in members][:1]
                 if not files:

@@ -1060,6 +1060,17 @@ class CoversAudit(unittest.TestCase):
         with self.assertRaises(gate.Deny):
             g.check_build_images(self.tar({"Containerfile": cf, ".env": b"REAL=1\n"}), q)
 
+    def test_item42_dot_slash_members_keep_their_leading_dot(self):
+        """`tar -C ctx .` writes `./dev/.env`; "./" must be cut as a prefix, so a root `./.env` stays `.env`."""
+        g = self.gate()
+        q = "/v5/libpod/build?dockerfile=%5B%22Containerfile%22%5D"
+        cf = b"FROM busybox\nCOPY . /app\n"
+        open(os.path.join(self.proj, "dev", "Containerfile"), "w").close()
+        with self.assertRaises(gate.Deny) as e:
+            g.check_build_images(self.tar({"./Containerfile": cf, "./.env": b"REAL=1\n"}), q)
+        self.assertIn(".env", str(e.exception))
+        g.check_build_images(self.tar({"./Containerfile": cf, "./.env": b""}), q)
+
     def test_n5_identity_checked_at_start(self):
         g = self.gate()
         doc = container("c1", State={"Pid": 0, "Status": "created"})
