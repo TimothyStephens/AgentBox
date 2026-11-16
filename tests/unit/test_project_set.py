@@ -310,6 +310,42 @@ class SetTest(SetBase):
         self.assertEqual(self.entry()["egress"], "locked")
 
 
+class PodmanTierKeepsLive(SetBase):
+    """`--podman TIER` sets the tier component only. The preset's `live` component (build and operate both
+    say `live = "observe"`) is a separate capability (design.md: a capability set, not a ladder) and stays
+    unless the project says otherwise; it used to be dropped silently (item 46)."""
+
+    def test_set_tier_on_a_preset_with_live_keeps_live(self):
+        self.project("p2", preset="build")
+        self.assertEqual(self.rc("project", "set", "p2", "--podman", "observe"), 0)
+        self.assertEqual(self.entry("p2")["podman"], {"tier": "observe", "live": "observe"})
+
+    def test_set_tier_keeps_a_stored_live_override(self):
+        self.project("p3", preset="script", podman={"tier": "none", "live": "observe"})
+        self.assertEqual(self.rc("project", "set", "p3", "--podman", "dev"), 0)
+        self.assertEqual(self.entry("p3")["podman"], {"tier": "dev", "live": "observe"})
+
+    def test_set_tier_on_a_preset_without_live_writes_tier_only(self):
+        self.assertEqual(self.rc("project", "set", "p1", "--podman", "dev"), 0)
+        self.assertEqual(self.entry("p1")["podman"], {"tier": "dev"})
+
+    def test_add_with_tier_keeps_the_presets_live(self):
+        root = self.mkdir("roots", "p4")
+        self.assertEqual(self.rc("project", "add", "p4", root, "--preset", "operate", "--podman", "dev"), 0)
+        self.assertEqual(self.entry("p4")["podman"], {"tier": "dev", "live": "observe"})
+
+    def test_a_preset_change_merges_with_the_new_presets_live(self):
+        self.project("p5", preset="build", podman={"tier": "dev", "live": "observe"})
+        self.assertEqual(self.rc("project", "set", "p5", "--preset", "script", "--podman", "none"), 0)
+        self.assertEqual(self.entry("p5")["podman"], {"tier": "none"}, "script has no live component")
+
+    def test_show_prints_the_kept_live(self):
+        self.project("p2", preset="build")
+        self.rc("project", "set", "p2", "--podman", "observe")
+        _code, out = self.rc_out("project", "show", "p2")
+        self.assertIn("observe (live: observe)", out)
+
+
 class LooseningIsAnnounced(SetBase):
     """F-8: `security` was a column nothing read. One of the things it decides now is this: an edit that
     grants a security-relevant setting more than the project had says so, where you can see it. An edit to a
