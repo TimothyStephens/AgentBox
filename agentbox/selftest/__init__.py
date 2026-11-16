@@ -6,6 +6,7 @@ from .. import session as sessionmod
 from .. import sockguard
 from ..config import HOME
 from ..fsutil import inside
+from ..podman import label_filters
 from ..registry import load as load_registry
 from . import runner
 from .runner import Result
@@ -105,8 +106,8 @@ def canary_result(canary):
 
 
 def live_containers(sess):
-    p = sess.podman.run(["ps", "-a", "--format", "{{.Names}}", "--filter",
-                         f"label={sockguard.COMPOSE_LABEL}={sess.podman_live}"], check=False)
+    p = sess.podman.run(["ps", "-a", "--format", "{{.Names}}"]
+                        + label_filters({sockguard.COMPOSE_LABEL: sess.podman_live}), check=False)
     return sorted((p.stdout or "").split())
 
 

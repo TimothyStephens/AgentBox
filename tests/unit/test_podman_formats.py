@@ -24,7 +24,7 @@ import unittest
 
 from agentbox import session
 from agentbox.errors import AgentboxError
-from agentbox.podman import Podman
+from agentbox.podman import Podman, label_filters
 
 from .helpers import SettingsCase
 
@@ -44,6 +44,12 @@ MANUAL_SCRIPT = REPO / "tests" / "manual" / "podman_formats.sh"
 # The template podman 5.7 rejects on `network ls`, and the error it gives.
 REJECTED = '{{.Name}} {{index .Labels "agentbox.session"}}'
 
+
+class LabelFilters(unittest.TestCase):
+    def test_one_filter_pair_per_label_in_order(self):
+        self.assertEqual(label_filters({"a": "1", "agentbox.role": "dev"}),
+                         ["--filter", "label=a=1", "--filter", "label=agentbox.role=dev"])
+        self.assertEqual(label_filters({}), [])
 
 class NetworkListing(SettingsCase):
     def setUp(self):

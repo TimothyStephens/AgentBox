@@ -9,6 +9,14 @@ from .errors import AgentboxError
 _LOG = None
 
 
+def label_filters(labels):
+    """`--filter label=k=v` for every label: a podman listing matches only what carries all of them."""
+    out = []
+    for k, v in labels.items():
+        out += ["--filter", f"label={k}={v}"]
+    return out
+
+
 def set_log(path):
     global _LOG
     _LOG = path
@@ -58,9 +66,7 @@ class Podman:
         or empty-on-error listing meant "nothing matches" -- which teardown reads as "nothing to remove",
         the session namer reads as "that name is free", and the selftest reads as "no leftovers" (audit
         F-2/F-10)."""
-        filters = []
-        for k, v in labels.items():
-            filters += ["--filter", f"label={k}={v}"]
+        filters = label_filters(labels)
         if kind == "container":
             p = self.run(["ps", "-a", "--format", "{{.Names}}"] + filters)
         elif kind == "network":
@@ -80,9 +86,7 @@ class Podman:
         this command ("error calling index: cannot index slice/array with type string"), and because the
         call was swallowed (`check=False`), network-based session detection had never worked at all. Keys in
         this report are LOWERCASE (`name`, `labels`) -- `ps --format json` capitalises its own."""
-        filters = []
-        for k, v in labels.items():
-            filters += ["--filter", f"label={k}={v}"]
+        filters = label_filters(labels)
         p = self.run(["network", "ls", "--format", "json"] + filters)
         try:
             return json.loads(p.stdout or "[]") or []
@@ -104,9 +108,7 @@ class Podman:
 
     def images_json(self, labels):
         """Every local image carrying all `labels`, as podman reports it. JSON read in Python, as above."""
-        filters = []
-        for k, v in labels.items():
-            filters += ["--filter", f"label={k}={v}"]
+        filters = label_filters(labels)
         p = self.run(["images", "--format", "json"] + filters)
         try:
             return json.loads(p.stdout or "[]") or []
@@ -131,9 +133,7 @@ class Podman:
         Raises when `ps` fails or its output cannot be parsed. This used to return [] in both cases, so
         "podman is broken" and "nothing is running" were the same answer -- the defect behind two of the
         third audit's findings, since liveness, the live-stack ownership check and gc all ask this."""
-        filters = []
-        for k, v in labels.items():
-            filters += ["--filter", f"label={k}={v}"]
+        filters = label_filters(labels)
         p = self.run(["ps", "-a", "--format", "json"] + filters)
         try:
             return json.loads(p.stdout or "[]") or []

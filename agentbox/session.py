@@ -16,7 +16,7 @@ from . import buildcap, builtrec, config, layout, scan, sockguard, toulmin, user
 from .config import HOME
 from .errors import AgentboxError
 from .fsutil import inside, write_private
-from .podman import Podman, set_log
+from .podman import Podman, label_filters, set_log
 
 TOKEN_PATH = "/run/agentbox/token"
 PROBE_PATH = "/run/agentbox/probe.sh"
@@ -2116,9 +2116,7 @@ def gc_images(settings, podman, now=None, warn=lambda m: None):
     image_keep_days are removed, except the newest image carrying each tag. Never forced: an image a
     container still uses stays. ab session kill leaves images alone (decision, 1 Oct)."""
     now = time.time() if now is None else now
-    filters = []
-    for k, v in {**settings.labels, "agentbox.role": "dev"}.items():
-        filters += ["--filter", f"label={k}={v}"]
+    filters = label_filters({**settings.labels, "agentbox.role": "dev"})
     p = podman.run(["images", "--format", "json"] + filters, check=False)
     try:
         images = json.loads(p.stdout or "[]") or []
