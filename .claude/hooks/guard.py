@@ -39,27 +39,122 @@ def block(reason):
     sys.exit(2)
 
 
-def segments(cmd):
-    """Split on shell separators; also descend into $(...) and backticks crudely."""
-    inner = re.findall(r"\$\(([^()]*)\)|`([^`]*)`", cmd)
-    parts = re.split(r"\|\||&&|[;|&\n]", cmd)
-    for a, b in inner:
-        parts += re.split(r"\|\||&&|[;|&\n]", a or b)
-    for p in parts:
+SEPARATORS = ";&|()<>\n"          # shell punctuation that ends a simple command (shlex returns runs of it as tokens)
+XARGS_WITH_ARG = {"-I", "-i", "-n", "-L", "-l", "-P", "-s", "-d", "-E", "-e", "-a", "--max-args", "--max-procs",
+                  "--max-lines", "--max-chars", "--replace", "--delimiter", "--arg-file", "--eof",
+                  "--process-slot-var"}
+HEREDOC = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
+
+
+def _lex(text):
+    """Shell words, with every run of SEPARATORS as its own token. Quotes are honoured, so a `;` or a
+    newline inside `-m '...'` stays inside the message instead of starting a new command (16 Nov)."""
+    lex = shlex.shlex(text, posix=True, punctuation_chars=SEPARATORS)
+    lex.whitespace = " \t\r"           # a newline separates commands: it must not vanish as whitespace
+    lex.whitespace_split = True
+    return list(lex)
+
+
+def _simple_commands(tokens):
+    """[(toks, src)] for each simple command in a token stream; src is the command piped into it, else None."""
+    out, cur, piped = [], [], False
+    for t in tokens + ["\n"]:
+        if t and all(c in SEPARATORS for c in t):
+            if cur:
+                out.append((cur, out[-1][0] if piped and out else None))
+            piped, cur = t.strip() in ("|", "|&"), []
+        else:
+            cur.append(t)
+    return out
+
+
+def _crude(text):
+    """The pre-16-Nov splitter, for text shlex cannot read (an apostrophe in a heredoc body): split on
+    separators first, then shlex each piece or fall back to whitespace."""
+    for p in re.split(r"\|\||&&|[;|&\n]", text):
         p = p.strip().lstrip("(").rstrip(")")
         if not p:
             continue
         try:
-            toks = shlex.split(p, comments=True)
+            yield shlex.split(p, comments=True), None
         except ValueError:
-            toks = p.split()
-        while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in WRAPPERS):
-            if toks[0] == "timeout" and len(toks) > 1 and re.match(r"^\d", toks[1]):
-                toks = toks[2:]
+            yield p.split(), None
+
+
+def _without_heredoc_bodies(text):
+    """(text with heredoc bodies cut out, the body lines). The bodies are data to the command that reads
+    them, but `bash <<EOF` runs them, so the caller still scans every body line as a command."""
+    kept, bodies, term = [], [], None
+    for line in text.split("\n"):
+        if term is not None:
+            if line.strip() == term:
+                term = None
             else:
-                toks = toks[1:]
+                bodies.append(line)
+            continue
+        kept.append(line)
+        m = HEREDOC.search(line)
+        if m:
+            term = m.group(2)
+    return "\n".join(kept), bodies
+
+
+def _commands(text):
+    try:
+        return _simple_commands(_lex(text))
+    except ValueError:
+        pass
+    head, bodies = _without_heredoc_bodies(text)
+    try:
+        cmds = _simple_commands(_lex(head))
+    except ValueError:
+        return list(_crude(text))
+    for line in bodies:
+        cmds += list(_crude(line))
+    return cmds
+
+
+def _strip_prefix(toks):
+    """Drop leading VAR=value assignments and wrappers (timeout 30, env, nohup ...)."""
+    while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in WRAPPERS):
+        if toks[0] == "timeout" and len(toks) > 1 and re.match(r"^\d", toks[1]):
+            toks = toks[2:]
+        else:
+            toks = toks[1:]
+    return toks
+
+
+def segments(cmd):
+    """Yield (toks, src) for every simple command in `cmd`, including those inside $(...) (quoted or not:
+    `-m "$(podman rm ...)"` runs podman all the same). src is the command piped into this one, or None."""
+    cmds = _commands(cmd)
+    for a in re.findall(r"\$\(([^()]*)\)", cmd) + re.findall(r"`([^`]*)`", cmd):
+        cmds += _commands(a)       # a substitution is a command of its own, quoted or not
+    for toks, src in cmds:
+        toks = _strip_prefix(toks)
         if toks:
-            yield toks
+            yield toks, _strip_prefix(src or [])
+
+
+def xargs_command(args):
+    """The command xargs runs, with xargs's own options removed."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in XARGS_WITH_ARG else 1
+    return args[i:]
+
+
+def shell_c_string(toks):
+    """The string `sh -c`/`bash -lc` runs, or None when the shell reads a script or stdin."""
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] == "-o":
+            i += 2
+            continue
+        if not toks[i].startswith("--") and "c" in toks[i][1:]:
+            return toks[i + 1] if i + 1 < len(toks) else None
+        i += 1
+    return None
 
 
 def is_test_name(n):
@@ -78,6 +173,13 @@ def allowed_path(p, root):
         p != t and p.startswith(t.rstrip("/") + os.sep) for t in tmp)
 
 
+def unexpanded(path):
+    """A path whose value only the shell knows: $(...), ${...}, a backtick, or a leading $VAR (which would
+    otherwise read as a name relative to the cwd, i.e. inside the repo). $HOME is expanded before this."""
+    path = path.replace("${HOME}", "~").replace("$HOME", "~")
+    return bool(re.search(r"\$[({]|`", path) or path.startswith("$"))
+
+
 def check_rm(toks, cwd, root):
     flags = [t for t in toks[1:] if t.startswith("-")]
     recursive = any(t in ("--recursive",) or (not t.startswith("--") and re.search(r"[rR]", t)) for t in flags)
@@ -87,6 +189,9 @@ def check_rm(toks, cwd, root):
         if t.startswith("-"):
             continue
         p = expand(t, cwd)
+        if unexpanded(t):
+            block("recursive rm of %s: the guard cannot see what $(...), ${...} or a backtick expands to; "
+                  "expand it yourself and pass the path" % t)
         if not allowed_path(p.rstrip("*").rstrip("/") or "/", root):
             block("recursive rm outside the repo and /tmp (%s)" % t)
 
@@ -124,6 +229,8 @@ def check_mounts(args, root, cwd):
             vals.append(args[i + 1])
         elif a.startswith(("--volume=", "--mount=", "-v=")):
             vals.append(a.split("=", 1)[1])
+        elif a.startswith("-v") and len(a) > 2:       # -v/src:/dst, the attached form
+            vals.append(a[2:])
     for v in vals:
         if "type=" in v or "src=" in v or "source=" in v:
             m = re.search(r"(?:src|source)=([^,]+)", v)
@@ -132,6 +239,9 @@ def check_mounts(args, root, cwd):
             src = v.split(":", 1)[0]
         if not src:
             continue
+        if unexpanded(src):
+            block("mounting %s: the guard cannot see what $(...), ${...} or a backtick expands to; expand it "
+                  "yourself and pass the path" % src)
         if src.startswith(("/", "~", "$HOME", "${HOME}", ".")):
             if not allowed_path(expand(src, cwd), root):
                 block("mounting %s: test containers may only mount paths inside the repo or /tmp" % src)
@@ -139,7 +249,24 @@ def check_mounts(args, root, cwd):
             block("named volume %s: test volumes must be named abt-* or spike*" % src)
 
 
-def check_podman(toks, root, cwd):
+NAMESPACE_OPT = re.compile(r"^--(pid|ipc|uts|userns|cgroupns|net|network)(?:=(.*))?$")
+
+
+def check_namespaces(args):
+    """No host namespace of any kind, and no joining another container's: --pid=host and --ipc=host reach
+    the live stacks' processes as surely as --network host reaches their ports (16 Nov)."""
+    for i, a in enumerate(args):
+        m = NAMESPACE_OPT.match(a)
+        if not m:
+            continue
+        val = m.group(2) if m.group(2) is not None else (args[i + 1] if i + 1 < len(args) else "")
+        if val == "host":
+            block("--%s=host shares the host's %s namespace" % (m.group(1), m.group(1)))
+        if re.match(r"^(container|ns):", val):
+            block("joining another container's or process's %s namespace" % m.group(1))
+
+
+def check_podman(toks, root, cwd, src=None, via_xargs=False):
     group, verb, args = podman_verb(toks)
     if verb is None:
         return
@@ -152,21 +279,29 @@ def check_podman(toks, root, cwd):
     if verb in ("run", "create") or (group == "pod" and verb == "create") or (group == "container" and verb in ("run", "create")):
         if "--privileged" in args:
             block("--privileged containers")
-        if any(re.match(r"^--(net|network)(=|$)", a) for a in args):
-            joined = " ".join(args)
-            if re.search(r"--(?:net|network)[= ]+host\b", joined):
-                block("--network host")
-            if re.search(r"--(?:net|network)[= ]+(?:container|ns):", joined):
-                block("joining another container's or process's network namespace")
+        check_namespaces(args)
+        check_mounts(args, root, cwd)
+        return
+    if verb == "build" and group in (None, "image"):
+        # a build's -v/--mount binds host paths into every RUN step, like a run's
+        check_namespaces(args)
         check_mounts(args, root, cwd)
         return
     if (group, verb) in GROUP_DESTRUCTIVE or (group in (None, "container", "image") and verb in DESTRUCTIVE):
         if any(a == "--all" or re.match(r"^-[a-zA-Z]*a[a-zA-Z]*$", a) for a in args):
             block("podman %s --all" % verb)
+        if any(a in ("-l", "--latest") for a in args):
+            block("podman %s --latest acts on whatever was created last, which may not be yours; name the "
+                  "abt-* resource" % verb)
+        if via_xargs:
+            fed_by_label = any(lab in t for t in (src or []) for lab in TEST_LABELS)
+            if not fed_by_label:
+                block("xargs podman %s takes its targets from stdin: the command feeding it must select them "
+                      "with --filter label=agentbox-test=1" % verb)
         filters = [args[i + 1] for i, a in enumerate(args) if a == "--filter" and i + 1 < len(args)]
         filters += [a.split("=", 1)[1] for a in args if a.startswith("--filter=")]
         for f in filters:
-            if not any(l in f for l in TEST_LABELS):
+            if not any(lab in f for lab in TEST_LABELS):
                 block("--filter %s: destructive filters must select label agentbox-test=1" % f)
         targets = names_in(args)
         if verb == "exec" or verb == "attach":
@@ -195,15 +330,19 @@ def check_git(toks):
         if toks[i] == "-c" and i + 1 < len(toks) and toks[i + 1].lower().startswith("core.hookspath"):
             block("git -c core.hooksPath overrides the commit hooks")
         i += 2 if toks[i] in GIT_GLOBAL_ARG else 1
-    if i >= len(toks) or toks[i] != "commit":
+    if i >= len(toks) or toks[i] not in ("commit", "merge", "push"):
         return
-    args, j = toks[i + 1:], 0
+    sub, args, j = toks[i], toks[i + 1:], 0
     while j < len(args):
         a = args[j]
         if a == "--":
             break
-        if a == "--no-verify" or a.startswith("--no-verify="):
-            block("git commit --no-verify skips the pre-commit secret scan")
+        if a.startswith("--no-v"):
+            # git takes any unambiguous prefix of a long option, so --no-veri is --no-verify too
+            block("git %s --no-verify skips the hooks (the pre-commit secret scan)" % sub)
+        if sub != "commit":
+            j += 1
+            continue
         if a.startswith("-") and not a.startswith("--") and len(a) > 1:
             for k, ch in enumerate(a[1:]):
                 if ch == "n":
@@ -259,22 +398,37 @@ def main():
 
     if re.search(r"\bGIT_PRECOMMIT_CHECK_\w+=", cmd):
         block("turning off the pre-commit checks")
+    if re.search(r"\bgit\b", cmd) and re.search(r"core\.hookspath", cmd, re.I):
+        block("core.hooksPath (as -c, --config-env, GIT_CONFIG_* or git config) redirects the commit hooks")
 
-    for toks in segments(cmd):
-        prog = os.path.basename(toks[0])
-        if prog == "rm":
-            check_rm(toks, cwd, root)
-        elif prog == "podman" and "compose" in toks[1:2]:
-            check_compose(toks[1:])
-        elif prog == "podman":
-            check_podman(toks, root, cwd)
-        elif prog in ("podman-compose", "docker-compose"):
-            check_compose(toks)
-        elif prog in ("docker",):
-            block("use podman, not docker")
-        elif prog == "git":
-            check_git(toks)
+    for toks, src in segments(cmd):
+        check_command(toks, root, cwd, src)
     return 0
+
+
+def check_command(toks, root, cwd, src=None, via_xargs=False):
+    prog = os.path.basename(toks[0])
+    if prog == "rm":
+        check_rm(toks, cwd, root)
+    elif prog == "xargs":
+        inner = _strip_prefix(xargs_command(toks[1:]))
+        if inner:
+            check_command(inner, root, cwd, src, via_xargs=True)
+    elif prog in ("sh", "bash", "dash", "zsh", "ksh"):
+        script = shell_c_string(toks)
+        if script:
+            for inner, inner_src in segments(script):
+                check_command(inner, root, cwd, inner_src)
+    elif prog == "podman" and "compose" in toks[1:2]:
+        check_compose(toks[1:])
+    elif prog == "podman":
+        check_podman(toks, root, cwd, src, via_xargs)
+    elif prog in ("podman-compose", "docker-compose"):
+        check_compose(toks)
+    elif prog in ("docker",):
+        block("use podman, not docker")
+    elif prog == "git":
+        check_git(toks)
 
 
 if __name__ == "__main__":
