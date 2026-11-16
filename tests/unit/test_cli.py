@@ -84,7 +84,7 @@ class RunParsing(SettingsCase):
             return FakeSess()
 
         with unittest.mock.patch("agentbox.lifecycle.sessions", return_value={}), \
-             unittest.mock.patch("agentbox.session.sessions", return_value={}), \
+             unittest.mock.patch("agentbox.sessionlock.sessions", return_value={}), \
              unittest.mock.patch("agentbox.session.load_project", side_effect=fake_load), \
              unittest.mock.patch("agentbox.session.make_session", side_effect=fake_make):
             # `ab()` closes stdin (so the no-TTY branch reads "" instead of blocking on the terminal) and
