@@ -35,7 +35,7 @@ class StdinIsClosedByDefault(SettingsCase):
             seen["isatty"] = sys.stdin.isatty()
             return 0
 
-        with mock.patch("agentbox.cli.cmd_project_ls", fake_cmd):
+        with mock.patch("agentbox.cli_project.cmd_project_ls", fake_cmd):
             code, _out = self.ab("project", "ls")
         self.assertEqual(code, 0)
         self.assertEqual(seen["read"], "", "at EOF, so a read returns rather than waiting")
@@ -49,7 +49,7 @@ class StdinIsClosedByDefault(SettingsCase):
             seen["read"] = sys.stdin.read()
             return 0
 
-        with mock.patch("agentbox.cli.cmd_project_ls", fake_cmd):
+        with mock.patch("agentbox.cli_project.cmd_project_ls", fake_cmd):
             self.ab("project", "ls", stdin="yes\n")
         self.assertEqual(seen["read"], "yes\n")
 
@@ -69,7 +69,7 @@ class StdinIsClosedByDefault(SettingsCase):
             return 0
 
         started = time.time()
-        with mock.patch("agentbox.cli.cmd_project_ls", fake_cmd), mock.patch("sys.stdin", stream):
+        with mock.patch("agentbox.cli_project.cmd_project_ls", fake_cmd), mock.patch("sys.stdin", stream):
             with self.assertRaises(AbTimeout) as cm:
                 self.ab("project", "ls", stdin=None, timeout=2)
         self.assertLess(time.time() - started, 30, "fast, not at the mercy of the runner's patience")
@@ -84,7 +84,7 @@ class ADeadlineNotAHang(SettingsCase):
             return 0
 
         started = time.time()
-        with mock.patch("agentbox.cli.cmd_project_ls", slow):
+        with mock.patch("agentbox.cli_project.cmd_project_ls", slow):
             with self.assertRaises(AbTimeout) as cm:
                 self.ab("project", "ls", timeout=2)
         self.assertLess(time.time() - started, 30)

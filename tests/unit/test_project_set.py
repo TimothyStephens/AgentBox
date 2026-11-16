@@ -259,7 +259,7 @@ class SetTest(SetBase):
         from agentbox import cli, session
         home = self.mkdir("home")
         ssh = self.mkdir("home", ".ssh")
-        for mod in (cli, session):
+        for mod in (cli.cli_project, session):
             patcher = mock.patch.object(mod, "HOME", home)
             patcher.start()
             self.addCleanup(patcher.stop)
