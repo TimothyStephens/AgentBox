@@ -765,13 +765,14 @@ class BuiltRecord(unittest.TestCase):
 
     def test_only_the_id_the_reply_ends_with_counts(self):
         """Review of 785ee15, H1: a RUN step can print any image's ID; only the last stream line counts."""
-        from agentbox import builtrec
         fake, real = "f" * 64, "e" * 64
         head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
 
         def chunk(text):
             return b"%x\r\n%s\r\n" % (len(text), text)
-        line = lambda t: chunk(b'{"stream":"' + t + b'\\n"}\n')
+
+        def line(t):
+            return chunk(b'{"stream":"' + t + b'\\n"}\n')
         replies = {
             "echoed ID, then the real one": (head + line(b"STEP 1/2") + line(fake.encode()) + line(b"STEP 2/2")
                                              + line(real.encode()) + b"0\r\n\r\n", real),
@@ -1093,6 +1094,24 @@ class CoversAudit(unittest.TestCase):
         self.assertIn("new.pem", str(e.exception))
         open(os.path.join(self.proj, "app", "new.pem"), "w").close()     # empty: nothing to protect
         self.bind(g, os.path.join(self.proj, "app"))
+
+    def test_n6_uses_the_names_mounts_masks(self):
+        """One list of secret names (mounts.MASK_FILES/MASK_EXEMPT/MASK_DIRS): the widened names count here too."""
+        from agentbox import mounts
+        g = self.gate()
+        app = os.path.join(self.proj, "app")
+        for name in (".netrc", "prod.env", "store.p12", ".env.example"):
+            with open(os.path.join(app, name), "w") as f:
+                f.write("x\n")
+        found = set()
+        while True:
+            hit = g.unmasked_secret_under(app)
+            if hit is None:
+                break
+            found.add(os.path.basename(hit))
+            os.unlink(hit)
+        self.assertEqual(found, {".netrc", "prod.env", "store.p12"})
+        self.assertIn(".env.example", mounts.MASK_EXEMPT)
 
     def test_n7_sub_path_on_another_filesystem_refused(self):
         g = self.gate()

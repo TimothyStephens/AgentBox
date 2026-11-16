@@ -72,7 +72,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
-from . import buildcap, builtrec, mounts
+from . import buildcap, builtrec
 from .errors import AgentboxError
 
 V = r"(?:/v[0-9][0-9.]*)?"
@@ -396,11 +396,6 @@ def cset(d, key, value):
     d[key] = value
 
 
-def cpop(d, key):
-    for k in [k for k in d if k.lower() == key.lower()]:
-        del d[k]
-
-
 def canonical_path(target):
     """The request path, decoded segment by segment. Refused: empty, `.` and `..` segments (also encoded), a
     trailing slash, backslashes, control characters, and an encoded `/` anywhere but inside an image name.
@@ -647,10 +642,10 @@ class Gate:
                        "session so it is masked")
 
     def unmasked_secret_under(self, real):
-        """A non-empty file named like a secret (.env, .env.*, *.pem, *.key, or under a secrets/ dir), under
-        `real`, that is not covered: it appeared after the session's masks were made (audit 6 Oct, N6). Gives
-        up (refusing) past BIND_SCAN_LIMIT entries rather than allow an unchecked tree."""
-        import fnmatch
+        """A non-empty file named like a secret (the names mounts.py masks: MASK_FILES less MASK_EXEMPT, or
+        anything under a MASK_DIRS directory), under `real`, that is not covered: it appeared after the
+        session's masks were made (audit 6 Oct, N6). Gives up (refusing) past BIND_SCAN_LIMIT entries rather
+        than allow an unchecked tree."""
         from . import mounts as _m
         if not os.path.isdir(real):
             return None
