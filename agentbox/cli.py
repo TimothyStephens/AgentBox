@@ -808,6 +808,7 @@ def cmd_project_purge(s, a):
     """Delete the project's directory: agent state, inbox, grant backups, built-image record, identity. The
     one command that does -- and since one project is one directory, nothing of it is left anywhere else."""
     import shutil
+    registry.check_name(a.name)       # registered or not, but a NAME: `../x` must not become the rmtree target
     base = s.project_dir(a.name)
     if not os.path.isdir(base):
         print(f"{a.name} has no agent state at {base}")
@@ -846,6 +847,7 @@ def cmd_project_clean(s, a):
     """Remove a project's per-session clones (clone mode) that no live session uses."""
     import shutil
     from .podman import Podman
+    registry.check_name(a.name)       # as purge: the name goes straight into a path that is rmtree'd
     base = s.clones_dir(a.name)
     if not os.path.isdir(base):
         print(f"{a.name} has no clones at {base}")

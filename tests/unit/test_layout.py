@@ -32,6 +32,14 @@ class Layout(SettingsCase):
             if name != config.PROJECTS:
                 self.assertFalse(state.startswith(os.path.join(self.settings.data_dir, name) + "/"), state)
 
+    def test_project_dir_refuses_a_name_that_could_leave_projects(self):
+        """Defence in depth under the CLI's own check (item 14): the path builder every reader and every
+        rmtree goes through will not compose a path from a name with a separator or a dot-name."""
+        for bad in ("", ".", "..", "../x", "a/b", "/abs", "a\0b"):
+            with self.subTest(name=bad), self.assertRaises(AgentboxError):
+                self.settings.project_dir(bad)
+        self.assertTrue(self.settings.project_dir("fine-1").endswith("/projects/fine-1"))
+
     def test_agent_state_dirs_skip_the_projects_own_entries(self):
         s = self.settings
         os.makedirs(s.state_dir("p1", "claude"))

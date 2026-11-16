@@ -270,6 +270,39 @@ class BrokenConfigFiles(SettingsCase):
         self.assertIn(path, self.broken("project", "ls"))
 
 
+class ProjectNameIsValidatedBeforeRmtree(SettingsCase):
+    """`ab project purge` and `ab project clean` work on registered-or-not names, so they take the name
+    straight to a path under projects/. The name must still be a project name: `../x` would otherwise walk
+    out of the data dir into an rmtree (item 14)."""
+
+    def setUp(self):
+        super().setUp()
+        # Outside the data dir: a stray directory INSIDE it would be taken for a flat-layout project and moved
+        # into projects/ by layout.migrate before the command runs.
+        self.victim = self.mkdir("victim")
+        self.write("victim/keep.txt", "k\n")
+
+    def test_purge_refuses_a_name_that_is_not_a_project_name(self):
+        for bad in ("../../victim", "../../victim/", "a/b", ".", "..", "/tmp", "UPPER"):
+            with self.subTest(name=bad):
+                code, out = self.ab("project", "purge", bad, "--yes")
+                self.assertEqual(code, 2, out)
+                self.assertIn("project name", out)
+        self.assertTrue(os.path.exists(os.path.join(self.victim, "keep.txt")))
+
+    def test_clean_refuses_a_name_that_is_not_a_project_name(self):
+        code, out = self.ab("project", "clean", "../../victim", "--yes")
+        self.assertEqual(code, 2, out)
+        self.assertIn("project name", out)
+        self.assertTrue(os.path.exists(os.path.join(self.victim, "keep.txt")))
+
+    def test_purge_still_works_for_an_unregistered_project(self):
+        self.write("data/projects/gone/claude/CLAUDE.md", "m\n")
+        code, out = self.ab("project", "purge", "gone", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.exists(self.settings.project_dir("gone")))
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

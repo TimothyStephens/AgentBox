@@ -49,7 +49,12 @@ PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, CLONES, LOCK_F
 
 
 def project_dir(data_dir, project):
-    """One project's directory. Module-level so builtrec, which is handed a data dir, agrees with Settings."""
+    """One project's directory. Module-level so builtrec, which is handed a data dir, agrees with Settings.
+
+    The name is checked where the CLI takes it (registry.check_name); this is the backstop under every
+    reader and every rmtree, so no caller can compose a path that leaves projects/ (item 14)."""
+    if not project or project in (".", "..") or "/" in project or "\0" in project:
+        raise AgentboxError(f"bad project name {project!r}")
     return os.path.join(data_dir, PROJECTS, project)
 
 DEFAULTS = {
