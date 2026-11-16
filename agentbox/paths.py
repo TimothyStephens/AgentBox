@@ -44,7 +44,7 @@ def _check_within_one_project(name, mine):
             same = mine_real == ro_real
             raise AgentboxError(
                 f"project {name}: {mine_real} is declared read-write and "
-                + (f"read-only at the same time" if same else f"sits inside its own read-only grant "
+                + ("read-only at the same time" if same else f"sits inside its own read-only grant "
                    f"{ro_real}") +
                 ". The deeper mount wins, so that path would be writable while `ab project show` lists it "
                 "as read-only. Move it out of the read-only grant, or declare it read-only too "

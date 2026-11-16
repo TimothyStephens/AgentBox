@@ -148,7 +148,7 @@ def precheck_project_settings(s, a):
     flag leaves no half-scaffolded tree behind (which would then make a corrected retry fail with "already
     exists; refusing to scaffold over it"). Everything here is re-checked by cmd_project_add afterwards;
     only the checks that need the project root to exist are left to it."""
-    reg = registry.load(s.registry_path)
+    registry.load(s.registry_path)        # for its checks: a broken registry file refuses before the scaffold
     presets_map = presets.load_presets(s.presets_dir)
     entry = {}
     _apply_project_settings(entry, a, _grant_kw(s), presets_map)
@@ -419,7 +419,7 @@ def cmd_project_check(s, a):
         print("  URL, does not.")
 
     if not exposure and accepted:
-        print(f"\n  => nothing is exposed any more: the stored acceptance is stale, and the next")
+        print("\n  => nothing is exposed any more: the stored acceptance is stale, and the next")
         print(f"     `ab project set`/`add` or `ab project accept-grant-exposure {a.name}` drops it.")
         print("     A session will start.")
         return 0
@@ -436,7 +436,7 @@ def cmd_project_check(s, a):
         print("\n  => these findings have CHANGED since they were accepted, so a session will REFUSE.")
         for line in grantcheck._diff_lines(stored, exposure):
             print(f"   {line}")
-        print(f"     Move them out of the grant, or accept the new state with")
+        print("     Move them out of the grant, or accept the new state with")
         print(f"     `ab project accept-grant-exposure {a.name}`.")
     else:
         print("\n  => not accepted, so a session will REFUSE. Move them out of the grant, or accept with")
@@ -749,7 +749,7 @@ def cmd_profile_install(s, a):
     Not a session: the profile is not a grant, so there is no project, no lock, no scan and no gate --
     just one hardened container behind the same sealed networks and squid a session gets, with the tree
     mounted at the path a session will see it at (installer.py says why that matters)."""
-    from . import installer, plugins
+    from . import installer
     doc = installer.install(s, a.agent, podman=Podman(s.podman), warn=warn, dry_run=a.dry_run)
     if a.dry_run:
         print(f"would install {len(doc['entries'])} entry(ies); the container would run:\n")
@@ -1074,7 +1074,7 @@ def cmd_gc(s, a):
 
 def cmd_selftest(s, a):
     from . import selftest
-    results, raw = selftest.run(s, a.agent, a.name, warn=warn)
+    results, _raw = selftest.run(s, a.agent, a.name, warn=warn)
     fails = [r for r in results if r.verdict == "FAIL"]
     if a.json:
         print(json.dumps([r.__dict__ for r in results], indent=1))
@@ -1237,7 +1237,7 @@ def parser(settings=None):
 
     def ex(*lines):
         """Format an examples epilog block."""
-        return "examples:\n" + "\n".join("  " + l for l in lines)
+        return "examples:\n" + "\n".join("  " + line for line in lines)
 
     def add(subparsers, name, summary, epilog=None):
         """A subparser whose one-line help also serves as its description, with an examples epilog that

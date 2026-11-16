@@ -98,7 +98,7 @@ def migrate(settings, warn=lambda m: None):
         warn(f"ab: moved {len(moved)} item(s) into {settings.projects_dir}/ -- one project is one directory "
              f"now (docs/decisions.md, 9 Nov 2026):\n  " + "\n  ".join(moved))
     if left:
-        warn(f"ab: left in the old place, not a project's: \n  " + "\n  ".join(left))
+        warn("ab: left in the old place, not a project's: \n  " + "\n  ".join(left))
     return moved
 
 
