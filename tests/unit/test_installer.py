@@ -572,6 +572,28 @@ class TheRun(SettingsCase):
         self.assertIn("make omp-image", str(cm.exception))
 
 
+class ReadLock(SettingsCase):
+    """`installer.read_lock(settings, agent)`: the parsed install.json, or None. The session log reads it
+    (item 41), so it must never raise: unreadable means "cannot tell"."""
+
+    def put(self, text):
+        path = installer.lock_path(self.settings, "omp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def test_the_parsed_lockfile(self):
+        self.put(json.dumps({"version": 1, "installed_at": 5}))
+        self.assertEqual(installer.read_lock(self.settings, "omp"), {"version": 1, "installed_at": 5})
+
+    def test_none_for_missing_broken_or_non_object(self):
+        self.assertIsNone(installer.read_lock(self.settings, "omp"))
+        for text in ("{not json", "[1, 2]", "", "\xff"):
+            with self.subTest(text=text):
+                self.put(text)
+                self.assertIsNone(installer.read_lock(self.settings, "omp"))
+
+
 class TheCli(SettingsCase):
     def test_install_is_a_profile_subcommand(self):
         code, out = self.ab("profile", "install", "--help")
