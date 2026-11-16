@@ -51,14 +51,6 @@ smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install
 
 **The gate.** `make test`; by hand on the host once, since it reaches the network.
 
-### 2.2 Unify the duplicated git-identity lookup
-
-**What.** `initproj.py` (~:274) and `session.py` (~:197, `git_identity`) each read the author name/email,
-slightly differently.
-
-**Why it matters.** Low — a cosmetic inconsistency between commits made inside a session and by `ab project init`.
-Review finding 10 (pre-real-project review, 15 Oct). Unify when next touching either.
-
 ---
 
 ## 3. Features deferred by design
@@ -131,8 +123,8 @@ Do not merge pre-emptively; add tests pinning the shared behaviour first.
   `gate.unmasked_secret_under` (ignores swap targets). **Known drift:** a custom swap target (e.g.
   `secrets.env`) is masked, but the gate's N6 check does not flag one created mid-session. That is the
   accepted host-writes-during-session limitation, not a bug to fix here.
-- **`mask_skip` resolved twice:** `mounts._rel_skips` and `grantcheck._under_mask_skip`. (It was three;
-  `grantcheck._rel_skips` went with D-E7.)
+- ~~**`mask_skip` resolved twice**~~ — **done, 16 Nov** (review item 56): both now resolve through
+  `mounts.mask_skip_paths`.
 
 ### 4.3 Uncovered gate HTTP error paths — cover opportunistically
 
