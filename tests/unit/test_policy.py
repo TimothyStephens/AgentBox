@@ -21,6 +21,35 @@ class RegistryTest(TempCase):
         registry.save(path, projects)
         self.assertEqual(registry.load(path), projects)
 
+    def test_save_is_durable_and_private(self):
+        """Item 49: the directory is made 0700, a stale `.tmp` link is not followed, and the data is fsynced
+        before the rename (a power cut used to be able to leave an empty projects.toml)."""
+        from unittest import mock
+        path = os.path.join(self.tmp, "newcfg", "projects.toml")
+        victim = os.path.join(self.tmp, "victim")
+        with open(victim, "w") as f:
+            f.write("keep\n")
+        os.makedirs(os.path.dirname(path), mode=0o700)
+        os.symlink(victim, path + ".tmp")
+        with mock.patch("os.fsync", wraps=os.fsync) as fsync:
+            registry.save(path, {"p1": {"root": "/x", "preset": "script"}})
+        self.assertTrue(fsync.called)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "keep\n")
+        self.assertEqual(registry.load(path), {"p1": {"root": "/x", "preset": "script"}})
+        fresh = os.path.join(self.tmp, "fresh", "sub", "projects.toml")
+        registry.save(fresh, {})
+        self.assertEqual(os.stat(os.path.dirname(fresh)).st_mode & 0o777, 0o700)
+
+    def test_an_existing_empty_file_is_refused_not_read_as_no_projects(self):
+        """`save` always writes a header, so an empty projects.toml is a truncated one; reading it as "no
+        projects" would let the next add overwrite every registration (item 49)."""
+        path = os.path.join(self.tmp, "projects.toml")
+        open(path, "w").close()
+        with self.assertRaises(AgentboxError) as cm:
+            registry.load(path)
+        self.assertIn("empty", str(cm.exception))
+
     def test_missing_file_is_empty(self):
         self.assertEqual(registry.load(os.path.join(self.tmp, "nope.toml")), {})
 

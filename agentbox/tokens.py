@@ -36,11 +36,24 @@ def rotate(path, agent, read=getpass.getpass, out=sys.stderr):
         raise AgentboxError("no token given (or it contains whitespace); nothing changed")
     if not token.startswith("sk-ant-"):
         print("warning: this does not look like a Claude token (expected sk-ant-...); saving anyway", file=out)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    # The directory lists what keys exist: the owner's only, however it was made (item 49).
+    mode = os.stat(d).st_mode & 0o777
+    if mode & 0o077:
+        os.chmod(d, mode & 0o700)
     tmp = path + ".new"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    # A leftover `.new` -- from a crash, or planted beside the token -- is removed and the temporary made
+    # fresh: O_TRUNC on an existing file kept ITS mode, and a link there must not be written through.
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(token + "\n")
+        f.flush()
+        os.fsync(f.fileno())          # on disk before the rename, so a power cut cannot leave an empty token
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     print(f"saved {path}; new sessions use it, running sessions keep the old one until restarted", file=out)

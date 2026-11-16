@@ -17,6 +17,11 @@ PROJECT_KEYS = projectkeys.PROJECT_KEYS
 def load(path):
     if not os.path.exists(path):
         return {}
+    if os.path.getsize(path) == 0:
+        # save() always writes a header, so an empty file is a truncated one (a crash mid-write before saves
+        # were fsynced). Read as "no projects", the next add would overwrite every registration (item 49).
+        raise AgentboxError(f"{path} is empty, so it was probably truncated; restore it from a backup, or "
+                            "delete it if you really have no projects registered")
     doc = load_toml(path)
     projects = doc.get("project", {})
     # A hand edit can make `project` a scalar, or an entry a bare value; every reader then dies on `.get`
@@ -74,10 +79,20 @@ def dump(projects):
 
 
 def save(path, projects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    text = dump(projects)                 # before anything is touched: a bad name writes nothing
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(dump(projects))
+    # Made fresh (a stale or planted `.tmp` link is not written through) and fsynced before the rename, so a
+    # power cut leaves the old file or the new one, never an empty one (item 49).
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 

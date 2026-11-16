@@ -106,6 +106,25 @@ class TokenTest(TempCase):
             self.assertEqual(f.read(), "fake-rotated-token\n")
         self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
 
+    def test_rotate_replaces_a_stale_new_file_and_never_follows_a_link(self):
+        """Item 49: a leftover `.new` (wide mode, or a link planted beside the token) is removed and the
+        temporary created fresh with O_EXCL, so neither its mode nor its target is inherited; the data is
+        fsynced before the rename and the directory is tightened to the owner."""
+        from unittest import mock
+        d = self.mkdir("cfg2")
+        os.chmod(d, 0o755)
+        p = os.path.join(d, "claude-oauth-token")
+        victim = self.write("victim", "keep\n", 0o644)
+        os.symlink(victim, p + ".new")
+        with mock.patch("os.fsync", wraps=os.fsync) as fsync:
+            tokens.rotate(p, "claude", read=lambda prompt: "fake-rotated-token", out=io.StringIO())
+        self.assertTrue(fsync.called, "flushed to disk before the rename")
+        with open(victim) as f:
+            self.assertEqual(f.read(), "keep\n", "the link was not followed")
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
+        self.assertFalse(os.path.lexists(p + ".new"))
+        self.assertEqual(os.stat(d).st_mode & 0o077, 0, "the token directory is the owner's only")
+
     def test_rotate_refuses_empty(self):
         p = os.path.join(self.tmp, "t")
         with self.assertRaises(AgentboxError):
