@@ -394,6 +394,29 @@ class FailuresLeaveNothingHalfDone(SettingsCase):
         self.assertFalse(os.path.lexists(os.path.join(prof, "skills", "deploy")), "the copy is removed")
 
 
+class UsageReferenceCoversEveryCommand(SettingsCase):
+    """docs/USAGE.md is generated from docs/gen_usage.py's GROUPS; a verb missing there is missing from the
+    reference (project clean/sync and profile install were, item 48)."""
+
+    def test_every_subparser_choice_is_in_groups(self):
+        import argparse
+        import importlib.util
+        here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        spec = importlib.util.spec_from_file_location("gen_usage", os.path.join(here, "docs", "gen_usage.py"))
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        listed = {tuple(argv) for _section, cmds in gen.GROUPS for _title, argv in cmds}
+
+        def walk(p, prefix):
+            for action in p._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for name, sub in action.choices.items():
+                        yield prefix + (name,)
+                        yield from walk(sub, prefix + (name,))
+        missing = sorted(" ".join(c) for c in walk(cli.parser(self.settings), ()) if c not in listed)
+        self.assertEqual(missing, [], "add these to docs/gen_usage.py GROUPS and regenerate docs/USAGE.md")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

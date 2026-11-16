@@ -20,7 +20,9 @@ GROUPS = [
         ("ab project show", ["project", "show"]),
         ("ab project set", ["project", "set"]),
         ("ab project rm", ["project", "rm"]),
+        ("ab project sync", ["project", "sync"]),
         ("ab project check", ["project", "check"]),
+        ("ab project clean", ["project", "clean"]),
         ("ab project selftest", ["project", "selftest"]),
         ("ab project accept-grant-exposure", ["project", "accept-grant-exposure"]),
         ("ab project accept-history-secrets", ["project", "accept-history-secrets"]),
@@ -49,6 +51,7 @@ GROUPS = [
         ("ab profile", ["profile"]),
         ("ab profile harvest", ["profile", "harvest"]),
         ("ab profile promote", ["profile", "promote"]),
+        ("ab profile install", ["profile", "install"]),
         ("ab profile dismiss", ["profile", "dismiss"]),
     ]),
     ("ab image", [
@@ -93,6 +96,10 @@ INTENT = {
     "ab project check": "Read-only: run the grant scan a session runs, print the findings, and say whether "
                         "they still match what was accepted. Exits 1 if a session would refuse.",
     "ab project ls": "List the registered projects.",
+    "ab project sync": "Bring a reviewer project's clone up to date with its builder (allowed while either is live).",
+    "ab project clean": "Remove a project's per-session clones (clone mode) that no live session uses.",
+    "ab profile install": "Install the plugins a profile declares, in a sandbox, into the tree sessions mount "
+                          "read-only.",
     "ab project rm": "Remove projects from the registry; their files, state and backups are left untouched.",
     "ab project reset-state": "Wipe a project's agent state (memory, settings, transcripts), keeping a copy.",
     "ab project accept-grant-exposure": "Record that you accept the secrets/live data grantcheck found in a "

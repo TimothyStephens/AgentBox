@@ -199,8 +199,10 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        `exec` is refused — not built (default: inherited from
-                        the preset)
+                        The preset's live-stack component (`live = observe` on
+                        build and operate) is kept; `--unset podman` returns
+                        the whole value to the preset's. `exec` is refused —
+                        not built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -212,11 +214,12 @@ options:
                         show the agent `STANDIN` in place of the masked file
                         `TARGET`, in every directory that has one
                         (repeatable), e.g. --swap .env.local=.env.dev. TARGET
-                        must be a name the masks cover (.env, .env.*, *.pem,
-                        *.key) and STANDIN must not be, so a swap can never
-                        uncover a secret. Merged with the default
-                        .env=.env.dev; a mapping for the same target replaces
-                        it
+                        must be a name the masks cover (.env, .env.*, *.env,
+                        .netrc, .pgpass, *.pem, *.key, *.p12, *.pfx, *.jks;
+                        anything under secrets/) and STANDIN must not be, so a
+                        swap can never uncover a secret. Merged with the
+                        default .env=.env.dev; a mapping for the same target
+                        replaces it
   --toulmin, --no-toulmin
                         the Toulmin integration: sessions ask `tm` for a
                         socket directory and a bridge, mount them, hand the
@@ -347,8 +350,10 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        `exec` is refused — not built (default: inherited from
-                        the preset)
+                        The preset's live-stack component (`live = observe` on
+                        build and operate) is kept; `--unset podman` returns
+                        the whole value to the preset's. `exec` is refused —
+                        not built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -360,11 +365,12 @@ options:
                         show the agent `STANDIN` in place of the masked file
                         `TARGET`, in every directory that has one
                         (repeatable), e.g. --swap .env.local=.env.dev. TARGET
-                        must be a name the masks cover (.env, .env.*, *.pem,
-                        *.key) and STANDIN must not be, so a swap can never
-                        uncover a secret. Merged with the default
-                        .env=.env.dev; a mapping for the same target replaces
-                        it
+                        must be a name the masks cover (.env, .env.*, *.env,
+                        .netrc, .pgpass, *.pem, *.key, *.p12, *.pfx, *.jks;
+                        anything under secrets/) and STANDIN must not be, so a
+                        swap can never uncover a secret. Merged with the
+                        default .env=.env.dev; a mapping for the same target
+                        replaces it
   --toulmin, --no-toulmin
                         the Toulmin integration: sessions ask `tm` for a
                         socket directory and a bridge, mount them, hand the
@@ -533,8 +539,10 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        `exec` is refused — not built (default: inherited from
-                        the preset)
+                        The preset's live-stack component (`live = observe` on
+                        build and operate) is kept; `--unset podman` returns
+                        the whole value to the preset's. `exec` is refused —
+                        not built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -546,11 +554,12 @@ options:
                         show the agent `STANDIN` in place of the masked file
                         `TARGET`, in every directory that has one
                         (repeatable), e.g. --swap .env.local=.env.dev. TARGET
-                        must be a name the masks cover (.env, .env.*, *.pem,
-                        *.key) and STANDIN must not be, so a swap can never
-                        uncover a secret. Merged with the default
-                        .env=.env.dev; a mapping for the same target replaces
-                        it
+                        must be a name the masks cover (.env, .env.*, *.env,
+                        .netrc, .pgpass, *.pem, *.key, *.p12, *.pfx, *.jks;
+                        anything under secrets/) and STANDIN must not be, so a
+                        swap can never uncover a secret. Merged with the
+                        default .env=.env.dev; a mapping for the same target
+                        replaces it
   --toulmin, --no-toulmin
                         the Toulmin integration: sessions ask `tm` for a
                         socket directory and a bridge, mount them, hand the
@@ -625,6 +634,30 @@ examples:
   ab project rm web old-thing
 ```
 
+### `ab project sync`
+
+Bring a reviewer project's clone up to date with its builder (allowed while either is live).
+
+```text
+usage: ab project sync [-h] [--branch BRANCH] name
+
+bring a reviewer's clone to its builder's last commit and hand the reviewer's reviews to the builder (host side; neither agent can reach the other's tree)
+
+positional arguments:
+  name             a reviewer project (`--reviews`), or a builder to sync all
+                   its reviewers
+
+options:
+  -h, --help       show this help message and exit
+  --branch BRANCH  the builder's branch to check out (default: the branch the
+                   builder is on)
+
+examples:
+  ab project sync web-review                 fetch, check out web's branch detached, copy reviews
+  ab project sync web                        every reviewer of web
+  ab project sync web-review --branch feature-x
+```
+
 ### `ab project check`
 
 Read-only: run the grant scan a session runs, print the findings, and say whether they still match what was accepted. Exits 1 if a session would refuse.
@@ -642,6 +675,27 @@ options:
 
 examples:
   ab project check web
+```
+
+### `ab project clean`
+
+Remove a project's per-session clones (clone mode) that no live session uses.
+
+```text
+usage: ab project clean [-h] [--yes] name
+
+remove the per-session clones a project's clone-mode sessions left (not a live session's); the owner fetches or merges from a clone before removing it
+
+positional arguments:
+  name        the project whose clones to remove
+
+options:
+  -h, --help  show this help message and exit
+  --yes       remove them (without it: list what would go)
+
+examples:
+  ab project clean web
+  ab project clean web --yes
 ```
 
 ### `ab project selftest`
@@ -1144,6 +1198,29 @@ options:
 
 examples:
   ab profile promote web/skills-deploy --as skills/deploy
+```
+
+### `ab profile install`
+
+Install the plugins a profile declares, in a sandbox, into the tree sessions mount read-only.
+
+```text
+usage: ab profile install [-h] [--dry-run] {claude,omp}
+
+install the plugins the profile declares, in a sandbox, into a tree sessions mount read-only
+
+positional arguments:
+  {claude,omp}  whose plugins.toml to install
+
+options:
+  -h, --help    show this help message and exit
+  --dry-run     print what would be installed and the script that would run;
+                change nothing
+
+examples:
+  ab profile install omp
+  ab profile install claude
+  ab profile install omp --dry-run
 ```
 
 ### `ab profile dismiss`
