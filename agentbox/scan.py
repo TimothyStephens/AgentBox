@@ -106,10 +106,14 @@ def worktrees(grants, skip=None):
 
 
 def _hash_file(path):
-    """'link:<target>' for a symlink, else sha256 of the content plus the mode bits."""
+    """'link:<target>' for a symlink, 'special:<kind>' for anything that is not a regular file (a FIFO, socket
+    or device is never opened: a FIFO with no writer blocks open() for good), else sha256 of the content plus
+    the mode bits."""
     st = os.lstat(path)
     if stat.S_ISLNK(st.st_mode):
         return "link:" + os.readlink(path)
+    if not stat.S_ISREG(st.st_mode):
+        return "special:" + stat.filemode(st.st_mode)
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -537,7 +541,8 @@ def state_snapshot(state_dir):
                 continue
             try:
                 entry = {"hash": _hash_file(p)}
-                if not _credential_like(rel) and not os.path.islink(p) and os.path.getsize(p) <= STATE_TEXT_MAX:
+                regular = not entry["hash"].startswith(("link:", "special:"))
+                if regular and not _credential_like(rel) and os.path.getsize(p) <= STATE_TEXT_MAX:
                     with open(p, "rb") as f:
                         entry["text"] = f.read().decode("utf-8", errors="replace")
             except OSError as e:

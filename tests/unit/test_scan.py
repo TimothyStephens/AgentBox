@@ -151,6 +151,40 @@ class Scan(TempCase):
         self.assertTrue(source.endswith("pre-commit"))
 
 
+def _finishes(fn, timeout=5):
+    """fn's result, or None when it has not returned within timeout (a FIFO opened for reading blocks forever)."""
+    import threading
+    box = []
+    t = threading.Thread(target=lambda: box.append(fn()), daemon=True)
+    t.start()
+    t.join(timeout)
+    return box[0] if box else None
+
+
+class SpecialFiles(TempCase):
+    """Item 26: a FIFO (or socket, device) in a grant must be recorded, never opened: open() on a FIFO with no
+    writer blocks until one arrives, which hung the snapshot and the report."""
+
+    def test_a_fifo_named_like_a_file_that_runs_later_is_recorded_not_opened(self):
+        root = self.mkdir("g")
+        fifo = os.path.join(root, "Makefile")
+        os.mkfifo(fifo)
+        h = _finishes(lambda: scan._hash_file(fifo))
+        self.assertIsNotNone(h, "_hash_file blocked on the FIFO")
+        self.assertTrue(h.startswith("special:"), h)
+        state = _finishes(lambda: scan.files_state(root))
+        self.assertIsNotNone(state, "files_state blocked on the FIFO")
+        self.assertEqual(state["Makefile"][2], h)
+
+    def test_a_fifo_in_the_agent_state_is_hashed_by_kind_and_not_read(self):
+        state_dir = self.mkdir("state")
+        os.mkfifo(os.path.join(state_dir, "CLAUDE.md"))
+        snap = _finishes(lambda: scan.state_snapshot(state_dir))
+        self.assertIsNotNone(snap, "state_snapshot blocked on the FIFO")
+        self.assertTrue(snap["CLAUDE.md"]["hash"].startswith("special:"), snap)
+        self.assertNotIn("text", snap["CLAUDE.md"])
+
+
 class RefMovement(TempCase):
     """What a session did to HEAD and the refs -- the changes that leave no file behind.
 

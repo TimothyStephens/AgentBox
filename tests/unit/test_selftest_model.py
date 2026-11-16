@@ -79,3 +79,25 @@ class CliVersionLine(unittest.TestCase):
         r = selftest.cli_version_result("omp", "")
         self.assertEqual((r.label, r.verdict), ("omp CLI version", "SKIP"))
         self.assertIn("make omp-image", r.detail)
+
+
+class GrepTree(unittest.TestCase):
+    """Item 26: the host-side token search opens every file under the state, backups and logs; a FIFO there
+    (no writer) blocked it forever. Only regular files are read."""
+
+    def test_a_fifo_is_skipped_and_regular_files_are_still_searched(self):
+        import os
+        import tempfile
+        import threading
+        from agentbox import selftest
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        os.mkfifo(os.path.join(d, "pipe"))
+        with open(os.path.join(d, "hit.txt"), "w") as f:
+            f.write("xx tok-123 yy")
+        box = []
+        t = threading.Thread(target=lambda: box.append(selftest._grep_tree(d, b"tok-123")), daemon=True)
+        t.start()
+        t.join(5)
+        self.assertTrue(box, "_grep_tree blocked on the FIFO")
+        self.assertEqual(box[0], [os.path.join(d, "hit.txt")])

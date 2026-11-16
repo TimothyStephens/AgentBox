@@ -1,5 +1,6 @@
 """Orchestrates `ab project selftest`: a real session whose command is the probe."""
 import os
+import stat
 
 from .. import session as sessionmod
 from .. import sockguard
@@ -31,7 +32,8 @@ def _inside(path, parent):
 
 
 def _grep_tree(root, needle):
-    """Paths under root whose contents contain needle (bytes)."""
+    """Paths under root whose contents contain needle (bytes). Only regular files are opened: a FIFO with no
+    writer blocks open() for good, and a symlink is read where it points."""
     hits = []
     if not needle or not os.path.exists(root):
         return hits
@@ -43,7 +45,8 @@ def _grep_tree(root, needle):
         for fn in files:
             p = os.path.join(dirpath, fn)
             try:
-                if os.path.islink(p) or os.path.getsize(p) > 64 << 20:
+                st = os.lstat(p)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > 64 << 20:
                     continue
                 with open(p, "rb") as f:
                     if needle in f.read():
