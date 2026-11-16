@@ -2,6 +2,7 @@ import os
 import subprocess
 
 from agentbox import mounts
+from agentbox.errors import AgentboxError
 
 from .helpers import TempCase
 
@@ -246,3 +247,94 @@ class WidenedSecretNames(TempCase):
     def test_grantcheck_uses_the_same_tuple(self):
         from agentbox import grantcheck
         self.assertIs(grantcheck.SECRET_FILES, mounts.MASK_FILES)
+
+
+class GitConfigPathsAreCovered(TempCase):
+    """Review item 15 (16 Nov): `.git/config` was read-only, but a `core.hooksPath` or `include.path` ALREADY in
+    it (husky's `.husky`, a repo's `.githooks`) named a writable path the owner's git runs or reads from."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+        subprocess.run(["git", "init", "-q", self.root], check=True)
+
+    def cfg(self, key, value):
+        subprocess.run(["git", "-C", self.root, "config", key, value], check=True)
+
+    def by_dst(self, p):
+        return {os.path.relpath(m.dst, self.root): m for m in p.mounts}
+
+    def test_an_in_grant_hooks_path_is_covered_read_only_and_counts_as_covered(self):
+        self.cfg("core.hooksPath", ".husky")
+        self.mkdir("proj", ".husky")
+        p = mounts.plan(root=self.root)
+        m = self.by_dst(p)
+        self.assertEqual((m[".husky"].kind, m[".husky"].ro, m[".husky"].src), ("bind", True, os.path.join(self.root, ".husky")))
+        self.assertIn(os.path.join(self.root, ".husky"), mounts.covered(p, [self.root]))
+        self.assertNotIn(os.path.join(self.root, ".husky"), mounts.hidden(p), "readable, so not hidden from the scan")
+
+    def test_a_missing_hooks_path_is_created_and_covered(self):
+        """Otherwise it is the agent's to create, and the owner's next commit runs it."""
+        self.cfg("core.hooksPath", "tools/hooks")
+        p = mounts.plan(root=self.root)
+        self.assertIn(os.path.join(self.root, "tools", "hooks"), p.create_dirs)
+        self.assertTrue(self.by_dst(p)["tools/hooks"].ro)
+        mounts.prepare(p)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "tools", "hooks")))
+
+    def test_an_include_is_resolved_against_the_config_file_and_covered(self):
+        self.cfg("include.path", "../.gitconfig.local")          # relative to .git/, so the root
+        self.write("proj/.gitconfig.local", "[user]\n\tname = x\n")
+        m = self.by_dst(mounts.plan(root=self.root))
+        self.assertEqual((m[".gitconfig.local"].kind, m[".gitconfig.local"].ro), ("bind", True))
+
+    def test_a_missing_include_is_created_empty_and_covered(self):
+        self.cfg("include.path", "../local.inc")
+        p = mounts.plan(root=self.root)
+        self.assertIn(os.path.join(self.root, "local.inc"), p.create_files)
+        self.assertTrue(self.by_dst(p)["local.inc"].ro)
+
+    def test_an_included_file_that_sets_hooks_path_is_followed(self):
+        self.cfg("include.path", "../extra.inc")
+        self.write("proj/extra.inc", "[core]\n\thooksPath = .githooks\n")
+        self.mkdir("proj", ".githooks")
+        m = self.by_dst(mounts.plan(root=self.root))
+        self.assertTrue(m[".githooks"].ro)
+        self.assertTrue(m["extra.inc"].ro)
+
+    def test_include_if_and_tilde_paths_are_read(self):
+        self.cfg("includeIf.gitdir:/x/.path", "../cond.inc")
+        found = mounts.git_config_targets(os.path.join(self.root, ".git"))
+        self.assertEqual([(k, t) for _c, k, t in found], [("includeif.gitdir:/x/.path", os.path.join(self.root, "cond.inc"))])
+        self.cfg("core.hooksPath", "~/hooks")
+        found = dict((k, t) for _c, k, t in mounts.git_config_targets(os.path.join(self.root, ".git")))
+        self.assertEqual(found["core.hookspath"], os.path.join(os.path.expanduser("~"), "hooks"))
+
+    def test_a_target_outside_the_grant_or_a_symlink_is_left_to_grantcheck(self):
+        outside = self.mkdir("elsewhere")
+        self.cfg("core.hooksPath", outside)
+        self.cfg("include.path", "../link.inc")
+        os.symlink("/etc/hostname", os.path.join(self.root, "link.inc"))
+        p = mounts.plan(root=self.root)
+        dsts = [m.dst for m in p.mounts]
+        self.assertNotIn(outside, dsts)
+        self.assertNotIn(os.path.join(self.root, "link.inc"), dsts)
+        self.assertEqual(p.create_files, [])
+
+    def test_a_repo_without_these_keys_is_unchanged(self):
+        p = mounts.plan(root=self.root)
+        self.assertEqual(sorted(os.path.relpath(m.dst, self.root) for m in p.mounts), [".", ".git/config", ".git/hooks"])
+
+
+class GitConfigThatCannotBeParsed(TempCase):
+    """A `core.hooksPath` the launcher cannot read is one it cannot cover (item 15): the plan refuses, as it
+    does for an unreadable `.git` file, rather than starting with the hooks path writable."""
+
+    def test_a_bad_config_refuses_the_plan(self):
+        root = self.mkdir("proj")
+        subprocess.run(["git", "init", "-q", root], check=True)
+        with open(os.path.join(root, ".git", "config"), "a") as f:
+            f.write("[core\n")
+        with self.assertRaises(AgentboxError) as cm:
+            mounts.plan(root=root)
+        self.assertIn("cannot read this git config", str(cm.exception))

@@ -556,3 +556,51 @@ class SandboxNotesNameTheMasks(SettingsCase):
         for name in mounts.MASK_EXEMPT:
             self.assertIn(f"`{name}`", notes, name)
         self.assertIn("are not", notes)
+
+
+class LauncherGitRunsSafe(SettingsCase):
+    """Review item 15 (16 Nov): the launcher's own git calls on agent-written trees (the history check, the clone
+    for clone mode) take the end-of-session scan's safe flags and no system/global config, so a `core.hooksPath`
+    or `diff.external` planted in one cannot run on the host."""
+
+    def spy(self):
+        import subprocess
+        from unittest import mock
+        calls, real = [], subprocess.run
+
+        def run(argv, **kw):
+            calls.append((argv, kw))
+            return real(argv, **kw)
+        patcher = mock.patch.object(session.subprocess, "run", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def assert_safe(self, argv, kw):
+        from agentbox import scan
+        for flag in scan.GIT_SAFE[1::2]:
+            self.assertIn(flag, argv, (flag, argv))
+        self.assertEqual(kw["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(kw["env"]["GIT_CONFIG_GLOBAL"], os.devnull)
+
+    def test_the_history_check(self):
+        root = self.project("p1")
+        calls = self.spy()
+        session._history_masked(os.path.join(root, ".git"), 60)
+        git = [c for c in calls if c[0][:1] == ["git"]]
+        self.assertEqual(len(git), 1)
+        self.assert_safe(*git[0])
+
+    def test_the_clone(self):
+        import subprocess
+        root = self.project("p1")
+        self.write("projects/p1/a.txt", "x\n")
+        subprocess.run(["git", "-C", root, "add", "."], check=True)
+        subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", "i"], check=True)
+        calls = self.spy()
+        session.clone_root(self.settings, "p1", "abt-unit-claude-p1-1", root)
+        # toulmin.head_of's rev-parse goes through the same subprocess module; it is toulmin.py's to harden
+        git = [c for c in calls if c[0][:1] == ["git"] and ("clone" in c[0] or "checkout" in c[0])]
+        self.assertEqual(len(git), 2, [c[0] for c in git])
+        for argv, kw in git:
+            self.assert_safe(argv, kw)

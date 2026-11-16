@@ -6,7 +6,9 @@ read-write:
   * a non-empty file with a masked name (`mounts.MASK_FILES`: `.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`,
     `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`), or any file under a `secrets/` directory, that the masks do
     not cover (an un-masked secret the agent could read);
-  * a `.git` whose remote URLs carry credentials (`https://user:pass@host`);
+  * a `.git` whose remote URLs carry credentials (`https://user:pass@host`), or whose config names a
+    `core.hooksPath` or `include.path` the session's read-only covers cannot reach (outside every grant, a
+    symlink, or in a config that cannot be read): the owner's git would run or read what the agent writes;
   * files that look like live data: `*.db` / `*.sqlite` / `*.sqlite3` / `*.duckdb` / `*.sql` / `*.dump` over
     LIVE_DATA_MB, and any host path a compose file in the grant binds as a volume holding such data.
 
@@ -25,6 +27,7 @@ import re
 import stat
 
 from . import mounts
+from .errors import AgentboxError
 
 LIVE_DATA_MB = 1
 SECRET_FILES = mounts.MASK_FILES          # one list: the scan looks for exactly what the masks would hide (item 28)
@@ -47,6 +50,24 @@ def _git_credential_urls(git_dir):
             continue
         if CRED_URL.search(text):
             yield p
+
+
+def _git_config_escapes(git_dir, grants):
+    """Config paths of one git dir that the session's covers do not reach (mounts.git_overlays covers the
+    rest): a hooksPath or include outside every grant, one that is a symlink (the agent could retarget it),
+    or a config git cannot read. Each is (text, sig)."""
+    try:
+        targets = mounts.git_config_targets(git_dir)
+    except AgentboxError as e:
+        yield f"git config cannot be read, so its hooks path is not covered: {e}", f"gitcfg:{git_dir}"
+        return
+    for cfg, key, target in targets:
+        if os.path.islink(target):
+            yield (f"git config {key} is a symlink, which the read-only cover would not pin: {target} "
+                   f"(set in {cfg})"), f"gitcfg:{target}"
+        elif not any(target == g or target.startswith(g.rstrip("/") + "/") for g in grants):
+            yield (f"git config {key} points outside the grant, so it is not covered read-only: {target} "
+                   f"(set in {cfg}); the host's git runs or reads what a session writes there"), f"gitcfg:{target}"
 
 
 def _compose_data_binds(path, grant):
@@ -120,6 +141,7 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
         return any(p == c or p.startswith(c.rstrip("/") + "/") for c in covered)
 
     found, ro_found, warn = {}, {}, set()
+    all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants)]   # a target in any is covered
 
     def onerror(e):
         warn.add(f"{getattr(e, 'filename', '?')}: unreadable ({getattr(e, 'strerror', e)}); a container's data "
@@ -147,6 +169,8 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
             if os.path.isdir(gd):
                 for c in _git_credential_urls(gd):
                     found[f"git credentials in a remote URL: {c}"] = f"gitcred:{c}"
+                for text, sig in _git_config_escapes(gd, all_grants):
+                    found[text] = sig
             in_secrets = any(part in mounts.MASK_DIRS for part in rel.split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
@@ -217,9 +241,9 @@ def fingerprint(findings):
 
 def sig_path(sig):
     """The path a finding's signature is about. Signatures are `<path>|size|mtime|inode`, or `gitcred:<path>`
-    / `compose:<path>` where there is no file to stat."""
+    / `compose:<path>` / `gitcfg:<path>` where there is no file to stat."""
     sig = str(sig)
-    for prefix in ("gitcred:", "compose:"):
+    for prefix in ("gitcred:", "compose:", "gitcfg:"):
         if sig.startswith(prefix):
             return sig[len(prefix):]
     return sig.split("|", 1)[0]

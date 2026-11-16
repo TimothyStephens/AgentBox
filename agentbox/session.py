@@ -70,6 +70,12 @@ def mount_mode_of(root, mount, toulmin):
     return "clone" if toulmin and os.path.isdir(os.path.join(root, ".git")) else "checkout"
 
 
+def _git_env():
+    """The repo's own config as the only one for the launcher's git calls on agent-written trees: no system
+    or global config (a `core.hooksPath` or `diff.external` there would run on the host), no prompts."""
+    return dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
+
+
 def clone_root(settings, project_name, session, root):
     """Clone mode: `git clone --no-hardlinks <root> projects/<name>/clones/<session>/`, then a session branch.
     Returns {"clone", "branch", "base"}; base is the commit the clone was made from. The clone is kept after
@@ -84,7 +90,9 @@ def clone_root(settings, project_name, session, root):
     if os.path.lexists(clone):
         raise AgentboxError(f"{clone} already exists; `ab project clean {project_name}` removes old clones")
     branch = f"agentbox/{session}"
-    p = subprocess.run(["git", "clone", "-q", "--no-hardlinks", root, clone], capture_output=True, text=True)
+    # scan.GIT_SAFE: the clone is made from an agent-written tree, so nothing its config names may run here
+    p = subprocess.run(["git", *scan.GIT_SAFE, "clone", "-q", "--no-hardlinks", root, clone], capture_output=True,
+                       text=True, env=_git_env())
     if p.returncode != 0:
         raise AgentboxError(f"clone mode: `git clone` failed: {p.stderr.strip()[-400:]}")
     base = toulmin.head_of(clone)
@@ -92,7 +100,8 @@ def clone_root(settings, project_name, session, root):
         shutil.rmtree(clone, ignore_errors=True)
         raise AgentboxError(f"project {project_name}: {root} has no commits yet, so there is nothing to clone a "
                             "session branch from; commit first, or use mount = checkout")
-    p = subprocess.run(["git", "-C", clone, "checkout", "-q", "-b", branch], capture_output=True, text=True)
+    p = subprocess.run(["git", "-C", clone, *scan.GIT_SAFE, "checkout", "-q", "-b", branch], capture_output=True,
+                       text=True, env=_git_env())
     if p.returncode != 0:
         shutil.rmtree(clone, ignore_errors=True)
         raise AgentboxError(f"clone mode: could not create branch {branch} in the clone: {p.stderr.strip()[-300:]}")
@@ -169,9 +178,9 @@ def dev_tier(project):
 def _history_masked(git_dir, timeout):
     """Paths in one repo's history (all refs) whose names the masks cover. Raises if git cannot tell."""
     try:
-        p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", "-c", "core.fsmonitor=false", "log",
+        p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", *scan.GIT_SAFE, "log",
                             "--all", "--format=", "--name-only", "--diff-filter=AM", "--no-renames"],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout, env=_git_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AgentboxError(f"cannot read the git history of {git_dir} ({e}); refusing rather than guessing")
     if p.returncode != 0 and "does not have any commits" not in p.stderr:

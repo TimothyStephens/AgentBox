@@ -1,6 +1,7 @@
 """Track 1 (Tim, 6 Oct): the grant holds code; a grant with secrets or live data refuses to start unless the
 exposure is accepted. grantcheck.scan returns (findings, warnings); findings block, warnings only inform."""
 import os
+import subprocess
 
 from agentbox import cli, grantcheck, registry, session
 from agentbox.errors import AgentboxError
@@ -439,3 +440,43 @@ class WidenedNames(TempCase):
             self.assertIn(want, joined, want)
         self.assertNotIn("schema.sql", joined)
         self.assertNotIn(".env.dev", joined)
+
+
+class GitConfigEscapes(TempCase):
+    """Review item 15 (16 Nov): a hooks path or include the covers cannot reach is a finding, not a silence."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+        subprocess.run(["git", "init", "-q", self.root], check=True)
+
+    def cfg(self, key, value):
+        subprocess.run(["git", "-C", self.root, "config", key, value], check=True)
+
+    def test_outside_and_symlink_targets_are_findings_in_grant_ones_are_not(self):
+        outside = self.mkdir("elsewhere", "hooks")
+        self.cfg("core.hooksPath", outside)
+        self.cfg("include.path", "../link.inc")
+        os.symlink("/etc/hostname", os.path.join(self.root, "link.inc"))
+        findings, _ = grantcheck.scan(self.root, [self.root])
+        joined = "\n".join(texts(findings))
+        self.assertIn(f"points outside the grant, so it is not covered read-only: {outside}", joined)
+        self.assertIn("is a symlink", joined)
+        self.assertTrue(all(f["sig"].startswith("gitcfg:") for f in findings), findings)
+        # drop the include first: git itself follows it on the next `git config` write
+        subprocess.run(["git", "-C", self.root, "config", "--unset", "include.path"], check=True)
+        os.unlink(os.path.join(self.root, "link.inc"))
+        self.cfg("core.hooksPath", ".husky")
+        self.assertEqual(grantcheck.scan(self.root, [self.root])[0], [], "an in-grant target is the plan's to cover")
+
+    def test_a_target_in_another_grant_is_covered_there_so_not_a_finding(self):
+        other = self.mkdir("data")
+        self.cfg("core.hooksPath", os.path.join(other, "hooks"))
+        self.assertEqual(grantcheck.scan(self.root, [self.root, other])[0], [])
+        self.assertEqual(grantcheck.scan(self.root, [self.root], warn_grants=[other])[0], [], "read-only there")
+
+    def test_an_unparseable_config_is_a_finding(self):
+        with open(os.path.join(self.root, ".git", "config"), "a") as f:
+            f.write("[core\n")
+        findings, _ = grantcheck.scan(self.root, [self.root])
+        self.assertIn("git config cannot be read", "\n".join(texts(findings)))

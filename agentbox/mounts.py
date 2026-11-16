@@ -7,6 +7,7 @@ import errno
 import fnmatch
 import os
 import stat
+import subprocess
 from dataclasses import dataclass
 
 from .errors import AgentboxError
@@ -228,10 +229,75 @@ def find_git_dirs(grant, skip_rel=()):
     return found, outside
 
 
+CONFIG_PATH_KEYS = r"^(core\.hookspath|include\.path|includeif\..*\.path)$"
+CONFIG_DEPTH = 8                 # include chains deeper than this are not something a repo does by accident
+
+
+def git_config_paths(cfg, work):
+    """[(key, path)] for every `core.hooksPath`, `include.path` and `includeIf.<cond>.path` a git config file
+    sets, each resolved the way git resolves it: `~/` expanded; a relative hooksPath against the WORK tree
+    (where hooks run), a relative include against the config file's own directory. Nothing is followed:
+    `--file` turns includes off, so this is one file's own entries.
+
+    git parses its own format (quoting, continuation lines, subsections); a hand parser would disagree with
+    it exactly where an agent would want it to. Raises when the file cannot be read or parsed (git exits 128):
+    a config the launcher cannot read is one whose hooks path it cannot cover (audit F-10's class)."""
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
+    try:
+        p = subprocess.run(["git", "config", "--file", cfg, "-z", "--get-regexp", CONFIG_PATH_KEYS],
+                           capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise AgentboxError(f"{cfg}: cannot read this git config ({e}), so a hooks path or include it names "
+                            "cannot be covered read-only")
+    if p.returncode == 1:
+        return []
+    if p.returncode != 0:
+        raise AgentboxError(f"{cfg}: cannot read this git config ({p.stderr.strip()[-200:]}), so a hooks path or "
+                            "include it names cannot be covered read-only; fix it or move the repo out of the grant")
+    out = []
+    for entry in p.stdout.split("\0"):
+        if not entry:
+            continue
+        key, _, value = entry.partition("\n")
+        value = os.path.expanduser(value)
+        base = work if key == "core.hookspath" else os.path.dirname(cfg)
+        out.append((key, os.path.normpath(os.path.join(base, value))))
+    return out
+
+
+def _git_work_tree(g):
+    """Where a git dir's hooks run: the checkout for a `.git` directory, the git dir itself for a bare repo."""
+    return os.path.dirname(g) if os.path.basename(g) == ".git" else g
+
+
+def git_config_targets(g):
+    """Every path the covered configs of one git dir point at, following includes that lie inside the git
+    dir's own tree of config files: [(config file, key, target)]. Raises when a config cannot be read."""
+    work = _git_work_tree(g)
+    todo = [os.path.join(g, n) for n in ("config", "config.worktree")]
+    seen, out = set(), []
+    while todo and len(seen) < CONFIG_DEPTH * 2:
+        cfg = todo.pop(0)
+        if cfg in seen or not os.path.isfile(cfg) or os.path.islink(cfg):
+            continue
+        seen.add(cfg)
+        for key, target in git_config_paths(cfg, work):
+            out.append((cfg, key, target))
+            if key != "core.hookspath" and os.path.isfile(target) and not os.path.islink(target):
+                todo.append(target)          # an included file may itself set hooksPath or include more
+    return out
+
+
 def git_overlays(git_dirs, grants):
-    """Read-only hooks/, config and config.worktree for every git dir that sits inside a writable grant.
-    A git dir outside every grant is not mounted, so the agent cannot reach it at all."""
-    mounts, create_dirs = [], []
+    """Read-only hooks/, config and config.worktree for every git dir that sits inside a writable grant,
+    plus whatever those configs point at inside a grant: a `core.hooksPath` (husky's `.husky`, a repo's
+    `.githooks`) is where the OWNER's git runs hooks from, and an `include.path` is config the owner's git
+    reads, so a writable one would let a session plant a hook the read-only `.git/hooks` was meant to stop
+    (review 16 Nov, item 15). A missing target is created empty and covered: it would otherwise be the
+    agent's to create. A target outside every grant, or a symlink, is not covered here; `grantcheck` reports
+    it, so the session refuses until it is accepted or the config is changed. A git dir outside every grant
+    is not mounted, so the agent cannot reach it at all."""
+    mounts, create_dirs, create_files = [], [], []
     for g in sorted(git_dirs):
         if not any(_inside(g, gr) for gr in grants):
             continue
@@ -243,7 +309,13 @@ def git_overlays(git_dirs, grants):
             cfg = os.path.join(g, name)
             if os.path.isfile(cfg) and not os.path.islink(cfg):
                 mounts.append(Mount("bind", cfg, cfg, ro=True))
-    return mounts, create_dirs
+        for _cfg, key, target in git_config_targets(g):
+            if not any(_inside(target, gr) for gr in grants) or target in grants or os.path.islink(target):
+                continue                     # grantcheck's to report, not ours to cover
+            if not os.path.lexists(target):
+                (create_dirs if key == "core.hookspath" else create_files).append(target)
+            mounts.append(Mount("bind", target, target, ro=True))
+    return mounts, create_dirs, create_files
 
 
 def compose_overlays(grant, skip_rel=()):
@@ -274,9 +346,10 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
             if not any(_inside(target, gr) for gr in rw_grants):
                 notes.append(f"{checkout}: .git points to {target}, which is not mounted (git will not work "
                              "there, and its hooks are out of the agent's reach)")
-    m, d = git_overlays(git_dirs, rw_grants)
+    m, d, f = git_overlays(git_dirs, rw_grants)
     mounts += m
     dirs += d
+    files += f
     if compose == "ro":
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
     for g in rw_grants + list(data_ro):          # secret masks always apply; there is no way to turn them off
