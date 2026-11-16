@@ -183,12 +183,13 @@ def remains(settings):
 
 
 def grep_canary(canary, root, *, exclude_files=(), exclude_dirs=(), skip_paths=()):
-    """Files under `root` containing `canary` (fixed string, text files only), via grep -rIlF. Honours
-    grep's --exclude/--exclude-dir globs, then drops any path in `skip_paths`. Returns [] when root is
-    missing. This reads file contents — the only check that does, and only when a canary is configured."""
+    """Files under `root` containing `canary` (fixed string, binaries included: a leaked secret in a
+    database, a transcript blob or a compiled file counts), via grep -ralF. Honours grep's
+    --exclude/--exclude-dir globs, then drops any path in `skip_paths`. Returns [] when root is missing.
+    This reads file contents — the only check that does, and only when a canary is configured."""
     if not os.path.exists(root):
         return []
-    cmd = ["grep", "-rIlF"]
+    cmd = ["grep", "-ralF"]
     for g in exclude_files:
         cmd.append(f"--exclude={g}")
     for g in exclude_dirs:

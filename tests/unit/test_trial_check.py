@@ -61,3 +61,15 @@ class TrialCheck(TempCase):
                  "c": {"name": "deploy_app", "started": "t3", "restarts": 0}}
         problems = check.compare_live(before, after)
         self.assertEqual(len(problems), 3, problems)       # a restarted, b gone, c new (b recreated)
+
+
+class GrepCanary(TempCase):
+    def test_a_canary_inside_a_binary_file_is_found(self):
+        """grep -I skipped binaries, so a secret leaked into a database or a blob was invisible (scan review)."""
+        root = self.mkdir("data")
+        with open(os.path.join(root, "state.db"), "wb") as f:
+            f.write(b"\x00\x01binary CANARY-xyz\x00")
+        self.write("data/notes.txt", "plain CANARY-xyz\n")
+        self.write("data/other.txt", "nothing\n")
+        hits = check.grep_canary("CANARY-xyz", root)
+        self.assertEqual(sorted(hits), sorted([os.path.join(root, "state.db"), os.path.join(root, "notes.txt")]))
