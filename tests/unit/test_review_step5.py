@@ -1567,5 +1567,29 @@ class Item8FieldNamesAndImageMounts(unittest.TestCase):
         self.assertEqual(g.container_violations(doc), [])
 
 
+class Item10RequestHead(unittest.TestCase):
+    """Review 2026-11-16, item 10: a header value with a bare LF was re-emitted upstream as two headers."""
+
+    def test_good_heads_parse(self):
+        m, t, v, h = gate.parse_head("GET /v5/_ping HTTP/1.1\r\nHost: d\r\nX-A:  b c \r\nContent-Length: 0")
+        self.assertEqual((m, t, v), ("GET", "/v5/_ping", "HTTP/1.1"))
+        self.assertEqual(h, [("Host", "d"), ("X-A", "b c"), ("Content-Length", "0")])
+        gate.parse_head("POST /v5/libpod/build?t=x HTTP/1.0\r\nTransfer-Encoding: chunked")
+
+    def test_injected_lines_and_bad_names_refused(self):
+        for head in ("GET /v5/_ping HTTP/1.1\r\nX-A: b\nContent-Length: 99\r\nHost: d",     # bare LF
+                     "GET /v5/_ping HTTP/1.1\r\nX-A: b\rHost: d",                            # bare CR
+                     "GET /v5/_ping HTTP/1.1\r\nX-A: b\0c",                                  # NUL
+                     "GET /v5/_ping HTTP/1.1\r\nBad Name: x",                                 # not a token
+                     "GET /v5/_ping HTTP/1.1\r\nHost: d\r\n continued",                      # obs-fold
+                     "GET /v5/_ping HTTP/1.1\r\nno-colon",
+                     "GET /v5/_ping HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: identity",
+                     "GET /v5/_ping\r\nHost: d", "GET /v5/_ping HTTP/2\r\nHost: d",
+                     "GET /v5/_ping HTTP/1.1 extra\r\nHost: d", "GET /v5/_p\ting HTTP/1.1",
+                     "G ET /x HTTP/1.1", "GET  /x HTTP/1.1"):
+            with self.subTest(head=head), self.assertRaises(gate.Deny):
+                gate.parse_head(head)
+
+
 if __name__ == "__main__":
     unittest.main()

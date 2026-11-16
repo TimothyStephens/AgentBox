@@ -2241,14 +2241,34 @@ def read_head(sock):
     return head.decode("latin-1"), rest
 
 
+TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")       # RFC 9110 token: header and method names
+
+
 def parse_head(head):
+    """The request line and headers, checked before anything is re-emitted upstream (review 2026-11-16,
+    item 10): the head is split on CRLF only, so a bare LF, CR or NUL inside a value went to podman verbatim
+    as a header the gate never saw. Refused: a name that is not a token (obs-fold lines too), a value holding
+    CR, LF or NUL, more than one Transfer-Encoding, a request line not of the form METHOD SP target SP
+    HTTP/1.x."""
     lines = head.split("\r\n")
-    method, target, version = lines[0].split(" ", 2)
+    parts = lines[0].split(" ")
+    if len(parts) != 3 or not TOKEN.match(parts[0]) or not re.fullmatch(r"HTTP/1\.[01]", parts[2]) \
+            or not parts[1] or any(c.isspace() or ord(c) < 32 or c == "\x7f" for c in parts[1]):
+        raise Deny("malformed request line")
+    method, target, version = parts
     headers = []
     for line in lines[1:]:
-        if line:
-            k, v = line.split(":", 1)
-            headers.append((k.strip(), v.strip()))
+        if not line:
+            continue
+        k, sep, v = line.partition(":")
+        if not sep or not TOKEN.match(k):
+            raise Deny(f"malformed header line {line[:40]!r}")
+        v = v.strip(" \t")
+        if any(c in "\r\n\0" for c in v):
+            raise Deny(f"header {k} holds a control character")
+        headers.append((k, v))
+    if sum(k.lower() == "transfer-encoding" for k, _ in headers) > 1:
+        raise Deny("ambiguous request framing (Transfer-Encoding twice)")
     return method, target, version, headers
 
 
