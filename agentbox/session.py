@@ -1866,7 +1866,16 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
                      f"label=agentbox.session={session}`.")
                 continue
             for target in found:
-                podman.run(argv + [target], check=False)
+                # a removal that fails leaves a container or network behind under a name the next session
+                # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
+                try:
+                    r = podman.run(argv + [target], check=False)
+                    why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
+                except AgentboxError as e:
+                    why = str(e)
+                if why:
+                    warn(f"agentbox: could not remove {kind} {target} of session {session} ({why}); remove it "
+                         f"with `podman {' '.join(argv)} {target}`")
         if settings.cgroup_parent:
             # the per-session build cgroup the gate names; empty once the builds are gone
             build_cg = "/sys/fs/cgroup" + buildcap.slice_cgroup_path(settings.cgroup_parent) + f"/{session}-build"

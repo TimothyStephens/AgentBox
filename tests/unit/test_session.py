@@ -635,3 +635,29 @@ class ToulminRecordInSessionJson(ToulminCase):
                 s.prepare()
         self.assertTrue(end.called, "teardown reached `tm session end`")
         self.assertEqual(end.call_args[0][0]["toulmin"]["session"], "S4")
+
+
+class TeardownReportsFailedRemovals(SettingsCase):
+    """Item 17: a failed `podman rm` / `network rm` used to be dropped; teardown now says what is left."""
+
+    def test_a_failed_removal_is_warned_with_the_command(self):
+        import subprocess
+        from agentbox.podman import Podman
+
+        class Failing(Podman):
+            def run(self, args, **kw):
+                if args[:1] == ["rm"] or args[:2] == ["network", "rm"]:
+                    return subprocess.CompletedProcess(args, 125, "", "Error: container is busy")
+                return super().run(args, **kw)
+
+        os.environ["FAKE_PODMAN_PS"] = "abt-unit-x-1-proxy\n"
+        os.environ["FAKE_PODMAN_NETLS"] = "abt-unit-x-1-int\n"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_PS", None)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_NETLS", None)
+        warned = []
+        session.teardown(self.settings, Failing(self.settings.podman), "abt-unit-x-1", warn=warned.append)
+        text = "\n".join(warned)
+        self.assertIn("could not remove container abt-unit-x-1-proxy", text)
+        self.assertIn("`podman rm -f -v -t 5 abt-unit-x-1-proxy`", text)
+        self.assertIn("could not remove network abt-unit-x-1-int", text)
+        self.assertIn("container is busy", text)
