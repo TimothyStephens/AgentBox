@@ -2944,3 +2944,9 @@ omp-env-era wrapper and is mounted only if the host has it; left as is, to be dr
 in: "1 marketplace, 6 npm", lockfile written, and `~/.config/agentbox/omp/` holds `config.yml models.yml
 plugins profile` -- no `plugins.building`, no `plugins.previous`. The installer change is verified on real
 podman for the success path; the failure path has the unit tests.
+
+**16 Nov, the session that proved it.** A `probe` session at bb7c301 listed 7 plugins (`omp plugin list`:
+egm, the four npm packages, the two linked repos) and no MAGS line. Its one warning read "no mcp.json ...
+OMP starts without them ... `cp ~/.omp/agent/config.yml`": the text was written for a list of three seeds.
+`_missing_seeds_note` now words it for what is missing (singular or plural, the config.yml advice only when
+config.yml is, a one-clause MCP hint when only mcp.json is). Unit test on the three shapes.

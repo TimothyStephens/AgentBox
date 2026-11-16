@@ -373,6 +373,7 @@ class OmpSession(OmpSessionBase):
         s.prepare(do_backup=False)
         self.addCleanup(s.teardown)
         self.assertEqual(len([w for w in warnings if "no mcp.json in" in w]), 1, "one line when it is missing")
+
         c = os.path.join(HOME, ".omp")
         # mags-codedev.yaml left the user files on 15 Nov (MAGS reads ~/.config/mags-codedev/config.yaml only)
         self.assertFalse([m for m in s.setup.mounts if "mags-codedev" in m[1]])
@@ -390,6 +391,21 @@ class OmpSession(OmpSessionBase):
         self.addCleanup(s2.teardown)
         m = [x for x in s2.setup.mounts if x[1] == f"{c}/agent/.mcp.json"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "mcp.json"), f"{c}/agent/.mcp.json", True)])
+
+    def test_the_missing_seed_note_is_worded_for_what_is_missing(self):
+        """16 Nov: with only mcp.json missing the note still said "without them" and advised copying
+        config.yml -- the text was written for a list of three."""
+        from agentbox.adapters.omp import _missing_seeds_note as note
+        only_mcp = note(["mcp.json"], "/cfg/omp")
+        self.assertIn("no mcp.json in /cfg/omp; OMP starts without it", only_mcp)
+        self.assertNotIn("config.yml", only_mcp)
+        self.assertIn("MCP servers", only_mcp)
+        only_cfg = note(["config.yml"], "/cfg/omp")
+        self.assertIn("without it", only_cfg)
+        self.assertIn("cp ~/.omp/agent/config.yml /cfg/omp/", only_cfg)
+        both = note(["config.yml", "mcp.json"], "/cfg/omp")
+        self.assertIn("no config.yml or mcp.json in /cfg/omp; OMP starts without them", both)
+        self.assertIn("cp ~/.omp/agent/config.yml", both)
 
     def test_config_yml_comes_from_agentboxs_own_seed_as_an_overlay(self):
         """The point of the 4 Nov move: it used to be mounted from `~/.omp/agent/config.yml`, the host

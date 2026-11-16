@@ -351,14 +351,26 @@ class OmpAdapter(Adapter):
             else:
                 missing.append(fn)
         if missing:
-            sess.warn(f"agentbox: no {' or '.join(missing)} in {s.seed_dir(self.name)}; OMP starts without "
-                      f"them, on its own defaults. Create them there yourself -- config.yml is OMP's own "
-                      f"config (a default model, for one), and it used to be read from the host's ~/.omp: "
-                      f"`cp ~/.omp/agent/config.yml {s.seed_dir(self.name)}/` if you want what you had.")
+            sess.warn(_missing_seeds_note(missing, s.seed_dir(self.name)))
         for fn, path in gen.items():
             _prepare_file(os.path.join(agent_dir, fn))
             setup.mounts.append((path, os.path.join(C_OMP, "agent", fn), True))
         return setup
+
+
+def _missing_seeds_note(missing, seed_dir):
+    """One line per start about the optional seeds that are not there, worded for what is actually
+    missing: the config.yml advice (its purpose, and where the old one was) only when config.yml is."""
+    these = " or ".join(missing)
+    it, them = ("it", "it") if len(missing) == 1 else ("they", "them")
+    note = (f"agentbox: no {these} in {seed_dir}; OMP starts without {them}, on its own defaults. "
+            f"Create {it} there yourself")
+    if "config.yml" in missing:
+        note += (" -- config.yml is OMP's own config (a default model, for one), and it used to be read from "
+                 f"the host's ~/.omp: `cp ~/.omp/agent/config.yml {seed_dir}/` if you want what you had")
+    elif "mcp.json" in missing:
+        note += " if you want MCP servers in sessions (OMP's .mcp.json format)"
+    return note + "."
 
 
 def _omp_notes(doc):
