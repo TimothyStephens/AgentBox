@@ -105,6 +105,10 @@ TAIL = re.compile(rf"^{V}{LIB}(/.*)$")
 COLLECTION = {"json", "create", "prune", "stats", "load", "import", "pull", "search", "export", "exists",
               "showmounts", "kube"}
 RESOURCE = re.compile(rf"^{V}{LIB}/(containers|pods|volumes|networks)/([^/]+)(?:/.*)?$")
+# Reads of one image (its config and ENV, layers, existence): only for images the dev tier may use (item 13). An
+# image name may hold `/` (canonical_path admits an encoded one there), so the name runs to the last segment.
+IMAGE_READ = re.compile(rf"^{V}{LIB}/images/(.+)/(json|history|exists|tree|changes)$")
+PODS_LIST = re.compile(rf"^{V}/libpod/pods/json$")
 
 # Refused by the gate itself (sockguard refuses them too; this keeps them refused if its rules ever loosen).
 # Matched on the path without its version and /libpod prefix.
@@ -167,6 +171,13 @@ class NotFound(Deny):
 class UpstreamError(Deny):
     """podman failed to answer a lookup: answered 502, never taken as "no such object"."""
     status = 502
+
+
+class LocalReply(Exception):
+    """A GET the gate answers itself (200, JSON), from the raw service and filtered to the session's objects."""
+    def __init__(self, body):
+        super().__init__(len(body))
+        self.body = body
 
 
 class LocalImage(Exception):
@@ -1298,6 +1309,32 @@ class Gate:
                    f"only images from {', '.join(self.cfg['registries'])}, this project's own builds, or names "
                    "matching the project's dev_images (`ab project add --dev-image`)")
 
+    def check_image_read(self, ref):
+        """An image inspect, history, exists or tree (review 2026-11-16, item 13): the same rule as running it.
+        A present image the tier may not use is answered as missing, as a foreign container is (L1): the
+        status must not tell whether another project's or a live stack's image exists. A missing one is left
+        to podman, which answers 404 itself."""
+        if self.image_doc(ref) is None:
+            return
+        try:
+            self.check_image(ref, "image inspect")
+        except Deny:
+            raise NotFound(f"no such image: {ref!r}")
+
+    def list_pods(self, target):
+        """GET /libpod/pods/json, answered by the gate: podman's list (from the raw service, the client's query
+        kept), filtered to pods carrying the dev labels that passed the post-create check. Sockguard's owner
+        policy cannot resolve pods, so the list it forwarded showed every pod on the host (item 13)."""
+        q = urlsplit(target).query
+        status, docs = self.raw_json("/libpod/pods/json" + (f"?{q}" if q else ""))
+        if status != 200 or not isinstance(docs, list):
+            raise UpstreamError(f"podman could not list pods (status {status})")
+        with self.lock:
+            verified = set(self.verified)
+        keep = [d for d in docs if isinstance(d, dict) and self.is_dev(d.get("Labels") or {})
+                and (d.get("Id") or "") in verified]
+        return (json.dumps(keep) + "\n").encode()
+
     def check_build_images(self, context_path, target):
         """Every image the build's Containerfile(s) use (FROM, COPY --from, RUN --mount from=) must pass
         check_image. The context is the spooled request body (a tar)."""
@@ -1897,6 +1934,12 @@ class Gate:
         for m, rx, why in DENIED:
             if (m is None or m == method) and rx.match(tail):
                 raise Deny(f"{why} is not allowed in the dev tier")
+        if method in ("GET", "HEAD"):
+            m = IMAGE_READ.match(path)
+            if m:
+                self.check_image_read(m.group(1))
+            if PODS_LIST.match(path):
+                raise LocalReply(self.list_pods(target))
         if method == "POST":
             if RE["compat_create"].match(path) and not self.cfg.get("compat_creates"):
                 raise Deny("Docker-API container creates are not supported in the dev tier: sockguard refuses the "
@@ -2413,6 +2456,14 @@ def recv_all(sock):
         raw += chunk
 
 
+def send_json(client, body):
+    try:
+        client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                       + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    except OSError:
+        pass
+
+
 def deny(client, msg, status=403):
     cause = {404: "no such object", 502: "podman error"}.get(status, "agentbox-gate")
     body = json.dumps({"cause": cause, "message": f"agentbox gate: {msg}", "response": status}).encode()
@@ -2633,12 +2684,10 @@ def make_handler(gate):
                              "(one request per connection)")
             except LocalImage as e:
                 gate.log("allow", method, path, f"pull answered locally: {e.image_id[:12]} is present")
-                body = (json.dumps({"images": [e.image_id], "id": e.image_id}) + "\n").encode()
-                try:
-                    client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
-                                   + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
-                except OSError:
-                    pass
+                send_json(client, (json.dumps({"images": [e.image_id], "id": e.image_id}) + "\n").encode())
+            except LocalReply as e:
+                gate.log("allow", method, path, "answered by the gate, filtered to the session's objects")
+                send_json(client, e.body)
             except Deny as e:
                 gate.log({403: "deny", 404: "notfound"}.get(e.status, "error"), method, path, str(e))
                 try:

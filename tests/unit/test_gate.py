@@ -269,8 +269,12 @@ class Scoping(unittest.TestCase):
 
     def test_collections_pass_and_the_session_network_may_be_read(self):
         g = FakeGate()
-        for path in ("/v5/libpod/containers/json", "/v5/libpod/containers/stats", "/v5/libpod/pods/json"):
+        for path in ("/v5/libpod/containers/json", "/v5/libpod/containers/stats", "/v5/libpod/images/json"):
             self.decide(g, "GET", path)
+        # the pod list is answered by the gate itself, filtered (review 2026-11-16, item 13)
+        g.raw_json = lambda path: (200, [])
+        with self.assertRaises(gate.LocalReply):
+            self.decide(g, "GET", "/v5/libpod/pods/json")
         self.decide(g, "GET", "/v5/libpod/networks/abt-s-1-int/json")
         with self.assertRaises(gate.Deny):
             self.decide(g, "DELETE", "/v5/libpod/networks/abt-s-1-int")

@@ -1644,5 +1644,56 @@ class Item12RemoveImage(unittest.TestCase):
         decide(Fake(), "POST", "/v5/libpod/containers/create", {"image": "x", "removeImage": False})
 
 
+class Item13ImageReadsAndPodList(unittest.TestCase):
+    """Review 2026-11-16, item 13: image inspect/history/exists/tree and the pod list passed to sockguard
+    unchecked, showing a live stack's image config (its ENV) and every pod on the host."""
+
+    def gate(self):
+        g = Fake({"images/localhost/live-app:latest": {"RepoTags": ["localhost/live-app:latest"], "Labels": {}},
+                  "images/localhost/mine:1": {"RepoTags": ["localhost/mine:1"], "Labels": {}},
+                  "pods": [{"Id": "p1", "Name": "proj_pod", "Labels": POD_DEV},
+                           {"Id": "p2", "Name": "unchecked", "Labels": POD_DEV},
+                           {"Id": "p3", "Name": "live_pod", "Labels": {"io.podman.compose.project": "shop"}},
+                           {"Id": "p4", "Name": "other", "Labels": {gate.DEV_OWNER: "abt-t-1", "agentbox.role": "dev"}}]})
+        g.cfg["images"] = ["localhost/mine:*"]
+        g.verified.update({"p1", "p3", "p4"})
+        return g
+
+    def test_foreign_image_reads_answer_404_and_allowed_ones_pass(self):
+        g = self.gate()
+        for path in ("/v5/libpod/images/localhost/live-app:latest/json", "/v5/images/localhost/live-app:latest/json",
+                     "/v5/libpod/images/localhost/live-app:latest/history", "/v5/images/localhost/live-app:latest/history",
+                     "/v5/libpod/images/localhost/live-app:latest/exists", "/v5/libpod/images/localhost/live-app:latest/tree",
+                     "/v5/libpod/images/localhost/live-app:latest/changes"):
+            with self.subTest(path=path), self.assertRaises(gate.Deny) as e:
+                decide(g, "GET", path)
+            self.assertEqual(e.exception.status, 404, "a foreign image looks missing, like a foreign container")
+        for path in ("/v5/libpod/images/docker.io/library/busybox:1.36/json", "/v5/libpod/images/localhost/mine:1/json",
+                     "/v5/images/busybox/history", "/v5/libpod/images/localhost/mine:1/exists",
+                     "/v5/libpod/images/localhost/nothere:1/json",          # absent: podman's own 404
+                     "/v5/libpod/images/json"):                              # the list is not an image read
+            with self.subTest(path=path):
+                self.assertEqual(decide(g, "GET", path)[2], "pass")
+
+    def test_pod_list_is_filtered_to_the_sessions_checked_pods(self):
+        g = self.gate()
+        with self.assertRaises(gate.LocalReply) as e:
+            decide(g, "GET", "/v5/libpod/pods/json?filters=%7B%7D")
+        self.assertEqual([p["Name"] for p in json.loads(e.exception.body)], ["proj_pod"])
+        g.objects["pods"] = {"not": "a list"}
+        with self.assertRaises(gate.UpstreamError):
+            decide(g, "GET", "/v5/libpod/pods/json")
+
+    def test_pod_list_through_the_handler(self):
+        g = self.gate()
+        a, t = run_handler(self, g)
+        a.sendall(b"GET /v5/libpod/pods/json HTTP/1.1\r\nHost: d\r\n\r\n")
+        a.shutdown(socket.SHUT_WR)
+        t.join(10)
+        reply = a.recv(65536)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 200 OK"), reply[:80])
+        self.assertEqual([p["Id"] for p in json.loads(reply.split(b"\r\n\r\n", 1)[1])], ["p1"])
+
+
 if __name__ == "__main__":
     unittest.main()
