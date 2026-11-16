@@ -21,6 +21,7 @@ Claude Code registers the marketplace and enables the plugin at startup, reads t
 directory in place, and keeps its own records (`plugins/known_marketplaces.json`, `installed_plugins.json`)
 in the per-project state, where it can write. The probe that settled this is in decisions.md.
 """
+import copy
 import json
 import os
 import re
@@ -81,11 +82,46 @@ def _write_atomic(path, text):
 # With approvals on (lockdown), Claude Code's managed policy: bypass mode cannot be entered, and only managed
 # hooks and permission rules apply, so a repo's own .claude/settings.json hooks and allow rules do nothing
 # (review 2026-10-01 #2). Key names checked against the image's Claude Code build.
+#
+# "Only managed" is not scoped to the repo: it drops the user-scope rules too, and in a session the
+# user-scope settings.json IS the profile's (copied into CLAUDE_CONFIG_DIR). So the profile's own
+# `permissions.deny` list and `hooks` are carried into the managed file (`managed_policy`), where they keep
+# applying; its `allow` rules are not, since the intent of the policy is that nothing widens permissions in
+# lockdown, the profile included.
 MANAGED_APPROVALS_ON = {
     "permissions": {"disableBypassPermissionsMode": "disable"},
     "allowManagedHooksOnly": True,
     "allowManagedPermissionRulesOnly": True,
 }
+
+
+def managed_policy(settings, profile_on=True):
+    """The managed settings a lockdown session gets: MANAGED_APPROVALS_ON, plus the profile's own deny
+    rules and hooks, read from the host profile and not from the state copy. The state copy is what the
+    agent can write, and with the profile off it is never refreshed, so promoting its hooks to managed ones
+    would let one session plant a hook every later lockdown session runs. With the profile off nothing is
+    merged. A missing or unreadable profile settings.json merges nothing either: the policy still stands."""
+    doc = copy.deepcopy(MANAGED_APPROVALS_ON)
+    if not profile_on:
+        return doc
+    path = os.path.join(settings.profile_src("claude"), "settings.json")
+    if os.path.islink(path) or not os.path.isfile(path):
+        return doc
+    try:
+        with open(path) as f:
+            own = json.load(f)
+    except (OSError, ValueError):
+        return doc
+    if not isinstance(own, dict):
+        return doc
+    perms = own.get("permissions")
+    deny = perms.get("deny") if isinstance(perms, dict) else None
+    if isinstance(deny, list) and deny:
+        doc["permissions"]["deny"] = list(deny)
+    hooks = own.get("hooks")
+    if isinstance(hooks, dict) and hooks:
+        doc["hooks"] = copy.deepcopy(hooks)
+    return doc
 
 
 class ClaudeAdapter(Adapter):
@@ -177,7 +213,7 @@ class ClaudeAdapter(Adapter):
             path = os.path.join(sess.settings.session_run_dir(sess.name), "claude-managed-settings.json")
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
-                json.dump(MANAGED_APPROVALS_ON, f, indent=2)
+                json.dump(managed_policy(sess.settings, profile_on=not sess.profile_off[0]), f, indent=2)
             setup.mount_root = MANAGED_DIR
             setup.mounts.append((path, f"{MANAGED_DIR}/managed-settings.json", True))
         return setup
