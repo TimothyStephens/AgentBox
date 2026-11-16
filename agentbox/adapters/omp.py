@@ -143,6 +143,10 @@ def _walk_strings(obj):
 
 
 def _host_of(url, where):
+    """(host, port) of a provider's baseUrl. The URL itself goes into the mounted models.yml verbatim, so
+    anything in it besides scheme, host, port and path is refused: `user:pass@` is a credential in a
+    sandbox (`.hostname` would have dropped it from the check and kept it in the file), and a query or
+    fragment is where an `?api_key=` would hide."""
     try:
         parts = urlsplit(url)
         host, port = parts.hostname, parts.port
@@ -150,6 +154,12 @@ def _host_of(url, where):
         raise AgentboxError(f"{where}: bad baseUrl {url!r}")
     if parts.scheme not in ("http", "https") or not host:
         raise AgentboxError(f"{where}: baseUrl {url!r} must be http(s)://host/...")
+    if parts.username is not None or parts.password is not None:
+        raise AgentboxError(f"{where}: baseUrl {url!r} carries credentials; keys live only in "
+                            "~/.config/agentbox/keys/ (`ab keys set`), never in the models file")
+    if parts.query or parts.fragment:
+        raise AgentboxError(f"{where}: baseUrl {url!r} has a query or fragment; a base URL is "
+                            "scheme://host[:port]/path only")
     return host, port or (443 if parts.scheme == "https" else 80)
 
 
