@@ -459,8 +459,7 @@ class Gate:
             in_secrets = any(p in _m.MASK_DIRS for p in os.path.relpath(dirpath, real).split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
-                if not (in_secrets or (fn not in _m.MASK_EXEMPT
-                                       and any(fnmatch.fnmatchcase(fn, pat) for pat in _m.MASK_FILES))):
+                if not (in_secrets or _m._masked(fn)):
                     continue
                 try:
                     st = os.lstat(p)

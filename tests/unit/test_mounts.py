@@ -1,5 +1,6 @@
 import os
 import subprocess
+import unittest
 
 from agentbox import mounts
 from agentbox.errors import AgentboxError
@@ -366,3 +367,23 @@ class DevSwapMountPoint(TempCase):
         self.assertNotIn(os.path.join(root, ".env"), [m.dst for m in p.mounts])
         self.assertEqual(p.create_files, [])
         self.assertTrue(any("not a regular file" in n for n in p.notes), p.notes)
+
+
+class MaskedNameMatcherIsOneRegex(unittest.TestCase):
+    """16 Nov profile: `_masked` ran fnmatch once per pattern per file, about 1-1.4 s of a 20 000-file grant's
+    start. It is one compiled regex now; this pins that it answers exactly what the pattern loop did."""
+
+    NAMES = [".env", ".env.local", ".env.dev", ".env.example", ".env.sample", ".env.template", "prod.env",
+             "x.env.bak", ".netrc", ".pgpass", "a.pem", "a.PEM", "id.key", "key", "keys.txt", "c.p12", "c.pfx",
+             "s.jks", "env", ".envrc", "a.pem.txt", "notes.md", "", ".", "a\nb.pem", "[x].key", "*.pem"]
+
+    def test_the_regex_answers_what_the_pattern_loop_answered(self):
+        import fnmatch
+        for n in self.NAMES:
+            want = n not in mounts.MASK_EXEMPT and any(fnmatch.fnmatchcase(n, p) for p in mounts.MASK_FILES)
+            self.assertEqual(mounts._masked(n), want, repr(n))
+
+    def test_the_gate_asks_the_same_question(self):
+        import inspect
+        from agentbox import gate
+        self.assertIn("_m._masked(fn)", inspect.getsource(gate.Gate.unmasked_secret_under))

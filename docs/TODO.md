@@ -151,9 +151,8 @@ Left:
 
 Do not merge pre-emptively; add tests pinning the shared behaviour first.
 
-- **Secret-name test: one list since 16 Nov, two matchers.** `grantcheck` now calls `mounts._masked` on
-  `mounts.MASK_FILES` (review item 28). `gate.unmasked_secret_under` reads the same lists but matches inline
-  and ignores custom swap targets. **Known drift:** a custom swap target (e.g. `secrets.env`) is masked, but
+- **Secret-name test: one list and one matcher since 16 Nov.** `grantcheck` and the gate's N6 check both call
+  `mounts._masked` (review item 28; the profiling entry). The gate still ignores custom swap targets. **Known drift:** a custom swap target (e.g. `secrets.env`) is masked, but
   the gate's N6 check does not flag one created mid-session. That is the accepted host-writes-during-session
   limitation, not a bug to fix here.
 - ~~**`mask_skip` resolved twice**~~ — **done, 16 Nov** (review item 56): both now resolve through
@@ -200,6 +199,11 @@ Do these **only alongside a change that already touches the area**, with the sui
   again 16 Nov): OMP's Anthropic client resolves the name itself instead of going through `HTTPS_PROXY`; its
   OpenAI-compatible client is fine. Upstream OMP behaviour; not tested through a third-party route by choice
   (12 Nov). Act if Anthropic models are wanted in OMP sessions.
+- **Session start time** (profiled 16 Nov, decisions.md). After the log-driver and stop-timeout changes the
+  rest is podman's own container starts and the host's `podman images`. Sockguard's `podman run -d` varied
+  0.8-6.6 s with no pattern. The grants are walked about five times per start (masks, grantcheck, the scan
+  before and after, history); one shared walk is the next step if a large tree makes it hurt.
+  `tests/perf/run.sh` re-measures.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
   when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 

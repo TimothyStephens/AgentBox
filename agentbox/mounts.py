@@ -6,6 +6,7 @@ Masks are computed once, at session start.
 import errno
 import fnmatch
 import os
+import re
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -19,6 +20,9 @@ from .fsutil import inside, write_private
 # Exact names only in MASK_EXEMPT: a committed example under another name (`example.env`) is masked.
 MASK_FILES = (".env", ".env.*", "*.env", ".netrc", ".pgpass", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks")
 MASK_EXEMPT = (".env.example", ".env.sample", ".env.template", ".env.dev")
+# MASK_FILES as one compiled pattern: `_masked` runs once per file of every grant, several times per session
+# start, and a fnmatch call per pattern was about 1-1.4 s of a 20 000-file grant (tests/perf, 16 Nov).
+_MASK_RE = re.compile("|".join(f"(?:{fnmatch.translate(p)})" for p in MASK_FILES))
 MASK_DIRS = ("secrets",)
 WALK_SKIP = (".git", "node_modules", ".venv", "venv", "__pycache__")
 COMPOSE_FILES = ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml",
@@ -73,7 +77,7 @@ def _masked(name):
     the arm could not change an answer (deadness pinned by test_projectkeys.SwapTargetsAreAlwaysMaskedNames)."""
     if name in MASK_EXEMPT:
         return False
-    return any(fnmatch.fnmatchcase(name, p) for p in MASK_FILES)
+    return _MASK_RE.match(name) is not None
 
 
 def _walk(grant, skip_rel):
