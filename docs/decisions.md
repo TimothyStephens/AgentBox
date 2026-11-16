@@ -3109,3 +3109,13 @@ clone mode's steady state (the bug above). cProfile also swallows `ab`'s exit st
 
 **Also seen.** In-session `podman images` 7.4 s, with the gate passing the request in milliseconds: the
 host's podman listing (13 Nov). Sockguard's `podman run -d` varied 0.8-6.6 s with no pattern; watch.
+
+**Rerun at 49f2bb5, 3 rounds (`perf-results/20261116-143542`).** Medians, before → after: small session
+19.5 → 6.8 s; small dev-tier 66.4 → 20.7 s (about 6 s of it the in-session test steps); big tree 28.8 →
+13.4 s; `ab project check` on the big tree 2.3 → 1.5 s; selftest 65.1 → 24.3 s. Clone mode now starts
+every round (13.4 s). All under cProfile, which inflates the file walks, so unprofiled starts are faster
+still. **Open: a large build context fails in the dev tier.** The big tree's build (about 150-250 MB of
+context: 100 MiB of blobs, 20 000 files, `.git`) failed every round with exit 125 after 6-8 s. The gate
+allowed and spooled it, then got `BrokenPipeError` forwarding it, and sockguard-dev logged no request.
+Sockguard's README says oversized bodies on its bounded tar inspectors get `413 Payload Too Large`, without
+naming the limit [likely the cause; the limit is unverified]. The agent sees only a failed build.
