@@ -78,9 +78,10 @@ SECTIONS = ("plugin", "npm", "repo")
 # decisions.md). An `[[npm]]` or `[[repo]]` entry in a Claude profile is a declaration nothing could honour,
 # so it is refused by name rather than installed as nothing.
 AGENT_SECTIONS = {"omp": SECTIONS, "claude": ("plugin",)}
-# The npm entries install into `node_modules/` of the installed tree; each repo entry is a directory beside
-# it, named by its `name`. So that one name is reserved.
-NPM_DIR = "node_modules"
+# A `[[repo]]` entry is cloned to `<tree>/.agentbox/sources/<name>`, and a `[[plugin]]` entry's catalog to
+# `<tree>/.agentbox/sources/<marketplace>`: one directory of names, shared by the two kinds, which is what
+# `_check_unique` checks across them. (npm entries land in `node_modules/` at the tree root, nowhere near
+# it, so no name is reserved for them any more.)
 
 
 class Entry:
@@ -221,9 +222,9 @@ def _repo(table, what):
     ext = table.get("extension_dir", ".")
     if not isinstance(ext, str) or not ext.strip():
         _refuse(what, "extension_dir must be a non-empty string")
-    if not PLAIN_NAME.match(name) or name == NPM_DIR:
+    if not PLAIN_NAME.match(name):
         _refuse(what, f"name {name!r} becomes a directory in the installed tree: letters, digits, '.', '_' "
-                      f"and '-', and not {NPM_DIR!r}, where the npm entries land")
+                      "and '-'")
     _check_https(url, what)
     _check_sha(ref, what)
     # Joined onto the clone, so it must stay inside it. `normpath(rel) == rel` rejects `a/../..`, `a//b`
@@ -240,12 +241,24 @@ def _entry(kind, table, what):
 
 def _check_unique(entries):
     """A label listed twice is a file that cannot say what it means. Two entries that would write the same
-    directory are worse: the second silently wins."""
+    directory are worse: the second silently wins -- and a `[[repo]]` named like a `[[plugin]]`'s marketplace
+    is exactly that, since both are cloned to `.agentbox/sources/<name>` (the install script's `rm -rf` of
+    the second would delete the first's checkout after it was added)."""
     seen = set()
+    dirs = {}
     for e in entries:
         if (e.kind, e.label) in seen:
             _refuse(f"{e.kind} {e.label}", "is listed twice")
         seen.add((e.kind, e.label))
+        name = e.marketplace if e.kind == "plugin" else e.name if e.kind == "repo" else None
+        if name is None:
+            continue
+        if name in dirs and dirs[name] != e.kind:
+            _refuse(f"{e.kind} {e.label}", f"{'name' if e.kind == 'repo' else 'marketplace'} {name!r} is also the "
+                                           f"{'marketplace' if e.kind == 'repo' else 'name'} of a "
+                                           f"[[{dirs[name]}]] entry; both would be cloned to "
+                                           f".agentbox/sources/{name}")
+        dirs.setdefault(name, e.kind)
 
 
 def load(path, sections=SECTIONS):

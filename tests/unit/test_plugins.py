@@ -186,7 +186,7 @@ class RefusesMarketplacePlugins(unittest.TestCase):
     def test_a_missing_key(self):
         for key in ("id", "marketplace", "source", "ref"):
             with self.subTest(missing=key):
-                lines = [l for l in PLUGIN.splitlines() if not l.startswith(f"{key} =")]
+                lines = [ln for ln in PLUGIN.splitlines() if not ln.startswith(f"{key} =")]
                 refuses(self, "\n".join(lines) + "\n", "missing", key)
 
     def test_a_typo_in_a_key_is_an_error_not_an_ignored_line(self):
@@ -229,9 +229,20 @@ class RefusesRepos(unittest.TestCase):
             with self.subTest(name=bad):
                 refuses(self, REPO.replace('"pi-session-stats"', f'"{bad}"'))
 
-    def test_the_npm_directory_name_is_reserved(self):
-        """The npm entries install into `node_modules/` of the same tree."""
-        refuses(self, REPO.replace('"pi-session-stats"', '"node_modules"'), "node_modules")
+    def test_a_name_that_is_also_a_marketplace_is_refused(self):
+        """Both are cloned to `.agentbox/sources/<name>`; the second clone's `rm -rf` would take the first."""
+        msg = refuses(self, PLUGIN + REPO.replace('"pi-session-stats"', '"egm"'), "egm", ".agentbox/sources/egm")
+        self.assertIn("[[plugin]]", msg)
+        # Order does not matter, and the same name across two [[plugin]] entries is one catalog, not a clash.
+        refuses(self, REPO.replace('"pi-session-stats"', '"egm"') + PLUGIN, "repo egm", "[[plugin]]")
+        two = PLUGIN + PLUGIN.replace('"egm@egm"', '"other@egm"')
+        self.assertEqual(len(plugins.parse(two)), 2)
+
+    def test_node_modules_is_an_ordinary_name_now(self):
+        """The reservation went with the layout it described: repo checkouts live under `.agentbox/sources`,
+        not beside `node_modules` at the tree root."""
+        self.assertEqual(plugins.parse(REPO.replace('"pi-session-stats"', '"node_modules"'))[0].name,
+                         "node_modules")
 
     def test_an_extension_dir_that_leaves_the_repo(self):
         for bad in ("../x", "/etc", "a/../..", "a/..", "a//b", ""):
