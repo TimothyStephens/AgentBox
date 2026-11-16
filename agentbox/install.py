@@ -30,6 +30,10 @@ def ours(path, bindir):
 
 
 def install(bindir, repo, out=sys.stdout, path_env=None):
+    if os.environ.get("AGENTBOX_SESSION"):
+        # Host-only: inside a session ~/.local/bin is a throwaway home, so an install would only look done.
+        raise SystemExit(f"host-only target; run on the host (this is agentbox session "
+                         f"{os.environ['AGENTBOX_SESSION']})")
     bindir, repo = os.path.abspath(os.path.expanduser(bindir)), os.path.abspath(repo)
     target, alias = os.path.join(bindir, "agentbox"), os.path.join(bindir, "ab")
     for p in (target, alias):

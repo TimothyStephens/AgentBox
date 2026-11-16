@@ -2,6 +2,7 @@
 import io
 import os
 import subprocess
+from unittest import mock
 
 from agentbox import install
 
@@ -11,10 +12,29 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 class Install(TempCase):
+    def setUp(self):
+        super().setUp()
+        # These tests install into a temp dir; the session refusal below has its own test.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("AGENTBOX_SESSION", None)
+
     def run_install(self, bindir, path_env=None):
         out = io.StringIO()
         install.install(bindir, REPO, out=out, path_env=path_env if path_env is not None else bindir)
         return out.getvalue()
+
+    def test_refuses_inside_a_session(self):
+        """`make install` writes into the user's ~/.local/bin: a host-only action. Inside an agentbox session
+        that directory is a throwaway home, so an install there only looks like it worked (review 16 Nov)."""
+        b = self.mkdir("bin")
+        os.environ["AGENTBOX_SESSION"] = "abt-s-1"
+        with self.assertRaises(SystemExit) as cm:
+            self.run_install(b)
+        self.assertIn("host-only", str(cm.exception))
+        self.assertIn("abt-s-1", str(cm.exception))
+        self.assertEqual(os.listdir(b), [], "nothing written")
 
     def test_installs_a_working_launcher_and_alias(self):
         b = self.mkdir("bin")
