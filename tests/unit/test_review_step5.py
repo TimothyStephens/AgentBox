@@ -533,6 +533,21 @@ class Upstream:
             buf += data
         return buf
 
+    @staticmethod
+    def read_request(conn):
+        """Head plus a Content-Length body: replying before the body has arrived would make the gate's body
+        send fail (EPIPE) and turn the test into a 403 at random."""
+        buf = Upstream.read_head(conn)
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        m = [ln.split(b":", 1)[1].strip() for ln in head.split(b"\r\n") if ln.lower().startswith(b"content-length:")]
+        need = int(m[0]) if m else 0
+        while len(rest) < need:
+            data = conn.recv(65536)
+            if not data:
+                break
+            rest += data
+        return head, rest
+
 
 def run_handler(test, g, upstream=None):
     """The gate's handler on one end of a socketpair, on a thread; returns the client end and the thread."""
@@ -1603,7 +1618,7 @@ class Item11HolderRecheckAfterSpool(unittest.TestCase):
         g.holder_ns = lambda: (order.append("holder"), real_holder())[1]
 
         def serve(conn, result):
-            result["head"] = Upstream.read_head(conn)
+            result["head"], result["body"] = Upstream.read_request(conn)
             conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
         up = Upstream(self, serve)
         with unittest.mock.patch.object(gate.Gate, "check_build_images",
@@ -1614,7 +1629,19 @@ class Item11HolderRecheckAfterSpool(unittest.TestCase):
         up.thread.join(5)
         self.assertEqual(order, ["holder", "context", "holder"])
         self.assertTrue(up.result.get("head", b"").startswith(b"POST /v5/libpod/build?"), up.result)
+        self.assertEqual(up.result.get("body"), b"ctx")
         self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 200 OK"))
+
+
+class Item12RemoveImage(unittest.TestCase):
+    def test_remove_image_on_container_removal_refused(self):
+        """Review 2026-11-16, item 12: image removal is refused on every endpoint; `removeImage` (podman run
+        --rmi) did it through a create."""
+        for body in ({"image": "x", "removeImage": True}, {"image": "x", "removeimage": True}):
+            with self.subTest(body=body), self.assertRaises(gate.Deny) as e:
+                decide(Fake(), "POST", "/v5/libpod/containers/create", body)
+            self.assertIn("removing the image", str(e.exception))
+        decide(Fake(), "POST", "/v5/libpod/containers/create", {"image": "x", "removeImage": False})
 
 
 if __name__ == "__main__":

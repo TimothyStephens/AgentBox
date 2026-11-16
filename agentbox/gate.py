@@ -214,7 +214,10 @@ LIBPOD_REFUSED = {
     "oci_runtime": "a client-chosen OCI runtime", "conmon_pid_file": "a conmon PID file on the host",
     "init_path": "an init binary from the host", "env_host": "the podman service's environment",
     "secrets": "podman secrets", "secret_env": "podman secrets",
-    "storage_opts": "storage options"}
+    "storage_opts": "storage options",
+    # `podman run --rmi`: removes the image when the container is removed, which is image removal through a
+    # create (review 2026-11-16, item 12); DELETE /images is refused, so this is too
+    "removeImage": "removing the image with the container"}
 POD_KEYS = (
     "name", "hostname", "exit_policy", "labels", "no_infra", "infra_name", "pod_create_command", "pidns", "ipcns",
     "utsns", "userns", "cgroupns", "restart_policy", "restart_tries", "shared_namespaces", "share_parent",
