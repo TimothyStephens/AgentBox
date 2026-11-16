@@ -697,3 +697,28 @@ class TokenDirIsProtected(SettingsCase):
         os.makedirs(os.path.join(root, "tok"))
         with self.assertRaises(AgentboxError):
             session.load_project(self.settings, "p1")
+
+
+class PluginTreeInTheSessionLog(SessionBase):
+    """Item 41: the session's profile log names the plugin install it ran with."""
+
+    def log(self, s):
+        return _read(s.log_path("profile"))
+
+    def test_no_tree_says_none(self):
+        s = self.make()
+        s.prepare()
+        self.assertIn("plugins agent=claude none\n", self.log(s))
+
+    def test_an_installed_tree_is_identified_by_its_lockfile_hash(self):
+        import hashlib
+        from agentbox import installer
+        lock = installer.lock_path(self.settings, "claude")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        body = json.dumps({"version": 1, "agent": "claude", "installed_at": 1763251200})
+        with open(lock, "w") as f:
+            f.write(body)
+        s = self.make()
+        s.prepare()
+        want = f"plugins agent=claude installed_at=1763251200 state={hashlib.sha256(body.encode()).hexdigest()}\n"
+        self.assertIn(want, self.log(s))

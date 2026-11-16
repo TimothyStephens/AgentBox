@@ -678,7 +678,8 @@ class Session:
             self._toulmin_lists()
         self._image, image_note = self._resolve_image()
         _keep(self.log_path("profile"),
-              self.profile.log_line().encode() + f"image {self.adapter.name}={self._image}\n".encode())
+              self.profile.log_line().encode() + f"image {self.adapter.name}={self._image}\n".encode()
+              + plugin_log_line(self.settings, self.adapter.name).encode())
         if image_note:
             self.warn(f"agentbox: {image_note}")
         if off:
@@ -1524,6 +1525,20 @@ def log_path(settings, session, started, kind):
     the start time is part of the name: two sessions never share a log file."""
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(started))
     return os.path.join(settings.data_dir, "logs", f"{session}-{stamp}-{kind}.log")
+
+
+def plugin_log_line(settings, agent):
+    """The session log's record of the installed plugin tree (item 41): which install it ran with, so a
+    behaviour change can be matched to an `ab profile install`. Never raises: it only reports."""
+    import hashlib
+    from . import installer                  # installer imports this module
+    try:
+        with open(installer.lock_path(settings, agent), "rb") as f:
+            state = hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return f"plugins agent={agent} none\n"
+    lock = installer.read_lock(settings, agent) or {}
+    return f"plugins agent={agent} installed_at={lock.get('installed_at', '?')} state={state}\n"
 
 
 def _keep(path, data):
