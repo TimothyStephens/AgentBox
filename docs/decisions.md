@@ -3143,3 +3143,10 @@ found up to 384 MiB.
 (identical `FROM busybox` + `RUN true`), and the gate logged them `not-recorded` ("not this build's"), so
 they are not this project's builds by the gate's record. Whether the agent can then run the tag it just
 built depends on `dev_images`; worth checking when a real project hits it.
+
+**Verified on the host.** After da7ad8e the big tree's dev-tier build passes: `perf-results/20261116-165034`,
+three rounds ok, 33.6-35.7 s per command, in-session build of the 20 000-file context 10.7-12.0 s. One
+earlier round (`20261116-164058`) took 105.8 s with the page cache cold after `build-limit`: the history
+scan 26 s (0.3 s warm), grant backup 12 s (2 s), git-dir walk 7.6 s (0.2 s), the build 30.6 s; Python's
+own time stayed small, so it was disk reads, not code. A large repo's first session after its files leave
+the cache costs about a minute more before the agent starts. Noted, not acted on.
