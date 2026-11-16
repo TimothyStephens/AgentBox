@@ -982,6 +982,8 @@ class Gate:
                 bad = self.net_violations(stored)
         except (OSError, ValueError, http.client.HTTPException) as e:
             stored, bad = None, [f"inspect failed ({e!r})"]
+        except Exception as e:                       # a check that crashes on an odd reply fails closed (item 44)
+            stored, bad = None, [f"check crashed ({e!r})"]
         if bad:
             # An object found under its new ID was created by this request: removing it is safe. A volume or
             # network reported for an existing name (IgnoreIfExists) is refused before it gets here.
@@ -2699,6 +2701,13 @@ def make_handler(gate):
                 gate.log("error", method, path, repr(e))
                 try:
                     deny(client, f"request refused ({e})")
+                except OSError:
+                    pass
+            except Exception as e:
+                # A bug (TypeError on an odd body, say) is a refusal, not a traceback and a silent drop (item 44)
+                gate.log("error", method, path, f"internal error {e!r}")
+                try:
+                    deny(client, f"request refused (internal error: {type(e).__name__})")
                 except OSError:
                     pass
             finally:

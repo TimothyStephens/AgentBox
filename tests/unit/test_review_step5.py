@@ -1716,5 +1716,36 @@ class Item13ImageReadsAndPodList(unittest.TestCase):
         self.assertEqual([p["Id"] for p in json.loads(reply.split(b"\r\n\r\n", 1)[1])], ["p1"])
 
 
+class Item44CrashesFailClosed(unittest.TestCase):
+    """Review 2026-11-16, item 44."""
+
+    def test_a_crashing_post_create_check_removes_the_object_and_refuses(self):
+        g = Fake({"containers/c5": container("c5")})
+
+        def boom(doc):
+            raise TypeError("unexpected shape")
+        g.container_violations = boom
+        raw = b"HTTP/1.1 201 Created\r\n\r\n" + json.dumps({"Id": "c5"}).encode()
+        with self.assertRaises(gate.Deny) as e:
+            g.verify_created("libpod_create", raw, "web")
+        self.assertIn("check crashed", str(e.exception))
+        self.assertTrue(any("c5" in d for d in g.deleted), g.deleted)
+        self.assertNotIn("c5", g.verified)
+
+    def test_an_internal_error_in_the_handler_is_answered_403(self):
+        g = Fake()
+
+        def boom(*a):
+            raise TypeError("bug")
+        g.decide = boom
+        a, t = run_handler(self, g)
+        a.sendall(b"GET /v5/libpod/_ping HTTP/1.1\r\nHost: d\r\n\r\n")
+        a.shutdown(socket.SHUT_WR)
+        t.join(10)
+        reply = a.recv(65536)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 403"), reply[:80])
+        self.assertIn(b"internal error", reply)
+
+
 if __name__ == "__main__":
     unittest.main()
