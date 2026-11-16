@@ -198,7 +198,6 @@ class CompatBindsReadOnly(TempCase):
         os.symlink(self.ro, link)
         self.assertEqual(self.binds(f"{link}:/m"), [f"{self.ro}:/m:ro"])
 
-    @unittest.expectedFailure
     def test_an_explicit_ro_on_a_ro_grant_is_not_doubled(self):
         """`ro` once. Today the rewrite appends `ro` without dropping the client's own, so `:ro` on a read-only
         grant goes upstream as `ro,ro`, which podman refuses as a duplicate mount option: the bind fails closed,

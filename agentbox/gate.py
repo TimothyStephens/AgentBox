@@ -1459,14 +1459,14 @@ class Gate:
                     name, rel = sub
                     opts = [o for o in cget(m, "options") or [] if o in VOLUME_OPTS]
                     if self.is_ro_root(os.path.realpath(cget(m, "source"))):
-                        opts = [o for o in opts if o != "rw"] + ["ro"]      # a read-only grant (audit H3)
+                        opts = [o for o in opts if o not in ("rw", "ro")] + ["ro"]      # a read-only grant (audit H3)
                     grant_mounts.append({"Name": name, "Dest": cget(m, "destination"), "SubPath": rel,
                                          "Options": opts})
                     continue
                 real = self.check_bind(cget(m, "source"))
                 cset(m, "source", real)
                 if self.is_ro_root(real):
-                    cset(m, "options", [o for o in cget(m, "options") or [] if o != "rw"] + ["ro"])
+                    cset(m, "options", [o for o in cget(m, "options") or [] if o not in ("rw", "ro")] + ["ro"])
             elif t == "tmpfs":
                 self.check_mount_options(cget(m, "options"), cget(m, "destination"))
             else:
@@ -1624,7 +1624,7 @@ class Gate:
                                      b)
             if src.startswith("/") and self.is_ro_root(src):         # a read-only grant (audit H3)
                 dst, _, opts = rest.partition(":")
-                opts = ",".join([o for o in opts.split(",") if o and o != "rw"] + ["ro"])
+                opts = ",".join([o for o in opts.split(",") if o and o not in ("rw", "ro")] + ["ro"])
                 rest = f"{dst}:{opts}"
             binds.append(f"{src}:{rest}" if rest else src)
         if hc.get("Binds"):

@@ -1022,6 +1022,16 @@ class CoversAudit(unittest.TestCase):
         g.read_mountinfo = lambda pid: "1 1 0:40 /ro /m ro,nosuid - tmpfs tmpfs rw\n"
         self.assertEqual(g.mount_violations(doc), [])
 
+    def test_h3_a_clients_own_ro_is_not_doubled(self):
+        """podman refuses `ro,ro` as a duplicate option, so a correct `:ro` request on a read-only grant failed."""
+        g = self.gate()
+        for src, key, opt in ((self.ro, "mounts", "options"), (os.path.join(self.ro, "sub"), "volumes", "Options")):
+            spec = json.loads(decide(g, "POST", "/v5/libpod/containers/create", {"image": "x", "mounts": [
+                {"type": "bind", "source": src, "destination": "/m", "options": ["ro", "rw", "nosuid"]}]})[1])
+            with self.subTest(src=src):
+                self.assertEqual(spec[key][-1][opt].count("ro"), 1, spec[key])
+                self.assertNotIn("rw", spec[key][-1][opt])
+
     def tar(self, files):
         import tarfile
         buf = io.BytesIO()
