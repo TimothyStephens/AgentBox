@@ -417,6 +417,9 @@ class OmpSession(OmpSessionBase):
         both = note(["config.yml", "mcp.json"], "/cfg/omp")
         self.assertIn("no config.yml or mcp.json in /cfg/omp; OMP starts without them", both)
         self.assertIn("cp ~/.omp/agent/config.yml", both)
+        # 16 Nov omp-live output: "Create they there yourself" -- the subject pronoun in object position.
+        self.assertIn("Create them there yourself", both)
+        self.assertIn("Create it there yourself", only_cfg)
 
     def test_config_yml_comes_from_agentboxs_own_seed_as_an_overlay(self):
         """The point of the 4 Nov move: it used to be mounted from `~/.omp/agent/config.yml`, the host

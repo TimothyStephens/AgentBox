@@ -3061,3 +3061,16 @@ intention. The decisions the fixes carried, by package:
   its module (`cli_project`, `cli_session`, `cli_profile`, `cli_keys`), and `warn` lives in `cli_common` so
   they need not import `cli` back. Every moved name is re-exported from its old module. `gate.py` stays over
   1000 lines because the `Gate` class alone is about 1600 and was not cut across files.
+
+## 2026-11-16 · Host gates on the fixed tree: itest, check, claude-live and omp-live pass
+
+Tim's runs at d074d80. `make check` and `make itest` pass, and so does `make claude-live`. `make omp-live`
+failed first: run without `AB_LIVE_MODEL` and with no `config.yml` seed, OMP fell back to its own default
+provider, Anthropic, and gave up after 10 retries on `getaddrinfo ENOTFOUND` for api.anthropic.com, the
+11 Nov failure of OMP's Anthropic client that is still open (squid tunnelled every model host with 200; the
+403s were OMP probing providers outside the allowlist). Not a regression: both recorded passes set the model.
+Rerun with `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash`: PASS, `AB_OK` in 53 s, 12 TLS tunnels; browser and
+debugpy worked; every session has a proxy log; no key in any log, state file or output (5 keys); sessions
+torn down. Both runs warned "plugins.toml has changed since the last install": the omp profile commits are
+not deployed yet, so `ab profile install omp` is still Tim's. The missing-seed note's "Create they there
+yourself" now reads "Create them".

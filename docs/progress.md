@@ -206,9 +206,9 @@ malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant 
 
 ## Waiting on Tim
 
-- **Host gates on the 16 Nov tree:** `make itest`, `make claude-live`, `make omp-live`, `ab profile install
-  claude|omp`, both `ab project selftest`s. The fixes were made in a sandbox without podman; a pass is
-  recorded in decisions.md under the dated entry.
+- **Host gates on the 16 Nov tree:** `make check`, `make itest`, `make claude-live` and `make omp-live`
+  (with `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash`) pass at d074d80 (decisions.md, 16 Nov). Still Tim's:
+  deploy both profiles, `ab profile install claude|omp`, both `ab project selftest`s.
 - Earlier records, for reference: the trial (`docs/TRIAL.md`) done 15 Oct (105 pass / 0 fail, `make
   trial-check` clean); live tests last re-passed on the dates decisions.md names (claude-live c62f59e, 15 Nov;
-  omp-live 98a9287, 13 Nov).
+  omp-live d074d80, 16 Nov).

@@ -376,9 +376,9 @@ def _missing_seeds_note(missing, seed_dir):
     """One line per start about the optional seeds that are not there, worded for what is actually
     missing: the config.yml advice (its purpose, and where the old one was) only when config.yml is."""
     these = " or ".join(missing)
-    it, them = ("it", "it") if len(missing) == 1 else ("they", "them")
+    them = "it" if len(missing) == 1 else "them"
     note = (f"agentbox: no {these} in {seed_dir}; OMP starts without {them}, on its own defaults. "
-            f"Create {it} there yourself")
+            f"Create {them} there yourself")
     if "config.yml" in missing:
         note += (" -- config.yml is OMP's own config (a default model, for one), and it used to be read from "
                  f"the host's ~/.omp: `cp ~/.omp/agent/config.yml {seed_dir}/` if you want what you had")
