@@ -13,7 +13,8 @@ asserts. Plugins for both agents come from `ab profile install <agent>` (the pro
 installed in a sandbox, mounted read-only); `~/.omp` is not an input and `omp_home` is a retired setting.
 Which gates are green, and at which commit, is recorded in `docs/progress.md` (Status) and the dated run
 records in `docs/decisions.md`; this file keeps no counts. The independent review of 16 Nov and the fixes it
-led to are one decisions.md entry ("Review 2026-11-16").
+led to are one decisions.md entry ("Review 2026-11-16"); the host gates on that tree (`make check`, `itest`,
+`claude-live`, `omp-live`, both profiles deployed and installed, both selftests) passed the same day.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -51,6 +52,38 @@ smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install
 
 **The gate.** `make test`; by hand on the host once, since it reaches the network.
 
+### 2.2 `make omp-live` refuses at once when no model is chosen
+
+**What.** omp-live copies the keyless `models.yml` seed but not `config.yml`. Run without `AB_LIVE_MODEL`
+and without `~/.config/agentbox/omp/config.yml`, OMP falls back to its own default provider (Anthropic),
+retries for about 10 minutes, and step 2 repeats it: a 20-minute run that ends in a FAIL that says nothing
+about the cause (16 Nov, decisions.md).
+
+**Why it matters.** Low; it costs a host run and a misdiagnosis, not correctness.
+
+**Done looks like.** Before starting a session, omp-live exits 2 with "set AB_LIVE_MODEL=<provider/model> or
+create ~/.config/agentbox/omp/config.yml" when neither is there; or it copies `config.yml` beside
+`models.yml` (it is mounted read-only as an overlay, and holds no keys). Pick one; the first is simpler.
+
+**Where to start.** `tests/live/omp_live.py` `main`, beside the `models.yml` seed copy; a unit test in the
+style of the existing `bring_plugin_tree` tests.
+
+**The gate.** `make test`; one `make omp-live` on the host.
+
+### 2.3 A narrow fresh review of the 16 Nov fixes
+
+**What.** About a hundred commits changed security-boundary code in one day (gate modules, `fsutil`,
+`sessionlock`/`projectlock`, installer, mounts). Every fix has a test and the host gates pass, but nobody
+but the fixer has read the result.
+
+**Done looks like.** An independent reviewer reads `git diff c782560..` for those modules only, looking for
+regressions the fixes introduced, not for new features; findings go to `docs/reviews/`.
+
+**Where to start.** A reviewer project (`ab project add <name> --reviews agentbox`), or a fresh session
+given only the diff and `docs/design.md`'s threat model.
+
+**The gate.** Its findings, each fixed with a test or recorded as accepted in decisions.md.
+
 ---
 
 ## 3. Features deferred by design
@@ -62,7 +95,7 @@ authoritative; this is the *why*.
 |---|---|
 | `ab deploy` | Step 6. Would validate a compose file, check `.env` against `.env.dev`, show the diff since the last deploy, confirm, then start the live stack through a sockguard deploy profile — never the raw socket. |
 | `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
-| podman `exec` tier | Refused in code (`session.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
+| podman `exec` tier | Refused in code (`project.py` and `projectkeys.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
 | Toulmin: restart a dead `tm session serve` | Recorded as a gap by the contract (1.5). Until built, Toulmin's `tm status` tells the owner the socket is dead and which command to run. |
 | Clone mode with the dev podman tier | Refused at session start. The gate would translate every bind source under the owner's path into the clone (grant volume device, cover ids, foreign-uid check, unmasked-secret walk). decisions.md, 10 Nov. |
@@ -118,18 +151,20 @@ Left:
 
 Do not merge pre-emptively; add tests pinning the shared behaviour first.
 
-- **Secret-name test, three copies:** `mounts._masked` (includes custom swap targets),
-  `grantcheck._is_secret_name` with its own `SECRET_FILES` (`grantcheck.py` vs `mounts.py`), and inline in
-  `gate.unmasked_secret_under` (ignores swap targets). **Known drift:** a custom swap target (e.g.
-  `secrets.env`) is masked, but the gate's N6 check does not flag one created mid-session. That is the
-  accepted host-writes-during-session limitation, not a bug to fix here.
+- **Secret-name test: one list since 16 Nov, two matchers.** `grantcheck` now calls `mounts._masked` on
+  `mounts.MASK_FILES` (review item 28). `gate.unmasked_secret_under` reads the same lists but matches inline
+  and ignores custom swap targets. **Known drift:** a custom swap target (e.g. `secrets.env`) is masked, but
+  the gate's N6 check does not flag one created mid-session. That is the accepted host-writes-during-session
+  limitation, not a bug to fix here.
 - ~~**`mask_skip` resolved twice**~~ — **done, 16 Nov** (review item 56): both now resolve through
   `mounts.mask_skip_paths`.
 
 ### 4.3 Uncovered gate HTTP error paths — cover opportunistically
 
 Reachable only through the HTTP/plumbing layer, mostly fail-closed error returns. Add a test when touching
-the area; none is a known defect.
+the area; none is a known defect. The 16 Nov fixes added framing tests (chunked bodies, smuggled requests
+after a body, `100 Continue`) in `test_review_step5.py`, so check E9 against them before writing new ones;
+the HTTP framing now lives in `gate_http.py` and the Containerfile reader in `gate_dockerfile.py`.
 
 | ID | What is untested |
 |---|---|
@@ -144,12 +179,12 @@ the area; none is a known defect.
 
 Do these **only alongside a change that already touches the area**, with the suite as the net.
 
-- **`gate.py` (~2,527 lines):** one `Gate` class mixes HTTP plumbing, policy, image handling and mount
-  verification. Long functions: `handle` (~110 lines), `decide` (~75), `rewrite_libpod_container` (~70),
-  `check_common_libpod` (~57). A pod start inspects the pod three times. Splitting plumbing from policy is
-  pure refactoring.
-- **`session.py`:** notes text, `ls`/idle and gc are mixed with the lifecycle; moving
-  `sandbox_notes`/`dev_notes` out is pure refactoring.
+- **Module-level splits done, 16 Nov** (review item 54): `gate.py` lost its schema tables, Containerfile
+  reader, mountinfo parsers and HTTP framing to `gate_*` modules; `session.py` lost notes, liveness, state,
+  infra, lifecycle, the lock and the project record to their own modules; `cli.py` has one module per noun.
+- **Left: the `Gate` class itself** (~1,600 of `gate.py`'s ~2,050 lines) still mixes policy, image handling
+  and mount verification. Long methods: `decide` (~85 lines), `rewrite_libpod_container`
+  (~70), `check_common_libpod` (~58). A pod start inspects the pod three times. Splitting it is pure refactoring.
 
 ---
 
@@ -159,9 +194,12 @@ Do these **only alongside a change that already touches the area**, with the sui
   recur. Candidate fix: a squid `dns_timeout` under the probe's 20 s. Full notes in `progress.md` → Watch
   items; `make egress-soak` is the measurement.
 - **`make omp-live`'s local model is slow** — about 257 s for one turn, which is why that check used to fail
-  intermittently. **Accepted** (4 Nov): the check stays on the real LAN endpoint, because exercising it is
-  the point. The report names the latency now, so a repeat reads as "slow model" rather than an unexplained
-  FAIL. `AB_LIVE_MODEL=<provider/model>` is there for a one-off.
+  intermittently. **Accepted** (4 Nov). The recorded passes since 13 Nov use
+  `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash` (about 50 s); see 2.2 for running without one.
+- **OMP's Anthropic provider cannot reach api.anthropic.com from a session** (`getaddrinfo ENOTFOUND`, 11 Nov,
+  again 16 Nov): OMP's Anthropic client resolves the name itself instead of going through `HTTPS_PROXY`; its
+  OpenAI-compatible client is fine. Upstream OMP behaviour; not tested through a third-party route by choice
+  (12 Nov). Act if Anthropic models are wanted in OMP sessions.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
   when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 
@@ -190,6 +228,9 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 16 Nov | The independent review's findings fixed (about 100 commits, one test each); modules split along their seams; host gates, both profile deploys and both selftests pass on the result |
+| 15 Nov | MAGS-CodeDev decided: it stays outside agentbox as its own container; a failed plugin install keeps the previous tree, and a `[[repo]]` without a `package.json` is refused before linking |
+| 13 Nov | OMP's OpenAI-compatible providers (OpenRouter) work through squid |
 | 9 Nov | `ab profile install claude` — the Claude profile's `plugins.toml` in agentbox's `[[plugin]]` format, each catalog cloned at its sha, mounted read-only at `/run/agentbox/claude/marketplaces` and declared to Claude Code through the copied `settings.json`; host gate (`make claude-live`) still to run |
 | 5 Nov | D-E9: the network-less `Session` path removed — one session class, and the audit now requires the agent container to be on a session network |
 | 6 Nov | `ab profile install` — plugins declared by the profile, installed in a sandbox against the image's own OMP, mounted read-only; `~/.omp` stops being an input and ~160 lines of whitelist go with it |
