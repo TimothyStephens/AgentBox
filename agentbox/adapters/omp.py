@@ -1,17 +1,26 @@
 """OMP (oh-my-pi) adapter.
 
-Only named pieces of the host's ~/.omp are mounted, all read-only (docs/decisions.md, "What the OMP session
-mounts from ~/.omp"): plugins, repos and pylibs from their actual link targets (they may sit in different
-versions), the version directories those live in or the plugins link into, and bin/mags-codedev. Everything
-else in ~/.omp (models.yml and its backup, .mcp.json, config.yml, extensions, sessions, databases, logs,
-caches, run/) never enters a session.
+Nothing a session loads comes from the host's ~/.omp: that directory is not read at all (5-6 Nov; the
+setting that named it is retired, config.RETIRED). `~/.omp` in a session is a tmpfs of the session user,
+with these mounted on top:
 
-Shrinking that list is the point: `config.yml` and the Playwright cache left it on 4 Nov, so the only
-remaining reason a session reads ~/.omp at all is the plugins/repos/pylibs snapshot -- plus
-bin/mags-codedev, which is a wrapper into repos/ and so goes with the same decision (TODO.md 1.1).
+  * **the installed plugin tree**, `~/.config/agentbox/omp/plugins`, which `ab profile install omp` builds
+    from the profile's `plugins.toml` in one hardened container against the image's own OMP (installer.py).
+    Mounted READ-ONLY at `~/.omp/plugins`, with the tree's copy of `marketplaces.json` beside it at
+    `~/.omp/marketplaces.json` (`plugin_mounts`). The tree's lockfile names the image it was built against,
+    and the session says so when that no longer matches or `plugins.toml` has changed since (`plugin_notes`).
+    `--no-profile` and `profile = "off"` mount none; lockdown mounts the tree but runs OMP with
+    `--no-extensions`, so nothing in it loads (decisions.md, 15 Oct).
+  * **the two user files** Tim creates himself under `~/.config/agentbox/omp/` (USER_FILES): `config.yml`,
+    mounted read-only at `~/.omp/agentbox-config.yml` and named in `PI_CONFIG_FILES` as an overlay OMP ranks
+    above its own `agent/config.yml`; and `mcp.json`, mounted read-only at `agent/.mcp.json`. Neither is
+    copied from ~/.omp, parsed or cleaned; a missing one is said out loud once per start.
+  * **the host-owned profile** -- skills, rules, prompts, sub-agents, commands -- read-only at OMP's own
+    load paths under `agent/` (PROFILE_DIRS; profile.py), and the inbox read-write at `agent/inbox`.
 
 Per project and persistent, read-write: ~/.omp/agent (sessions, OMP's databases) and ~/.omp/logs, from
-~/.local/share/agentbox/projects/<project>/omp/. Generated per session, read-only: agent/models.yml (only providers
+~/.local/share/agentbox/projects/<project>/omp/, with the code-loading places under `agent/` covered empty
+and read-only (CODE_DIRS, CODE_FILES). Generated per session, read-only: agent/models.yml (only providers
 with a key file, plus the local model server) and agent/AGENTS.md. The rest of ~/.omp (run/, caches) is the
 session's tmpfs home.
 """
@@ -394,8 +403,10 @@ def _omp_notes(doc):
             "own, writable state: OMP saves settings there. The plugins are read-only too — never put secrets "
             "in any of them.\n"
             "- `~/.omp/agent/models.yml` and this file are read-only and regenerated each session.\n"
-            "- `~/.omp/plugins`, `repos`, `pylibs` and `versions` are read-only; install Python packages with "
-            "`pip install --user` or into a project virtualenv instead.\n"
+            "- `~/.omp/plugins` is the installed plugin tree, mounted read-only from the host's "
+            "`~/.config/agentbox/omp/plugins` (`ab profile install omp` builds it; nothing in a session can "
+            "change it). Install Python packages with `pip install --user` or into a project virtualenv "
+            "instead.\n"
             "- The browser tool uses the system Chromium through the proxy.\n")
 
 

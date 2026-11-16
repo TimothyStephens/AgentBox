@@ -539,6 +539,14 @@ class OmpSession(OmpSessionBase):
         self.addCleanup(s.teardown)
         self.assertEqual(s.setup.project_covers, [])
 
+    def test_the_notes_describe_the_installed_tree_not_the_old_omp_snapshot(self):
+        """`repos`, `pylibs` and `versions` came from the host's ~/.omp and are not mounted any more."""
+        notes = omp._omp_notes({"providers": {}})
+        self.assertIn("~/.config/agentbox/omp/plugins", notes)
+        for gone in ("pylibs", "versions", "`repos`"):
+            self.assertNotIn(gone, notes)
+            self.assertNotIn(gone, omp.__doc__)
+
     def test_agents_md_describes_the_session(self):
         s = self.make()
         with open(os.path.join(s.settings.session_run_dir(s.name), "omp-AGENTS.md")) as f:
