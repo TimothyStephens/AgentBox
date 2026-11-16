@@ -11,7 +11,6 @@ teardown (and `ab session kill`, `ab session gc`) removes it; a preview exists o
 be one of that session's own dev containers.
 """
 import getpass
-import os
 import re
 import socket
 

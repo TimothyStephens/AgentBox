@@ -49,7 +49,7 @@ class EgressDiagnostics(unittest.TestCase):
         self.assertEqual(by["proxied CONNECT example.com:443 refused (locked)"].verdict, "PASS")
         log = "1759400000.123 20001 10.89.3.5 TCP_TUNNEL/000 0 CONNECT pypi.org:443 - HIER_NONE/- -\nother line\n"
         found = runner.diagnose_proxied_failures(b.cases, results, log, resolve=lambda h: ["151.101.0.223"])
-        [(label, text)] = [(l, t) for l, t in found if "pypi.org" in l]
+        [(label, text)] = [(lb, t) for lb, t in found if "pypi.org" in lb]
         self.assertIn("TCP_TUNNEL/000", text)
         self.assertIn("151.101.0.223", text)
         self.assertIn("20013ms", text)

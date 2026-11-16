@@ -75,7 +75,7 @@ class ToulminCase(SettingsCase):
     def calls(self):
         try:
             with open(os.path.join(self.stub, "calls")) as f:
-                return [l.split()[:2] + l.split()[2:3] for l in f.read().splitlines()]
+                return [ln.split()[:2] + ln.split()[2:3] for ln in f.read().splitlines()]
         except FileNotFoundError:
             return []
 
@@ -345,7 +345,7 @@ class ExitReasons(ToulminCase):
 
     def ends(self):
         with open(os.path.join(self.stub, "ends.jsonl")) as f:
-            return [json.loads(l) for l in f if l.strip()]
+            return [json.loads(ln) for ln in f if ln.strip()]
 
     def test_agent_exit_after_a_commit_reports_the_new_head(self):
         from agentbox.podman import Podman

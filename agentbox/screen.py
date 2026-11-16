@@ -210,10 +210,10 @@ def pick_layout(cfg, requested, cols):
             if lay["name"] == name:
                 return lay
         raise ConfigError(f"no layout named '{name}' (ab screen --list)")
-    fitting = [l for l in layouts if l.get("min_cols", 0) <= cols]
+    fitting = [lay for lay in layouts if lay.get("min_cols", 0) <= cols]
     if fitting:
-        return max(fitting, key=lambda l: l.get("min_cols", 0))
-    return min(layouts, key=lambda l: l.get("min_cols", 0))
+        return max(fitting, key=lambda lay: lay.get("min_cols", 0))
+    return min(layouts, key=lambda lay: lay.get("min_cols", 0))
 
 
 def shares(values, what="sizes"):

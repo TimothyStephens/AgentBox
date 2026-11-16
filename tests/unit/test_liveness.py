@@ -357,7 +357,8 @@ class GcAsksADifferentQuestion(SettingsCase):
 
     def test_session_kill_finds_a_husk_that_is_only_networks(self):
         """Everything of it is gone except its networks -- which were invisible until the network listing
-        was fixed (28 Oct), so `kill` used to answer "no session named ...".""" 
+        was fixed (28 Oct), so `kill` used to answer "no session named ...".
+        """
         self.ps("[]")
         os.environ["FAKE_PODMAN_NETJSON"] = json.dumps(
             [{"name": f"{self.name}-int", "labels": {"agentbox.session": self.name,

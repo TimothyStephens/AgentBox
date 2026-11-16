@@ -102,9 +102,9 @@ class ListAttachKill(SettingsCase):
         self.assertEqual(code, 0, out)
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("WORKSPACE"))
-        web = next(l for l in lines if l.startswith("ab-web "))
+        web = next(ln for ln in lines if ln.startswith("ab-web "))
         self.assertIn("ab-claude-web-1", web)
-        other = next(l for l in lines if l.startswith("ab-other "))
+        other = next(ln for ln in lines if ln.startswith("ab-other "))
         self.assertIn("(not registered)", other)
         self.assertNotIn("not-ours", out, "only agentbox's own tmux sessions")
 

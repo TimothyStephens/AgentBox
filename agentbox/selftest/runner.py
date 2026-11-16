@@ -7,9 +7,7 @@ import base64
 import os
 import secrets as _secrets
 import socket
-from dataclasses import dataclass, field
-
-from ..config import HOME
+from dataclasses import dataclass
 
 PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe.sh")
 SECRET_NAME_WORDS = ("API_KEY", "APIKEY", "SECRET", "PASSWORD", "PASSWD", "TOKEN", "CREDENTIAL", "PRIVATE_KEY")
@@ -182,8 +180,11 @@ def podman_cases(b, *, socket_path, compose_project, own, canary, logs=False, ab
         b.add("api", ["GET", path, "names", socket_path], f"list {path.split('?')[0]} shows only {compose_project}'s containers",
               lambda obs, w=want: ("PASS" if obs == f"200 {w}".rstrip() or (not w and obs in ("200", "200 "))
                                    else "FAIL", obs))
-    denied = lambda obs: ("PASS" if _status(obs) == "403" else "FAIL", obs)
-    hidden = lambda obs: ("PASS" if _status(obs) in ("403", "404") else "FAIL", obs)
+    def denied(obs):
+        return ("PASS" if _status(obs) == "403" else "FAIL", obs)
+
+    def hidden(obs):
+        return ("PASS" if _status(obs) in ("403", "404") else "FAIL", obs)
     if canary:
         b.add("api", ["GET", f"/libpod/containers/{canary}/json", "-", socket_path], "inspect another project's container refused",
               hidden)
@@ -224,7 +225,8 @@ def dev_cases(b, *, socket_path, canary, protected):
     """Tier dev, through the gate: the agent's own stack only. `protected` are the session's own containers
     the agent must not touch (its proxy, sockguard, holder); `canary` stands in for other projects."""
     b.add("exists", [socket_path], "podman socket present (dev tier, through the gate)", expect("yes"))
-    denied = lambda obs: ("PASS" if _status(obs) == "403" else "FAIL", obs)
+    def denied(obs):
+        return ("PASS" if _status(obs) == "403" else "FAIL", obs)
     b.add("api", ["GET", "/libpod/containers/json?all=true", "names", socket_path],
           "list shows only this session's dev containers (none yet)",
           lambda obs: ("PASS" if obs.strip() in ("200", "200 ") else "FAIL", obs))
@@ -236,7 +238,8 @@ def dev_cases(b, *, socket_path, canary, protected):
           "pull from an unlisted registry refused", denied)
     # Another project's container, or the session's own sidecars, are invisible to the dev tier: 404, the same
     # answer as for a container that does not exist (review of 785ee15, L1).
-    hidden = lambda obs: ("PASS" if _status(obs) == "404" else "FAIL", obs)
+    def hidden(obs):
+        return ("PASS" if _status(obs) == "404" else "FAIL", obs)
     for name in ([canary] if canary else []) + list(protected):
         for method, path, what in (("POST", f"/libpod/containers/{name}/exec", "exec on"),
                                    ("POST", f"/libpod/containers/{name}/stop", "stop"),
@@ -393,7 +396,7 @@ def diagnose_proxied_failures(cases, results, proxy_log_text, resolve=None):
         host = proxied_target(c)
         if not host or r.verdict != "FAIL":
             continue
-        lines = [l for l in proxy_log_text.splitlines() if host in l][-5:]
+        lines = [ln for ln in proxy_log_text.splitlines() if host in ln][-5:]
         t0 = time.monotonic()
         try:
             answer = ", ".join(resolve(host)) or "no addresses"
@@ -401,9 +404,9 @@ def diagnose_proxied_failures(cases, results, proxy_log_text, resolve=None):
             answer = f"error: {e}"
         dns = f"{answer} in {int((time.monotonic() - t0) * 1000)}ms"
         text = (f"{c.label}: {r.detail}\n  dns from the host: {dns}\n  proxy log lines for {host}:\n"
-                + ("\n".join(f"    {l}" for l in lines) if lines else "    (none: the request never reached squid's log)"))
+                + ("\n".join(f"    {ln}" for ln in lines) if lines else "    (none: the request never reached squid's log)"))
         out.append((c.label, text))
-        shown = " | ".join(l.strip() for l in lines[-2:])
+        shown = " | ".join(ln.strip() for ln in lines[-2:])
         r.detail = f"{r.detail}; dns {dns}; proxy log for {host}: {shown or 'nothing (never reached squid)'}"
     return out
 

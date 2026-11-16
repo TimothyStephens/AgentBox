@@ -34,7 +34,6 @@ their first characters.
 """
 import hashlib
 import os
-import re
 import stat
 import subprocess
 
@@ -335,7 +334,7 @@ def _base_branch_lines(work, base_branch, old_map, now_map, regex):
     if p.returncode != 0:
         return ([f"base branch {base_branch}: its commits could not be listed ({p.stderr.strip()})"],
                 [f"{work}: commits on {base_branch} not listed"])
-    got = [l for l in p.stdout.splitlines() if l.strip()]
+    got = [ln for ln in p.stdout.splitlines() if ln.strip()]
     if not got:
         return [f"base branch {base_branch} ({_short(new)}): no new commits this session"], []
     # The subjects are the agent's own text: held to the same rule as an added line, never printed whole
@@ -345,10 +344,10 @@ def _base_branch_lines(work, base_branch, old_map, now_map, regex):
     except SecretScanError as e:
         return ([f"base branch {base_branch} ({_short(new)}): {len(got)} new commit(s), subjects withheld ({e})"],
                 [f"{work}: {e}"])
-    shown = [(l.split(" ", 1)[0] + " <subject withheld: it matches the secret pattern>") if i in withheld else l
-             for i, l in enumerate(got[:BASE_COMMITS_MAX])]
+    shown = [(ln.split(" ", 1)[0] + " <subject withheld: it matches the secret pattern>") if i in withheld else ln
+             for i, ln in enumerate(got[:BASE_COMMITS_MAX])]
     more = len(got) > BASE_COMMITS_MAX
-    lines = [f"new commits on {base_branch} ({len(got)}{'+' if more else ''}):"] + [f"  {l}" for l in shown]
+    lines = [f"new commits on {base_branch} ({len(got)}{'+' if more else ''}):"] + [f"  {ln}" for ln in shown]
     if more:
         lines.append(f"  ... more than {BASE_COMMITS_MAX}")
     return lines, [f"{work}: {len(got)}{'+' if more else ''} new commit(s) on {base_branch}"]
@@ -580,7 +579,7 @@ def state_report(before, state_dir):
         a = ((old or {}).get("text") or "").splitlines()
         b = ((new or {}).get("text") or "").splitlines()
         diff = list(difflib.unified_diff(a, b, f"a/{r}", f"b/{r}", lineterm="", n=2))
-        lines += [f"    {l}" for l in diff[:DIFF_LINES]]
+        lines += [f"    {ln}" for ln in diff[:DIFF_LINES]]
         if len(diff) > DIFF_LINES:
             lines.append(f"    ... {len(diff) - DIFF_LINES} more diff lines")
     names = ", ".join(changed[:6]) + (f" and {len(changed) - 6} more" if len(changed) > 6 else "")

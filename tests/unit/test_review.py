@@ -5,7 +5,6 @@ import os
 import subprocess
 
 from agentbox import registry, review, session
-from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase
 
