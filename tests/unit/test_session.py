@@ -683,3 +683,17 @@ class PrepareTeardownIsShielded(SessionBase):
                 s.prepare()
         self.assertEqual(set(seen.values()), {signal.SIG_IGN}, seen)
         self.assertEqual(signal.getsignal(signal.SIGINT), before)
+
+
+class TokenDirIsProtected(SettingsCase):
+    """Item 39: a `token_dir` outside the config dir could be granted to a project, token and all."""
+
+    def test_a_project_root_holding_the_token_dir_is_refused(self):
+        tokdir = self.mkdir("tokens")
+        self.settings.values["token_dir"] = tokdir
+        self.assertIn(os.path.realpath(tokdir), [os.path.realpath(p) for p in session.protected_extra(self.settings)])
+        root = self.project("p1")
+        self.settings.values["token_dir"] = os.path.join(root, "tok")
+        os.makedirs(os.path.join(root, "tok"))
+        with self.assertRaises(AgentboxError):
+            session.load_project(self.settings, "p1")

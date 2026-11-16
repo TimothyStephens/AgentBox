@@ -109,8 +109,11 @@ def clone_root(settings, project_name, session, root):
 
 
 def protected_extra(settings):
+    """Launcher-owned paths no grant may include. The token directory is its own setting (`token_dir`), so
+    it can sit outside the config dir and was not covered by it (item 39)."""
     from .keys import keys_dir
-    return [settings.config_dir, settings.data_dir, settings.run_dir, keys_dir(settings)]
+    return [settings.config_dir, settings.data_dir, settings.run_dir, keys_dir(settings),
+            os.path.dirname(settings.token_file("claude"))]
 
 
 def load_project(settings, name):
