@@ -1,5 +1,5 @@
 # The loop: make check (unit tests + guard, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test check itest spikes clean guard host-only install-slice claude-live itest-oom base-image omp-image claude-image omp-live probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
+.PHONY: test check itest clean guard host-only install-slice claude-live itest-oom base-image omp-image claude-image omp-live probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
 
 # bash with pipefail: `cmd | tee log` fails when cmd fails, instead of reporting tee's success.
 SHELL := bash
@@ -7,7 +7,7 @@ SHELL := bash
 
 # Targets that need the host (real podman, the LAN, ~/.config, systemd). Inside an agentbox session
 # (AGENTBOX_SESSION is set) each of them stops before its recipe with exit 2.
-HOST_ONLY := itest spikes clean install-slice claude-live itest-oom base-image omp-image claude-image omp-live \
+HOST_ONLY := itest clean install-slice claude-live itest-oom base-image omp-image claude-image omp-live \
 	probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
 ifdef AGENTBOX_SESSION
 host-only:
@@ -33,9 +33,6 @@ check: test guard
 itest: .SHELLFLAGS := -o pipefail -c
 itest:
 	python3 -m unittest discover -s tests/integration -t . -v; rc=$$?; python3 -m tests.live.freshness check; exit $$rc
-
-spikes:
-	./spikes/run_all.sh
 
 # Run by Tim, not by the builder: uses the real token in ~/.config/agentbox/ (read in place).
 # AB_LIVE_EGRESS=packages or open tries another mode (default locked).

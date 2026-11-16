@@ -118,7 +118,6 @@ ALLOW = [
     "rm -rf /tmp/abt-work",
     "rm -f notes.txt",
     "make test",
-    "./spikes/run_all.sh 1",
     "git commit -m 'gate: pin builds'",
     "git commit -m 'no -n here'",
     "git commit -q -F - <<'EOF'",

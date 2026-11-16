@@ -3,8 +3,6 @@
     "defaultMode": "acceptEdits",
     "allow": [
       "Bash(make *)",
-      "Bash(./spikes/run_all.sh *)",
-      "Bash(spikes/run_all.sh *)",
       "Bash(python3 -m pytest *)",
       "Bash(.venv/bin/python -m pytest *)",
       "Bash(.venv/bin/pytest *)",
