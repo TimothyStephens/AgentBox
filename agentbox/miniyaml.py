@@ -20,9 +20,19 @@ def _err(n, msg):
 
 def _strip_comment(line):
     quote = None
+    skip = False
     for i, c in enumerate(line):
+        if skip:                     # the second character of an escape inside a quoted string
+            skip = False
+            continue
         if quote:
-            if c == quote:
+            # `''` inside single quotes and `\"` (any backslash escape) inside double quotes do not end the
+            # string; ending it there cut `'it''s # x'` at the `#` (item 50).
+            if quote == "'" and c == "'" and line[i + 1:i + 2] == "'":
+                skip = True
+            elif quote == '"' and c == "\\":
+                skip = True
+            elif c == quote:
                 quote = None
         elif c in "\"'" and (i == 0 or line[i - 1] in " -:[,"):
             quote = c
@@ -157,6 +167,12 @@ def _seq(lines, i, indent):
     while i < len(lines) and lines[i][0] == indent and _is_item(lines[i][1]):
         _ind, text, n = lines[i]
         rest = text[1:].lstrip()
+        if _is_item(rest):
+            # `- - x`: a sequence inside a sequence on one line. It used to come back as the string "- x";
+            # refused, as every other unsupported form is (item 50). The block form (`-` then an indented
+            # `- x`) is read.
+            _err(n, "a nested sequence on one line (`- - x`) is not supported; put the inner list on the "
+                    "next lines, indented")
         if not rest:
             val, i = _nested(lines, i, indent)
         elif _split_key(rest, n) is not None:
