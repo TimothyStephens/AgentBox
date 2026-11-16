@@ -133,6 +133,12 @@ DENIED = [(m, re.compile(p), why) for m, p, why in (
 
 DEV_OWNER = "agentbox.dev-owner"     # sockguard's ownership label key for the dev tier
 UPSTREAM_TIMEOUT = 300               # builds and pulls can be slow on this host
+# The client's side (item 43): a client that stops sending its request (or reading the gate's own reply) is
+# dropped after this long, per read or write. Lifted for what is meant to be long-lived: upgraded exec/attach
+# streams, a build's reply, and a relayed reply (wait, logs -f, events).
+CLIENT_TIMEOUT = 60
+MAX_CONNECTIONS = 128                # concurrent client connections; one more is answered 503
+MAX_EXEC_IDS = 4096                  # exec sessions remembered; the oldest are forgotten (refused) past this
 MAX_HEAD = 1 << 20
 MAX_BODY = 64 << 20
 MAX_BUILD_BODY = 8 << 30
@@ -437,6 +443,7 @@ class Gate:
         self.network = cfg["network"]
         self.labels = dict(cfg["labels"])
         self.exec_ids = {}               # exec session id -> container id
+        self.slots = threading.BoundedSemaphore(int(cfg.get("max_connections", MAX_CONNECTIONS)))
         self.verified = set()            # IDs (volume names) whose post-create check passed
         self.lock = threading.Lock()
         # Per-container locks (audit 6 Oct, N1): a start holds its containers' locks from the gate's
@@ -446,6 +453,15 @@ class Gate:
         self.ctr_locks = {}
         self._tls = threading.local()
         self.log_path = cfg.get("log")
+
+    def remember_exec(self, exec_id, cid):
+        """Record an exec session made through the gate; bounded, the oldest forgotten first (item 43: the map
+        only ever grew). A forgotten session is refused, which fails closed."""
+        with self.lock:
+            self.exec_ids.pop(exec_id, None)
+            self.exec_ids[exec_id] = cid
+            while len(self.exec_ids) > MAX_EXEC_IDS:
+                self.exec_ids.pop(next(iter(self.exec_ids)))
 
     # ---- logging --------------------------------------------------------------------------------
     def log(self, verdict, method, path, why=""):
@@ -1974,6 +1990,8 @@ class Gate:
             with self.lock:
                 cid = self.exec_ids.get(m.group(1))
                 ok = cid is not None and cid in self.verified
+                if ok and m.group(2) == "remove":
+                    self.exec_ids.pop(m.group(1), None)        # removed (or failed closed: unusable either way)
             if not ok:
                 raise Deny(f"exec session {m.group(1)[:12]} was not created through this gate on a checked "
                            "container")
@@ -2386,6 +2404,8 @@ def read_chunked(sock, data):
                 trailer, data = data.split(b"\r\n", 1)
                 if trailer == b"":
                     return body, data
+        if len(body) + size > MAX_BODY:              # before reading the chunk, not after (item 43)
+            raise ValueError("request body too large")
         fill(lambda: len(data) >= size + 2)
         body += data[:size]
         data = data[size + 2:]
@@ -2470,7 +2490,7 @@ def send_json(client, body):
 def deny(client, msg, status=403):
     cause = {404: "no such object", 502: "podman error"}.get(status, "agentbox-gate")
     body = json.dumps({"cause": cause, "message": f"agentbox gate: {msg}", "response": status}).encode()
-    reason = {404: "Not Found", 502: "Bad Gateway"}.get(status, "Forbidden")
+    reason = {404: "Not Found", 502: "Bad Gateway", 503: "Service Unavailable"}.get(status, "Forbidden")
     client.sendall(f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nConnection: close\r\n".encode()
                    + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
 
@@ -2594,6 +2614,20 @@ def pipe_back(upstream, client):
 def make_handler(gate):
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
+            if not gate.slots.acquire(blocking=False):
+                gate.log("deny", "-", "-", f"over {MAX_CONNECTIONS} connections")
+                try:
+                    deny(self.request, "too many connections to the gate; try again", 503)
+                except OSError:
+                    pass
+                return
+            try:
+                self.request.settimeout(CLIENT_TIMEOUT)
+                self.serve_one()
+            finally:
+                gate.slots.release()
+
+        def serve_one(self):
             client, upstream = self.request, None
             method = path = "?"
             gate.begin_request()
@@ -2647,8 +2681,7 @@ def make_handler(gate):
                             exec_id = (json.loads(resp or b"{}") or {}).get("Id")
                             if exec_id:
                                 cid = gate.require_dev("containers", ref)
-                                with gate.lock:
-                                    gate.exec_ids[exec_id] = cid
+                                gate.remember_exec(exec_id, cid)
                         else:
                             gate.after_start_checked()
                     client.sendall(build_response(status, reason, hdrs, resp))
@@ -2669,6 +2702,7 @@ def make_handler(gate):
                         for block in iter(lambda: f.read(1 << 20), b""):
                             upstream.sendall(block)
                     upstream.settimeout(None)
+                    client.settimeout(None)               # the build itself can run for a long time
                     # only the ID the reply ends with is recorded, before the client sees that end, so a build
                     # started right after it already finds this one in the record
                     started = time.time()
@@ -2676,6 +2710,7 @@ def make_handler(gate):
                     return
                 upstream.sendall(build_head(method, target, version, headers) + body)
                 upstream.settimeout(None)
+                client.settimeout(None)                   # long-lived by design: attach, exec, wait, logs -f
                 if upgrade:
                     if rest:
                         upstream.sendall(rest)        # the upgraded stream (exec start, attach) has begun

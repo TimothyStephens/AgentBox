@@ -1747,5 +1747,67 @@ class Item44CrashesFailClosed(unittest.TestCase):
         self.assertIn(b"internal error", reply)
 
 
+class Item43ClientLimits(unittest.TestCase):
+    """Review 2026-11-16, item 43: no client timeout, no connection cap, exec_ids never pruned, and a chunk's
+    size checked only after the whole chunk was buffered."""
+
+    def test_a_silent_client_is_dropped(self):
+        with unittest.mock.patch.object(gate, "CLIENT_TIMEOUT", 0.2):
+            a, t = run_handler(self, Fake())
+            a.sendall(b"GET /v5/libpod/_ping HTTP/1.1\r\n")           # never finishes its head
+            t.join(5)
+        self.assertFalse(t.is_alive(), "the handler still waits on a silent client")
+        self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 403"))
+
+    def test_the_timeout_is_lifted_for_a_relayed_reply(self):
+        """`podman wait` or `logs -f`: podman answers late; the client must not be cut at CLIENT_TIMEOUT."""
+        def serve(conn, result):
+            Upstream.read_head(conn)
+            threading.Event().wait(0.6)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+        up = Upstream(self, serve)
+        with unittest.mock.patch.object(gate, "CLIENT_TIMEOUT", 0.2):
+            a, t = run_handler(self, Fake(), up)
+            a.sendall(b"POST /v5/libpod/containers/json HTTP/1.1\r\nHost: d\r\n\r\n")
+            a.settimeout(5)
+            reply = a.recv(65536)
+            t.join(5)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 200 OK"), reply[:80])
+
+    def test_connections_over_the_cap_get_503(self):
+        g = Fake()
+        g.slots = threading.BoundedSemaphore(1)
+        g.slots.acquire()                                              # one connection already in flight
+        a, t = run_handler(self, g)
+        t.join(5)
+        self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 503"))
+        g.slots.release()
+        a, t = run_handler(self, g)
+        a.sendall(b"GET /v5/libpod/_pin%2F HTTP/1.1\r\n\r\n")        # any request: the slot is free again
+        a.shutdown(socket.SHUT_WR)
+        t.join(5)
+        self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 403"))
+        self.assertTrue(g.slots.acquire(blocking=False), "the slot was released after the request")
+
+    def test_exec_ids_bounded_and_removed(self):
+        g = Fake()
+        g.verified.add("c1")
+        with unittest.mock.patch.object(gate, "MAX_EXEC_IDS", 3):
+            for i in range(5):
+                g.remember_exec(f"e{i}", "c1")
+        self.assertEqual(list(g.exec_ids), ["e2", "e3", "e4"])
+        decide(g, "POST", "/v5/libpod/exec/e3/remove")
+        self.assertNotIn("e3", g.exec_ids)
+        with self.assertRaises(gate.Deny):
+            decide(g, "POST", "/v5/libpod/exec/e3/start")
+
+    def test_an_oversized_chunk_is_refused_before_it_is_read(self):
+        sock = FakeSock([b"x" * 65536] * 4)
+        with self.assertRaises(ValueError) as e:
+            gate.read_chunked(sock, b"%x\r\n" % (gate.MAX_BODY + 1))
+        self.assertIn("too large", str(e.exception))
+        self.assertEqual(len(sock.chunks), 4, "nothing of the chunk was read")
+
+
 if __name__ == "__main__":
     unittest.main()
