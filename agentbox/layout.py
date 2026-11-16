@@ -23,6 +23,7 @@ import time
 
 from . import config, registry
 from .errors import AgentboxError
+from .fsutil import write_private
 
 STAMP = "%Y-%m-%dT%H:%M:%S"
 
@@ -134,11 +135,7 @@ def write_identity(settings, project, root, *, created=None, previous=None, now=
         doc["previous_roots"] = list(previous)
     path = settings.project_file(project)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    write_private(path, json.dumps(doc, indent=1, sort_keys=True), tmp_suffix=f".{os.getpid()}.tmp")
     return doc
 
 

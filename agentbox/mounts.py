@@ -11,7 +11,7 @@ import subprocess
 from dataclasses import dataclass
 
 from .errors import AgentboxError
-from .fsutil import inside
+from .fsutil import inside, write_private
 
 # The one list of secret file NAMES: the masks hide them, grantcheck (SECRET_FILES) and the history check look
 # for them, and a swap target must be one. Widened 16 Nov (review item 28) from `.env`/`.env.*`/`*.pem`/`*.key`:
@@ -495,6 +495,6 @@ def prepare(p):
         os.makedirs(d, exist_ok=True)
     for f in p.create_files:
         try:
-            os.close(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            write_private(f, "", atomic=False)
         except FileExistsError:
             pass

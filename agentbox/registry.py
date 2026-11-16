@@ -5,6 +5,7 @@ import re
 from . import projectkeys
 from .config import load_toml
 from .errors import AgentboxError
+from .fsutil import write_private
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
@@ -81,19 +82,9 @@ def dump(projects):
 def save(path, projects):
     text = dump(projects)                 # before anything is touched: a bad name writes nothing
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = path + ".tmp"
     # Made fresh (a stale or planted `.tmp` link is not written through) and fsynced before the rename, so a
     # power cut leaves the old file or the new one, never an empty one (item 49).
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    write_private(path, text)
 
 
 def check_name(name):

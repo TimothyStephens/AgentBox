@@ -11,6 +11,7 @@ import re
 import sys
 
 from .errors import AgentboxError
+from .fsutil import write_private
 from .tokens import check_token_file
 
 PROVIDER = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
@@ -80,12 +81,7 @@ def set_key(settings, provider, read=getpass.getpass, out=None):
         raise AgentboxError("no key given (or it contains whitespace); nothing changed")
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     os.chmod(os.path.dirname(path), 0o700)
-    tmp = path + ".new"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(key + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    write_private(path, key + "\n", tmp_suffix=".new")
     print(f"saved {path}; new sessions use it, running sessions keep the old one until restarted", file=out)
     if provider not in PROVIDER_DOMAINS:
         print(f"note: {provider!r} has no known API domain; its entry in the model config needs a baseUrl",

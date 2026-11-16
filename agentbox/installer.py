@@ -54,6 +54,7 @@ import time
 from . import adapters, egress, hardening, plugins, profile, session as sessionmod
 from .config import HOME
 from .errors import AgentboxError
+from .fsutil import write_private
 
 # Inside the host tree, which is mounted at ~/.omp/plugins. Dotted, so OMP's own discovery has no reason
 # to walk it, and one directory rather than four so the tree has exactly one place that is ours.
@@ -353,9 +354,7 @@ class Install:
         gw = pm.run(["network", "inspect", self.egr_net, "--format", "{{range .Subnets}}{{.Gateway}} {{end}}"])
         dns = (gw.stdout or "").split()[0] if (gw.stdout or "").split() else None
         conf = os.path.join(self.run_dir, "squid.conf")
-        fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(self.squid_conf(dns=dns))
+        write_private(conf, self.squid_conf(dns=dns))
         pm.run(sessionmod.proxy_run_argv(s, self.labels("proxy"), self.proxy_name,
                                          conf_path=conf, networks=[self.egr_net, self.int_net]))
         self._wait_proxy()
@@ -594,8 +593,5 @@ def _lock(settings, agent, entries, pin, tree):
     path = os.path.join(tree, LOCKFILE)
     _clear(path + ".tmp")
     _clear(path)
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f, indent=1, sort_keys=True)
-    os.replace(path + ".tmp", path)
+    write_private(path, json.dumps(doc, indent=1, sort_keys=True))
     return doc

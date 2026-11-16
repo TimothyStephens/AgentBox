@@ -16,6 +16,7 @@ import json
 import os
 
 from . import config
+from .fsutil import write_private
 
 
 def path(settings, project):
@@ -61,11 +62,9 @@ def acquire(settings, project, *, pid=None, pid_start=None, agent="", now=None):
     doc = {"pid": pid if pid is not None else os.getpid(), "pid_start": pid_start,
            "agent": agent, "session": "", "taken": now if now is not None else time.time()}
     try:
-        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        write_private(p, json.dumps(doc), atomic=False)
     except FileExistsError:
         return False, (read(settings, project) or {})
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f)
     return True, doc
 
 
@@ -77,11 +76,7 @@ def note_session(settings, project, session_id):
         return False
     doc["session"] = session_id
     p = path(settings, project)
-    tmp = p + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f)
-    os.replace(tmp, p)
+    write_private(p, json.dumps(doc))
     return True
 
 

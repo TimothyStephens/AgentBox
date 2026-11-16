@@ -15,6 +15,7 @@ import re
 import time
 
 from . import config
+from .fsutil import write_private
 
 ID = re.compile(r"^[0-9a-f]{64}$")
 
@@ -43,11 +44,8 @@ def _update(path, change):
         fcntl.flock(lock, fcntl.LOCK_EX)
         images = load(path)
         change(images)
-        tmp = f"{path}.{os.getpid()}.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump({"images": images}, f, indent=1, sort_keys=True)
-        os.replace(tmp, path)
+        write_private(path, json.dumps({"images": images}, indent=1, sort_keys=True),
+                      tmp_suffix=f".{os.getpid()}.tmp")
 
 
 def add(path, image_id, session):

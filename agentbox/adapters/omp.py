@@ -34,6 +34,7 @@ from .. import keys as keysmod
 from .. import miniyaml
 from ..config import HOME
 from ..errors import AgentboxError
+from ..fsutil import write_private
 from . import Adapter, SessionSetup
 
 C_OMP = os.path.join(HOME, ".omp")                     # ~/.omp inside the session
@@ -258,7 +259,7 @@ def _prepare_file(path):
             raise AgentboxError(f"{path} is a directory; expected a file")
         os.unlink(path)
     if not os.path.exists(path):
-        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+        write_private(path, "", atomic=False)
 
 
 class OmpAdapter(Adapter):
@@ -293,9 +294,7 @@ class OmpAdapter(Adapter):
         servers[name] = server
         doc["mcpServers"] = servers
         path = os.path.join(s.session_run_dir(sess.name), "omp-mcp.json")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(doc, f, indent=1)
+        write_private(path, json.dumps(doc, indent=1))
         setup.mounts[:] = [m for m in setup.mounts if m[1] != dst]
         _prepare_file(os.path.join(sess.state_dir, "agent", ".mcp.json"))
         setup.mounts.append((path, dst, True))
@@ -323,9 +322,7 @@ class OmpAdapter(Adapter):
         gen = {}
         for fn, text in (("models.yml", miniyaml.dumps(doc)), ("AGENTS.md", sandbox_notes + _omp_notes(doc))):
             path = os.path.join(run_dir, f"omp-{fn}")
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
+            write_private(path, text)
             gen[fn] = path
         # ~/.omp is a tmpfs owned by the session user (run/, caches, logs of this session), with the named
         # pieces mounted on top; without it the runtime creates it root-owned and OMP cannot write there.
@@ -341,15 +338,13 @@ class OmpAdapter(Adapter):
             setup.ro_empty_dirs.append(os.path.join(C_OMP, rel))
         if sess.project.value("approvals") != "off":
             overlay = os.path.join(run_dir, "omp-lockdown.yml")
-            fd = os.open(overlay, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(LOCKDOWN_SETTINGS)
+            write_private(overlay, LOCKDOWN_SETTINGS)
             setup.mounts.append((overlay, LOCKDOWN_OVERLAY, True))
             root = sess.project.root
             setup.project_covers += [os.path.join(root, rel) for rel in REPO_CODE
                                      if os.path.lexists(os.path.join(root, rel))]
         empty = os.path.join(run_dir, "omp-empty")
-        os.close(os.open(empty, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        write_private(empty, "")
         user_dsts = {os.path.join(C_OMP, rel) for fn, rel in USER_FILES
                      if os.path.isfile(os.path.join(s.seed_dir(self.name), fn))
                      and not os.path.islink(os.path.join(s.seed_dir(self.name), fn))}

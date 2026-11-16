@@ -27,6 +27,7 @@ import os
 import re
 
 from ..errors import AgentboxError
+from ..fsutil import write_private
 from . import Adapter, SessionSetup
 
 MANAGED_DIR = "/etc/claude-code"
@@ -72,13 +73,7 @@ def _read_json(path):
 def _write_atomic(path, text):
     """Write `text` to `path` via a .tmp sibling, following a symlink at neither (O_EXCL|O_NOFOLLOW)."""
     _unlink_if_link(path)
-    tmp = path + ".tmp"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    write_private(path, text)
 # With approvals on (lockdown), Claude Code's managed policy: bypass mode cannot be entered, and only managed
 # hooks and permission rules apply, so a repo's own .claude/settings.json hooks and allow rules do nothing
 # (review 2026-10-01 #2). Key names checked against the image's Claude Code build.
@@ -211,9 +206,8 @@ class ClaudeAdapter(Adapter):
                                    for k, v in keys.items()})
         if not approvals_off:
             path = os.path.join(sess.settings.session_run_dir(sess.name), "claude-managed-settings.json")
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(managed_policy(sess.settings, profile_on=not sess.profile_off[0]), f, indent=2)
+            write_private(path, json.dumps(managed_policy(sess.settings, profile_on=not sess.profile_off[0]),
+                                           indent=2))
             setup.mount_root = MANAGED_DIR
             setup.mounts.append((path, f"{MANAGED_DIR}/managed-settings.json", True))
         return setup

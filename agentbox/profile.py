@@ -26,6 +26,7 @@ import subprocess
 import time
 
 from .errors import AgentboxError
+from .fsutil import write_private
 
 # What a profile may hold: the paths an agent LOADS. Anything else in the directory is ignored, so a stray
 # note or a README cannot become something an agent loads.
@@ -215,14 +216,7 @@ def read_sidecar(inbox, name):
 
 
 def write_sidecar(inbox, name, doc):
-    path = sidecar_path(inbox, name)
-    tmp = path + ".tmp"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    write_private(sidecar_path(inbox, name), json.dumps(doc, indent=1, sort_keys=True))
 
 
 def record_new_items(settings, project, agent, before, *, session, preset, egress, now=None):

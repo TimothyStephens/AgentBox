@@ -22,7 +22,7 @@ import subprocess
 import time
 
 from .errors import AgentboxError
-from .fsutil import inside
+from .fsutil import inside, write_private
 from .scan import GIT_SAFE
 
 HANDSHAKE = 1
@@ -126,11 +126,7 @@ def start(settings):
 def write_token(run_dir, token):
     """The token, 0600, in the session run dir. Mounted read-only into the socket directory's container path
     as `token`; never in --env, argv or a log (podman inspect shows env and argv)."""
-    path = os.path.join(run_dir, TOKEN_FILE)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token)
-    return path
+    return write_private(os.path.join(run_dir, TOKEN_FILE), token)
 
 
 def socket_container_path(record):
@@ -228,11 +224,7 @@ def confirm_message(record, *, preset, network, mounts_hash_value, project_root,
 
 
 def _write_json(run_dir, name, doc):
-    path = os.path.join(run_dir, name)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(doc, f, indent=1, sort_keys=True)
-    return path
+    return write_private(os.path.join(run_dir, name), json.dumps(doc, indent=1, sort_keys=True))
 
 
 def confirm(record, doc, run_dir):

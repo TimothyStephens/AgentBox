@@ -15,7 +15,7 @@ from . import keys as keysmod
 from . import buildcap, builtrec, config, layout, scan, sockguard, toulmin, userimage
 from .config import HOME
 from .errors import AgentboxError
-from .fsutil import inside
+from .fsutil import inside, write_private
 from .podman import Podman, set_log
 
 TOKEN_PATH = "/run/agentbox/token"
@@ -611,8 +611,7 @@ class Session:
     def _prepare_reserved(self, do_backup):
         p = self.project
         self._write_meta()
-        fd = os.open(self.mask_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
-        os.close(fd)
+        write_private(self.mask_file, "", mode=0o444, atomic=False)
         mode = self.mount_mode
         if mode == "clone" and dev_tier(p):
             # The gate resolves the agent's bind sources on the host, where the owner's path IS the owner's
@@ -814,9 +813,7 @@ class Session:
         if text is not None and self.adapter.instructions_name:
             path = os.path.join(self.settings.session_run_dir(self.name),
                                 f"{self.adapter.name}-instructions.md")
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
+            write_private(path, text, atomic=False)
             dst = f"{self.adapter.state_mount}/{self.adapter.instructions_name}"
             check(dst, "generated instructions")
             self._own_mount_point(path, dst)
@@ -867,7 +864,7 @@ class Session:
         if os.path.islink(host) or (os.path.lexists(host) and not os.path.isfile(host)):
             os.unlink(host)
         if not os.path.exists(host):
-            os.close(os.open(host, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+            write_private(host, "", atomic=False)
 
     def _check_setup(self):
         """Adapter mounts: destinations under the adapter's own root, never on top of a grant or /run/agentbox;
@@ -953,9 +950,7 @@ class Session:
                          "harvest": [os.path.join(self.settings.session_run_dir(self.name), n)
                                      for n, _dst in self.adapter.per_session_dirs]}}
         path = os.path.join(self.settings.session_run_dir(self.name), SCAN_STATE)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(doc, f)
+        write_private(path, json.dumps(doc), atomic=False)
 
     def _write_meta(self):
         """session.json: what every teardown path (the launcher's, `kill`, `gc`) needs. Written again whenever
@@ -971,10 +966,7 @@ class Session:
                 # copy on disk is the 0600 file toulmin.write_token makes for the container
                 "toulmin": ({k: v for k, v in self.toulmin.items() if k != "token"} if self.toulmin else None)}
         path = os.path.join(self.settings.session_run_dir(self.name), "session.json")
-        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(meta, f)
-        os.replace(path + ".tmp", path)
+        write_private(path, json.dumps(meta))
 
     # ---- the agent container ------------------------------------------------------------
     def allowed_mount_srcs(self, extra=()):
@@ -1222,9 +1214,7 @@ class Session:
         gw = pm.run(["network", "inspect", self.egr_net, "--format", "{{range .Subnets}}{{.Gateway}} {{end}}"])
         dns = (gw.stdout or "").split()[0] if (gw.stdout or "").split() else None
         conf = os.path.join(s.session_run_dir(self.name), "squid.conf")
-        fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(self.squid_conf(dns=dns))
+        write_private(conf, self.squid_conf(dns=dns))
         pm.run(self.proxy_run_args(conf))
         self._wait_proxy()
         self.env.update(egress.proxy_env(self.proxy_name))
@@ -1363,9 +1353,7 @@ class Session:
         s, run = self.settings, self.settings.session_run_dir(self.name)
         os.makedirs(os.path.dirname(socket_path), mode=0o700, exist_ok=True)
         conf = os.path.join(run, f"{role}.yaml")
-        fd = os.open(conf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
+        write_private(conf, text)
         self.podman.run(self.sockguard_run_args(service, conf, name=name, socket_path=socket_path, role=role))
 
         def running():
@@ -1464,9 +1452,7 @@ class Session:
         # create body. Lower case is the one curl, wget, Python and Go all read.
         container_proxy_env = {k: v for k, v in proxy_env.items() if k.islower()}
         cfg = os.path.join(s.service_dir(self.name), "gate.json")
-        fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(self.gate_config(service, container_proxy_env), f, indent=2)
+        write_private(cfg, json.dumps(self.gate_config(service, container_proxy_env), indent=2))
         os.makedirs(os.path.dirname(self.gate_socket), mode=0o700, exist_ok=True)
         self._gate_proc = sockguard.start_gate(cfg, s.service_dir(self.name), self.gate_socket,
                                                float(s.ready_timeout), slice_name=s.cgroup_parent,
@@ -1541,11 +1527,9 @@ def plugin_log_line(settings, agent):
 def _keep(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        write_private(path, data, atomic=False)
     except FileExistsError:
         return False                 # a second teardown of the same session: its log is already kept
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
     return True
 
 
