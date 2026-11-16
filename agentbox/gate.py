@@ -79,6 +79,7 @@ from .gate_schema import (COMPAT_KEYS, COMPAT_NETWORK_KEYS, DATA_PATHS, HOSTCONF
                           VOLUME_KEYS, Deny, NotFound, UpstreamError, _Obj, canonical, cget, cset, strict_loads)
 from .gate_dockerfile import (_HEREDOC, _WS, _subst, check_run_mount, dockerfile_images,  # noqa: F401
                               heredoc_markers, image_name, instruction_words, normalize_ref)
+from .gate_mounts import parse_mountinfo, parse_mountinfo_opts  # noqa: F401
 
 V = r"(?:/v[0-9][0-9.]*)?"
 LIB = r"(?:/libpod)?"
@@ -1849,30 +1850,6 @@ def created_name(kind, target, body):
     except ValueError:
         return None
     return cget(doc, "name") if isinstance(doc, dict) else None
-
-
-def parse_mountinfo_opts(text):
-    """{mount point: (major:minor, root within that filesystem, [per-mount options])}."""
-    def unescape(s):
-        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
-    out = {}
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) >= 6:
-            out[unescape(f[4])] = (f[2], unescape(f[3]), f[5].split(","))
-    return out
-
-
-def parse_mountinfo(text):
-    """[(mount point, 'major:minor', root within that filesystem)] from a mountinfo file."""
-    def unescape(s):
-        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
-    out = []
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) >= 5:
-            out.append((unescape(f[4]), f[2], unescape(f[3])))
-    return out
 
 
 # ---- HTTP plumbing ------------------------------------------------------------------------------
