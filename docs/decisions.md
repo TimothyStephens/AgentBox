@@ -3119,3 +3119,12 @@ context: 100 MiB of blobs, 20 000 files, `.git`) failed every round with exit 12
 allowed and spooled it, then got `BrokenPipeError` forwarding it, and sockguard-dev logged no request.
 Sockguard's README says oversized bodies on its bounded tar inspectors get `413 Payload Too Large`, without
 naming the limit [likely the cause; the limit is unverified]. The agent sees only a failed build.
+
+**Follow-up, same day: a cut-off build says why.** When the upstream stops reading a build context (EPIPE or
+reset while the gate forwards the spooled tar), the gate now reads what the upstream answered before it
+closed and relays it: the upstream's status (413 from sockguard's bounded tar inspector), its message, how
+much of the context got through, and the advice to keep large files out with a `.containerignore`. With no
+answer it is a 502 that says the connection closed. Before, the agent got a 403 "request refused
+(BrokenPipeError...)". The refusal stays a refusal; only its status and words changed. `tests/perf` has a
+`build-limit` scenario (run by name) that builds 16-384 MiB contexts in one dev-tier session to find the
+size the dev tier refuses; the session notes will name it once it is measured.

@@ -80,6 +80,7 @@ from .gate_dockerfile import (_HEREDOC, _WS, _subst, check_run_mount, dockerfile
                               heredoc_markers, image_name, instruction_words, normalize_ref)
 from .gate_mounts import parse_mountinfo, parse_mountinfo_opts  # noqa: F401
 from .gate_http import (MAX_BODY, MAX_BUILD_BODY, MAX_HEAD, TOKEN, UPSTREAM_TIMEOUT, UnixHTTP,  # noqa: F401
+                        build_cut_off_message, early_reply,
                         _BytesSocket, build_head, build_response, deny, hget, hset, parse_head, parse_response,
                         pipe, pipe_back, pipe_build_reply, pipe_reply, read_body, read_chunked, read_head,
                         recv_all, send_json, spool_body)
@@ -1958,10 +1959,19 @@ def make_handler(gate):
                         gate.check_build_images(f"/proc/self/fd/{f.fileno()}", target)
                         headers = hset(hset(headers, "Transfer-Encoding", None), "Content-Length", str(size))
                         target = gate.finalize_build(target)      # holder PID re-checked after the spool (item 11)
-                        upstream.sendall(build_head(method, target, version, headers))
-                        f.seek(0)
-                        for block in iter(lambda: f.read(1 << 20), b""):
-                            upstream.sendall(block)
+                        sent = 0
+                        try:
+                            upstream.sendall(build_head(method, target, version, headers))
+                            f.seek(0)
+                            for block in iter(lambda: f.read(1 << 20), b""):
+                                upstream.sendall(block)
+                                sent += len(block)
+                        except (BrokenPipeError, ConnectionResetError):
+                            # upstream stopped reading: say what it answered, not "BrokenPipeError" (16 Nov)
+                            status, msg = build_cut_off_message(early_reply(upstream), size, sent)
+                            e = Deny(msg)
+                            e.status = status
+                            raise e from None
                     upstream.settimeout(None)
                     client.settimeout(None)               # the build itself can run for a long time
                     # only the ID the reply ends with is recorded, before the client sees that end, so a build

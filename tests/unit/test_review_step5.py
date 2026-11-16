@@ -1830,3 +1830,77 @@ class Item43ClientLimits(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildContextCutOffUpstream(unittest.TestCase):
+    """16 Nov profile: a ~200 MB build context failed in the dev tier with exit 125 and nothing to say why. The
+    gate spooled it, then got EPIPE forwarding it (sockguard answers an oversized tar with 413 and closes), and
+    replied "request refused (BrokenPipeError...)". The agent now gets the upstream's own status and words,
+    how much of the context got through, and what to do about it."""
+
+    class BuildFake(Fake):
+        def rewrite_build(self, target):
+            return target
+
+        def check_build_images(self, context_path, target):
+            return None
+
+        def finalize_build(self, target):
+            return target
+
+    SIZE = 8 << 20                 # well past the socket buffers, so the send really is cut off
+
+    def run_build(self, serve):
+        up = Upstream(self, serve)
+        a, t = run_handler(self, self.BuildFake(), up)
+        a.sendall(b"POST /v5/libpod/build?t=localhost/x:1 HTTP/1.1\r\nHost: d\r\n"
+                  + f"Content-Length: {self.SIZE}\r\n\r\n".encode())
+        sender = threading.Thread(target=lambda: self._send_body(a), daemon=True)
+        sender.start()
+        t.join(20)
+        up.thread.join(5)
+        reply = b""
+        a.settimeout(5)
+        try:
+            while True:
+                data = a.recv(65536)
+                if not data:
+                    break
+                reply += data
+        except OSError:
+            pass
+        return reply
+
+    def _send_body(self, a):
+        try:
+            for _ in range(self.SIZE // (1 << 20)):
+                a.sendall(b"\0" * (1 << 20))
+        except OSError:
+            pass
+
+    def test_the_upstreams_refusal_reaches_the_client_with_the_size_and_the_advice(self):
+        def serve(conn, result):
+            Upstream.read_head(conn)
+            conn.recv(65536)
+            body = b'{"message":"request body exceeds the build inspection limit"}'
+            conn.sendall(b"HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\n"
+                         + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+            conn.shutdown(socket.SHUT_RDWR)
+        reply = self.run_build(serve)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 413 "), reply[:120])
+        text = reply.decode("utf-8", "replace")
+        self.assertIn("exceeds the build inspection limit", text)
+        self.assertIn("8 MiB", text)
+        self.assertIn(".containerignore", text)
+
+    def test_a_close_without_a_reply_is_a_bad_gateway_that_says_so(self):
+        def serve(conn, result):
+            Upstream.read_head(conn)
+            conn.recv(65536)
+            conn.shutdown(socket.SHUT_RDWR)
+        reply = self.run_build(serve)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 502 "), reply[:120])
+        text = reply.decode("utf-8", "replace")
+        self.assertIn("closed the connection", text)
+        self.assertIn(".containerignore", text)
+        self.assertNotIn("BrokenPipeError", text)

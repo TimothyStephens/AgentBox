@@ -229,6 +229,48 @@ def recv_all(sock):
         raw += chunk
 
 
+def early_reply(sock, timeout=5.0, limit=1 << 20):
+    """What an upstream that stopped reading a request body said before it closed: (status, reason, headers,
+    body), or None if it said nothing parseable. A server that refuses a body mid-upload (sockguard's 413 on
+    an oversized build context) writes its answer and closes; the sender sees EPIPE, but the answer is
+    still in the socket's receive buffer."""
+    raw = b""
+    try:
+        sock.settimeout(timeout)
+        while len(raw) < limit:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except OSError:
+        pass
+    if not raw:
+        return None
+    try:
+        return parse_response(raw)
+    except (http.client.HTTPException, ValueError, OSError):
+        return None
+
+
+def build_cut_off_message(reply, size, sent):
+    """(status, message) for the client when the build context could not be forwarded whole."""
+    mib = lambda n: f"{n / (1 << 20):.0f} MiB"   # noqa: E731
+    advice = ("Keep large files and directories (data, build outputs, .git) out of the context with a "
+              ".containerignore, or build from a smaller directory")
+    if reply is None:
+        return 502, (f"the build context ({mib(size)}) was cut off after {mib(sent)}: podman's side closed the "
+                     f"connection without a reply. {advice}")
+    status, reason, _h, body = reply
+    said = ""
+    try:
+        said = str((json.loads(body or b"{}") or {}).get("message") or "")
+    except (ValueError, AttributeError):
+        said = (body or b"").decode("utf-8", "replace")
+    said = " ".join(said.split())[:300]
+    return status, (f"the build context ({mib(size)}) was refused after {mib(sent)} by the dev tier's socket "
+                    f"proxy: {status} {reason}{': ' + said if said else ''}. {advice}")
+
+
 def send_json(client, body):
     try:
         client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
@@ -240,7 +282,8 @@ def send_json(client, body):
 def deny(client, msg, status=403):
     cause = {404: "no such object", 502: "podman error"}.get(status, "agentbox-gate")
     body = json.dumps({"cause": cause, "message": f"agentbox gate: {msg}", "response": status}).encode()
-    reason = {404: "Not Found", 502: "Bad Gateway", 503: "Service Unavailable"}.get(status, "Forbidden")
+    reason = {404: "Not Found", 413: "Payload Too Large", 502: "Bad Gateway",
+              503: "Service Unavailable"}.get(status, "Forbidden")
     client.sendall(f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nConnection: close\r\n".encode()
                    + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
 
