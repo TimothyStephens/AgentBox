@@ -234,6 +234,7 @@ class RawSocketNeverMounted(SettingsCase):
         srv.bind(path)
         self.addCleanup(srv.close)
         argv = ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--http-proxy=false",
                 "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1",
                 f"--mount=type=bind,src={path},dst={d}/raw.sock", "img"]
         with self.assertRaises(AgentboxError) as cm:
