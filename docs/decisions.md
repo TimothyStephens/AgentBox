@@ -2950,3 +2950,54 @@ egm, the four npm packages, the two linked repos) and no MAGS line. Its one warn
 OMP starts without them ... `cp ~/.omp/agent/config.yml`": the text was written for a list of three seeds.
 `_missing_seeds_note` now words it for what is missing (singular or plural, the config.yml advice only when
 config.yml is, a one-clause MCP hint when only mcp.json is). Unit test on the three shapes.
+
+## 2026-11-16 · Review 2026-11-16: fixes and the decisions they carried
+
+An independent review of the whole tree (gate, session, installer, CLI, paths, scan, the guard hook, tests,
+adapters, the two profile repos, config, build, hygiene, docs) produced a numbered findings table; the fixes
+were made the same day in an agentbox session (no podman, so unit tests only), one commit per item, each
+behavioural fix with a unit test that failed before it. Host gates (`make itest`, `make claude-live`,
+`make omp-live`, `ab profile install claude|omp`, both selftests) are Tim's to rerun on this tree and record
+here. The rule for every fix was: grep design.md and decisions.md first, and do not regress a recorded
+intention. The decisions the fixes carried, by package:
+
+- **Masks and grantcheck (items 28, 15; session package, `b843324`).** `mounts.MASK_FILES` is the ONE list
+  of secret names (grantcheck's `SECRET_FILES` is the same object; the history check and the swap-target rule
+  already read it): `.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `*.jks`. `grantcheck.DATA_SUFFIXES` adds `.sql` and `.dump` (same 1 MB floor, so a schema-only `.sql`
+  passes). `MASK_EXEMPT` is unchanged and stays exact names, so `example.env` is masked while `.env.example`
+  is not; the session notes list the full set and the exemptions. **Why:** the 6 Oct known-limitations entry
+  accepted that a secret under another name gets past the masks; the review listed six conventional names
+  and two data shapes (`pg_dump` output) that cost nothing to add. **Consequence:** a project whose git
+  history holds one of the new names is refused at the next `ab session start` until
+  `ab project accept-history-secrets` -- the existing rule on a longer list. `mounts.git_overlays` now parses
+  each covered `config`/`config.worktree` for `core.hooksPath`, `include.path` and `includeIf.<cond>.path`:
+  a target inside a read-write grant is covered read-only (dir or file); one outside every grant, or
+  unreadable, is a grantcheck finding (`git config points outside the grant: ...`), so the session refuses
+  rather than running with a hooks path the cover does not reach. The launcher's own git calls on
+  agent-written trees (`_history_masked`, `clone_root`) run with `scan.GIT_SAFE` and
+  `GIT_CONFIG_NOSYSTEM=1`/`GIT_CONFIG_GLOBAL=/dev/null`, as the scan and the review sync already did.
+  design.md's threat-model bullets, Project secrets, grantcheck and git-cover bullets updated (`b36a666`).
+- **The dev swap's mount point (item 37; session package).** Creating an empty 0600 `.env` as the mount
+  point where a read-write grant has `.env.dev` and no `.env` is the documented behaviour (29 Sep, "Dev
+  swap") and is kept. Changed: in a `data_ro` grant nothing is created on the host (the swap for that
+  directory is skipped with a note: a read-only grant is not ours to write into), and a target that exists
+  as something other than a regular file (`.env/` as a directory, a FIFO) is skipped and noted instead of
+  failing `podman run`.
+- **Docs (items 30-32 and the reviewer's low items; `d56de4a`, `1555ef8`, `14ba37a`, `a729667`).**
+  `CLAUDE.md` is rewritten for an agent working on agentbox from the host or from inside a session (the
+  builder-on-the-host text and the spike narrative are gone; the two spike facts the tests still rest on
+  moved into design.md's Spike results). `docs/progress.md`'s Status table is the ONE built/deferred/not-built
+  list: `TODO.md` §1.1 (MAGS as three session features, reversed on 15 Nov) is deleted, its deferred table
+  no longer carries built rows, and design.md's "Planned / not built" is a pointer plus the two design-level
+  items. design.md, PERSONALIZATION.md and INSTALL.md describe the plugin tree, the base images and the
+  per-project backups as the code has them (`~/.omp` whitelist, images "derived from omp-env/claudecode",
+  `backups/<project>/<timestamp>`, `mags-codedev.yaml` as a seed: all gone); the stale `ab run|attach|kill|ls`
+  names in the Toulmin contract and the canary probe are the `ab session` verbs.
+- **Landed by the other packages the same day, each with its test (see the commit bodies):** the gate's
+  Containerfile parsing (whitespace class, heredocs as buildkit finds them, `465cfca` non-ASCII create keys
+  and image-mount checks), the installer's lock/staging/symlink hardening, the scan's NUL/`++`/short-match
+  fixes and FIFO safety, the selftest probe's argument encoding and missing-canary FAIL, malformed-TOML
+  refusals, the `SessionTest` fixture split, and the lint cleanups. Decisions those packages recorded in
+  their own notes are to be appended under this entry if they are not already above: at the time of
+  writing, only the session package's notes had reached the docs package.
