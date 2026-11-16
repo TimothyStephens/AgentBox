@@ -3,10 +3,12 @@ before the fix. Upstream lookups are faked."""
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock
 
@@ -1904,3 +1906,40 @@ class BuildContextCutOffUpstream(unittest.TestCase):
         self.assertIn("closed the connection", text)
         self.assertIn(".containerignore", text)
         self.assertNotIn("BrokenPipeError", text)
+
+    def test_the_upstream_connection_is_opened_after_the_spool_not_before(self):
+        """16 Nov build-limit run: contexts of 16-384 MiB of one random file built; a 122 MiB tree of 20 000
+        files was cut off after 0 MiB with no reply, 8-11 s after the gate allowed it. The gate connected
+        upstream before spooling and checking the context, and sockguard closes a connection that sends no
+        request head in time. Here the upstream closes one that is idle for 0.5 s, and the body is slow."""
+        def serve(conn, result):
+            conn.settimeout(0.5)
+            try:
+                head = Upstream.read_head(conn)
+            except TimeoutError:
+                conn.shutdown(socket.SHUT_RDWR)            # what an idle-header timeout does
+                return
+            conn.settimeout(10)
+            need = int(re.search(rb"(?i)content-length:\s*(\d+)", head).group(1))
+            got = len(head.partition(b"\r\n\r\n")[2])
+            while got < need:
+                data = conn.recv(1 << 20)
+                if not data:
+                    break
+                got += len(data)
+            result["got"] = got
+            conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}')
+        up = Upstream(self, serve)
+        a, t = run_handler(self, self.BuildFake(), up)
+        size = 4 << 20
+        a.sendall(b"POST /v5/libpod/build?t=localhost/x:1 HTTP/1.1\r\nHost: d\r\n"
+                  + f"Content-Length: {size}\r\n\r\n".encode())
+        for _ in range(4):                                   # 1.2 s of spooling, longer than the upstream waits
+            time.sleep(0.3)
+            a.sendall(b"\0" * (1 << 20))
+        t.join(20)
+        up.thread.join(5)
+        a.settimeout(5)
+        reply = a.recv(65536)
+        self.assertTrue(reply.startswith(b"HTTP/1.1 200 OK"), reply[:200])
+        self.assertEqual(up.result.get("got"), size)

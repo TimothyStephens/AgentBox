@@ -3128,3 +3128,18 @@ answer it is a 502 that says the connection closed. Before, the agent got a 403 
 (BrokenPipeError...)". The refusal stays a refusal; only its status and words changed. `tests/perf` has a
 `build-limit` scenario (run by name) that builds 16-384 MiB contexts in one dev-tier session to find the
 size the dev tier refuses; the session notes will name it once it is measured.
+
+**Measured, and the size theory was wrong.** `build-limit` (`perf-results/20261116-151514`): contexts of 16,
+32, 48, 64, 96, 128, 192, 256 and 384 MiB of one random file all built (1-13 s). The big tree's 122 MiB
+context failed again, now with the new message: "cut off after 0 MiB ... closed the connection without a
+reply", 11 s after the gate allowed it. Size was not the limit; time was. The gate connected to sockguard
+before spooling and checking the context, and sent nothing until that was done: about 1 s for one large
+file, 8-11 s for 20 000 files. sockguard closed the idle connection before the request head arrived
+[likely a header-read timeout; its value is not confirmed]. A build's upstream connection is now opened
+after the spool, just before the head is sent. No context-size note goes into the session notes: none was
+found up to 384 MiB.
+
+**Seen, not acted on.** Several `build-limit` builds were cache hits on images other sessions had built
+(identical `FROM busybox` + `RUN true`), and the gate logged them `not-recorded` ("not this build's"), so
+they are not this project's builds by the gate's record. Whether the agent can then run the tag it just
+built depends on `dev_images`; worth checking when a real project hits it.

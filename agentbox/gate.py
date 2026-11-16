@@ -1927,7 +1927,9 @@ def make_handler(gate):
                 upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 upstream.settimeout(UPSTREAM_TIMEOUT)
                 # pod_start and pod_raw: a pod the session owns, already checked; sockguard cannot resolve pods
-                upstream.connect(gate.cfg["raw"] if kind in ("pod_start", "pod_raw") else gate.cfg["upstream"])
+                dest = gate.cfg["raw"] if kind in ("pod_start", "pod_raw") else gate.cfg["upstream"]
+                if not is_build:
+                    upstream.connect(dest)
                 if kind in CREATES:
                     upstream.sendall(build_head(method, target, version, headers) + body)
                     reply = gate.verify_created(kind, recv_all(upstream), created_name(kind, target, body))
@@ -1959,6 +1961,9 @@ def make_handler(gate):
                         gate.check_build_images(f"/proc/self/fd/{f.fileno()}", target)
                         headers = hset(hset(headers, "Transfer-Encoding", None), "Content-Length", str(size))
                         target = gate.finalize_build(target)      # holder PID re-checked after the spool (item 11)
+                        # Connected only now: spooling and checking a many-file context took 8-11 s, and
+                        # sockguard closed the idle connection before its head arrived (16 Nov).
+                        upstream.connect(dest)
                         sent = 0
                         try:
                             upstream.sendall(build_head(method, target, version, headers))
