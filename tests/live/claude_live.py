@@ -102,7 +102,7 @@ def main():
 
     # --- token and cleanup checks ------------------------------------------------------------
     leaks = []
-    for where in (env.data, env.run_dir, env.cfg):
+    for where in (env.data, env.run_dir, env.cfg, env.projects):
         for dirpath, _d, files in os.walk(where):
             for fn in files:
                 try:
