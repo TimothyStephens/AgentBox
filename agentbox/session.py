@@ -597,7 +597,9 @@ class Session:
         try:
             self._prepare_reserved(do_backup)
         except BaseException:
-            self.teardown("error")           # nothing is running yet; remove the run dir it reserved
+            # nothing is running yet; remove the run dir it reserved -- with the signals held off, as
+            # _guarded does, so a second Ctrl-C cannot cut the teardown short and strand a sidecar (item 36)
+            self._teardown_shielded("error")
             raise
 
     profile = None                       # set by _prepare_reserved (profile.Loaded)
@@ -1116,11 +1118,24 @@ class Session:
         return v if v and v not in ("<no value>", "unknown") else None
 
     # ---- lifecycle ----------------------------------------------------------------------
+    SHIELDED = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def _teardown_shielded(self, reason, old=None):
+        """teardown() with SIGINT/SIGTERM/SIGHUP ignored for its duration, then `old` (default: the handlers
+        in place now) back."""
+        old = old or {sig: signal.getsignal(sig) for sig in self.SHIELDED}
+        for sig in self.SHIELDED:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            self.teardown(reason)
+        finally:
+            for sig, h in old.items():
+                signal.signal(sig, h)
+
     def _guarded(self, body, *, agent_owns_ctrl_c):
         """Run body() and always tear down: on return, error, Ctrl-C, SIGTERM or SIGHUP (terminal closed).
         Teardown itself runs with those signals ignored, so a second signal cannot cut it short."""
-        sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-        old = {sig: signal.getsignal(sig) for sig in sigs}
+        old = {sig: signal.getsignal(sig) for sig in self.SHIELDED}
 
         def stop(signum, frame):
             raise KeyboardInterrupt
@@ -1136,13 +1151,7 @@ class Session:
             reason = "signal"
             raise
         finally:
-            for sig in sigs:
-                signal.signal(sig, signal.SIG_IGN)
-            try:
-                self.teardown(reason)
-            finally:
-                for sig, h in old.items():
-                    signal.signal(sig, h)
+            self._teardown_shielded(reason, old)     # ignores the signals first, then puts the caller's back
 
     def run_interactive(self, command, tty):
         def body():

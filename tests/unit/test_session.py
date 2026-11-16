@@ -661,3 +661,25 @@ class TeardownReportsFailedRemovals(SettingsCase):
         self.assertIn("`podman rm -f -v -t 5 abt-unit-x-1-proxy`", text)
         self.assertIn("could not remove network abt-unit-x-1-int", text)
         self.assertIn("container is busy", text)
+
+
+class PrepareTeardownIsShielded(SessionBase):
+    """Item 36: the teardown after a failed prepare() runs with SIGINT/SIGTERM/SIGHUP ignored, like _guarded's."""
+
+    def test_signals_are_ignored_during_the_teardown_and_restored_after(self):
+        import signal
+        from unittest import mock
+        s = self.make()
+        seen = {}
+        real = s.teardown
+
+        def spy(reason="error"):
+            seen.update({sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)})
+            real(reason)
+        before = signal.getsignal(signal.SIGINT)
+        with mock.patch.object(s, "teardown", spy), \
+                mock.patch.object(s, "_prepare_reserved", side_effect=AgentboxError("boom")):
+            with self.assertRaises(AgentboxError):
+                s.prepare()
+        self.assertEqual(set(seen.values()), {signal.SIG_IGN}, seen)
+        self.assertEqual(signal.getsignal(signal.SIGINT), before)
