@@ -2408,6 +2408,40 @@ def pipe(a, b):
     t.join(timeout=10)
 
 
+def pipe_reply(upstream, client):
+    """Relay a plain (not upgraded) reply. Bytes the client sends after its request are read and dropped, never
+    forwarded (review 2026-11-16, item 9: `pipe` relayed them, so a second request could follow a checked one
+    unchecked). The client's own EOF still half-closes upstream, as before, so a long handler (wait, logs -f,
+    events) ends when the client goes; a half-close right after the request would make podman's Go server
+    cancel that handler at once. Returns the number of bytes dropped."""
+    dropped = 0
+
+    def drain():
+        nonlocal dropped
+        try:
+            while True:
+                data = client.recv(65536)
+                if not data:
+                    break
+                dropped += len(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                upstream.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    pipe_back(upstream, client)
+    try:
+        client.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    t.join(timeout=10)
+    return dropped
+
+
 def pipe_build_reply(upstream, client, record):
     """Pass a build reply on, holding back any bytes that may carry the final ID line until more output
     follows (then it was not the final line) or the reply ends (then it is recorded first, and sent after)."""
@@ -2552,10 +2586,16 @@ def make_handler(gate):
                     pipe_build_reply(upstream, client, lambda image_id: gate.record_build(image_id, started))
                     return
                 upstream.sendall(build_head(method, target, version, headers) + body)
-                if rest:
-                    upstream.sendall(rest)            # an upgraded stream (exec start, attach) only
                 upstream.settimeout(None)
-                pipe(client, upstream)
+                if upgrade:
+                    if rest:
+                        upstream.sendall(rest)        # the upgraded stream (exec start, attach) has begun
+                    pipe(client, upstream)
+                    return
+                dropped = pipe_reply(upstream, client)
+                if dropped:
+                    gate.log("deny", method, path, f"{dropped} bytes after the request were dropped, not forwarded "
+                             "(one request per connection)")
             except LocalImage as e:
                 gate.log("allow", method, path, f"pull answered locally: {e.image_id[:12]} is present")
                 body = (json.dumps({"images": [e.image_id], "id": e.image_id}) + "\n").encode()

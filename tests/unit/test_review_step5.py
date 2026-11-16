@@ -3,6 +3,9 @@ before the fix. Upstream lookups are faked."""
 import io
 import json
 import os
+import shutil
+import socket
+import tempfile
 import threading
 import unittest
 import unittest.mock
@@ -497,6 +500,100 @@ class FakeSock:
 
     def sendall(self, data):
         self.sent += data
+
+
+class Upstream:
+    """A fake podman socket for handler tests: accepts one connection and runs `serve(conn, result)` on a
+    thread. The gate under test gets its path as cfg["upstream"] (and cfg["raw"])."""
+
+    def __init__(self, test, serve):
+        d = tempfile.mkdtemp(prefix="abt-unit-")
+        test.addCleanup(shutil.rmtree, d)
+        self.path = os.path.join(d, "u.sock")
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(self.path)
+        self.srv.listen(4)
+        test.addCleanup(self.srv.close)
+        self.result = {}
+        self.thread = threading.Thread(target=self._run, args=(serve,), daemon=True)
+        self.thread.start()
+
+    def _run(self, serve):
+        conn, _ = self.srv.accept()
+        with conn:
+            serve(conn, self.result)
+
+    @staticmethod
+    def read_head(conn):
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            data = conn.recv(65536)
+            if not data:
+                return buf
+            buf += data
+        return buf
+
+
+def run_handler(test, g, upstream=None):
+    """The gate's handler on one end of a socketpair, on a thread; returns the client end and the thread."""
+    a, b = socket.socketpair()
+    test.addCleanup(a.close)
+    test.addCleanup(b.close)
+    if upstream is not None:
+        g.cfg["upstream"] = g.cfg["raw"] = upstream.path
+    t = threading.Thread(target=gate.make_handler(g), args=(b, None, None), daemon=True)
+    t.start()
+    return a, t
+
+
+class Item9OneRequestPerConnection(unittest.TestCase):
+    """Review 2026-11-16, item 9: after a plain (not upgraded) request, bytes the client sends later were relayed
+    to podman unchecked by the full-duplex pipe. Now they are dropped; the client's EOF still reaches podman."""
+
+    def test_bytes_after_the_request_never_reach_upstream(self):
+        got = threading.Event()
+
+        def serve(conn, result):
+            result["head"] = Upstream.read_head(conn)
+            got.set()
+            conn.settimeout(1.0)
+            try:
+                result["extra"] = conn.recv(65536)       # the smuggled request, if it is relayed
+            except socket.timeout:
+                result["extra"] = b""
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+        up = Upstream(self, serve)
+        a, t = run_handler(self, Fake(), up)
+        a.sendall(b"GET /v5/libpod/_ping HTTP/1.1\r\nHost: d\r\n\r\n")
+        self.assertTrue(got.wait(5))
+        a.sendall(b"POST /v5/libpod/containers/create HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+        a.shutdown(socket.SHUT_WR)
+        t.join(10)
+        up.thread.join(5)
+        self.assertEqual(up.result["extra"], b"", "a pipelined request reached upstream")
+        reply = b""
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            reply += data
+        self.assertTrue(reply.startswith(b"HTTP/1.1 200 OK"), reply[:80])
+
+    def test_the_clients_eof_still_ends_the_upstream_request(self):
+        """podman's Go server cancels a handler when the client goes; `wait` and `logs -f` rely on that."""
+        def serve(conn, result):
+            Upstream.read_head(conn)
+            conn.settimeout(5.0)
+            result["eof"] = conn.recv(65536) == b""       # the half-close, forwarded
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        up = Upstream(self, serve)
+        a, t = run_handler(self, Fake(), up)
+        a.sendall(b"POST /v5/libpod/containers/json HTTP/1.1\r\nHost: d\r\n\r\n")
+        a.shutdown(socket.SHUT_WR)
+        t.join(10)
+        up.thread.join(5)
+        self.assertTrue(up.result.get("eof"))
+        self.assertTrue(a.recv(65536).startswith(b"HTTP/1.1 200 OK"))
 
 
 class Framing(unittest.TestCase):
