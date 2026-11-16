@@ -22,12 +22,28 @@ def set_log(path):
     _LOG = path
 
 
-def _log(argv):
+def _stamp():
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t)) + ".%03d" % (int(t * 1000) % 1000)
+
+
+def _write(line):
     if not _LOG:
         return
     os.makedirs(os.path.dirname(_LOG), exist_ok=True)
     with open(_LOG, "a") as f:
-        f.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + json.dumps(argv) + "\n")
+        f.write(line + "\n")
+
+
+def _log(argv):
+    """The start line: a millisecond timestamp and the full argv. A call that hangs leaves only this."""
+    _write(f"{_stamp()} {json.dumps(argv)}")
+
+
+def _log_end(argv, t0, rc):
+    """The end line, so the log alone times every podman call: elapsed ms, exit code (or timeout/error) and
+    the subcommand (argv[1:3]) to pair it with its start line by eye or by script."""
+    _write(f"{_stamp()} = {int((time.monotonic() - t0) * 1000)}ms rc={rc} {json.dumps(argv[1:3])}")
 
 
 class Podman:
@@ -38,16 +54,20 @@ class Podman:
     def run(self, args, *, check=True, capture=True, input=None, timeout=None):
         argv = [self.binary] + list(args)
         _log(argv)
+        t0 = time.monotonic()
         try:
             p = subprocess.run(argv, input=input, text=True, timeout=timeout or self.timeout,
                                stdout=subprocess.PIPE if capture else None,
                                stderr=subprocess.PIPE if capture else None)
         except subprocess.TimeoutExpired:
+            _log_end(argv, t0, "timeout")
             raise AgentboxError(f"podman {' '.join(args[:2])} timed out")
         except OSError as e:
+            _log_end(argv, t0, "error")
             # A missing or unexecutable binary is a condition to report, not a traceback: every safety
             # decision that asks podman a question has to be able to tell "no" from "cannot tell".
             raise AgentboxError(f"cannot run podman ({self.binary}): {e}")
+        _log_end(argv, t0, p.returncode)
         if check and p.returncode != 0:
             err = (p.stderr or "").strip().splitlines()[-3:] if capture else []
             raise AgentboxError(f"podman {' '.join(args[:2])} failed ({p.returncode}): {' '.join(err)}")
@@ -57,7 +77,10 @@ class Podman:
         """Run with the terminal attached; return the exit code."""
         argv = [self.binary] + list(args)
         _log(argv)
-        return subprocess.call(argv)
+        t0 = time.monotonic()
+        rc = subprocess.call(argv)
+        _log_end(argv, t0, rc)
+        return rc
 
     def ids(self, kind, labels):
         """IDs/names of containers or networks carrying all `labels`.
