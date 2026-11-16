@@ -2994,10 +2994,51 @@ intention. The decisions the fixes carried, by package:
   per-project backups as the code has them (`~/.omp` whitelist, images "derived from omp-env/claudecode",
   `backups/<project>/<timestamp>`, `mags-codedev.yaml` as a seed: all gone); the stale `ab run|attach|kill|ls`
   names in the Toulmin contract and the canary probe are the `ab session` verbs.
-- **Landed by the other packages the same day, each with its test (see the commit bodies):** the gate's
-  Containerfile parsing (whitespace class, heredocs as buildkit finds them, `465cfca` non-ASCII create keys
-  and image-mount checks), the installer's lock/staging/symlink hardening, the scan's NUL/`++`/short-match
-  fixes and FIFO safety, the selftest probe's argument encoding and missing-canary FAIL, malformed-TOML
-  refusals, the `SessionTest` fixture split, and the lint cleanups. Decisions those packages recorded in
-  their own notes are to be appended under this entry if they are not already above: at the time of
-  writing, only the session package's notes had reached the docs package.
+- **Gate (items 1, 2, 8-13, 42-44).** Containerfiles are read as buildkit reads them: instructions split on
+  its whitespace class, heredocs only as whole `<<name` words found with a port of its word splitter, an
+  unterminated heredoc refused. Create bodies with non-ASCII field names are refused (Go folds `ſ` to `s`,
+  Python's `lower()` does not), and an image mount's image is checked after create. A request head with a bare
+  CR, LF or NUL, a non-token name or two `Transfer-Encoding` headers is refused; bytes after a plain request are
+  dropped; the build holder's PID is re-checked after the context is spooled; `removeImage` is refused.
+  **Closes the deferred A4 low "image reads not scoped" (1 Oct):** reading an image the dev tier cannot run
+  answers 404, and `GET /libpod/pods/json` is answered by the gate, filtered to the session's checked pods, since
+  an image's config carries its ENV and sockguard cannot scope pods. Clients get a 60 s idle timeout while a
+  request is read and at most 128 connections; a crashed post-create check removes the object and refuses.
+  **Deviation:** exec records of an unverified container are kept, not pruned (`test_g7` expects them to work
+  once the container is verified); the record is capped instead.
+- **Session (items 16-18, 35, 36, 38, 39, 41).** A flock guard serialises stale-lock clearing, and
+  `force_release` removes only the holder it judged gone. Teardown warns, with the manual command, when a
+  removal fails. The Toulmin record is written before `clone_root` can fail, and without its token.
+  `prepare()`'s teardown runs with signals blocked. Every container runs with `--http-proxy=false` (podman's
+  default copied the host's proxy variables in). The token directory is a protected path. The session log
+  names the plugin tree it mounted (`installer.read_lock`).
+- **Installer and adapters (items 3, 21, 22, 40).** The staging tree is untrusted output: after the run any
+  symlink in it whose target is absolute or above the tree refuses the install (npm's relative
+  `node_modules/.bin` links are kept), and the lockfile is read and written without following links. One
+  install per agent at a time (flock on `<tree>.lock`, which stays); staging is removed on any exception; a
+  symlinked `.previous` is refused and a leftover one with no tree is put back. Lockdown's managed policy
+  carries the profile's `permissions.deny` and `hooks`, read from the host profile, never the state copy;
+  `allow` rules are not carried (review 2026-10-01 #2). An OMP `baseUrl` with userinfo, a query or a fragment
+  is refused. A `[[repo]]` named like a `[[plugin]]` marketplace is refused; the `node_modules` reservation
+  is dropped.
+- **CLI, config, paths (items 4, 5, 14, 29, 46-50).** **Deviation from the review's wording (item 5):**
+  protected home paths are compared as written and at their realpath, and `/tmp` and `/var/tmp` are refused
+  as grants themselves (`paths.SHARED_SCRATCH`), not added to `SYSTEM`, which would refuse every private
+  directory below them, the unit fixtures' included. `--podman TIER` now sets only the tier and keeps `live`
+  (§Presets treats them as separate capabilities). Purge and clean validate the name; promote refuses an
+  inbox item holding a symlink; malformed TOML is an `ab: <path>:` refusal; registry and token writes fsync
+  and refuse a reused temp file; an empty `projects.toml` is refused, not read as "no projects".
+- **Scan and selftest (items 6, 26, 27, 45).** A secret-scan match is shown as its first four characters,
+  length and a short hash (was: the first 12 characters, so a short secret printed whole). A NUL byte no longer
+  silences the scan and a failed grep is reported as "secret scan failed"; files that are not regular are
+  recorded as `special:<kind>` and never opened (a FIFO hung teardown). With podman access on, a missing
+  canary is a FAIL, per §Selftest "every guarantee is checked"; probe arguments are base64-encoded because a
+  path with a space was split.
+- **Build and tests (items 7, 19, 20, 33, 34, 52, 53, 55).** `make test` no longer runs the guard; `make check`
+  runs both, so one failure no longer hides the other. Host-only make targets and `install.py` exit 2 when
+  `AGENTBOX_SESSION` is set; recipes run under bash with pipefail (`itest` keeps plain `-c` so its freshness
+  tail runs). The Python 3.11 floor is declared in `pyproject.toml` and checked at start. The spike kit is
+  deleted (design.md's Spike results records what each spike established; nothing called it), `KICKOFF.md`
+  moved to `docs/reviews/2026-09-29-kickoff.md`, and `tests/fixtures/omp/tree.txt` removed (`tests/ompfake.py`
+  builds the tree; the 30 Sep entry above cites it, git history keeps it). No LICENSE was added: the owner
+  has to choose one.
