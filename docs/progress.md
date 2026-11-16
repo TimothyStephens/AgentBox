@@ -2,7 +2,7 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 4 Nov 2026
+**Updated:** 16 Nov 2026
 
 ## Status (single source of truth — what this tool does and does not do)
 
@@ -23,7 +23,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **Egress (locked/packages/open, squid)** | **built** | Modes behave as designed; private-address refusal; an occasional upstream latency flake is the host's uplink, not agentbox (watch items below; `make egress-soak`). |
 | **Preview** (`ab session preview`) | **built** | One session service on 127.0.0.1, reached by `ssh -L`, removed with the session (`test_preview`). |
 | **Podman tiers** | **none/observe/dev built; exec NOT built** | `exec` is refused in code (`session.py`: "exec on the live stack is not built"). The built tiers scope to the session's own dev stack; builds via the holder-netns path. |
-| **`ab profile install`** (OMP plugins) | **built** | The profile declares plugins in `plugins.toml` (marketplace entries pinned by a 40-char sha, npm packages at exact versions, git checkouts linked); `ab profile install omp` installs them in ONE hardened container behind the session proxy, `packages` egress and no model-host rule, into `~/.config/agentbox/omp/plugins`, which sessions mount **read-only** (proved by a real read-only bind mount in `test_step3_omp`). Pinning is agentbox's: `omp plugin marketplace add` cannot take a commit, so the catalog is cloned, checked out, verified and added by path. The tree carries a lockfile recording the image it was built against, and a session says so when that no longer matches. **`~/.omp` is not read at all** — `omp_home` is a retired setting — and ~160 lines of whitelist went with it (decisions.md, 5–6 Nov). |
+| **`ab profile install <agent>`** (plugins, both agents) | **built** | Claude (9 Nov): each marketplace catalog cloned at its sha into `~/.config/agentbox/claude/plugins/<marketplace>`, mounted read-only at `/run/agentbox/claude/marketplaces` and declared through the copied `settings.json`. OMP (6 Nov): the profile declares plugins in `plugins.toml` (marketplace entries pinned by a 40-char sha, npm packages at exact versions, git checkouts linked); `ab profile install omp` installs them in ONE hardened container behind the session proxy, `packages` egress and no model-host rule, into `~/.config/agentbox/omp/plugins`, which sessions mount **read-only** (proved by a real read-only bind mount in `test_step3_omp`). Pinning is agentbox's: `omp plugin marketplace add` cannot take a commit, so the catalog is cloned, checked out, verified and added by path. The tree carries a lockfile recording the image it was built against, and a session says so when that no longer matches. **`~/.omp` is not read at all** — `omp_home` is a retired setting — and ~160 lines of whitelist went with it (decisions.md, 5–6 Nov). |
 | **Adapters** | **Claude + OMP built; Pi/Codex not built** | `adapters/claude.py`, `adapters/omp.py` exist; Pi/Codex are planned (step 8). |
 | **Caps/devices opt-in** | **not built** | The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert. |
 | **Forgotten-session guards** | **built** | `ab session ls` shows start/age/idle and flags long-idle sessions; `ab session start` warns if a session for the project is already up. No auto-reap (decisions.md 6 Oct). |
@@ -34,7 +34,8 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`mask`** (per-project masked paths) | **built** (10 Nov) | `--mask PATH`, repeatable: a bare name masks every file or directory of that name in the grants, `./x` or a slashed path one path under the root. Empty, read-only, hidden for grantcheck, covered for the gate, out of the backup and the scan. `docs/agentbox-masked-paths.md` was the spec. decisions.md, 10 Nov. |
 | **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
-| **Real projects on the box** | **off** | Gated until the mount/covers area + Track 1 are independently re-reviewed again (below). |
+| **Reviewer projects** (`--reviews`, `ab project sync`) | **built** (11 Nov) | A reviewer is an ordinary project whose root is a clone of the builder's repo; the user's `ab project sync` moves the clone to the builder's last commit (detached) and copies `reviews/*.md` into the builder's `.review/`. Neither agent reaches the other's tree. design.md, "Clone mode and the Toulmin integration". |
+| **Real projects on the box** | **the user's call** | The independent re-review (`reviews/2026-10-15-pre-real-project.md`) is done and its findings actioned; the 16 Nov review's fixes are in decisions.md. First real project: `life-updates`, registered `lockdown`, run supervised. |
 
 Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`, which is
 organised by what can be acted on: §1 open questions needing a decision, §2 scoped and ready, §3 deferred by
@@ -42,13 +43,16 @@ design, §4 the maintainability backlog, §5 watch-only, §6 known limitations.
 
 ## Current step
 
-**Stopped.** The threat model is now written down (mistake containment + cross-project isolation, NOT a malicious/injected agent; `docs/design.md` top, decisions.md 6 Oct). The fifth review (`docs/reviews/2026-10-06-final.md`) was scoped against it: H3, M4, the cheap half of H1, and the backup proof were done; everything else is recorded as a known limitation under the threat model (decisions.md 6 Oct), not a TODO. `ab project init` (pod/python) now scaffolds a grantcheck-clean project by construction (data in a named volume; `--data-bind` deferred).
+**Review of 16 November 2026.** An independent review of the whole tree (gate, session, installer, CLI, scan,
+profile repos, tests, docs) produced the findings table that the fixes of 16 Nov answer; each fix carries a
+unit test and the decisions they required are one dated entry in `docs/decisions.md` ("Review 2026-11-16").
+Host gates (`make itest`, `make claude-live`, `make omp-live`, `ab profile install`) are the user's to rerun
+and record there; the sandbox the fixes were made in has no podman.
 
-Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-covers2.md`, a fourth high, N1).
-- **Track 1 (primary wall):** the grant holds code; a grant with uncovered secrets or live data refuses to start (`agentbox/grantcheck.py`, `ab project accept-grant-exposure` / `--i-understand-grant-exposure`). Covers are defence in depth behind it. Documented in the design doc and the session notes.
-- **Track 2:** N1 (stop/start race: per-container lock + PID recheck), N2 (nothing mounted under a dir mask), N3 (`RUN --mount source=` checked by the gate), N4-N9 fixed. Builds confirmed: a COPY of a cover arrives empty, and a crafted context carrying masked content is refused.
-
-**Real projects stay off until this area is independently re-reviewed again (Tim).** The covers review of 5 Oct is still open from last round too.
+Earlier state, for the record: the threat model (mistake containment + cross-project isolation, NOT a
+malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant is the primary wall,
+`agentbox/grantcheck.py`) and Track 2 (covers enforced at the gate, N1-N9) are built and were re-reviewed
+(`docs/reviews/2026-10-06-covers2.md`, `2026-10-15-pre-real-project.md`).
 
 ## Done
 
@@ -181,7 +185,10 @@ Two tracks after the covers fix was reviewed again (`docs/reviews/2026-10-06-cov
 
 ## Next
 
-The one remaining step is the **first real project** — `life-updates`, with Tim, registered `lockdown` first, run supervised; its live `deploy` stack stays untouched. All gates are cleared: the independent re-review is **done** (`reviews/2026-10-15-pre-real-project.md`, all 10 findings actioned), the live tests re-passed 16 Oct against `563f352`, and `make test`/`make itest` are green. Optional/deferred work (not blocking) lives in `docs/TODO.md`.
+1. The user reruns the host gates on the 16 Nov tree and records the passes in decisions.md.
+2. The **first real project** — `life-updates`, registered `lockdown`, run supervised, its live `deploy`
+   stack untouched (design.md, Host migration).
+3. Optional and deferred work lives in `docs/TODO.md`; nothing there blocks either step.
 
 ## Open decisions (Tim)
 
@@ -199,5 +206,9 @@ The one remaining step is the **first real project** — `life-updates`, with Ti
 
 ## Waiting on Tim
 
-- **The trial** (`docs/TRIAL.md`): **done** 15 Oct — `ab project selftest` 105 pass / 0 fail, `make trial-check` all checks passed (the secret-leak scan clean).
-- **`make claude-live` / `make omp-live`:** re-passed 16 Oct against `563f352` (after the review fixes). claude-live egress=locked (search ok, fetch denied, bash ok, token nowhere); omp-live egress=packages (PyPI allowed, non-allowlisted hosts denied, key nowhere). `make test` (510) and `make itest` (165) green on the same tree; live-freshness clear.
+- **Host gates on the 16 Nov tree:** `make itest`, `make claude-live`, `make omp-live`, `ab profile install
+  claude|omp`, both `ab project selftest`s. The fixes were made in a sandbox without podman; a pass is
+  recorded in decisions.md under the dated entry.
+- Earlier records, for reference: the trial (`docs/TRIAL.md`) done 15 Oct (105 pass / 0 fail, `make
+  trial-check` clean); live tests last re-passed on the dates decisions.md names (claude-live c62f59e, 15 Nov;
+  omp-live 98a9287, 13 Nov).

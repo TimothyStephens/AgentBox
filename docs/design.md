@@ -344,7 +344,7 @@ Without the gate, a container created with no network, or a `podman build`, runs
 - `ab session preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab session kill`, teardown, gc); `ab session preview <session> --stop` removes it earlier.
 - `ab deploy <project> --lan 10.0.0.103:<port>` (**planned, not built** — build step 6): it would validate the compose file (binds inside the project, no privileged or host networking, ports only on the address named), check the real .env has every variable name in .env.dev, show the diff since the last deploy, ask for confirmation, then start the live `<project>` stack through a sockguard deploy profile, never the raw socket.
 
-### Workspace UI (planned, not built)
+### Workspace UI (`ab screen`)
 
 - Build step 7, **built 10 Nov as `ab screen`** (`agentbox/screen.py`, formerly `contrib/ab-ws`): one tmux workspace per registered project (`ab screen start|attach|ls|kill <project>`, `layouts`, `config`), agent panes and host shells from a layout in `~/.config/agentbox/screen.toml`, every pane in the project's registered root and every agent pane entering the sandbox through `ab session start` (or `attach` when the project is already live).
 
@@ -688,7 +688,6 @@ inbox items would be lost.
 
 | Command | What it would do |
 | --- | --- |
-| `ab screen start <name> [--agent <a>]` | Full tmux workspace: agent pane, two sandbox shells, btop, monitor (step 7) |
 | `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
 | `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
@@ -803,16 +802,22 @@ ab deploy filelab --lan 10.0.0.103:8095
 
 ## Planned / not built
 
-The design above is the full target. These parts are **not built yet**; `docs/progress.md`'s Status table is the authoritative list, and this section is the prose index into it. Nothing here should be read as a current guarantee.
+The design above is the full target; **`docs/progress.md`'s Status table is the one list** of what is built,
+deferred and not built, and nothing here should be read as a current guarantee. Two items are kept here
+because they are design decisions rather than status:
 
-- **Commands:** `ab allow` (loosening a *running* session; per-project settings are `ab project set`, which applies from the next session), `ab deploy` (step 6) and its `.env` variable-name check, `ab outbox`, `ab reload`, `ab resume`. The "How host edits reach a running session" table and the presets' "changes via outbox" both describe these planned paths.
-- **Podman exec tier:** refused in code (the `none`, `observe` and `dev` tiers are built; `exec` is not).
-- **Per-project caps/devices opt-in:** the gate refuses `cap_add`, `devices` and security options in every preset; the `caps` preset value is inert.
-- **Model key gateway:** deferred (see Model key gateway); provider keys enter as per-provider files exported at start.
-- **Adapters:** Claude Code and OMP are built; **Pi** and **Codex** are planned (step 8).
-- **`--data-bind`** and the **`dev/data`→`data` overlay:** deferred / not built (see `ab project init` and decisions.md); the pod template's named-volume default and the python template's `DATA_DIR` config are what exist. The masking half of the `--data-bind` contract is the `mask` setting (`--mask ./data`, 10 Nov); the `init` template and the `--data-backup` naming are not built.
-- **A read-only project-root mount mode** (for a planner preset that may read the code but not edit it, optionally with one writable notes directory): not built. The root is a read-write bind under every preset, `research` and `lockdown` included; this needs a new mount mode and another pass over the gate/covers logic. Mitigation today: commit before the session, and the per-session snapshot as a within-session undo (`docs/TODO.md`).
-- **Host migration** of the real stacks: not started (gated on an independent re-review of the mount/covers area and Track 1).
+- **A read-only project-root mount mode** (for a planner preset that may read the code but not edit it,
+  optionally with one writable notes directory): not built. The root is a read-write bind under every preset,
+  `research` and `lockdown` included; this needs a new mount mode and another pass over the gate/covers logic
+  (`docs/TODO.md` §3.1). Mitigation today: commit before the session, and the per-session snapshot as a
+  within-session undo.
+- **Host migration** of the real stacks (the section above): not started; the first real project is the
+  user's call (progress.md, Next).
+
+The commands the usage sections name but which do not exist (`ab allow`, `ab deploy`, `ab outbox`,
+`ab reload`, `ab resume`), the podman `exec` tier, the caps/devices opt-in, the key gateway, the Pi and Codex
+adapters, `--data-bind` and the `dev/data` overlay are each a Status row there, with the reason in
+`docs/TODO.md` §3.
 
 ## Spike results
 

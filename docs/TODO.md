@@ -7,28 +7,13 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 6 November 2026.** The image restructure is done and exercised end to end on the host:
-`node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp}` → optional personal layer, each agent
-CLI installed by agentbox at a Makefile pin the build asserts (node's major included, since a
-digest pin can silently override the tag). `make test` (1150), `make itest`,
-`make claude-live`, `make omp-live`, both `ab project selftest`s and both `ab image build`s green; the unit suite
-runs with zero ResourceWarnings. Ten of eleven dead-enforcement items removed (D-E11 is a deliberate knob, and stays). The third preset/settings
-audit (F-1 … F-12) is fully closed. `config.yml` is agentbox's own and the Playwright cache is gone, both
-confirmed on the host (5 Nov: `make itest` 186 OK, `make omp-live` pass with the browser probe, then again
-after `make omp-image && ab image build omp` so the image's own change is exercised too). `make claude-live`
-re-recorded the same day. `ab session gc` now sweeps personal image layers and profile snapshots as well as
-session-built images.
-
-**6 November: `~/.omp` is no longer an input.** `ab profile install omp` builds a host-owned tree from
-the profile's `plugins.toml` (marketplace plugins pinned by sha, npm packages at exact versions, git
-checkouts linked), in one hardened container behind the session proxy, and sessions mount it **read-only**.
-`make itest` and `make omp-live` both pass, which settles the question that could have forced a redesign:
-**OMP tolerates a read-only `~/.omp/plugins`** — proved by a real read-only bind mount, not a `chmod`
-stand-in. About 160 lines of whitelist went with the host directory, and `omp_home` is a retired setting.
-
-**No outstanding host run.** `make test` (1150), `make itest`, `make claude-live`, `make omp-live`, both
-`ab project selftest`s, both `ab image build`s and `ab profile install omp` are all green on the host as of
-6 November.
+**State as of 16 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
+`agentbox-{claude,omp}` → optional personal layer, each agent CLI installed at a Makefile pin the build
+asserts. Plugins for both agents come from `ab profile install <agent>` (the profile's `plugins.toml`,
+installed in a sandbox, mounted read-only); `~/.omp` is not an input and `omp_home` is a retired setting.
+Which gates are green, and at which commit, is recorded in `docs/progress.md` (Status) and the dated run
+records in `docs/decisions.md`; this file keeps no counts. The independent review of 16 Nov and the fixes it
+led to are one decisions.md entry ("Review 2026-11-16").
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -37,62 +22,10 @@ stand-in. About 160 lines of whitelist went with the host directory, and `omp_ho
 
 ## 1. Open questions — a decision is needed before any code
 
-### 1.1 MAGS — three session features, not an adapter
-
-**Decided 5 Nov: MAGS runs as an OMP extension, and agentbox grows the three things it needs.** Not a
-`--agent mags` adapter, and not a standalone tool outside `ab`. The evidence is in omp-env's
-`manifest.json`: `mags-codedev` is a git entry with `extensionDir: mags-codedev-extension`, so **MAGS
-ships an OMP extension** — "part of OMP" is how it is built, not a convenience. It is a `[[repo]]` entry in the
-profile's `plugins.toml`; dropping that entry is how it stays out of sessions.
-
-**Why not standalone on the host.** Its job is to run model-generated code and its own generated tests. On
-the host that means no gate (the spikes proved any container on a default or plain bridge network reaches
-the LAN, including this machine's live stacks), no secret masks over `.env`, and no end-of-session scan. Of
-everything here, a tool that executes generated code is the worst candidate for running outside the
-sandbox.
-
-**Why not an adapter.** The adapter interface is for *harnesses*: an interactive agent CLI with its own
-config, per-project state, instructions file and profile mounts. MAGS is a batch tool that calls models
-itself and needs none of that, while the things it does need are session and gate features that sit
-outside the adapter interface anyway.
-
-**What to build — three features, each useful beyond MAGS:**
-
-1. **A sealed network for gate-created containers.** Today the gate pins every container the agent creates
-   to the session network *and* injects `HTTP(S)_PROXY`, so "reaches nothing" needs the proxy taken away,
-   not just the LAN. A project setting (`spawned_network = "sealed"`) giving an `--internal`,
-   `isolate=strict` network with no proxy environment. Any "run generated code" workflow wants it.
-2. **A combined keys file on tmpfs** (`MAGS_KEYS_FILE`: 0600, `KEY=value` lines). agentbox already mounts
-   per-provider key files read-only and never in the environment; this renders one file from them into the
-   agent's tmpfs. What makes it safe is already enforced: never inside a grant, which grantcheck refuses.
-3. **The scan must tell a worktree from a new repo.** `base_dir: .mags-codedev` holds git worktrees in the
-   project root, so the scan prints "NEW GIT REPO" per module. The right fix is general: a `.git` *file*
-   pointing inside the project is a worktree. Better than a skip list, which would hide a real new repo.
-
-**Still needed from Tim:** the four answers below, which are the spec. Nothing else blocks it.
-
-**Already built from the approved plan.** The gate's network-pinning test (`tests/unit/test_gate.py`: a
-create naming no network at all is still pinned to the session network, on both APIs); the scan's HEAD/ref
-movement reporting; and `base_branch` as a project key.
-
-**What reading MAGS's own config established** (4 Nov, from `mags_codedev/config.template.yaml`) — carry
-these into the spec:
-
-- `test_runner: "auto"` auto-detects `podman > docker > apptainer > singularity > local`. The plan says test
-  containers go through the gate and `local` is refused, so the session must **force
-  `test_runner: podman`** rather than rely on `auto`, which would silently fall back to `local`.
-- `docker_test_image: "mags-dev-env:latest"`, "auto-built if not found" — that build goes through the gate,
-  so the name needs to be in the project's `dev_images` allowlist or be a session build the gate records.
-- `base_dir: ".mags-codedev"` holds **git worktrees inside the project root**. `scan.worktrees()` walks for
-  `.git`, so a MAGS run would produce a "NEW GIT REPO" line per module unless the adapter arranges a skip.
-  Decide this in the spec.
-- `MAGS_KEYS_FILE` is a 0600 file of `KEY=value` lines that "should live outside the project directory" —
-  which matches the plan's keys-on-tmpfs item exactly.
-
-**Structurally confirmed already:** a tmpfs keys file in the agent container cannot be reached by a sibling
-container. The gate's bind allowlist is the grants only (`session.bind_roots`), and a tmpfs in the agent's
-mount namespace is not a host path at all. This holds **provided the keys file is not written inside a
-grant** — which is also what grantcheck would refuse.
+None open. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox, as its own container, and
+nothing of it remains in the launcher (decisions.md, 2026-11-15). The three session features its plan
+listed (a sealed network for gate-created containers, a combined keys file on tmpfs, worktree-aware scan)
+are not asked for by anything else and are not on the backlog.
 
 ---
 
@@ -136,13 +69,12 @@ authoritative; this is the *why*.
 | Feature | Why not built |
 |---|---|
 | `ab deploy` | Step 6. Would validate a compose file, check `.env` against `.env.dev`, show the diff since the last deploy, confirm, then start the live stack through a sockguard deploy profile — never the raw socket. |
-| `ab screen` (subcommand) | `agentbox/screen.py` does the workspace job from outside the CLI, starting agents only through `ab session start`, so the sandboxing stays in `ab`. A subcommand would add surface for no new capability. |
 | `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
 | podman `exec` tier | Refused in code (`session.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
 | Toulmin: restart a dead `tm session serve` | Recorded as a gap by the contract (1.5). Until built, Toulmin's `tm status` tells the owner the socket is dead and which command to run. |
 | Clone mode with the dev podman tier | Refused at session start. The gate would translate every bind source under the owner's path into the clone (grant volume device, cover ids, foreign-uid check, unmasked-secret walk). decisions.md, 10 Nov. |
-| `masked_paths` (per-project masked dir) | **Built 10 Nov** as the `mask` setting (`--mask`). What is left of the spec: the in-session errno probe (§5.1) as an itest, and `ab project init --data-bind` with `--data-backup`. |
+| The masked-paths spec's in-session errno probe (`docs/agentbox-masked-paths.md` §5.1) as an itest | The `mask` setting itself is built (10 Nov); the probe stays manual until a change touches the covers tests. |
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | Pi / Codex adapters | Step 8. The adapter interface is the only per-agent code and has carried two agents through a restructure, so a third is mostly configuration. |
@@ -238,7 +170,8 @@ Do these **only alongside a change that already touches the area**, with the sui
   intermittently. **Accepted** (4 Nov): the check stays on the real LAN endpoint, because exercising it is
   the point. The report names the latency now, so a repeat reads as "slow model" rather than an unexplained
   FAIL. `AB_LIVE_MODEL=<provider/model>` is there for a one-off.
-- **omp-env / image plugin drift** — see §1.1. Mitigation: keep `OMP_VERSION` near what omp-env installs.
+- **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
+  when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 
 ---
 
