@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import sys
 import time
 
 from . import adapters, buildcap, builtrec, profile, projectlock, scan, sockguard, toulmin, userimage
@@ -13,7 +12,7 @@ from .errors import AgentboxError
 from .fsutil import write_private
 from .liveness import session_is_alive, sessions
 from .podman import label_filters
-from .progress import Step
+from .progress import Step, stderr_line
 from .state import _free_name, ephemeral_state, service_tmp
 
 
@@ -160,7 +159,7 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
     each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
     created), the scan runs last, and no failure of either skips the removal. `exit_reason` is what the
     Toulmin end message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS)."""
-    warn = warn or (lambda m: print(m, file=sys.stderr))
+    warn = warn or stderr_line
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)
     try:

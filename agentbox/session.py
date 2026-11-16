@@ -5,7 +5,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 import time
 
 from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, profile, tokens
@@ -15,7 +14,7 @@ from .config import HOME
 from .errors import AgentboxError
 from .fsutil import inside, write_private
 from .podman import Podman, set_log
-from .progress import Step
+from .progress import Step, stderr_line as _stderr_line
 from .project import (  # noqa: F401
     clone_root, dev_tier, load_project, mount_mode_of, podman_access, Project, protected_extra, _check, _git_env,
     _no_commas
@@ -24,7 +23,8 @@ from .historysecrets import (  # noqa: F401
     history_secrets, history_secrets_changes, history_secrets_message, _history_masked
 )
 from .notes import dev_notes, profile_notes, sandbox_notes  # noqa: F401
-from .infra import net_create_argv, proxy_run_argv, SIDECAR_LOG_DRIVER, SQUID_READY  # noqa: F401
+from .infra import (net_create_argv, proxy_run_argv, SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE,  # noqa: F401
+                    SQUID_READY)
 from .state import ephemeral_state, migrate_state_to_inbox, reset_state, service_tmp, _free_name  # noqa: F401
 from .liveness import (  # noqa: F401
     idle_seconds, INFRA_ROLES, project_is_live, session_is_alive, session_metas, sessions, _alive, _newest_mtime,
@@ -101,7 +101,7 @@ class Session:
         self.adapter = adapters.get(agent)
         self.project = project
         self.podman = podman or Podman(settings.podman)
-        self.warn = warn or (lambda m: print(m, file=sys.stderr))
+        self.warn = warn or _stderr_line
         self.no_profile = bool(no_profile)      # `ab session start --no-profile`, for this run only
         self.name = None
         self.plan = None
@@ -913,7 +913,8 @@ class Session:
         s = self.settings
         name = name or self.sockguard_name
         socket_path = socket_path or self.sockguard_socket
-        args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER]
+        args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER,
+                SIDECAR_LOG_SIZE]
         args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, role).items()]
         args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
                  "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
@@ -1035,7 +1036,8 @@ class Session:
     def holder_run_args(self):
         """A container that only sleeps on the session network: builds join its network namespace."""
         s = self.settings
-        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}", SIDECAR_LOG_DRIVER]
+        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}",
+                SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE]
         args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "holder").items()]
         args += [f"--network={self.int_net}", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
                  "--memory=32m", "--memory-swap=32m", "--pids-limit=16", f"--oom-score-adj={int(s.oom_score_adj)}"]

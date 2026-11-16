@@ -105,3 +105,34 @@ class BackupProgress(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewR5toR7(TempCase):
+    def test_sidecar_logs_are_bounded(self):
+        """R-5: k8s-file has no size limit of its own, and squid logs every request to stdout."""
+        from agentbox.infra import SIDECAR_LOG_SIZE
+        self.assertTrue(SIDECAR_LOG_SIZE.startswith("--log-opt=max-size="))
+
+    def test_the_default_warn_writes_a_line_in_one_call(self):
+        """R-6: print writes the text and the newline separately, so a heartbeat could split a warning."""
+        import io
+        from unittest import mock
+        from agentbox.progress import stderr_line
+        buf = io.StringIO()
+        writes = []
+        buf.write = lambda s, w=buf.write: (writes.append(s), w(s))[1]
+        with mock.patch("sys.stderr", buf):
+            stderr_line("agentbox: x")
+        self.assertEqual(writes, ["agentbox: x\n"])
+
+    def test_only_a_missing_rsync_is_told_to_install_rsync(self):
+        """R-7: any other OSError in the copy (a full /tmp, a closed stderr) said `apt-get install rsync`."""
+        from unittest import mock
+        from agentbox.errors import AgentboxError
+        src = self.mkdir("proj")
+        self.write("proj/a.txt", "x")
+        with mock.patch("agentbox.backup.tempfile.TemporaryFile", side_effect=OSError(28, "No space left")):
+            with self.assertRaises(AgentboxError) as cm:
+                backup.snapshot(self.mkdir("bk"), "s1", [src], step=_Recorder())
+        self.assertNotIn("install", str(cm.exception).lower())
+        self.assertIn("No space left", str(cm.exception))

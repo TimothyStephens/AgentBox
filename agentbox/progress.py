@@ -4,11 +4,20 @@ the grant walks, the git-history read, the end-of-session scan).
 A step that finishes within `DELAY` prints nothing, so a fast session looks as it always did. One that runs
 longer says what it is doing, then repeats a line every `HEARTBEAT` seconds with the elapsed time (and a
 percentage when the step can measure one), and ends with how long it took. Whole lines only, never a
-redrawn line, so the output reads the same in a terminal, a log or a captured run, and a warning printed
-by the step itself cannot collide with it. The cost is one sleeping thread per step.
+redrawn line, so the output reads the same in a terminal, a log or a captured run. The heartbeat comes
+from a second thread, so the launcher's default `warn` is `stderr_line`, which writes a line in one call:
+`print` writes the text and the newline separately, and two threads' lines could interleave (review
+16 Nov, R-6). The cost is one sleeping thread per step.
 """
+import sys
 import threading
 import time
+
+
+def stderr_line(msg):
+    """One whole line to stderr in a single write, so a heartbeat and a warning never share a line."""
+    sys.stderr.write(f"{msg}\n")
+    sys.stderr.flush()
 
 DELAY = 2.0
 HEARTBEAT = 15.0
@@ -65,7 +74,11 @@ class Step:
         if self.delay <= 0:
             self._say(f"agentbox: {self.label} ...")     # at once, so a zero delay always shows the step
         self._thread = threading.Thread(target=self._run, name="ab-progress", daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:                 # a Ctrl-C here never reaches __exit__: stop the heartbeat now
+            self._stop.set()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb):

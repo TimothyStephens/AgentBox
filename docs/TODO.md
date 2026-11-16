@@ -70,19 +70,10 @@ style of the existing `bring_plugin_tree` tests.
 
 **The gate.** `make test`; one `make omp-live` on the host.
 
-### 2.3 A narrow fresh review of the 16 Nov fixes
+### 2.3 Done 16 Nov: regression review of the 16 Nov fixes
 
-**What.** About a hundred commits changed security-boundary code in one day (gate modules, `fsutil`,
-`sessionlock`/`projectlock`, installer, mounts). Every fix has a test and the host gates pass, but nobody
-but the fixer has read the result.
-
-**Done looks like.** An independent reviewer reads `git diff c782560..` for those modules only, looking for
-regressions the fixes introduced, not for new features; findings go to `docs/reviews/`.
-
-**Where to start.** A reviewer project (`ab project add <name> --reviews agentbox`), or a fresh session
-given only the diff and `docs/design.md`'s threat model.
-
-**The gate.** Its findings, each fixed with a test or recorded as accepted in decisions.md.
+Four fresh reviewers over `c782560..`; seven findings fixed with tests (`docs/reviews/2026-11-16-regression.md`).
+One left for a decision: `--podman none` keeps the preset's `live = observe`.
 
 ---
 

@@ -32,6 +32,10 @@ def net_create_argv(settings, labels, name, *, internal, dev_owner=""):
 # journal: 3-11 s a call, paid once while waiting for squid and once per sidecar at teardown (tests/perf,
 # 16 Nov). The file goes when the container is removed, after teardown has kept what it needs.
 SIDECAR_LOG_DRIVER = "--log-driver=k8s-file"
+# k8s-file has no size limit of its own (containers.conf log_size_max=-1), and squid writes every request to
+# stdout: a long or orphaned session would grow the proxy's log without end, and teardown reads it whole.
+# 256 MB is about two million requests; past it conmon starts the file again (review 16 Nov, R-5).
+SIDECAR_LOG_SIZE = "--log-opt=max-size=256mb"
 
 
 def proxy_run_argv(settings, labels, name, *, conf_path, networks):
@@ -48,5 +52,6 @@ def proxy_run_argv(settings, labels, name, *, conf_path, networks):
     if s.cgroup_parent:
         args.append(f"--cgroup-parent={s.cgroup_parent}")
     args += [f"--network={n}" for n in networks]
-    args += [SIDECAR_LOG_DRIVER, f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
+    args += [SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE,
+             f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
     return args

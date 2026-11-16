@@ -140,8 +140,11 @@ def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
         except OSError as e:
             # The pre-session snapshot is the session's only undo, so a missing rsync has to stop the
             # session -- but as a condition with a fix in it, not a traceback (the same shape as a missing
-            # podman binary, audit F-2).
+            # podman binary, audit F-2). Only a missing binary gets the install advice: a full /tmp or a
+            # closed stderr is an OSError too (review 16 Nov, R-7).
             shutil.rmtree(work, ignore_errors=True)
+            if not (isinstance(e, FileNotFoundError) and e.filename in (None, argv[0])):
+                raise AgentboxError(f"backup of {g} failed: {e}")
             raise AgentboxError(f"cannot run rsync ({e}); agentbox needs it for the pre-session snapshot of "
                                 f"{g}. Install it (`apt-get install rsync`) -- see docs/INSTALL.md.")
         except BaseException:
