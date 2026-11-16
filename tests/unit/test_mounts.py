@@ -338,3 +338,31 @@ class GitConfigThatCannotBeParsed(TempCase):
         with self.assertRaises(AgentboxError) as cm:
             mounts.plan(root=root)
         self.assertIn("cannot read this git config", str(cm.exception))
+
+
+class DevSwapMountPoint(TempCase):
+    """Item 37: the empty `.env` mount point is created only where we may write, and only as a file."""
+
+    def test_a_read_only_grant_gets_no_created_env_and_a_note(self):
+        root, ref = self.mkdir("proj"), self.mkdir("ref")
+        self.write("ref/.env.dev", "DEV=1\n")
+        p = mounts.plan(root=root, data_ro=[ref])
+        self.assertEqual(p.create_files, [])
+        self.assertNotIn(os.path.join(ref, ".env"), [m.dst for m in p.mounts])
+        self.assertTrue(any("read-only" in n and ".env" in n for n in p.notes), p.notes)
+        mounts.prepare(p)
+        self.assertFalse(os.path.lexists(os.path.join(ref, ".env")))
+
+    def test_a_read_write_grant_still_gets_its_mount_point(self):
+        root = self.mkdir("proj")
+        self.write("proj/.env.dev", "DEV=1\n")
+        self.assertEqual(mounts.plan(root=root).create_files, [os.path.join(root, ".env")])
+
+    def test_a_directory_at_the_target_is_skipped_with_a_note(self):
+        root = self.mkdir("proj")
+        self.mkdir("proj", ".env")
+        self.write("proj/.env.dev", "DEV=1\n")
+        p = mounts.plan(root=root)
+        self.assertNotIn(os.path.join(root, ".env"), [m.dst for m in p.mounts])
+        self.assertEqual(p.create_files, [])
+        self.assertTrue(any("not a regular file" in n for n in p.notes), p.notes)

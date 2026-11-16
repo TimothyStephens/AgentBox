@@ -88,9 +88,16 @@ def _walk(grant, skip_rel):
         yield dirpath, dirnames, sorted(filenames)
 
 
-def secret_mounts(grant, *, ro, skip_rel=(), swap=None):
-    """Masks and dev-swap mounts for one grant. Returns (mounts, files_to_create)."""
+def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
+    """Masks and dev-swap mounts for one grant. Returns (mounts, files_to_create).
+
+    A missing swap target is created empty (0600) as the mount point -- documented since 29 Sep -- but only in
+    a read-write grant: a read-only grant is not ours to write into, so there the swap is skipped and noted
+    (nothing is hidden by skipping it: there is no real file). A target that exists as something other than
+    a regular file or symlink (a `.env/` directory, a FIFO) cannot take a file bind; it is skipped and noted
+    instead of failing `podman run` (item 37)."""
     swap = effective_swap(swap)
+    notes = notes if notes is not None else []
     mounts, create = [], []
     for dirpath, dirnames, filenames in _walk(grant, skip_rel):
         for d in list(dirnames):
@@ -102,7 +109,14 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None):
         for target, dev in swap.items():
             if dev in present and not os.path.islink(os.path.join(dirpath, dev)):
                 dst = os.path.join(dirpath, target)
-                if target not in present:
+                if os.path.lexists(dst) and not (os.path.islink(dst) or os.path.isfile(dst)):
+                    notes.append(f"{dst} is not a regular file, so {dev} is not shown in its place")
+                    continue
+                if not os.path.lexists(dst):
+                    if ro:
+                        notes.append(f"{dst} does not exist and {grant} is read-only, so {dev} is not shown "
+                                     f"at {target} there (nothing is created in a read-only grant)")
+                        continue
                     create.append(dst)
                 mounts.append(Mount("bind", dst, os.path.join(dirpath, dev), ro=ro))
                 handled.add(target)
@@ -353,7 +367,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     if compose == "ro":
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
     for g in rw_grants + list(data_ro):          # secret masks always apply; there is no way to turn them off
-        m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap)
+        m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap, notes=notes)
         mounts += m
         files += c
     # The project's own masks come AFTER the secret masks and the swap: one mount per destination and the
