@@ -5,3 +5,6 @@ spikes/spike-results-*.txt
 .claude/settings.local.json
 .coverage
 htmlcov/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/

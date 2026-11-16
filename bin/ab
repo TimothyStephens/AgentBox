@@ -3,6 +3,9 @@
 import os
 import sys
 
+if sys.version_info < (3, 11):
+    sys.exit("agentbox needs Python 3.11+ (tomllib)")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from agentbox.cli import main  # noqa: E402
 
