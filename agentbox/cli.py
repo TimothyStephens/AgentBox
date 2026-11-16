@@ -1176,11 +1176,13 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="dev tier: also allow running or building from images matching this name pattern "
                         "(e.g. localhost/myapp:*); by default only allowlisted registries and this project's "
                         "builds (repeatable)")
+    from . import mounts                  # the mask list is mounts.py's; the help must not keep its own copy
     x.add_argument("--swap", action="append", default=[], metavar="TARGET=STANDIN",
                    help="show the agent `STANDIN` in place of the masked file `TARGET`, in every directory "
                         "that has one (repeatable), e.g. --swap .env.local=.env.dev. TARGET must be a name "
-                        "the masks cover (.env, .env.*, *.pem, *.key) and STANDIN must not be, so a swap can "
-                        "never uncover a secret. Merged with the default .env=.env.dev; a mapping for the "
+                        f"the masks cover ({', '.join(mounts.MASK_FILES)}; anything under "
+                        f"{', '.join(d + '/' for d in mounts.MASK_DIRS)}) and STANDIN must not be, so a swap "
+                        "can never uncover a secret. Merged with the default .env=.env.dev; a mapping for the "
                         "same target replaces it")
     x.add_argument("--toulmin", action=argparse.BooleanOptionalAction, default=None,
                    help="the Toulmin integration: sessions ask `tm` for a socket directory and a bridge, mount "
