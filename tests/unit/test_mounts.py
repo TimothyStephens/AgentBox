@@ -221,3 +221,28 @@ class UserMasks(TempCase):
         p = mounts.plan(root=self.root, mask=["data"])
         self.assertIn(os.path.realpath(os.path.join(self.root, "data")), mounts.hidden(p))
         self.assertIn(os.path.realpath(os.path.join(self.root, "dev", "data")), mounts.covered(p, [self.root]))
+
+
+class WidenedSecretNames(TempCase):
+    """Review item 28 (16 Nov): the mask list grew by `*.env`, `.netrc`, `.pgpass`, `*.p12`, `*.pfx`, `*.jks`.
+    The dev swap and the exact-name exemptions are unchanged by it."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+        for rel in ("prod.env", ".netrc", ".pgpass", "tls/cert.p12", "tls/store.pfx", "jvm/keystore.jks",
+                    "example.env", ".env", ".env.dev", ".env.example", "notes.txt", "schema.sql"):
+            self.write(os.path.join("proj", rel), "SECRET=1\n")
+
+    def test_the_new_names_are_masked_and_the_exemptions_and_swap_still_hold(self):
+        m = {os.path.relpath(x.dst, self.root): x for x in mounts.plan(root=self.root).mounts}
+        for masked in ("prod.env", ".netrc", ".pgpass", "tls/cert.p12", "tls/store.pfx", "jvm/keystore.jks",
+                       "example.env"):
+            self.assertEqual(m[masked].kind, "mask", masked)
+        for exempt in (".env.example", ".env.dev", "notes.txt", "schema.sql"):
+            self.assertNotIn(exempt, m, exempt)
+        self.assertEqual((m[".env"].kind, m[".env"].src), ("bind", os.path.join(self.root, ".env.dev")))
+
+    def test_grantcheck_uses_the_same_tuple(self):
+        from agentbox import grantcheck
+        self.assertIs(grantcheck.SECRET_FILES, mounts.MASK_FILES)

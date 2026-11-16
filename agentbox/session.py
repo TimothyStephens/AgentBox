@@ -351,8 +351,10 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
         "that contain a covered path cannot be renamed or moved (`Device or resource busy`), and moving a file "
         "out of one fails with a cross-device error (`git mv` too; `mv` copies instead). Read-only data stays "
         "read-only in your containers.",
-        "- Secret files (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/`) are masked and read as empty. Where a "
-        "directory has `.env.dev`, that file appears at `.env`: add dev variables there.",
+        "- Secret files (`.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, "
+        "`*.jks`, and everything under `secrets/`) are masked and read as empty; `.env.example`, `.env.sample`, "
+        "`.env.template` and `.env.dev` are not. Where a directory has `.env.dev`, that file appears at `.env`: "
+        "add dev variables there.",
         "- `AGENTBOX_SESSION` is set to this session's id. A script that must only run on the host (a deploy, "
         "an installer, anything that needs the LAN or writes outside a grant) should check it and refuse.",
     ]

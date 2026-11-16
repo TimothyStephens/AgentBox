@@ -194,8 +194,8 @@ class SessionTest(SessionBase):
         warned = []
         session.teardown(self.settings, s.podman, s.name, warn=warned.append)
         logs = os.listdir(os.path.join(self.settings.data_dir, "logs"))
-        self.assertTrue(any(l.startswith(s.name) and l.endswith("-gate.log") for l in logs), logs)
-        scan_logs = [l for l in logs if l.startswith(s.name) and l.endswith("-scan.log")]
+        self.assertTrue(any(n.startswith(s.name) and n.endswith("-gate.log") for n in logs), logs)
+        scan_logs = [n for n in logs if n.startswith(s.name) and n.endswith("-scan.log")]
         self.assertTrue(scan_logs, logs)
         self.assertIn("Makefile", _read(os.path.join(self.settings.data_dir, "logs", scan_logs[0])))
         self.assertTrue(any("run later" in w for w in warned), warned)
@@ -541,3 +541,18 @@ class UserMaskInASession(SessionBase):
         with open(os.path.join(self.settings.session_run_dir(sess.name), "scan-state.json")) as f:
             state = json.load(f)
         self.assertEqual(sorted(state["skip"][self.root]), ["data", "dev/data"])
+
+
+class SandboxNotesNameTheMasks(SettingsCase):
+    """The notes the agent reads list the secret names the masks actually hide, and say which `.env.*` names
+    are exempt (the docs review found them claiming every `.env.*` is masked while `.env.dev` is shown)."""
+
+    def test_notes_match_the_mask_tuple_and_name_the_exemptions(self):
+        from agentbox import mounts
+        self.project("p1")
+        notes = session.sandbox_notes(session.load_project(self.settings, "p1"), "packages")
+        for name in mounts.MASK_FILES:
+            self.assertIn(f"`{name}`", notes, name)
+        for name in mounts.MASK_EXEMPT:
+            self.assertIn(f"`{name}`", notes, name)
+        self.assertIn("are not", notes)

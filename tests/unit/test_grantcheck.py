@@ -146,7 +146,7 @@ class GrantScan(TempCase):
 
     def test_git_credentials_in_config_worktree(self):
         """E16: creds are checked in config AND config.worktree; only config was exercised."""
-        gitdir = self.mkdir("proj", ".git")
+        self.mkdir("proj", ".git")
         self.write("proj/.git/config", "[core]\n")
         self.write("proj/.git/config.worktree",
                    '[remote "o"]\n\turl = https://user:ghp_tok@github.com/x/y.git\n')
@@ -415,3 +415,27 @@ class MaskClearsAFinding(SettingsCase):
         findings, _w, _fp = grantcheck.preflight(self.settings, "p1", dict(entry, mask=["./data"]))
         self.assertEqual(len(findings), 1, "./data is root-only: dev/data is still live data")
         self.assertIn("dev/data/app.db", texts(findings)[0])
+
+
+class WidenedNames(TempCase):
+    """Review item 28 (16 Nov): the scan keys on the widened mask list and on `.sql`/`.dump` as data shapes."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+
+    def test_netrc_pgpass_key_stores_and_dumps_are_findings_exempt_names_are_not(self):
+        self.write("proj/.netrc", "machine x login u password p\n")
+        self.write("proj/.pgpass", "h:5432:db:u:p\n")
+        self.write("proj/prod.env", "KEY=1\n")
+        self.write("proj/tls/site.p12", "x\n")
+        self.write("proj/backup/prod.dump", "x" * (2 << 20))
+        self.write("proj/backup/prod.sql", "x" * (2 << 20))
+        self.write("proj/schema.sql", "create table t;\n")         # small: schema, not data
+        self.write("proj/.env.dev", "DEV=1\n")                      # exempt
+        findings, _ = grantcheck.scan(self.root, [self.root])
+        joined = "\n".join(texts(findings))
+        for want in (".netrc", ".pgpass", "prod.env", "tls/site.p12", "backup/prod.dump", "backup/prod.sql"):
+            self.assertIn(want, joined, want)
+        self.assertNotIn("schema.sql", joined)
+        self.assertNotIn(".env.dev", joined)

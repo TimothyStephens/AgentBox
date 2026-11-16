@@ -11,7 +11,11 @@ from dataclasses import dataclass
 
 from .errors import AgentboxError
 
-MASK_FILES = (".env", ".env.*", "*.pem", "*.key")
+# The one list of secret file NAMES: the masks hide them, grantcheck (SECRET_FILES) and the history check look
+# for them, and a swap target must be one. Widened 16 Nov (review item 28) from `.env`/`.env.*`/`*.pem`/`*.key`:
+# `*.env` (prod.env), `.netrc`/`.pgpass` (plaintext passwords by convention), `*.p12`/`*.pfx`/`*.jks` (key stores).
+# Exact names only in MASK_EXEMPT: a committed example under another name (`example.env`) is masked.
+MASK_FILES = (".env", ".env.*", "*.env", ".netrc", ".pgpass", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks")
 MASK_EXEMPT = (".env.example", ".env.sample", ".env.template", ".env.dev")
 MASK_DIRS = ("secrets",)
 WALK_SKIP = (".git", "node_modules", ".venv", "venv", "__pycache__")

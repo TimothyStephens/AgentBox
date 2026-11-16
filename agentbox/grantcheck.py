@@ -3,11 +3,12 @@ rule — the masks and the gate's cover checks are defence in depth behind it.
 
 Before a session starts, each grant root is scanned for things that should not be in a grant the agent gets
 read-write:
-  * a non-empty `.env` / `.env.*` / `*.pem` / `*.key`, or any file under a `secrets/` directory, that the masks
-    do not cover (an un-masked secret the agent could read);
+  * a non-empty file with a masked name (`mounts.MASK_FILES`: `.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`,
+    `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`), or any file under a `secrets/` directory, that the masks do
+    not cover (an un-masked secret the agent could read);
   * a `.git` whose remote URLs carry credentials (`https://user:pass@host`);
-  * files that look like live data: `*.db` / `*.sqlite` / `*.sqlite3` / `*.duckdb` over LIVE_DATA_MB, and any
-    host path a compose file in the grant binds as a volume holding such data.
+  * files that look like live data: `*.db` / `*.sqlite` / `*.sqlite3` / `*.duckdb` / `*.sql` / `*.dump` over
+    LIVE_DATA_MB, and any host path a compose file in the grant binds as a volume holding such data.
 
 If any are found, the session refuses to start and names them. `ab project add --i-understand-grant-exposure`,
 or `ab project accept-grant-exposure <name>`, records an acknowledgement per project (like history secrets);
@@ -18,7 +19,6 @@ agent); it catches the common shapes, not every one. Scanning covers what it can
 another user (a rootless container's data dir) can't be read and is reported as a warning, not descended into.
 Known limitations (secrets under other names, more data shapes) are in `docs/decisions.md`.
 """
-import fnmatch
 import hashlib
 import os
 import re
@@ -27,15 +27,14 @@ import stat
 from . import mounts
 
 LIVE_DATA_MB = 1
-SECRET_FILES = (".env", ".env.*", "*.pem", "*.key")
-DATA_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".duckdb")
+SECRET_FILES = mounts.MASK_FILES          # one list: the scan looks for exactly what the masks would hide (item 28)
+DATA_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".duckdb", ".sql", ".dump")
 CRED_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@")     # scheme://user:password@host
 WALK_SKIP = set(mounts.WALK_SKIP) - {".git"}                            # .git is scanned for credential URLs
 
 
 def _is_secret_name(fn, in_secrets):
-    return in_secrets or (fn not in mounts.MASK_EXEMPT
-                          and any(fnmatch.fnmatchcase(fn, p) for p in SECRET_FILES))
+    return in_secrets or mounts._masked(fn)
 
 
 def _git_credential_urls(git_dir):
@@ -319,8 +318,8 @@ def acceptance_message(name, findings, accepted):
 
 def message(name, findings):
     lines = [f"project {name}: the grant holds secrets or live data the agent would get read-write. A grant is "
-             "for code; move these out of the grant (for a secret file, a masked name — .env, *.pem, *.key, or "
-             "a secrets/ directory — also covers it). Found:"]
+             "for code; move these out of the grant (for a secret file, a masked name — .env, *.env, .netrc, "
+             "*.pem, *.key, *.p12, or a secrets/ directory — also covers it). Found:"]
     lines += [f"  - {f['text'] if isinstance(f, dict) else f}" for f in findings]
     lines.append(f"To run anyway, recording that you accept this exposure: "
                  f"`ab project accept-grant-exposure {name}` (or `--i-understand-grant-exposure` at add time).")
