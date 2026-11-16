@@ -367,7 +367,17 @@ def make(settings, a, *, out=print, warn=None):
     # override flags (ab project init shares their definition with ab project add/set) and its preset; only `root`
     # is init-specific, filled in here.
     a.root = dest
-    cli.cmd_project_add(settings, a)
+    try:
+        cli.cmd_project_add(settings, a)
+    except BaseException:
+        # A refusal at registration (grantcheck, overlap, ...) would leave a fresh tree that makes the corrected
+        # retry fail with "already exists". Removed only if the project did not get registered: once it is in
+        # the registry, its root is the project's and stays (audit item 47).
+        if name not in registry.load(settings.registry_path):
+            import shutil
+            shutil.rmtree(dest, ignore_errors=True)
+            warn(f"ab: removed the scaffold {dest}, since {name} was not registered")
+        raise
 
     out(f"\nscaffolded {template} project {name} at {dest}")
     out(f"  start:  ab session start <agent> {name}")

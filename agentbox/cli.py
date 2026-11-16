@@ -605,9 +605,13 @@ def cmd_project_reset_state(s, a):
         print(f"{a.name} has no agent state")
         return 0
     if not a.yes:
-        answer = input(f"Reset the agent state of {a.name} (memory, settings, transcripts of every agent, in "
-                       f"{src})? It is moved to {s.project_backups_dir(a.name)}/agent-state-<stamp>/ first. "
-                       f"[y/N] ")
+        try:
+            answer = input(f"Reset the agent state of {a.name} (memory, settings, transcripts of every agent, "
+                           f"in {src})? It is moved to {s.project_backups_dir(a.name)}/agent-state-<stamp>/ "
+                           f"first. [y/N] ")
+        except EOFError:              # no terminal (a script, `< /dev/null`): no answer is a no (item 47)
+            print()
+            answer = ""
         if answer.strip().lower() not in ("y", "yes"):
             print("not reset")
             return 1
@@ -754,21 +758,34 @@ def cmd_profile_promote(s, a):
     dst = os.path.join(prof, dest)
     if os.path.lexists(dst):
         raise AgentboxError(f"{dst} already exists; remove it or choose another --as")
+    # The profile directory first: ensure_repo makes a repository only of a directory that exists, so on a
+    # first promotion the copy used to land in a plain directory and the commit then failed (item 47).
+    os.makedirs(prof, mode=0o700, exist_ok=True)
     profile.ensure_repo(prof, out=print)
     os.makedirs(os.path.dirname(dst) or prof, mode=0o700, exist_ok=True)
-    if os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=False,
-                        ignore=shutil.ignore_patterns("*" + profile.SIDECAR))
-    else:
-        shutil.copyfile(src, dst)
     doc = profile.read_sidecar(s.inbox_dir(row["project"], a.agent), row["name"])
     msg = (f"profile: add {dest} (promoted from {row['project']}/{row['name']})\n\n"
            f"project: {row['project']}\nagent: {a.agent}\nsession: {doc.get('session', '?')}\n"
            f"added: {doc.get('added', '?')}\npreset: {doc.get('preset', '?')}\n"
            f"egress: {doc.get('egress', '?')}\n")
-    profile._git(prof, "add", "-A")
-    profile._git(prof, "-c", "user.name=agentbox", "-c", "user.email=agentbox@localhost",
-                 "commit", "-qm", msg)
+    try:
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, symlinks=False,
+                            ignore=shutil.ignore_patterns("*" + profile.SIDECAR))
+        else:
+            shutil.copyfile(src, dst)
+        profile._git(prof, "add", "-A")
+        profile._git(prof, "-c", "user.name=agentbox", "-c", "user.email=agentbox@localhost",
+                     "commit", "-qm", msg)
+    except BaseException:
+        # An uncommitted copy would be loaded by every session with no history behind it (the profile reads
+        # as dirty). Take it back out, and unstage it, so the profile is as it was.
+        if os.path.isdir(dst) and not os.path.islink(dst):
+            shutil.rmtree(dst, ignore_errors=True)
+        elif os.path.lexists(dst):
+            os.unlink(dst)
+        profile._git(prof, "reset", "-q", "--", dest, check=False)
+        raise
     doc.update({"reviewed": True, "promoted_to": dest, "promoted_commit": profile.commit_id(prof)})
     profile.write_sidecar(s.inbox_dir(row["project"], a.agent), row["name"], doc)
     print(f"promoted {row['project']}/{row['name']} -> {dst}")

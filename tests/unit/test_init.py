@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from contextlib import redirect_stdout
 
-from agentbox import cli, config, grantcheck, initproj, registry
+from agentbox import cli, config, grantcheck, registry
 
 from .helpers import SettingsCase
 
@@ -229,6 +229,19 @@ class RefusalTest(InitCase):
         rc, _ = self.init("python", "Bad Name")
         self.assertEqual(rc, 2)
         self.assertFalse(os.path.exists(os.path.join(self.repos, "Bad Name")))
+
+
+class RegistrationFailureRemovesTheScaffold(InitCase):
+    """Item 47: if registering fails after the tree is written, the fresh scaffold is removed, so a corrected
+    retry is not refused with "already exists; refusing to scaffold over it"."""
+
+    def test_a_failed_registration_leaves_no_tree_and_the_retry_works(self):
+        from unittest import mock
+        from agentbox.errors import AgentboxError
+        with mock.patch.object(cli, "cmd_project_add", side_effect=AgentboxError("simulated refusal")):
+            self.assertEqual(self.init_rc("python", "p9"), 2)
+        self.assertFalse(os.path.exists(os.path.join(self.repos, "p9")))
+        self.assertEqual(self.init_rc("python", "p9"), 0)
 
 
 class TemplateOverrideTest(InitCase):

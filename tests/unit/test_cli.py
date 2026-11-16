@@ -345,6 +345,55 @@ class PromoteRefusesLinks(SettingsCase):
         self.assertTrue(os.path.isfile(os.path.join(self.prof, "skills", "deploy", "SKILL.md")))
 
 
+class FailuresLeaveNothingHalfDone(SettingsCase):
+    """Item 47: a prompt with no stdin, a first promotion into a profile that does not exist yet, and a
+    registration that fails after the scaffold each end cleanly, with nothing left to trip over."""
+
+    def test_reset_state_with_no_stdin_is_not_reset(self):
+        self.project("p1")
+        st = self.settings.state_dir("p1", "claude")
+        os.makedirs(st)
+        self.write(os.path.join(st, "CLAUDE.md"), "x\n")
+        code, out = self.ab("project", "reset-state", "p1", stdin="")
+        self.assertEqual(code, 1, out)
+        self.assertIn("not reset", out)
+        self.assertNotIn("Traceback", out)
+        self.assertTrue(os.path.isfile(os.path.join(st, "CLAUDE.md")))
+
+    def test_first_promotion_creates_a_versioned_profile(self):
+        from agentbox import profile
+        inbox = self.settings.inbox_dir("p1", "claude")
+        os.makedirs(os.path.join(inbox, "deploy"))
+        self.write(os.path.join(inbox, "deploy", "SKILL.md"), "# d\n")
+        profile.write_sidecar(inbox, "deploy", {"project": "p1", "agent": "claude"})
+        prof = self.settings.profile_src("claude")
+        self.assertFalse(os.path.exists(prof))
+        code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(profile.commit_id(prof), "the promotion is a commit")
+        self.assertFalse(profile.commit_state(prof)[1], "nothing left uncommitted")
+
+    def test_a_failed_commit_removes_the_copy(self):
+        from unittest import mock
+        from agentbox import profile
+        from agentbox.errors import AgentboxError as E
+        inbox = self.settings.inbox_dir("p1", "claude")
+        os.makedirs(os.path.join(inbox, "deploy"))
+        self.write(os.path.join(inbox, "deploy", "SKILL.md"), "# d\n")
+        profile.write_sidecar(inbox, "deploy", {"project": "p1", "agent": "claude"})
+        prof = self.mkdir("config", "claude", "profile")
+        real = profile._git
+
+        def failing(src, *args, **kw):
+            if "commit" in args and "-qm" in args and "profile: add" in args[-1]:
+                raise E("git commit failed (simulated)")
+            return real(src, *args, **kw)
+        with mock.patch.object(profile, "_git", failing):
+            code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        self.assertEqual(code, 2, out)
+        self.assertFalse(os.path.lexists(os.path.join(prof, "skills", "deploy")), "the copy is removed")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
