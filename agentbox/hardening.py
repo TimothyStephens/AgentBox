@@ -17,6 +17,10 @@ def fixed_flags(settings, *, cgroup_parent):
         "--read-only-tmpfs=false",
         "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,notmpcopyup",
         "--userns=keep-id",
+        # podman copies the HOST's http_proxy/https_proxy/no_proxy into every container by default; the
+        # session sets its own proxy variables explicitly (start_infra), so the host's must not come along
+        # (review 16 Nov, item 38: a host proxy would be a route the egress mode never allowed).
+        "--http-proxy=false",
         "--init",
         f"--pids-limit={int(settings.agent_pids)}",
         f"--memory={settings.agent_memory}",
@@ -29,7 +33,8 @@ def fixed_flags(settings, *, cgroup_parent):
     return flags
 
 
-REQUIRED = ("--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id")
+REQUIRED = ("--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+            "--http-proxy=false")
 REQUIRED_PREFIX = ("--pids-limit=", "--memory=", "--memory-swap=", "--oom-score-adj=")
 FORBIDDEN_EXACT = {"--privileged", "-P", "--publish-all", "-v", "--volume", "--device", "--cap-add",
                    "--network", "--net", "--pid", "--ipc", "--uts", "--cgroupns", "--userns",

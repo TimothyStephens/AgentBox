@@ -87,6 +87,7 @@ class MountAuditSocketStat(TempCase):
         src = os.path.join(root, "thing")
         self.write("grant/thing", "x")
         argv = ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--http-proxy=false",
                 "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1",
                 f"--mount=type=bind,src={src},dst={src}", "img"]
         kw = dict(allowed_mount_srcs=[root], allowed_mount_dsts=[root], networks=[],
@@ -111,6 +112,7 @@ class MountAuditSocketStat(TempCase):
         root = self.mkdir("grant")
         src = os.path.join(root, "gone")
         argv = ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--http-proxy=false",
                 "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1",
                 f"--mount=type=bind,src={src},dst={src}", "img"]
         hardening.audit(argv, allowed_mount_srcs=[root], allowed_mount_dsts=[root], networks=[],

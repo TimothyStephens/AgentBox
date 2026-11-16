@@ -29,7 +29,7 @@ class HardeningTest(unittest.TestCase):
         f = hardening.fixed_flags(S, cgroup_parent="agentbox.slice")
         for want in ("--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
                      "--memory=4g", "--memory-swap=4g", "--cpus=3", "--pids-limit=4096",
-                     "--oom-score-adj=500", "--cgroup-parent=agentbox.slice"):
+                     "--oom-score-adj=500", "--cgroup-parent=agentbox.slice", "--http-proxy=false"):
             self.assertIn(want, f)
         self.assertNotIn("--cgroup-parent=", " ".join(hardening.fixed_flags(S, cgroup_parent="")))
 
@@ -84,7 +84,7 @@ class HardeningTest(unittest.TestCase):
 
     def test_required(self):
         for drop in ("--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
-                     "--memory=4g", "--pids-limit=4096", "--oom-score-adj=500"):
+                     "--memory=4g", "--pids-limit=4096", "--oom-score-adj=500", "--http-proxy=false"):
             argv = [a for a in base() if a != drop]
             with self.assertRaises(AgentboxError, msg=drop):
                 audit(argv)
@@ -101,6 +101,7 @@ class MaskFile(unittest.TestCase):
 
     def argv(self, mount):
         return ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id",
+                "--http-proxy=false",
                 "--pids-limit=1", "--memory=1g", "--memory-swap=1g", "--oom-score-adj=1", mount, "img"]
 
     def test_mask_must_be_read_only(self):
