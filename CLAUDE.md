@@ -1,50 +1,65 @@
 # agentbox
 
-`agentbox` (`ab`) runs coding agents (Claude Code, OMP, Pi, others) in hardened rootless podman sandboxes on this machine, one project per session, with scoped access to pods, directories and the network. **`docs/design.md` is the spec. Read it before planning anything.** Its "Spike results" and "Open items" sections are current as of 29 September 2026.
-
-You are running directly on the host as `vmuser`, with the same power over podman and files as Tim. The sandbox you are building does not exist yet, so the rules below are what keep his other projects and live services safe. A guard hook (`.claude/hooks/guard.py`) enforces the worst cases; follow the rules even where the hook can't see (inside scripts you write).
+`agentbox` (`ab`) runs coding agents (Claude Code, OMP) in hardened rootless podman sandboxes, one project
+per session. **`docs/design.md` is the spec; read it before planning anything.** This file is for an agent
+working *on* agentbox, on the host or inside an agentbox session.
 
 ## Hard rules
 
-- **Never touch anything you did not create.** Live services on this host: the `media_server` stack (10.0.0.103:8088 and :8112), the compose project `deploy` (life-updates) and `ollama`, plus other projects under `~`. Do not stop, remove, exec into, restart, or change their containers, pods, networks or volumes.
-- **Uncommitted changes you did not make are Tim's.** Never revert, stage or commit them — no `git checkout`/`restore`/`stash` on them, no `git add -A` or `git commit -a` that sweeps them in. Stage explicit paths only, and report anything you find in the tree that you did not write, then ask. However odd a change looks, assume Tim made it and say so rather than "fixing" it: a `make claude-live` record was reverted this way, on a hunch about a stray writer, and it was his real result. The same rule makes baseline comparisons a separate worktree or clone — never `git checkout <other commit>` in the live tree, which discards or strands whatever is uncommitted.
-- **Name and label everything you create.** Names start with `abt-` (tests) or `spike` (the spike kit); every container, pod, network and volume carries the label `agentbox-test=1`. Compose projects are always started with `-p abt-<name>`. Clean up by label (`make clean`), never with `--all` or `prune`.
-- **Credentials are off limits.** Don't read `~/.ssh`, `~/.claude/.credentials.json`, `~/.config/claude-container/`, `~/.config/agentbox/claude-oauth-token`, `~/.omp/`, or any `.env`. Tests use fake tokens under `/tmp`. Anything that needs a real credential (the Claude-through-squid test) goes in a make target Tim runs himself: write it, tell him the command, and do not run it.
-- **No root, no system changes.** No `sudo`, no `systemctl --user` changes, no edits to `~/.bashrc`, `~/.config/containers/`, or systemd units. If a step seems to need one, stop and ask.
-- **Mounts:** test containers mount only paths inside this repo or `/tmp`. Never `--privileged`, never `--network host`.
-- **If the guard blocks you, don't find another way to do the same thing.** Tell Tim what you wanted and why.
+- **Uncommitted changes you did not make are the user's.** Never revert, stage or commit them: no
+  `git checkout`/`restore`/`stash` on them, no `git add -A` or `git commit -a`. Stage explicit paths and
+  report what you find in the tree that you did not write. Baseline comparisons go in a separate worktree
+  or clone, never `git checkout <other commit>` in the live tree.
+- **Name and label everything you create.** Test resources are named `abt-*` and carry the label
+  `agentbox-test=1`; compose projects start with `-p abt-<name>`. Clean up by label (`make clean`), never
+  with `--all` or `prune`. Never touch a container, pod, network or volume you did not create.
+- **Credentials are off limits.** Do not read `~/.ssh`, `~/.config/agentbox/claude-oauth-token`,
+  `~/.config/agentbox/keys/`, `~/.claude/.credentials.json`, or any `.env`. Tests use fake tokens under
+  `/tmp`. Anything that needs a real credential is a make target the user runs (`make claude-live`,
+  `make omp-live`): write it, name the command, do not run it.
+- **No root, no system changes.** No `sudo`, no `systemctl --user` changes, no edits to `~/.bashrc`,
+  `~/.config/containers/` or systemd units. Test containers mount only paths inside this repo or `/tmp`;
+  never `--privileged`, never `--network host`.
+- **Standard library only** at runtime, Python >= 3.11 (`tomllib`). Test tools go in `.venv`.
+- **If the guard or the sandbox blocks you, do not find another way to do the same thing.** Say what you
+  wanted and why. On the host, `.claude/hooks/guard.py` enforces the worst cases; follow the rules where it
+  cannot see (inside scripts you write).
 
-## Environment (ubuntu-dev)
+## Where you are, and what runs there
 
-- Ubuntu, kernel 7.0.0-31, rootless podman 5.7.0, netavark 1.16.1, podman-compose 1.5.0, ext4 on LVM. `vmuser` has no root.
-- The podman API socket is `$XDG_RUNTIME_DIR/podman/podman.sock`. Tests start their own `podman system service` on a temp socket (see `spikes/common.sh`, `start_api`) rather than using it.
-- Local models: `http://10.0.0.2:8080/v1` (another machine, may be off).
-- The host is slow at times: allow 60 s on API calls before calling something a failure.
+`AGENTBOX_SESSION` is set inside a session and absent on the host; host-only scripts check it and refuse.
 
-## What the spikes proved (`spikes/`, all passing as of run 5)
+| | Host (`vmuser`, real podman) | Inside an agentbox session |
+| --- | --- | --- |
+| `make test` (unit tests, fake podman) and `make guard` | yes | yes |
+| Profile repos' `bash tests/run.sh` and `tools/check.py` | yes | yes |
+| `make itest`, `make *-image`, `make *-live`, `make install`, `ab profile install`, `./build.sh deploy` | yes (the user runs `*-live` and `install`) | no: no podman socket, no LAN |
 
-- Any container on podman's default network or a plain bridge network reaches the LAN; an `--internal` network doesn't. Everything agent-created must go through the gate.
-- Squid egress modes (locked/packages/open) behave as designed, including refusing public names that resolve to private addresses.
-- `driver_opts: isolate: "strict"` passes through podman-compose and isolates; plain networks reach each other.
-- sockguard scopes list/inspect/logs by compose label and enforces bind-mount allowlists, but **does not scope exec** against a raw API client. The gate does: it inspects the target's labels before exec create and only starts exec sessions it created.
-- **Builds:** `podman build --network <name>` fails on this host (`did not get container start message from parent: EOF`). What works: join a per-session holder container's network namespace, `nsoptions` network entry `Path=/proc/<pid>/ns/net`, `networkmode=2`. The podman client sends `networkmode` as `0`/`1`/`2` and the network inside `nsoptions`; it forwards any namespace path it's given as-is, so the gate must always overwrite it, drop every client namespace entry except `user`, and re-check the holder PID on each build.
-- podman echoes each build `STEP` line, so match test markers on whole output lines only.
-- Alpine's busybox has no `httpd`; use `busybox:1.36` for stand-in web servers.
-- `spikes/spike_gate.py` is the working prototype of the gate; start from it.
-- Claude Code in sessions authenticates with a subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`), not an API key. The model key gateway is deferred.
+The grant `agentbox-dev/` holds three sibling repos: `agentbox/` (the launcher) and
+`agentbox-profile-{claude,omp}/` (the profiles the launcher's deployed clones at
+`~/.config/agentbox/<agent>/profile` come from). A change to a shared part of one profile repo
+(`build.sh`, `Containerfile`, `tools/check.py` shared rules) is mirrored in the other.
 
 ## Working loop
 
-Run tests yourself and read their output; Tim should not have to copy commands or logs.
+- Run the tests yourself and read the output. `make test` runs `.claude/hooks/test_guard.py` first, then
+  `tests/unit`; one module: `python3 -m unittest tests.unit.test_gate -q`. `make itest` needs real podman,
+  names everything `abt-<run>-*`, and cleans up after itself even on failure.
+- Every behavioural fix gets a unit test that fails before and passes after.
+- Commit after each green step, with a message that says what now works. A run with an excused failure is
+  not green: say "unverified" and name what did not run.
+- Record every deviation from `docs/design.md` in `docs/decisions.md` (date, what, why) and update
+  design.md to match in the same commit.
 
-- `make test`: fast checks, no podman (unit tests plus a fake podman API, as in the spike kit's approach).
-- `make itest`: real podman, `abt-` names, cleans up after itself even on failure.
-- `make clean`: removes leftovers by label.
-- `make spikes`: the original spikes, as a regression check for the host.
-- Python 3, standard library only at runtime. Test tools go in `.venv` (`python3 -m venv .venv`).
-- Commit after each green step, with a message that says what now works.
-- Record any deviation from `docs/design.md` in `docs/decisions.md` (date, what, why) and update the design doc to match.
+## Where things are written down
 
-## Build order
-
-Follow the "Build order" section of `docs/design.md`, against a dummy two-container compose project (`tests/fixtures/`), real stacks last. Each step has a gate (the tests that must pass) before the next starts.
+- `docs/design.md`: the spec and threat model (mistake containment and cross-project isolation, not a wall
+  against a malicious agent). Its "Spike results" table records the host facts the design rests on.
+- `docs/decisions.md`: dated log of deviations and the reasoning; newest last.
+- `docs/progress.md`: the Status table is the one built / deferred / not-built list.
+- `docs/TODO.md`: the open backlog; nothing in it blocks use.
+- `docs/USAGE.md` is generated by `docs/gen_usage.py`; edit the argparse help, not the file.
+- `docs/reviews/`: independent review records and the prompts that produced them. A reviewer project
+  (`ab project add <name> --reviews <builder>`) reviews a clone of the builder's repo and writes
+  `reviews/*.md`; the user's `ab project sync <reviewer>` moves the clone to the builder's last commit and
+  hands the reviews to the builder's `.review/`. Neither agent can reach the other's tree.

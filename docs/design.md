@@ -828,6 +828,11 @@ Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose
 | 4 · Key gateway | Plumbing works: the gateway forwarded the call with the real key and Anthropic refused it (organization disabled). Claude Code rejected a made-up model alias | Skipped for now: no paid API key. With a subscription login, Claude Code's credential has to live inside the sandbox (see Open items). The gateway stays useful only for remote models billed by API key |
 | 5 · Compose isolation | `isolate: "strict"` reaches the network and blocks another network; two plain networks can reach each other | Compose files can carry isolation, and must: it is off by default |
 
+Two smaller facts from the same runs that the tests still rest on: podman echoes every build `STEP` line
+into the build output, so a test marker is matched on whole output lines only (`test_review_step5`'s
+echoed-ID cases); and Alpine's busybox has no `httpd`, so the stand-in web servers in `tests/fixtures/dummy`
+are `busybox:1.36` (decisions.md, 29 Sep).
+
 ## Open items and future options
 
 **To verify during the build**
