@@ -1953,11 +1953,18 @@ def _subst(value, args):
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)", one, value)
 
 
+# buildkit splits an instruction and its arguments on exactly these (tokenWhitespace in its parser); so does
+# the gate, so `FROM<TAB>image` names the same image for both.
+_WS = re.compile(r"[ \t\v\f\r]+")
+
+
 def dockerfile_images(text, buildargs=None):
     """[(instruction, image ref)] a Containerfile uses: FROM, COPY/ADD --from, RUN --mount=...,from=. Stage
     names, stage numbers and `scratch` are not images. ARG defaults and build args are substituted."""
     escape = "\\"
-    lines = text.splitlines()
+    # Lines end at "\n" only (buildkit's scanner; a trailing "\r" is dropped): str.splitlines would also break a
+    # line at \v, \f or a lone \r, and see an instruction where buildkit sees one argument.
+    lines = [ln.rstrip("\r") for ln in text.split("\n")]
     for line in lines[:5]:
         m = re.match(r"^#\s*escape\s*=\s*(\S)\s*$", line, re.I)
         if m:
@@ -1986,16 +1993,16 @@ def dockerfile_images(text, buildargs=None):
     for line in logical:
         if not line:
             continue
-        instr, _, rest = line.partition(" ")
+        instr, rest = (_WS.split(line, 1) + [""])[:2]
         instr = instr.upper()
         env = dict(defaults, **args)
         if instr == "ARG":
-            for tok in rest.split():
+            for tok in _WS.split(rest):
                 k, eq, v = tok.partition("=")
                 if eq and k not in defaults:
                     defaults[k] = v.strip("\"'")
         elif instr == "FROM":
-            toks = [t for t in rest.split() if not t.startswith("--")]
+            toks = [t for t in _WS.split(rest) if t and not t.startswith("--")]
             if not toks:
                 raise Deny("build: a FROM without an image")
             ref = _subst(toks[0], env)
@@ -2004,7 +2011,7 @@ def dockerfile_images(text, buildargs=None):
             if len(toks) >= 3 and toks[1].lower() == "as":
                 stages.add(toks[2].lower())
         elif instr in ("COPY", "ADD", "RUN"):
-            for tok in rest.split():
+            for tok in _WS.split(rest):
                 if not tok.startswith("--"):
                     break
                 if tok.lower().startswith("--from="):

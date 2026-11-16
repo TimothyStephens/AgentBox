@@ -1388,5 +1388,19 @@ class ProductionConfig(unittest.TestCase):
         self.assertIn("infra container", str(e.exception))
 
 
+class ContainerfileParsing(unittest.TestCase):
+    """Review 2026-11-16, items 1 and 2: the gate must see the same images buildkit does. An instruction split
+    looser or stricter than buildkit's lets a FROM hide from check_image."""
+
+    def test_item1_instruction_split_on_buildkits_whitespace_class(self):
+        for sep in ("\t", "\v", "\f", "\r", " \t ", "\t\t"):
+            with self.subTest(sep=repr(sep)):
+                out = gate.dockerfile_images(f"FROM alpine\nFROM{sep}localhost/live-app\n")
+                self.assertEqual(out, [("FROM", "alpine"), ("FROM", "localhost/live-app")])
+        out = gate.dockerfile_images("FROM\tbusybox\tAS\tb\nCOPY\t--from=localhost/x\t/a /b\n"
+                                     "ARG\tBASE=localhost/y\nFROM\t$BASE\n")
+        self.assertEqual(out, [("FROM", "busybox"), ("COPY", "localhost/x"), ("FROM", "localhost/y")])
+
+
 if __name__ == "__main__":
     unittest.main()
