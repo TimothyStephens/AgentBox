@@ -12,14 +12,19 @@ from .project import _git_env
 def _history_masked(git_dir, timeout):
     """Paths in one repo's history (all refs) whose names the masks cover. Raises if git cannot tell."""
     try:
-        p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", *scan.GIT_SAFE, "log",
+        # -z: names NUL-separated and unquoted. Without it git quotes any name with a non-ASCII byte, a
+        # newline, a tab or a `"` (`"caf\303\251.env"`), and the quotes hid it from the mask test (review
+        # 16 Nov, R-1; the user's core.quotepath cannot help, since git's global config is not read here).
+        p = subprocess.run(["git", "--no-pager", f"--git-dir={git_dir}", *scan.GIT_SAFE, "log", "-z",
                             "--all", "--format=", "--name-only", "--diff-filter=AM", "--no-renames"],
-                           capture_output=True, text=True, timeout=timeout, env=_git_env())
+                           capture_output=True, text=True, errors="replace", timeout=timeout,
+                           env=_git_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AgentboxError(f"cannot read the git history of {git_dir} ({e}); refusing rather than guessing")
     if p.returncode != 0 and "does not have any commits" not in p.stderr:
         raise AgentboxError(f"cannot read the git history of {git_dir}: {p.stderr.strip()[-200:]}")
-    names = sorted({line for line in p.stdout.splitlines() if line})
+    # With --format= git still separates commits by a newline, which lands at the front of the next name.
+    names = sorted({n.lstrip("\n") for n in p.stdout.split("\0") if n.lstrip("\n")})
     return [n for n in names if mounts._masked(os.path.basename(n))
             or any(part in mounts.MASK_DIRS for part in n.split("/")[:-1])]
 

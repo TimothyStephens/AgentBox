@@ -203,3 +203,25 @@ class TheAcknowledgementTracksTheWholeFoundSet(SettingsCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("tls/server.key", out + err)
         self.assertEqual(self.entry()["history_secrets_accepted"], [".env"], "proceeding is not accepting")
+
+
+class QuotedNamesAreStillSeen(SettingsCase):
+    """Review 16 Nov, R-1: git quotes a path with a non-ASCII byte, a newline, a tab or a `"`
+    (`"caf\\303\\251.env"`), and the quotes hid it from the mask test, so such a committed secret passed the
+    history check. Names now come NUL-separated and unquoted; one that is not UTF-8 is still read."""
+
+    def test_unusual_names_in_history_are_found(self):
+        from agentbox.historysecrets import _history_masked
+        repo = self.mkdir("hq")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        for rel in ("café.env", "secrets/é.txt", "new\nline.key", "tab\there.pem", 'q"uote.env', "plain.env"):
+            commit_then_untrack(repo, rel)
+        bad = os.path.join(os.fsencode(repo), b"lat\xe9.key")
+        open(bad, "w").close()
+        subprocess.run([b"git", b"-C", os.fsencode(repo), b"add", b"-f", bad], check=True)
+        subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+                       check=True, capture_output=True)
+        found = _history_masked(os.path.join(repo, ".git"), 30)
+        for want in ("café.env", "secrets/é.txt", "new\nline.key", "tab\there.pem", 'q"uote.env', "plain.env"):
+            self.assertIn(want, found)
+        self.assertTrue(any(n.startswith("lat") and n.endswith(".key") for n in found), found)
