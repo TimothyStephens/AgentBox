@@ -2939,3 +2939,8 @@ optional seed.
 with agentbox's goals, and a separate container is more modular. Nothing of MAGS remains in the launcher
 but the `bin/mags-codedev` entry in the `~/.omp` whitelist (omp.py docstring, design.md row), which is the
 omp-env-era wrapper and is mounted only if the host has it; left as is, to be dropped with that whitelist.
+
+**16 Nov, on Tim's host.** `ab profile install omp` at e54f833 built in the staging directory and swapped
+in: "1 marketplace, 6 npm", lockfile written, and `~/.config/agentbox/omp/` holds `config.yml models.yml
+plugins profile` -- no `plugins.building`, no `plugins.previous`. The installer change is verified on real
+podman for the success path; the failure path has the unit tests.
