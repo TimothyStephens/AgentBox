@@ -303,6 +303,48 @@ class ProjectNameIsValidatedBeforeRmtree(SettingsCase):
         self.assertFalse(os.path.exists(self.settings.project_dir("gone")))
 
 
+class PromoteRefusesLinks(SettingsCase):
+    """An inbox item is agent-written. A symlink in it (or the item being one) would be followed by the copy
+    into the profile, which every session of every project then loads (item 4). promote refuses before it
+    copies anything, and harvest marks the item so the refusal is no surprise."""
+
+    def setUp(self):
+        super().setUp()
+        from agentbox import profile
+        self.prof = self.mkdir("config", "claude", "profile")
+        self.inbox = self.settings.inbox_dir("p1", "claude")
+        os.makedirs(os.path.join(self.inbox, "deploy"))
+        with open(os.path.join(self.inbox, "deploy", "SKILL.md"), "w") as f:
+            f.write("# deploy\n")
+        self.secret = self.write("elsewhere/id_ed25519", "PRIVATE\n")
+        profile.write_sidecar(self.inbox, "deploy", {"project": "p1", "agent": "claude", "added": "2026-11-16T10:00:00"})
+
+    def test_a_link_inside_the_item_refuses_the_promotion_and_copies_nothing(self):
+        os.symlink(self.secret, os.path.join(self.inbox, "deploy", "key"))
+        code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        self.assertEqual(code, 2, out)
+        self.assertIn("symlink", out)
+        self.assertFalse(os.path.lexists(os.path.join(self.prof, "skills", "deploy")), "nothing copied")
+
+    def test_an_item_that_is_itself_a_link_is_refused(self):
+        os.symlink(self.secret, os.path.join(self.inbox, "note.md"))
+        code, out = self.ab("profile", "promote", "p1/note.md", "--as", "rules/note.md")
+        self.assertEqual(code, 2, out)
+        self.assertIn("symlink", out)
+        self.assertFalse(os.path.lexists(os.path.join(self.prof, "rules", "note.md")))
+
+    def test_harvest_flags_an_item_that_holds_a_link(self):
+        os.symlink(self.secret, os.path.join(self.inbox, "deploy", "key"))
+        code, out = self.ab("profile", "harvest", "--agent", "claude")
+        self.assertEqual(code, 0, out)
+        self.assertIn("SYMLINK", out)
+
+    def test_a_plain_item_still_promotes(self):
+        code, out = self.ab("profile", "promote", "p1/deploy", "--as", "skills/deploy")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.isfile(os.path.join(self.prof, "skills", "deploy", "SKILL.md")))
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

@@ -615,6 +615,26 @@ def cmd_project_ls(s, a):
 
 # --- the host-owned profile and the inbox ------------------------------------------------------------
 
+def _link_in(path):
+    """The first symlink (or other non-regular entry) in an inbox item, the item itself included, or None.
+
+    An inbox item is agent-written. A copy into the profile follows links, and the profile is loaded by every
+    session of every project, so a planted `key -> ~/.ssh/id_ed25519` would be published by `promote`
+    (item 4). Walked without following links, as profile._walk does for the profile itself."""
+    if os.path.islink(path):
+        return path
+    if os.path.isfile(path):
+        return None
+    if not os.path.isdir(path):
+        return path
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+        for n in sorted(dirnames) + sorted(filenames):
+            full = os.path.join(dirpath, n)
+            if os.path.islink(full) or not (os.path.isdir(full) or os.path.isfile(full)):
+                return full
+    return None
+
+
 def _inbox_rows(s, agent):
     """Every inbox item of one agent, across all projects, newest first, with its provenance."""
     from . import profile
@@ -627,7 +647,8 @@ def _inbox_rows(s, agent):
                          "registered": project in reg, "reviewed": bool(doc.get("reviewed")),
                          "added": doc.get("added", ""), "egress": doc.get("egress", ""),
                          "preset": doc.get("preset", ""), "session": doc.get("session", ""),
-                         "content": profile.content_id(os.path.join(inbox, name))})
+                         "content": profile.content_id(os.path.join(inbox, name)),
+                         "link": _link_in(os.path.join(inbox, name))})
     return sorted(rows, key=lambda r: (r["added"], r["project"], r["name"]), reverse=True)
 
 
@@ -675,6 +696,9 @@ def cmd_profile_harvest(s, a):
                 flags.append("same name, DIFFERENT content elsewhere")
             if any(r["reviewed"] for r in same):
                 flags.append("reviewed")
+            if any(r["link"] for r in same):
+                flags.append("HOLDS A SYMLINK or special file (promote refuses it): "
+                             + next(r["link"] for r in same if r["link"]))
             print(f"    {name}  [{content}]  {where}")
             print(f"      added {same[0]['added'] or '?'}  preset {same[0]['preset'] or '?'}  "
                   f"egress {same[0]['egress'] or '?'}  session {same[0]['session'] or '?'}")
@@ -717,6 +741,8 @@ def cmd_profile_promote(s, a):
                                 f"{', '.join(profile.ITEMS)}). {src} is not plainly a skill directory.")
     if dest.startswith("/") or ".." in dest.split("/"):
         raise AgentboxError(f"--as {dest!r} must be a relative path inside the profile")
+    if row["link"]:                   # refused before anything is copied: the copy would follow it (item 4)
+        raise profile._link_refused(row["link"])
     dst = os.path.join(prof, dest)
     if os.path.lexists(dst):
         raise AgentboxError(f"{dst} already exists; remove it or choose another --as")
