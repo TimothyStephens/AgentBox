@@ -21,7 +21,7 @@ mkdir -p "$OUT"
 
 # Run inside the session. Each step prints `INSESSION <name> <ms>` so the analysis can time it.
 T='t() { local n=$1; shift; local s=$(date +%s%N); "$@" >/dev/null 2>&1; local rc=$?; echo "INSESSION $n $(( ($(date +%s%N)-s)/1000000 )) rc=$rc"; }'
-DEV="$T; for i in 1 2 3; do t podman-run podman run --rm $IMG true; done; t podman-build podman build -t localhost/abperf:1 -f Containerfile.perf .; t podman-images podman images"
+DEV="$T; for i in 1 2 3; do t podman-run podman run --rm $IMG true; done; t podman-build podman build -t localhost/abperf-TAG:1 -f Containerfile.perf .; t podman-images podman images"
 CHURN="$T; t churn sh -c 'find src -name \"*.txt\" | head -n 2000 | while read f; do echo x >> \"\$f\"; done'"
 
 # name | ab arguments | command run in the session's shell (empty: not a session)
@@ -42,6 +42,7 @@ SCENARIOS=(
 for round in $(seq 1 "$RUNS"); do
   for sc in "${SCENARIOS[@]}"; do
     IFS='|' read -r name args cmd <<< "$sc"
+    cmd=${cmd//TAG/$name}   # one build tag per project: the gate refuses a name another project built
     if [ -n "${ABPERF_ONLY:-}" ] && [[ " $ABPERF_ONLY " != *" $name "* ]]; then continue; fi
     if [ "$name" = selftest ] && [ "$round" -gt 1 ]; then continue; fi   # minutes long; once is enough
     base="$OUT/$name.$round"
@@ -56,13 +57,20 @@ for round in $(seq 1 "$RUNS"); do
     fi
     t0=$EPOCHREALTIME
     PYTHONPATH="$REPO" python3 -m cProfile -o "$base.prof" -m agentbox "${argv[@]}" > "$base.out" 2>&1
-    rc=$?
     t1=$EPOCHREALTIME
-    echo "$name $round rc=$rc wall=$(python3 -c "print(round($t1-$t0,3))")" | tee -a "$OUT/walls.txt"
+    # cProfile swallows the SystemExit `ab` raises, so its exit status says nothing: read the output instead.
+    # A refused or failed `ab` prints `ab: ...`; a failed step inside the session prints INSESSION ... rc!=0.
+    if grep -q '^ab: ' "$base.out"; then status=ab-error
+    elif grep '^INSESSION ' "$base.out" | grep -qv ' rc=0$'; then status=step-failed
+    else status=ok; fi
+    echo "$name $round status=$status wall=$(python3 -c "print(round($t1-$t0,3))")" | tee -a "$OUT/walls.txt"
+    [ "$status" = ok ] || { echo "   see $base.out"; grep -m3 '^ab: \|^INSESSION .* rc=[^0]' "$base.out" | sed 's/^/   /'; }
     tail -c +"$((logsize + 1))" "$ABLOG" > "$base.ablog" 2>/dev/null || true
     mkdir -p "$base.logs"
     find "$DATA/logs" -maxdepth 1 -type f -newer "$base.marker" ! -name ab.log -exec cp -t "$base.logs" {} + 2>/dev/null
     rm -f "$base.marker"
+    # clone mode keeps each session's clone for the owner; these are throwaway
+    if [[ "$args" == *abperf-big-clone* ]]; then PYTHONPATH="$REPO" python3 -m agentbox project clean abperf-big-clone --yes >/dev/null 2>&1; fi
   done
 done
 echo "== results in $OUT"

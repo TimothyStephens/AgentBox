@@ -70,11 +70,16 @@ def ablog(path):
 
 def main(d):
     walls = defaultdict(list)
-    rcs = defaultdict(set)
+    rcs = defaultdict(list)
+    bad = set()
     for line in open(os.path.join(d, "walls.txt")):
-        name, rnd, rc, wall = line.split()
+        name, rnd, status, wall = line.split()
+        status = status.split("=")[1]
+        rcs[name].append(status)
+        if status != "ok":       # a refused or failed run is reported, never averaged in
+            bad.add((name, rnd))
+            continue
         walls[name].append(float(wall.split("=")[1]))
-        rcs[name].add(rc.split("=")[1])
     data = {}
     print(f"# ab profile: {os.path.basename(os.path.normpath(d))}\n")
     try:
@@ -82,10 +87,12 @@ def main(d):
     except OSError:
         pass
     print("## Wall time per command (s)\n")
-    print("| scenario | runs | min | median | max | first run | exit codes |\n|---|---|---|---|---|---|---|")
-    for name, ws in walls.items():
-        print(f"| {name} | {len(ws)} | {min(ws):.1f} | {med(ws):.1f} | {max(ws):.1f} | {ws[0]:.1f} | "
-              f"{','.join(sorted(rcs[name]))} |")
+    print("| scenario | ok runs | min | median | max | first ok run | not ok |\n|---|---|---|---|---|---|---|")
+    for name in rcs:
+        ws = walls.get(name) or [0.0]
+        notok = [f"{i + 1}:{st}" for i, st in enumerate(rcs[name]) if st != "ok"]
+        print(f"| {name} | {len(walls.get(name, []))} | {min(ws):.1f} | {med(ws):.1f} | {max(ws):.1f} | {ws[0]:.1f} | "
+              f"{', '.join(notok) or '-'} |")
     for name in walls:
         cum = defaultdict(list)
         tot = defaultdict(list)
@@ -93,7 +100,8 @@ def main(d):
         waits, totals = [], []
         pod = defaultdict(lambda: [[], []])
         ins = defaultdict(list)
-        profs = sorted(glob.glob(os.path.join(d, f"{name}.*.prof")))
+        profs = [p for p in sorted(glob.glob(os.path.join(d, f"{name}.*.prof")))
+                 if (name, p.rsplit(".", 2)[1]) not in bad]
         for p in profs:
             st = pstats.Stats(p).stats
             total = max(ct for (_cc, _nc, _tt, ct, _c) in st.values())
