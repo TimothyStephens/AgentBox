@@ -69,6 +69,13 @@ def _git_config_escapes(git_dir, grants):
         elif not any(inside(target, g) for g in grants):
             yield (f"git config {key} points outside the grant, so it is not covered read-only: {target} "
                    f"(set in {cfg}); the host's git runs or reads what a session writes there"), f"gitcfg:{target}"
+        elif any(os.path.realpath(target) == os.path.realpath(g) for g in grants):
+            # Covering it read-only would make the whole grant read-only, so mounts.git_overlays leaves it
+            # writable: the owner's git would run hooks the session wrote at the grant's top level (review
+            # 16 Nov, R-2).
+            yield (f"git config {key} points at a grant's root, which cannot be covered read-only without "
+                   f"covering the whole grant: {target} (set in {cfg}); point it at a subdirectory such as "
+                   f".githooks"), f"gitcfg:{target}"
 
 
 def _compose_data_binds(path, grant):

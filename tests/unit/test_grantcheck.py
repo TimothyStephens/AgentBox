@@ -475,6 +475,17 @@ class GitConfigEscapes(TempCase):
         self.assertEqual(grantcheck.scan(self.root, [self.root, other])[0], [])
         self.assertEqual(grantcheck.scan(self.root, [self.root], warn_grants=[other])[0], [], "read-only there")
 
+    def test_a_hooks_path_at_a_grant_root_is_a_finding(self):
+        """Review 16 Nov, R-2: `core.hooksPath = .` names the root, which the covers leave writable (covering
+        it would cover the grant), so it was neither covered nor reported."""
+        self.cfg("core.hooksPath", ".")
+        findings, _ = grantcheck.scan(self.root, [self.root])
+        self.assertIn("points at a grant's root", "\n".join(texts(findings)))
+        other = self.mkdir("data")
+        self.cfg("core.hooksPath", other)
+        findings, _ = grantcheck.scan(self.root, [self.root, other])
+        self.assertIn("points at a grant's root", "\n".join(texts(findings)))
+
     def test_an_unparseable_config_is_a_finding(self):
         with open(os.path.join(self.root, ".git", "config"), "a") as f:
             f.write("[core\n")
