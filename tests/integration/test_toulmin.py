@@ -25,6 +25,8 @@ paths = {}
 def setUpModule():
     global ENV
     ENV = harness.Env()
+    # tearDownModule does not run when setUpModule raises; a module cleanup does
+    unittest.addModuleCleanup(harness.cleanup)
     root = ENV.make_project(PROJECT, preset="script", secrets_files=False)
     stub = os.path.join(harness.BASE, "tm-stub")
     sock_dir = os.path.join(harness.BASE, "toulmin-1000", "S4")

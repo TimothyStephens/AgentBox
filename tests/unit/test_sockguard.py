@@ -164,6 +164,8 @@ class ServiceStop(TempCase):
         # a stand-in whose command line looks like `<bin> system service ... unix://<run>/...`
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "system", "service",
                                  f"unix://{run}/podman/podman.sock"])
+        self.addCleanup(proc.wait)                 # a failing assertion must not leave the sleeper running
+        self.addCleanup(proc.kill)
         with open(os.path.join(run, "service.pid"), "w") as f:
             f.write(f"{proc.pid}\n")
         self.assertTrue(sockguard.stop_service(run))

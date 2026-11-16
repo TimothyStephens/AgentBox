@@ -147,6 +147,8 @@ def setUpModule():
     if not image_present():
         raise unittest.SkipTest(f"{IMAGE} missing: run make omp-image")
     ENV = harness.Env()
+    # tearDownModule does not run when setUpModule raises; a module cleanup does
+    unittest.addModuleCleanup(harness.cleanup)
     # The installed plugin tree, where `ab profile install omp` puts it: there is no
     # setting to point anywhere else, and nothing reads the host's ~/.omp (5 Nov).
     tree = ompfake.build(ENV.cfg)

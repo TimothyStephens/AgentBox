@@ -27,8 +27,22 @@ def slice_installed():
     return bool(props.get("FragmentPath")) and props.get("MemoryMax") not in ("", "infinity", None)
 
 
+_armed = False
+
+
+def arm_cleanup():
+    """Register cleanup() to run at interpreter exit, once. Called when a run starts creating things (Env(),
+    podman()), not at import: `make test` imports every integration module to prove it imports, and an
+    import-time registration made that unit run call podman at exit (review 16 Nov)."""
+    global _armed
+    if not _armed:
+        _armed = True
+        atexit.register(cleanup)
+
+
 class Env:
     def __init__(self):
+        arm_cleanup()
         self.cfg = os.path.join(BASE, "config")
         self.data = os.path.join(BASE, "data")
         self.run_dir = os.path.join(BASE, "run")
@@ -136,6 +150,7 @@ class Env:
 
 
 def podman(*args, timeout=120):
+    arm_cleanup()
     return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=timeout)
 
 
@@ -203,8 +218,6 @@ def _write(path, text):
     with open(path, "w") as f:
         f.write(text)
 
-
-atexit.register(cleanup)
 
 
 def read_file(path, *args, **kw):

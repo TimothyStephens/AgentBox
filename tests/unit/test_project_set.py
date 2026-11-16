@@ -254,8 +254,20 @@ class SetTest(SetBase):
     def test_a_stored_grant_is_rechecked_on_every_set(self):
         """A hand-written data_ro pointing at a protected path is caught by the next `set`, not just at
         session start."""
-        self.project("p1", preset="script", data_ro=[os.path.join(os.path.expanduser("~"), ".ssh")])
-        self.assertEqual(self.rc("project", "set", "p1", "--build-memory", "4g"), 2)
+        # A temp home, not the real one: the test needs a ~/.ssh to point at and must never name the user's.
+        from unittest import mock
+        from agentbox import cli, session
+        home = self.mkdir("home")
+        ssh = self.mkdir("home", ".ssh")
+        for mod in (cli, session):
+            patcher = mock.patch.object(mod, "HOME", home)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.project("p1", preset="script", data_ro=[ssh])
+        code, out = self.rc_out("project", "set", "p1", "--build-memory", "4g")
+        self.assertEqual(code, 2, out)
+        self.assertIn(ssh, out, "the refusal names the protected path")
+        self.assertNotIn(os.path.join(os.path.expanduser("~"), ".ssh"), out.replace(ssh, ""))
 
     # --- re-validation and the live-session guard ---
 
