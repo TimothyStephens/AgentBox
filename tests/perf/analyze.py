@@ -16,6 +16,7 @@ from collections import defaultdict
 END = re.compile(r" = (\d+)ms rc=(\S+) (\[.*\])$")
 START = re.compile(r"^\S+ (\[.*\])$")
 INS = re.compile(r"^INSESSION (\S+) (\d+) rc=(\d+)")
+INS_ERR = re.compile(r"^INSESSION-ERR (\S+) (.*)$")
 # Builtins a process blocks in while a child runs or a pipe fills; their tottime is waiting, not Python work.
 WAITS = {"waitpid", "poll", "select", "read", "_wait", "sleep", "acquire", "communicate", "wait"}
 
@@ -100,6 +101,8 @@ def main(d):
         waits, totals = [], []
         pod = defaultdict(lambda: [[], []])
         ins = defaultdict(list)
+        insfail = defaultdict(int)
+        inserr = {}
         profs = [p for p in sorted(glob.glob(os.path.join(d, f"{name}.*.prof")))
                  if (name, p.rsplit(".", 2)[1]) not in bad]
         for p in profs:
@@ -124,6 +127,10 @@ def main(d):
                     m = INS.match(line.strip())
                     if m:
                         ins[m.group(1)].append(int(m.group(2)) / 1000)
+                        insfail[m.group(1)] += m.group(3) != "0"
+                    e = INS_ERR.match(line.strip())
+                    if e:
+                        inserr[e.group(1)] = e.group(2)[-300:]
             except OSError:
                 pass
         if not profs:
@@ -155,9 +162,13 @@ def main(d):
                 print(f"| `{k}` | {med(v):.2f} |")
         if ins:
             print("\nInside the session (median s, all runs):\n")
-            print("| step | median | min | max | n |\n|---|---|---|---|---|")
+            print("| step | median | min | max | n | failed |\n|---|---|---|---|---|---|")
             for k, v in ins.items():
-                print(f"| {k} | {med(v):.2f} | {min(v):.2f} | {max(v):.2f} | {len(v)} |")
+                print(f"| {k} | {med(v):.2f} | {min(v):.2f} | {max(v):.2f} | {len(v)} | {insfail[k]} |")
+            if inserr:
+                print("\nWhat the failed steps said (last run):\n")
+                for k, v in inserr.items():
+                    print(f"- `{k}`: {v}")
         data[name] = {"walls": walls[name], "total": med(totals), "wait": med(waits),
                       "cum": {k: med(v) for k, v in top}, "own": {k: med(v) for k, v in own},
                       "podman": {k: [med(s), med(n)] for k, (s, n) in pod.items()},

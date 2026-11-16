@@ -3,7 +3,10 @@
 #
 #   ABPERF_RUNS   rounds; each round runs every scenario once, interleaved (default 3)
 #   ABPERF_OUT    results directory (default ~/repos/agentbox-dev/perf-results/<timestamp>)
-#   ABPERF_ONLY   space-separated scenario names to run (default: all)
+#   ABPERF_ONLY   space-separated scenario names to run (default: all but build-limit)
+#
+# build-limit (run it by name: ABPERF_ONLY=build-limit) builds contexts of 16 MiB to 384 MiB of random data in
+# abperf-small-dev, to find the size the dev tier refuses; its failing steps are the measurement, not errors.
 #
 # Every `ab` call runs under cProfile, so where Python waits on podman, git or rsync shows up under the
 # calling function, and ab.log gives each podman call's own duration. A session runs a bash shell with
@@ -20,8 +23,9 @@ IMG=docker.io/library/busybox:1.36
 mkdir -p "$OUT"
 
 # Run inside the session. Each step prints `INSESSION <name> <ms>` so the analysis can time it.
-T='t() { local n=$1; shift; local s=$(date +%s%N); "$@" >/dev/null 2>&1; local rc=$?; echo "INSESSION $n $(( ($(date +%s%N)-s)/1000000 )) rc=$rc"; }'
+T='t() { local n=$1; shift; local s=$(date +%s%N); "$@" >/tmp/t.out 2>&1; local rc=$?; echo "INSESSION $n $(( ($(date +%s%N)-s)/1000000 )) rc=$rc"; [ $rc = 0 ] || echo "INSESSION-ERR $n $(tail -c 400 /tmp/t.out | tr "\n" " ")"; }'
 DEV="$T; for i in 1 2 3; do t podman-run podman run --rm $IMG true; done; t podman-build podman build -t localhost/abperf-TAG:1 -f Containerfile.perf .; t podman-images podman images"
+LIMIT="$T; for mb in 16 32 48 64 96 128 192 256 384; do mkdir -p ctx-\$mb; head -c \${mb}M /dev/urandom > ctx-\$mb/blob; printf \"FROM $IMG\\nRUN true\\n\" > ctx-\$mb/Containerfile; t limit-\${mb}MiB podman build -t localhost/abperf-limit:1 ctx-\$mb; rm -rf ctx-\$mb; done"
 CHURN="$T; t churn sh -c 'find src -name \"*.txt\" | head -n 2000 | while read f; do echo x >> \"\$f\"; done'"
 
 # name | ab arguments | command run in the session's shell (empty: not a session)
@@ -34,6 +38,7 @@ SCENARIOS=(
   "project-check-big|project check abperf-big|"
   "session-ls|session ls|"
   "selftest|project selftest claude abperf-small-dev|"
+  "build-limit|session start claude abperf-small-dev --shell --no-tty|$LIMIT"
 )
 
 { echo "host $(hostname)  $(date -Is)"; echo "commit $(git -C "$REPO" rev-parse --short HEAD)"; podman --version
@@ -44,6 +49,8 @@ for round in $(seq 1 "$RUNS"); do
     IFS='|' read -r name args cmd <<< "$sc"
     cmd=${cmd//TAG/$name}   # one build tag per project: the gate refuses a name another project built
     if [ -n "${ABPERF_ONLY:-}" ] && [[ " $ABPERF_ONLY " != *" $name "* ]]; then continue; fi
+    if [ -z "${ABPERF_ONLY:-}" ] && [ "$name" = build-limit ]; then continue; fi
+    if [ "$name" = build-limit ] && [ "$round" -gt 1 ]; then continue; fi
     if [ "$name" = selftest ] && [ "$round" -gt 1 ]; then continue; fi   # minutes long; once is enough
     base="$OUT/$name.$round"
     echo "== round $round: $name"
@@ -61,7 +68,7 @@ for round in $(seq 1 "$RUNS"); do
     # cProfile swallows the SystemExit `ab` raises, so its exit status says nothing: read the output instead.
     # A refused or failed `ab` prints `ab: ...`; a failed step inside the session prints INSESSION ... rc!=0.
     if grep -q '^ab: ' "$base.out"; then status=ab-error
-    elif grep '^INSESSION ' "$base.out" | grep -qv ' rc=0$'; then status=step-failed
+    elif grep '^INSESSION ' "$base.out" | grep -v '^INSESSION limit-' | grep -qv ' rc=0$'; then status=step-failed
     else status=ok; fi
     echo "$name $round status=$status wall=$(python3 -c "print(round($t1-$t0,3))")" | tee -a "$OUT/walls.txt"
     [ "$status" = ok ] || { echo "   see $base.out"; grep -m3 '^ab: \|^INSESSION .* rc=[^0]' "$base.out" | sed 's/^/   /'; }
