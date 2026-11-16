@@ -106,3 +106,13 @@ class ClaudeSandboxBlock(SettingsCase):
     def test_no_profile_instructions_is_just_the_notes(self):
         self.assertEqual(self.md().count("SANDBOX-NOTES-SENTINEL"), 1)
         self.assertNotIn("USER-RULE", self.md())
+
+
+class FreeName(SettingsCase):
+    def test_the_first_name_nothing_holds_counting_a_dangling_link(self):
+        from agentbox import session
+        d = self.mkdir("inbox")
+        self.assertEqual(session._free_name(d, "x"), os.path.join(d, "x"))
+        open(os.path.join(d, "x"), "w").close()
+        os.symlink(os.path.join(d, "nowhere"), os.path.join(d, "x.2"))
+        self.assertEqual(session._free_name(d, "x"), os.path.join(d, "x.3"))

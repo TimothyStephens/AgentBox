@@ -483,6 +483,10 @@ class Session:
         self.plan_host = None            # the mount plan in host paths (the clone's); self.plan is the agent's view
         self.session_mounts = []         # (host src, container dst, ro): the integration's, audited like the adapter's
         self._serve_proc = None
+        self._service_proc = None        # the podman service and the gate, once _start_podman_access ran
+        self._gate_proc = None
+        self.int_subnets = []            # the internal network's subnets, once dev_proxy_env asked podman
+        self._meta_written = False       # session.json written once: `started` is fixed then
         set_log(os.path.join(settings.data_dir, "logs", "ab.log"))
 
     # ---- naming -----------------------------------------------------------------
@@ -964,7 +968,7 @@ class Session:
     def _write_meta(self):
         """session.json: what every teardown path (the launcher's, `kill`, `gc`) needs. Written again whenever
         the Toulmin record or the clone changes, so a teardown without this process still has them."""
-        if not getattr(self, "_meta_written", False):
+        if not self._meta_written:
             self.started = time.time()
             self._meta_written = True
         meta = {"session": self.name, "agent": self.adapter.name, "project": self.project.name,
@@ -1413,7 +1417,7 @@ class Session:
         if not ip:
             return None, dns
         url = f"http://{ip}:{egress.PROXY_PORT}"
-        no_proxy = ",".join(["localhost", "127.0.0.1"] + list(getattr(self, "int_subnets", [])))
+        no_proxy = ",".join(["localhost", "127.0.0.1"] + list(self.int_subnets))
         return {"http_proxy": url, "https_proxy": url, "HTTP_PROXY": url, "HTTPS_PROXY": url,
                 "no_proxy": no_proxy, "NO_PROXY": no_proxy}, dns
 
@@ -1497,7 +1501,7 @@ class Session:
         teardown(self.settings, self.podman, self.name, warn=self.warn, exit_reason=exit_reason)
         # the module teardown -> sockguard.stop_service reaps our service and gate Popen handles as well as
         # killing by PID; this poll is a harmless belt-and-braces.
-        for proc in (getattr(self, "_service_proc", None), getattr(self, "_gate_proc", None), self._serve_proc):
+        for proc in (self._service_proc, self._gate_proc, self._serve_proc):
             if proc:
                 proc.poll()
 
@@ -1509,7 +1513,7 @@ def make_session(settings, agent, project, **kw):
 
 
 SCAN_STATE = "scan-state.json"
-SIDECAR_LOGS = (("proxy", "proxy"), ("sockguard", "sockguard"), ("sockguard-dev", "sockguard-dev"))
+SIDECAR_LOGS = ("proxy", "sockguard", "sockguard-dev")      # container `<session>-<name>`, kept as <name>
 
 
 def log_path(settings, session, started, kind):
@@ -1549,9 +1553,9 @@ def _keep_logs(settings, podman, session, started, warn):
     if os.path.isfile(gate_log):
         with open(gate_log, "rb") as src:
             _keep(log_path(settings, session, started, "gate"), src.read())
-    for suffix, kind in SIDECAR_LOGS:
+    for kind in SIDECAR_LOGS:
         try:
-            logs = podman.run(["logs", f"{session}-{suffix}"], check=False)
+            logs = podman.run(["logs", f"{session}-{kind}"], check=False)
             if logs.returncode == 0 and logs.stdout:
                 # stdout is squid's access log and sockguard's audit; stderr is squid's cache.log, which says why
                 # an upstream connection failed (the egress flake, 2 Oct)
@@ -1683,6 +1687,14 @@ def live_session_of(settings, podman, project):
     return None
 
 
+def _free_name(directory, base):
+    """`directory/base`, or `base.2`, `base.3`, ... : the first that nothing (not even a dangling link) holds."""
+    dst, n = os.path.join(directory, base), 2
+    while os.path.lexists(dst):
+        dst, n = os.path.join(directory, f"{base}.{n}"), n + 1
+    return dst
+
+
 def migrate_state_to_inbox(settings, project, adapter, warn):
     """Move what earlier sessions accumulated in the per-project state into the project's inbox, once.
 
@@ -1721,10 +1733,7 @@ def migrate_state_to_inbox(settings, project, adapter, warn):
             removed.append(name)
             continue
         os.makedirs(inbox, mode=0o700, exist_ok=True)
-        dst = os.path.join(inbox, f"from-state-{name}")
-        n = 2
-        while os.path.lexists(dst):
-            dst, n = os.path.join(inbox, f"from-state-{name}.{n}"), n + 1
+        dst = _free_name(inbox, f"from-state-{name}")
         try:
             shutil.move(src, dst)
         except OSError as e:
@@ -1770,10 +1779,7 @@ def _harvest_per_session_dirs(box, inbox, warn):
             continue
         for name in sorted(os.listdir(src)):
             os.makedirs(inbox, mode=0o700, exist_ok=True)
-            dst = os.path.join(inbox, f"learned-{name}")
-            n = 2
-            while os.path.lexists(dst):
-                dst, n = os.path.join(inbox, f"learned-{name}.{n}"), n + 1
+            dst = _free_name(inbox, f"learned-{name}")
             try:
                 shutil.move(os.path.join(src, name), dst)
             except OSError as e:
