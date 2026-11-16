@@ -231,19 +231,28 @@ def history_secrets_message(project, names, accepted=()):
             f"(`ab project accept-history-secrets {project}` for a registered project)")
 
 
+def git_user(settings):
+    """(name, email) of the user: the `git_name`/`git_email` settings, else the host's global git config.
+    Each is "" when unknown or when it holds a newline. The one lookup, for sessions and `ab project init`."""
+    out = []
+    for key, setting in (("name", "git_name"), ("email", "git_email")):
+        val = getattr(settings, setting, "") or ""
+        if not val:
+            try:
+                val = subprocess.run(["git", "config", "--global", f"user.{key}"], capture_output=True,
+                                     text=True, timeout=10).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                val = ""
+        out.append(val if "\n" not in val else "")
+    return tuple(out)
+
+
 def git_identity(settings, agent):
     """Author and committer for commits made in the sandbox, as environment variables only; no git config
     file enters the sandbox. The committer is "<name> via agentbox-<agent>" so agent commits stand out."""
     out = {}
-    for key, setting in (("NAME", "git_name"), ("EMAIL", "git_email")):
-        val = getattr(settings, setting)
-        if not val:
-            try:
-                val = subprocess.run(["git", "config", "--global", f"user.{key.lower()}"], capture_output=True,
-                                     text=True, timeout=10).stdout.strip()
-            except (OSError, subprocess.TimeoutExpired):
-                val = ""
-        if val and "\n" not in val:
+    for key, val in zip(("NAME", "EMAIL"), git_user(settings)):
+        if val:
             out[f"GIT_AUTHOR_{key}"] = out[f"GIT_COMMITTER_{key}"] = val
     if "GIT_COMMITTER_NAME" in out:
         out["GIT_COMMITTER_NAME"] = f"{out['GIT_COMMITTER_NAME']} via agentbox-{agent}"

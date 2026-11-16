@@ -24,6 +24,7 @@ import subprocess
 
 from . import registry
 from .errors import AgentboxError
+from .session import git_user
 
 TEMPLATES = ("pod", "python")
 PRESET = {"pod": "build", "python": "script"}
@@ -273,20 +274,9 @@ def _git(dest, *args, **kw):
 
 
 def _git_identity(settings):
-    name = getattr(settings, "git_name", "") or ""
-    email = getattr(settings, "git_email", "") or ""
-    for key, have in (("user.name", name), ("user.email", email)):
-        if have:
-            continue
-        try:
-            got = subprocess.run(["git", "config", "--get", key], stdout=subprocess.PIPE, text=True).stdout.strip()
-        except OSError:
-            got = ""
-        if key == "user.name":
-            name = got or "agentbox"
-        else:
-            email = got or "agentbox@localhost"
-    return name, email
+    """The scaffold commit's author: the same lookup sessions use, with a fallback so the commit is made."""
+    name, email = git_user(settings)
+    return name or "agentbox", email or "agentbox@localhost"
 
 
 def _template_overrides(settings, template, name):

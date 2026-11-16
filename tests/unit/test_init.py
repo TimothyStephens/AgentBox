@@ -6,6 +6,7 @@ import os
 import subprocess
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 from agentbox import cli, config, grantcheck, registry
 
@@ -107,6 +108,20 @@ class FreshProjectTest(InitCase):
         self.assertTrue(os.path.isfile(os.path.join(root, "compose.dev.yaml")))
         self.assertFalse(os.path.isdir(os.path.join(root, "data")), "no ./data: --data-bind is deferred")
 
+
+class GitIdentityTest(unittest.TestCase):
+    """`ab project init` and sessions read the author through one lookup (session.git_user); init only adds
+    a fallback so the scaffold commit can be made."""
+
+    def test_settings_win_and_a_newline_value_falls_back(self):
+        from types import SimpleNamespace
+
+        from agentbox import initproj
+        s = SimpleNamespace(git_name="Tim Test", git_email="tim@example.com")
+        self.assertEqual(initproj._git_identity(s), ("Tim Test", "tim@example.com"))
+        with mock.patch("subprocess.run", side_effect=OSError("no git")):
+            bad = SimpleNamespace(git_name="Tim\nX", git_email="")
+            self.assertEqual(initproj._git_identity(bad), ("agentbox", "agentbox@localhost"))
 
 class OverrideTest(InitCase):
     """ab project init shares the project-setting flags with ab project add/set (requirement 1); it is no longer
