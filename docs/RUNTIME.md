@@ -37,7 +37,7 @@ node checksum of ours to keep current.
 | `omp` (OMP CLI) | npm global prefix, on PATH | `npm install -g @oh-my-pi/pi-coding-agent` in `images/omp/Containerfile` | `OMP_VERSION` in the `Makefile` — **18.13.3** |
 | `bun` (OMP's extension runtime) | `/root/.bun/bin/bun`, first on PATH | `ADD --checksum` from the GitHub release, unzipped | `BUN_VERSION` + `BUN_SHA256` in the `Makefile` — **1.4.4** (OMP 18.13.3 declares `engines.bun >= 1.4.4`) |
 | `node`, `npm` | base image PATH | `node:26-bookworm-slim` | the OS base's digest (`OS_BASE_DIGEST`) |
-| `podman` (podman-remote, static) | `/usr/local/bin/podman`, first on PATH | `ADD --checksum` from GitHub in `images/base/Containerfile` | `PODMAN_REMOTE_VERSION` + `PODMAN_REMOTE_SHA256` — **5.7.0** (matches the host podman service major) |
+| `podman` (podman-remote, static) | `/usr/local/bin/podman`, ahead of `/usr/bin` on PATH (so it shadows a Debian podman; Bun's directory is prepended in front of both in the OMP image) | `ADD --checksum` from GitHub in `images/base/Containerfile` | `PODMAN_REMOTE_VERSION` + `PODMAN_REMOTE_SHA256` — **5.7.0** (matches the host podman service major) |
 | the compose tool | base image site-packages | `pip --require-hashes` in the base | `images/base/requirements.txt` — **1.5.0** (with `python-dotenv` 1.2.3, `pyyaml` 6.0.3) |
 | `debugpy` (OMP only) | image site-packages | `pip --require-hashes` | `images/omp/requirements.txt` — **1.8.22** |
 | `git`, `curl`, `jq`, `rsync`, `rg`, `fd`, `gcc`/`g++`/`make`, `python3`+venv | base PATH | `apt-get install` in the base | distro version (apt verifies its own packages) |

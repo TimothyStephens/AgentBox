@@ -73,17 +73,17 @@ Design and internals:
 - **[docs/progress.md](docs/progress.md)** — current build state, with the built / deferred / not-built Status
   table.
 - **[docs/TODO.md](docs/TODO.md)** — the remaining optional TODOs and the deferred maintainability backlog (nothing here blocks use).
-- **[docs/agentbox-masked-paths.md](docs/agentbox-masked-paths.md)** — a proposal (NOT implemented): a
-  per-project masked-paths setting.
+- **[docs/agentbox-masked-paths.md](docs/agentbox-masked-paths.md)** — the spec the `mask` project setting
+  was built from (implemented 10 Nov 2026 as `ab project add/set --mask PATH`), with its measurements.
 - **[docs/reviews/](docs/reviews/)** — historical independent review records.
 
-Contributor entry points: `CLAUDE.md` (the rules for an agent working *on* agentbox) and `KICKOFF.md` (the
-original build kickoff).
+Contributor entry point: `CLAUDE.md` (the rules for an agent working *on* agentbox, on the host or inside a
+session).
 
 ## Tests
 
 - `make test` — fast unit checks, no podman.
 - `make itest` — real podman, `abt-` names, cleans up after itself; warns when `make claude-live` needs
   rerunning.
-- `make claude-live`, `make omp-live` — run by you, with your real token, keys and `~/.omp`.
+- `make claude-live`, `make omp-live` — run by you, with your real token, keys and installed plugin tree.
 - `make verify-sockguard` — checks the pinned sockguard image's signature (needs cosign).

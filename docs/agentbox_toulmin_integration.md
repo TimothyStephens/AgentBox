@@ -4,7 +4,7 @@ Date: 2026-11-10. Source of truth for the Toulmin side: `toulmin_v1_design.md` s
 
 Toulmin is a single-user CLI (`tm`) that records analysis runs and lets an AI agent, running inside an agentbox container, draft claims about registered data through an MCP tool server (`tm-agent`) that runs outside the container as the owner. agentbox's job is to launch the agent with the right mounts, hand it the bridge to that tool server, and report back what it did. Toulmin trusts agentbox's report and does not verify it.
 
-The Toulmin side (`tm session start|confirm|serve|end`) does not exist yet; this spec fixes the interface so both sides can be built against it. Where this spec says "agentbox", it means the launcher's `ab run` path and its teardown.
+The Toulmin side (`tm session start|confirm|serve|end`) does not exist yet; this spec fixes the interface so both sides can be built against it. Where this spec says "agentbox", it means the launcher's `ab session start` path and its teardown.
 
 ## 1. What to build
 
@@ -14,7 +14,7 @@ The Toulmin side (`tm session start|confirm|serve|end`) does not exist yet; this
 - At session start: `git clone --no-hardlinks <owner repo root> projects/<name>/clones/<session>/`, then `git checkout -b agentbox/<session>` in the clone. The clone is the container's project root at the owner's real repository path (so paths the agent sees match the owner's). The owner's checkout, its `.git`, and anything untracked or ignored in it are not mounted.
 - The rsync backup is skipped in clone mode.
 - At teardown: record the clone path, the base commit (the commit the clone was made from), and the head of `agentbox/<session>`; keep the clone until `ab project clean` or the owner removes it. Never push, merge, or delete branches in the owner's repository.
-- Registry root, overlap checks, the one-live-session lock, and `ab attach` keep keying on the owner's path.
+- Registry root, overlap checks, the one-live-session lock, and `ab session attach` keep keying on the owner's path.
 
 Why not a worktree: a worktree's `.git` is a file pointing into the owner's repository, which is not mounted, so git cannot run inside the container.
 
