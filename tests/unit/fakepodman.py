@@ -10,6 +10,7 @@
                           their `Labels` (podman's capitalisation). Invalid JSON is passed through verbatim
   FAKE_PODMAN_NETLS     stdout for `network ls --format {{.Name}}`; labelled lines as for FAKE_PODMAN_PS
   FAKE_PODMAN_NETJSON   stdout for `network ls --format json`; filtered by the lowercase `labels` key
+  FAKE_PODMAN_VOLJSON   stdout for `volume ls --format json`; filtered by `Labels`
   FAKE_PODMAN_IMAGES    stdout for `images --format json`
   FAKE_PODMAN_FAIL      substring: any call whose argv contains it exits 1
   FAKE_PODMAN_FAIL_STATUS  the status FAKE_PODMAN_FAIL exits with (default 1). 125 is podman's own "the
@@ -230,6 +231,8 @@ elif argv[:1] == ["images"]:
         listed = [img for img in listed
                   if all((img.get("Labels") or {}).get(k) == v for k, v in want.items())]
     sys.stdout.write(json.dumps(listed))
+elif argv[:2] == ["volume", "ls"] and fmt == "json":
+    sys.stdout.write(filtered_json(os.environ.get("FAKE_PODMAN_VOLJSON", "[]"), label_filters(), "Labels"))
 elif argv[:2] == ["network", "ls"]:
     if fmt == "json":
         sys.stdout.write(filtered_json(os.environ.get("FAKE_PODMAN_NETJSON", "[]"), label_filters(), "labels"))

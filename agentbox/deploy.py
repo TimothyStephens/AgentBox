@@ -196,8 +196,10 @@ def stage(root, commit, dst, extra_files=(".env",)):
 def _extract(tar, dst):
     """Unpack git's archive by hand (tarfile's `filter="data"` arrived in 3.11.4; agentbox runs on 3.11):
     regular files, directories and symlinks only, no absolute name, no `..`, nothing written through a
-    symlink, and modes reduced to the owner's bits plus read for no one else. A symlink is kept as a link;
-    what it points at is the gate's concern when something binds or builds from it."""
+    symlink. Modes are git's own (0644, or 0755 for an executable; directories 0755) and never setuid: a
+    container whose app runs as a non-root user (`USER node` after `COPY .`) must be able to read what it
+    was built from. The copy's top directory is 0700, so no other host user gets in. A symlink is kept as a
+    link; what it points at is the gate's concern when something binds or builds from it."""
     base = os.path.realpath(dst)
     for m in tar.getmembers():
         name = m.name
@@ -208,7 +210,8 @@ def _extract(tar, dst):
         if not inside(parent, base):
             raise AgentboxError(f"the archive writes {name!r} through a symlink")
         if m.isdir():
-            os.makedirs(target, mode=0o700, exist_ok=True)
+            os.makedirs(target, exist_ok=True)
+            os.chmod(target, 0o755)
         elif m.issym():
             os.symlink(m.linkname, target)
         elif m.isfile():
@@ -216,7 +219,7 @@ def _extract(tar, dst):
                 fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "wb") as out:
                     shutil.copyfileobj(src, out)
-            os.chmod(target, 0o700 if m.mode & 0o100 else 0o600)
+            os.chmod(target, 0o755 if m.mode & 0o100 else 0o644)
         elif m.type == tarfile.XGLTYPE or m.type == tarfile.XHDTYPE:
             continue
         else:

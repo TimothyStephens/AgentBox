@@ -143,3 +143,52 @@ Open for step 3: a stack deployed by hand before has unlabelled containers and v
 reuse or remove them (volumes `<compose_project>_*` without the labels are refused), so the first `ab deploy`
 of such a project needs a migration step. `external:` volumes and networks, binds of `/etc/localtime` and
 similar, and the OOM score of a live service are refused or kept strict until decided.
+
+## Step 3 (built)
+
+`ab deploy <project> [--lan ADDR:PORT] [--commit REF] [--yes]` runs (`agentbox/deployrun.py`, `cli_deploy.py`;
+tests in `tests/unit/test_deploy_run.py`, against the fake podman). Not yet run against real podman.
+
+- **Settings** (`projectkeys.py`; `ab project add/set/init` flags, `ab project show`): `lan_addr`
+  (`--lan-addr`), `deploy_ports` (`--deploy-port`), `deploy_binds` (`--deploy-bind`), `deploy_files`
+  (`--deploy-file`), `deploy_external` (`--deploy-external`). All `kind=project`, security-relevant, not cleared
+  by a preset change, unsettable. `ab deploy --lan ADDR:PORT` stores the address and adds the port only after a
+  successful deploy. `deploy_binds` go through `paths.check_deploy_binds`: `check_grant` (kind `deploy_bind`),
+  and no overlap with the project's own root or any grant of another project; checked again at every deploy.
+- **Before anything starts:** host only; one deploy per project (flock on `<project dir>/deploy.lock`); the
+  step 1 checks; a LAN address (given, or stored and still an address of this host); the deploy binds; no
+  container of the compose project without the deploy labels (refused with the `podman-compose -p <name> down`
+  to run); no volume `<compose_project>_*` without the deploy labels. Then the review and the prompt
+  `Deploy <commit> of <project> to <lan>? [y/N]`; `--yes` only with stdin not a terminal and the commit the last
+  deploy's.
+- **External volumes and networks** are enforced in the gate, not by reading the compose file: cfg `external_ok`
+  (from `deploy_external`) lets a container use an existing external volume or join an existing external
+  network; reads of them go to the raw service; nothing else may touch them. An unlisted one is refused at the
+  create, with a message naming `deploy_external`.
+- **The run** reuses a session's parts: `sockguard.start_service` (no slice, D5) on `<run>/services/<prefix>deploy-<project>`,
+  a sockguard with `sockguard.deploy_config` (the dev rules, owner isolation on `agentbox.deploy=<project>`, bind
+  roots the copy, `deploy_binds` and the timezone files), a build holder on a per-deploy bridge network with
+  normal egress, the gate with `mode="deploy"`, then the runner (`localhost/agentbox-base:latest`,
+  `hardening.fixed_flags` with no cgroup parent, audited, `--network=none`, the copy read-only at its own path,
+  the gate socket at `/run/agentbox/podman.sock`) running `podman-compose -p <cp> -f <copy>/compose.yaml up -d
+  --build --remove-orphans`. The infrastructure carries session labels under the name `<prefix>deploy-<project>`
+  and a `session.json` naming this process, so `ab session gc` leaves a running deploy alone and reaps a crashed
+  one; teardown is `lifecycle.teardown` on every path (signals ignored while it runs). The stack carries only
+  `agentbox.deploy=<project>`, `agentbox.role=deploy`, `agentbox.deploy-run=<stamp>` and the configured labels.
+- **After:** a record in `deploys.jsonl` (`commit, compose_project, lan, ports, result, error, stage, images`)
+  on success and failure; the deployed containers listed; warnings if lingering is off or
+  `podman-restart.service` is not enabled (read-only checks). Copies are kept: the newest two and the last
+  successful deploy's.
+
+Deviations and choices made strict, pending a decision:
+- **Separate build record.** A deploy's gate records and trusts only `deploy-built-images.json`, never the
+  sessions' `built-images.json`: otherwise a compose file naming a `localhost/` image could run one the agent
+  built in a session, not from the reviewed commit. `images` (the dev allowlist) is empty in deploy mode.
+- **Unlabelled `<compose_project>_*` volumes** (a hand-deployed stack's, kept by `down`) are refused before the
+  run. The step 2 decision kept them, but the gate cannot use them, so the first deploy of such a stack cannot
+  proceed until they are moved or adoption is built.
+- **deploy_binds** may not overlap the project's own root (agent-written); its own data_ro/data_rw may be bound.
+  `check_grant` also refuses system directories (`/var`, `/etc`, ...) as deploy binds.
+- **Observe tier:** a deployed stack's containers have their working dir in the copy under the data dir; the
+  live-stack ownership check now accepts that dir only for containers with the deploy labels.
+- `--yes` on a first deploy is refused (there is no "last deploy" to equal).

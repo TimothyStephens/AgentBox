@@ -71,7 +71,10 @@ objects for `--remove-orphans` and recreation; a dev gate always forces role=dev
 containers join only the stack's own networks; ports only on cfg["lan_addr"] and cfg["ports"]; binds only
 inside cfg["stage"] or cfg["deploy_binds"] (never /proc, /sys, /dev, /run, a socket, or a directory holding
 the gate's sockets); named volumes only `<compose_project>_*`; restart forced to unless-stopped; no cgroup
-parent, no proxy variables. Privilege, image and build checks are the dev tier's.
+parent, no proxy variables. Privilege, image and build checks are the dev tier's. `external:` volumes and networks
+are usable only when named in cfg["external_ok"] (the project's deploy_external) and existing: never created,
+labelled or removed, and read (inspect, exists) on the raw service, since the deploy sockguard's owner isolation
+does not see them.
 """
 import http.client
 import json
@@ -240,6 +243,9 @@ class Gate(MountsMixin, ImagesMixin):
         if self.deploy:
             self._check_deploy_cfg()
             self.refused = set()         # deploy mode: IDs the gate removed (labels alone decide ownership)
+        # deploy mode: `external:` volumes and networks the project lists in deploy_external. Used as they are
+        # (they must exist), never created, labelled or removed; read through the raw service.
+        self.external_ok = frozenset(cfg.get("external_ok") or ()) if self.deploy else frozenset()
         self.exec_ids = {}               # exec session id -> container id
         self.slots = threading.BoundedSemaphore(int(cfg.get("max_connections", MAX_CONNECTIONS)))
         self.verified = set()            # IDs (volume names) whose post-create check passed
@@ -581,13 +587,16 @@ class Gate(MountsMixin, ImagesMixin):
         if not isinstance(name, str) or not name:
             return False
         doc = self.inspect("networks", name)
+        if doc is not None and name in self.external_ok:
+            return True                  # an external network the project lists (deploy_external)
         return doc is not None and self.is_dev(self.labels_in("networks", doc)) and self.passed(
             doc.get("id") or doc.get("Id") or name)
 
     def require_own_network(self, name):
         if not self.network_owned(name):
             raise Deny(f"network {name!r} is not one of this stack's networks (only networks the stack created, "
-                       "labelled for this deploy, can be joined)")
+                       "labelled for this deploy, can be joined; an `external:` network must exist and be listed "
+                       "in the project's deploy_external)")
 
     def deploy_network_violations(self, doc):
         hc = doc.get("HostConfig") or {}
@@ -678,7 +687,8 @@ class Gate(MountsMixin, ImagesMixin):
     def deploy_volume_name(self, name, where):
         prefix = f"{self.cfg['compose_project']}_"
         if not isinstance(name, str) or not name.startswith(prefix):
-            raise Deny(f"{where}: volume {name!r} is not this stack's (its named volumes start with {prefix!r})")
+            raise Deny(f"{where}: volume {name!r} is not this stack's (its named volumes start with {prefix!r}; an "
+                       "`external:` volume must exist and be listed in the project's deploy_external)")
 
     @property
     def memory_max(self):
@@ -888,6 +898,10 @@ class Gate(MountsMixin, ImagesMixin):
             return
         if "/" in name or name.startswith(".") or "~" in name or not re.match(r"^[A-Za-z0-9][\w.-]*$", name):
             raise Deny(f"{where}: {name!r} is neither an absolute bind source nor a volume name")
+        if self.deploy and name in self.external_ok:
+            if self.inspect("volumes", name) is None:
+                raise Deny(f"{where}: external volume {name!r} does not exist (agentbox never creates one)")
+            return
         if self.deploy:
             self.deploy_volume_name(name, where)
         doc = self.inspect("volumes", name)
@@ -1414,6 +1428,10 @@ class Gate(MountsMixin, ImagesMixin):
             kind, ref = m.group(1), m.group(2)
             if kind == "networks" and method == "GET" and ref == self.network:
                 return target, body, "pass"           # compose inspects the network it was told to use
+            if kind in ("volumes", "networks") and ref in self.external_ok and method in ("GET", "HEAD"):
+                # deploy: podman-compose inspects an external volume or network before using it. Read on the raw
+                # service (the deploy sockguard's owner isolation would hide it); nothing else may touch it.
+                return target, body, "ext_read"
             oid = self.require_dev(kind, ref)
             if kind == "containers" and (method == "DELETE" or LIFECYCLE.match(path)):
                 self.hold(oid)                       # waits for a start in progress (N1)
@@ -1514,7 +1532,7 @@ def make_handler(gate):
                 upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 upstream.settimeout(UPSTREAM_TIMEOUT)
                 # pod_start and pod_raw: a pod the session owns, already checked; sockguard cannot resolve pods
-                dest = gate.cfg["raw"] if kind in ("pod_start", "pod_raw") else gate.cfg["upstream"]
+                dest = gate.cfg["raw"] if kind in ("pod_start", "pod_raw", "ext_read") else gate.cfg["upstream"]
                 if not is_build:
                     upstream.connect(dest)
                 if kind in CREATES:

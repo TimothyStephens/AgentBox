@@ -155,6 +155,8 @@ class MountsMixin:
             elif t == "bind":
                 if not self._is_root(m.get("Source", "")):
                     bad.append(f"bind {m.get('Source')} (only a grant root itself)")
+            elif t == "volume" and self.deploy and (m.get("Name") or "") in self.external_ok:
+                continue                 # an external volume the project lists (deploy_external), used as it is
             elif t == "volume":
                 name = m.get("Name") or ""
                 vdoc = self.inspect("volumes", name) if name else None

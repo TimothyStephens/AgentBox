@@ -205,10 +205,13 @@ class TheCommand(DeployCase):
         self.assertNotEqual(code, 0)
         self.assertIn("runs on the host", out)
 
-    def test_without_check_it_says_the_run_is_not_built_yet(self):
+    def test_without_check_and_with_no_lan_address_it_is_refused_before_anything_starts(self):
+        # Step 3 built the run, so this no longer says "not built yet": with no --lan and no stored lan_addr
+        # the deploy is refused after the review, and podman is only asked read-only questions.
         code, out = self.ab("deploy", "web")
-        self.assertNotEqual(code, 0)
-        self.assertIn("not built yet", out)
+        self.assertEqual(code, 2)
+        self.assertIn("no LAN address", out)
+        self.assertFalse([c for c in self.podman_calls() if c[:1] == ["run"]])
 
     def test_lan_must_be_an_address_of_this_host(self):
         with self.assertRaises(AgentboxError):
@@ -220,3 +223,17 @@ class TheCommand(DeployCase):
     def test_check_records_nothing(self):
         self.ab("deploy", "web", "--check")
         self.assertEqual(deploy.records(self.settings, "web"), [])
+
+
+class CopyModes(DeployCase):
+    def test_a_non_root_container_user_can_read_the_copy_but_no_other_host_user_can_enter_it(self):
+        os.chmod(os.path.join(self.root, "app.py"), 0o755)
+        self.write("projects/web/sub/data.txt", "x")
+        sha = self.commit("modes")
+        dst = deploy.stage(self.root, sha, os.path.join(self.tmp, "stage"))
+        mode = lambda *p: os.stat(os.path.join(dst, *p)).st_mode & 0o7777
+        self.assertEqual(mode(), 0o700)
+        self.assertEqual(mode("sub"), 0o755)
+        self.assertEqual(mode("sub", "data.txt"), 0o644)
+        self.assertEqual(mode("app.py"), 0o755)
+        self.assertEqual(mode(".env"), 0o600, "the real secrets stay owner-only")

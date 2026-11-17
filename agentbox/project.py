@@ -35,6 +35,12 @@ class Project:
     profile: str = "on"           # "off": this project's sessions load no host profile and no plugins
     base_branch: str = ""         # the branch the work lands on; the scan names its new commits
     reviews: str = ""             # the builder this project reviews (review.py): its root is a clone of the builder's
+    lan_addr: str = ""            # `ab deploy`: the LAN address the live stack publishes on
+    deploy_ports: list = field(default_factory=list)      # host ports it may publish
+    deploy_binds: list = field(default_factory=list)      # host directories it may bind (checked by `ab deploy`)
+    deploy_files: list = field(default_factory=list)      # untracked files copied into the deploy copy
+    deploy_external: list = field(default_factory=list)   # external volumes/networks it may use
+    deploy_adopted: list = field(default_factory=list)    # hand-run stack volumes adopted by name
 
     def value(self, key):
         return self.eff[key][0]
@@ -133,6 +139,10 @@ def load_project(settings, name):
                    profile=_check(name, "profile", p.get("profile", "on")),
                    base_branch=_check(name, "base_branch", p["base_branch"]) if p.get("base_branch") else "",
                    reviews=_check(name, "reviews", p["reviews"]) if p.get("reviews") else "",
+                   lan_addr=p.get("lan_addr", ""), deploy_ports=list(p.get("deploy_ports", [])),
+                   deploy_binds=list(p.get("deploy_binds", [])), deploy_files=list(p.get("deploy_files", [])),
+                   deploy_external=list(p.get("deploy_external", [])),
+                   deploy_adopted=list(p.get("deploy_adopted", [])),
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
                    # project would have had anyway waived the ownership check while changing nothing.
                    compose_project_explicit=bool(p.get("compose_project")

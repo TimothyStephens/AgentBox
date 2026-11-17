@@ -150,6 +150,15 @@ class Podman:
         err = (p.stderr or "").strip().splitlines()[-2:]
         raise AgentboxError(f"podman image exists {ref} failed ({p.returncode}): {' '.join(err)}")
 
+    def volumes_json(self, labels=None):
+        """Every volume (carrying all `labels`, if given), as podman reports it (`Name`, `Labels`). Raises when
+        the listing fails or cannot be parsed, never "no volumes"."""
+        p = self.run(["volume", "ls", "--format", "json"] + label_filters(labels or {}))
+        try:
+            return json.loads(p.stdout or "[]") or []
+        except ValueError as e:
+            raise AgentboxError(f"podman volume ls output could not be read as JSON ({e})")
+
     def containers_json(self, labels):
         """Every container carrying all `labels`, as podman reports it.
 

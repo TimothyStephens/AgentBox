@@ -111,3 +111,31 @@ def check_grant(path, *, home, extra_protected=(), kind="grant"):
         if inside(real, p) or inside(p, real):
             raise AgentboxError(f"{kind} {path}: {real} overlaps protected path {p}")
     return real
+
+
+def check_deploy_binds(name, binds, entry, reg, *, home, extra_protected=()):
+    """`deploy_binds`: host directories the LIVE stack may bind (`ab deploy`, D4). Each must be safe in itself
+    (check_grant, kind deploy_bind: not /, $HOME or an ancestor, a system or launcher directory -- the data dir
+    with every project's backups is one), and may not overlap this project's root (agent-written: binding it
+    would let the agent change what the live stack reads after the review) or any grant of another project, in
+    either direction. The project's own data_ro and data_rw grants may be bound: a media library or a data dir
+    the agent also sees is what D4 is for. Returns the real paths."""
+    out = []
+    for b in binds:
+        real = check_grant(b, kind="deploy_bind", home=home, extra_protected=extra_protected)
+        root = os.path.realpath(os.path.expanduser(entry.get("root") or "/nonexistent"))
+        if inside(real, root) or inside(root, real):
+            raise AgentboxError(f"project {name}: deploy_bind {real} overlaps the project's own root {root}; the "
+                                "live stack runs from the reviewed copy, and binds of the working tree would "
+                                "let what the agent writes reach it")
+        for other_name, other in sorted(reg.items()):
+            if other_name == name:
+                continue
+            for their_path, _rw in grants_of(other):
+                their = os.path.realpath(os.path.expanduser(their_path))
+                if inside(real, their) or inside(their, real):
+                    raise AgentboxError(f"project {name}: deploy_bind {real} overlaps project {other_name}'s grant "
+                                        f"{their}")
+        if real not in out:
+            out.append(real)
+    return out

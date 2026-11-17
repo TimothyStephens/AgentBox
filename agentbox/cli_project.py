@@ -135,6 +135,16 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["dev_images"] = _check(a.name, "dev_images", list(a.dev_image))
     if a.swap:
         entry["swap"] = _check(a.name, "swap", _parse_swap(a.swap))
+    if getattr(a, "lan_addr", None):
+        entry["lan_addr"] = _check(a.name, "lan_addr", a.lan_addr)
+    if getattr(a, "deploy_port", None):
+        entry["deploy_ports"] = _check(a.name, "deploy_ports", list(a.deploy_port))
+    if getattr(a, "deploy_bind", None):
+        entry["deploy_binds"] = [check_grant(d, kind="deploy_bind", **grant_kw) for d in a.deploy_bind]
+    if getattr(a, "deploy_file", None):
+        entry["deploy_files"] = _check(a.name, "deploy_files", list(a.deploy_file))
+    if getattr(a, "deploy_external", None):
+        entry["deploy_external"] = _check(a.name, "deploy_external", list(a.deploy_external))
     return cleared
 
 
@@ -269,6 +279,8 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
             entry[key] = [check_grant(d, kind=key, **grant_kw) for d in entry[key]]
     presets.effective(name, entry, presets_map)
     paths.check_overlaps(name, entry, reg)
+    if entry.get("deploy_binds"):
+        entry["deploy_binds"] = paths.check_deploy_binds(name, entry["deploy_binds"], entry, reg, **grant_kw)
     review.check(name, entry, reg)
     from . import grantcheck
     exposure, warnings, _fp = grantcheck.preflight(s, name, entry)
@@ -527,7 +539,9 @@ def _print_effective(s, name):
                 "compose_project": p.compose_project, "observe_logs": p.observe_logs,
                 "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
                 "profile": p.profile, "base_branch": p.base_branch, "reviews": p.reviews,
-                "toulmin": p.toulmin, "mount": p.mount,
+                "toulmin": p.toulmin, "mount": p.mount, "lan_addr": p.lan_addr, "deploy_ports": p.deploy_ports,
+                "deploy_binds": p.deploy_binds, "deploy_files": p.deploy_files,
+                "deploy_external": p.deploy_external,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
@@ -844,6 +858,22 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
     x.add_argument("--observe-logs", action=argparse.BooleanOptionalAction, default=None,
                    help="let the observe tier read the live stack's logs (default: off; logs can hold "
                         "secrets, and what the agent reads goes to its model provider)")
+    x.add_argument("--lan-addr", metavar="ADDR",
+                   help="`ab deploy`: the IPv4 address of this host the live stack publishes on (`ab deploy "
+                        "--lan ADDR:PORT` stores it too)")
+    x.add_argument("--deploy-port", action="append", default=[], type=int, metavar="PORT",
+                   help="`ab deploy`: a host port the live stack may publish on the LAN address (repeatable; "
+                        "`ab deploy --lan ADDR:PORT` adds one)")
+    x.add_argument("--deploy-bind", action="append", default=[], metavar="DIR",
+                   help="`ab deploy`: a host directory the live stack may bind (a media library, a data dir; "
+                        "repeatable). Not the project's root, another project's grant, $HOME, a system or "
+                        "agentbox directory")
+    x.add_argument("--deploy-file", action="append", default=[], metavar="PATH",
+                   help="`ab deploy`: an untracked file (root-relative) copied into the deploy copy next to the "
+                        "real .env, which is always copied (repeatable)")
+    x.add_argument("--deploy-external", action="append", default=[], metavar="NAME",
+                   help="`ab deploy`: an `external:` volume or network the live stack may use (repeatable); "
+                        "agentbox never creates or removes it")
     x.add_argument("--accept-history-secrets", action="store_true",
                    help="register even though masked file names (.env, *.key, ...) are in git history")
     x.add_argument("--i-understand-grant-exposure", action="store_true",

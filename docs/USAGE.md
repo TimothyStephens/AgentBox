@@ -125,7 +125,9 @@ usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
                        [--dev-image PATTERN] [--swap TARGET=STANDIN]
                        [--toulmin | --no-toulmin] [--mount MODE]
                        [--reviews BUILDER]
-                       [--observe-logs | --no-observe-logs]
+                       [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
+                       [--deploy-port PORT] [--deploy-bind DIR]
+                       [--deploy-file PATH] [--deploy-external NAME]
                        [--accept-history-secrets]
                        [--i-understand-grant-exposure] [--reattach | --fresh]
                        {pod,python} name
@@ -247,6 +249,23 @@ options:
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
                         agent reads goes to its model provider)
+  --lan-addr ADDR       `ab deploy`: the IPv4 address of this host the live
+                        stack publishes on (`ab deploy --lan ADDR:PORT` stores
+                        it too)
+  --deploy-port PORT    `ab deploy`: a host port the live stack may publish on
+                        the LAN address (repeatable; `ab deploy --lan
+                        ADDR:PORT` adds one)
+  --deploy-bind DIR     `ab deploy`: a host directory the live stack may bind
+                        (a media library, a data dir; repeatable). Not the
+                        project's root, another project's grant, $HOME, a
+                        system or agentbox directory
+  --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
+                        into the deploy copy next to the real .env, which is
+                        always copied (repeatable)
+  --deploy-external NAME
+                        `ab deploy`: an `external:` volume or network the live
+                        stack may use (repeatable); agentbox never creates or
+                        removes it
   --accept-history-secrets
                         register even though masked file names (.env, *.key,
                         ...) are in git history
@@ -281,7 +300,9 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--toulmin | --no-toulmin] [--mount MODE]
                       [--reviews BUILDER] [--observe-logs | --no-observe-logs]
-                      [--accept-history-secrets]
+                      [--lan-addr ADDR] [--deploy-port PORT]
+                      [--deploy-bind DIR] [--deploy-file PATH]
+                      [--deploy-external NAME] [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
                       name [root]
 
@@ -400,6 +421,23 @@ options:
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
                         agent reads goes to its model provider)
+  --lan-addr ADDR       `ab deploy`: the IPv4 address of this host the live
+                        stack publishes on (`ab deploy --lan ADDR:PORT` stores
+                        it too)
+  --deploy-port PORT    `ab deploy`: a host port the live stack may publish on
+                        the LAN address (repeatable; `ab deploy --lan
+                        ADDR:PORT` adds one)
+  --deploy-bind DIR     `ab deploy`: a host directory the live stack may bind
+                        (a media library, a data dir; repeatable). Not the
+                        project's root, another project's grant, $HOME, a
+                        system or agentbox directory
+  --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
+                        into the deploy copy next to the real .env, which is
+                        always copied (repeatable)
+  --deploy-external NAME
+                        `ab deploy`: an `external:` volume or network the live
+                        stack may use (repeatable); agentbox never creates or
+                        removes it
   --accept-history-secrets
                         register even though masked file names (.env, *.key,
                         ...) are in git history
@@ -472,11 +510,16 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
                       [--toulmin | --no-toulmin] [--mount MODE]
                       [--reviews BUILDER] [--observe-logs | --no-observe-logs]
-                      [--accept-history-secrets]
+                      [--lan-addr ADDR] [--deploy-port PORT]
+                      [--deploy-bind DIR] [--deploy-file PATH]
+                      [--deploy-external NAME] [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
                       [--clear-extra-domains] [--clear-dev-images]
                       [--clear-mask-skip] [--clear-mask]
+                      [--clear-deploy-ports] [--clear-deploy-binds]
+                      [--clear-deploy-files] [--clear-deploy-external]
+                      [--clear-deploy-adopted]
                       name
 
 change a registered project's settings in place (re-validated; refused while a session for it is live)
@@ -591,6 +634,23 @@ options:
                         let the observe tier read the live stack's logs
                         (default: off; logs can hold secrets, and what the
                         agent reads goes to its model provider)
+  --lan-addr ADDR       `ab deploy`: the IPv4 address of this host the live
+                        stack publishes on (`ab deploy --lan ADDR:PORT` stores
+                        it too)
+  --deploy-port PORT    `ab deploy`: a host port the live stack may publish on
+                        the LAN address (repeatable; `ab deploy --lan
+                        ADDR:PORT` adds one)
+  --deploy-bind DIR     `ab deploy`: a host directory the live stack may bind
+                        (a media library, a data dir; repeatable). Not the
+                        project's root, another project's grant, $HOME, a
+                        system or agentbox directory
+  --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
+                        into the deploy copy next to the real .env, which is
+                        always copied (repeatable)
+  --deploy-external NAME
+                        `ab deploy`: an `external:` volume or network the live
+                        stack may use (repeatable); agentbox never creates or
+                        removes it
   --accept-history-secrets
                         register even though masked file names (.env, *.key,
                         ...) are in git history
@@ -603,7 +663,9 @@ options:
                         caps, secrets, approvals, data, data_ro, data_rw,
                         extra_domains, compose_project, observe_logs,
                         dev_images, mask_skip, swap, mask, toulmin, mount,
-                        reviews, base_branch, build_memory, profile
+                        reviews, base_branch, build_memory, profile, lan_addr,
+                        deploy_ports, deploy_binds, deploy_files,
+                        deploy_external, deploy_adopted
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains
@@ -614,6 +676,18 @@ options:
   --clear-mask-skip     empty the mask_skip list (the same as --unset
                         mask_skip)
   --clear-mask          empty the mask list (the same as --unset mask)
+  --clear-deploy-ports  empty the deploy_ports list (the same as --unset
+                        deploy_ports)
+  --clear-deploy-binds  empty the deploy_binds list (the same as --unset
+                        deploy_binds)
+  --clear-deploy-files  empty the deploy_files list (the same as --unset
+                        deploy_files)
+  --clear-deploy-external
+                        empty the deploy_external list (the same as --unset
+                        deploy_external)
+  --clear-deploy-adopted
+                        empty the deploy_adopted list (the same as --unset
+                        deploy_adopted)
 
 examples:
   ab project set web --egress open
@@ -1143,10 +1217,12 @@ examples:
 
 ### `ab deploy`
 
-Start a project's live stack from a reviewed commit, on the host. Being built (decisions.md, 17 Nov): `--check` runs every check and shows the review; the deploy itself is not built yet.
+Start a project's live stack from a reviewed commit, on the host: checks the commit, the .env names and the LAN address, shows the diff since the last deploy, asks, then runs podman-compose from a copy of the commit in a runner whose only podman access is the deploy-mode gate. `--check` stops after the review. Not yet verified against real podman (docs/deploy-proposal.md).
 
 ```text
-usage: ab deploy [-h] [--lan ADDR:PORT] [--commit REF] [--check] project
+usage: ab deploy [-h] [--lan ADDR:PORT] [--commit REF] [--yes]
+                 [--adopt-volumes] [--check]
+                 project
 
 start a project's live stack from a reviewed commit (host only)
 
@@ -1155,18 +1231,28 @@ positional arguments:
 
 options:
   -h, --help       show this help message and exit
-  --lan ADDR:PORT  the address of this host and the port the stack publishes
-                   on; nothing else is published
+  --lan ADDR:PORT  the address of this host the stack publishes on, and a port
+                   it may publish; after a successful deploy the address is
+                   stored as lan_addr and the port added to deploy_ports, so
+                   later deploys may omit it. Only those ports, only on that
+                   address, are published
   --commit REF     deploy this commit instead of HEAD (a redeploy or a
                    rollback); the working tree need not be clean then, since
                    nothing is taken from it but the real .env
+  --yes            skip the prompt: only from a script (stdin not a terminal),
+                   and only to redeploy the commit deployed last
+  --adopt-volumes  take over, by name, the <compose_project>_* volumes a stack
+                   run by hand left (after you stopped it with `podman-compose
+                   down`), so their data carries over; asks first, then
+                   deploys nothing
   --check          show the review and run every check, then stop: start
                    nothing, record nothing
 
 examples:
   ab deploy filelab --check
   ab deploy filelab --lan 10.0.0.103:8095
-  ab deploy filelab --commit 3f2a9c1 --check
+  ab deploy filelab
+  ab deploy filelab --commit 3f2a9c1
 ```
 
 ## ab profile

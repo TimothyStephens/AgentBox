@@ -24,7 +24,7 @@ from .historysecrets import (  # noqa: F401
 )
 from .notes import dev_notes, profile_notes, sandbox_notes  # noqa: F401
 from .infra import (net_create_argv, proxy_run_argv, SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE,  # noqa: F401
-                    SQUID_READY)
+                    SQUID_READY, holder_run_argv, sockguard_run_argv)
 from .state import ephemeral_state, migrate_state_to_inbox, reset_state, service_tmp, _free_name  # noqa: F401
 from .liveness import (  # noqa: F401
     idle_seconds, INFRA_ROLES, project_is_live, session_is_alive, session_metas, sessions, _alive, _newest_mtime,
@@ -572,10 +572,16 @@ class Session:
             raise AgentboxError(f"project {p.name}: cannot confirm that compose project "
                                 f"{p.compose_project!r} is this project's stack: {e}. Refusing rather than "
                                 "observing a stack that may not be yours.")
+        deploys = os.path.realpath(self.settings.deploys_dir(p.name))
         for c in containers:
-            wd = (c.get("Labels") or {}).get("com.docker.compose.project.working_dir", "")
+            labels = c.get("Labels") or {}
+            wd = labels.get("com.docker.compose.project.working_dir", "")
             real = os.path.realpath(wd) if wd else ""
-            if not real or not inside(real, p.root):
+            # `ab deploy` runs the stack from its copy of a reviewed commit under the project's data dir; the
+            # deploy gate stamps these labels and drops any a client sets, and a dev gate never makes them
+            deployed = (labels.get("agentbox.deploy") == p.name and labels.get("agentbox.role") == "deploy"
+                        and real and inside(real, deploys))
+            if not real or not (inside(real, p.root) or deployed):
                 name = (c.get("Names") or ["?"])[0]
                 raise AgentboxError(
                     f"project {p.name}: compose project {p.compose_project!r} has container {name} from "
@@ -911,21 +917,9 @@ class Session:
 
     def sockguard_run_args(self, service_sock, conf_path, *, name=None, socket_path=None, role="sockguard"):
         s = self.settings
-        name = name or self.sockguard_name
-        socket_path = socket_path or self.sockguard_socket
-        args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER,
-                SIDECAR_LOG_SIZE]
-        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, role).items()]
-        args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
-                 "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
-                 f"--memory-swap={s.sockguard_memory}", "--pids-limit=128", f"--oom-score-adj={int(s.oom_score_adj)}"]
-        if s.cgroup_parent:
-            args.append(f"--cgroup-parent={s.cgroup_parent}")
-        args += [f"--mount=type=bind,src={service_sock},dst={sockguard.UPSTREAM}",
-                 f"--mount=type=bind,src={os.path.dirname(socket_path)},dst={os.path.dirname(sockguard.LISTEN)}",
-                 f"--mount=type=bind,src={conf_path},dst=/etc/sockguard/sockguard.yaml,ro",
-                 s.sockguard_image, "serve", "-c", "/etc/sockguard/sockguard.yaml"]
-        return args
+        return sockguard_run_argv(s, labels_for(s, self.project.name, self.name, role), name or self.sockguard_name,
+                                  service_sock=service_sock, socket_path=socket_path or self.sockguard_socket,
+                                  conf_path=conf_path, cgroup_parent=s.cgroup_parent)
 
     def sockguard_config(self):
         return sockguard.config(self.podman_live, logs=self.project.observe_logs)
@@ -1036,14 +1030,8 @@ class Session:
     def holder_run_args(self):
         """A container that only sleeps on the session network: builds join its network namespace."""
         s = self.settings
-        args = ["run", "-d", f"--name={self.holder_name}", f"--hostname={self.holder_name}",
-                SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE]
-        args += [f"--label={k}={v}" for k, v in labels_for(s, self.project.name, self.name, "holder").items()]
-        args += [f"--network={self.int_net}", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
-                 "--memory=32m", "--memory-swap=32m", "--pids-limit=16", f"--oom-score-adj={int(s.oom_score_adj)}"]
-        if s.cgroup_parent:
-            args.append(f"--cgroup-parent={s.cgroup_parent}")
-        return args + ["--entrypoint=/bin/sleep", s.squid_image, "infinity"]
+        return holder_run_argv(s, labels_for(s, self.project.name, self.name, "holder"), self.holder_name,
+                               network=self.int_net, cgroup_parent=s.cgroup_parent)
 
     def dev_proxy_env(self):
         """Proxy variables for the agent and every dev container: the session's own subnet and podman's DNS

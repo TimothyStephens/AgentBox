@@ -188,7 +188,31 @@ KEYS = (
          values=("off", "on"), security=False, clears=False, unsettable=True, display="always", inert="",
          inert_reason=""),
 
+    # --- `ab deploy` (deployrun.py; docs/deploy-proposal.md section 8): properties of the LIVE service the user
+    # deploys, not of a session's posture, so a preset change does not clear them. Security-relevant: they
+    # decide what the live stack may publish and bind. Nothing in a session reads them.
+    _key("lan_addr", kind="project", arity="scalar", flags=("--lan-addr",), dest="lan_addr", validate="ipv4",
+         values=(), security=True, clears=False, unsettable=True, display="stored", inert="", inert_reason=""),
+    _key("deploy_ports", kind="project", arity="list", flags=("--deploy-port",), dest="deploy_port",
+         validate="ports", values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
+         inert_reason=""),
+    _key("deploy_binds", kind="project", arity="list", flags=("--deploy-bind",), dest="deploy_bind",
+         validate="grant_deploy", values=(), security=True, clears=False, unsettable=True, display="stored",
+         inert="", inert_reason=""),
+    _key("deploy_files", kind="project", arity="list", flags=("--deploy-file",), dest="deploy_file",
+         validate="rel_files", values=(), security=True, clears=False, unsettable=True, display="stored",
+         inert="", inert_reason=""),
+    _key("deploy_external", kind="project", arity="list", flags=("--deploy-external",), dest="deploy_external",
+         validate="external_names", values=(), security=True, clears=False, unsettable=True, display="stored",
+         inert="", inert_reason=""),
+
     # --- acknowledgements: written by their own commands, never cleared by a preset change ---
+    # Volumes of a stack run by hand before `ab deploy` (no deploy labels, which podman cannot add to an
+    # existing volume), adopted by name with `ab deploy <p> --adopt-volumes` after the user confirms; the deploy
+    # gate then accepts exactly these, as it accepts deploy_external (Tim, 17 Nov).
+    _key("deploy_adopted", kind="ack", arity="list", flags=(), dest="", validate="external_names",
+         values=(), security=True, clears=False, unsettable=True, display="stored", inert="",
+         inert_reason=""),
     _key("history_secrets_accepted", kind="ack", arity="list", flags=(), dest="", validate="name_list",
          values=(), security=True, clears=False, unsettable=False, display="stored", inert="",
          inert_reason=""),
@@ -474,6 +498,49 @@ def _fingerprint(name, where, value, **_kw):
     return value
 
 
+IPV4 = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
+EXTERNAL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _ipv4(name, where, value, **_kw):
+    """One IPv4 address, not 0.0.0.0 and not a loopback: the address a live stack publishes on. That it is an
+    address of THIS host is checked by `ab deploy` itself (the host's addresses can change)."""
+    m = IPV4.match(value) if isinstance(value, str) else None
+    if not m or not all(int(o) <= 255 and (o == "0" or not o.startswith("0")) for o in m.groups()) \
+            or value == "0.0.0.0" or m.group(1) == "127":
+        raise AgentboxError(f"{where}: {name} {value!r}: one IPv4 address of this host (not 0.0.0.0 or loopback)")
+    return value
+
+
+def _ports(name, where, value, **_kw):
+    if not isinstance(value, list) or not all(isinstance(p, int) and not isinstance(p, bool) and 0 < p < 65536
+                                              for p in value):
+        raise AgentboxError(f"{where}: {name} must be a list of port numbers (1-65535)")
+    return sorted(set(value))
+
+
+def _rel_files(name, where, value, **_kw):
+    """Untracked files copied into the deploy copy: paths under the root, no '..', no absolute path."""
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        raise AgentboxError(f"{where}: {name} must be a list of root-relative file paths")
+    out = []
+    for raw in value:
+        parts = raw.split("/")
+        if (not raw or raw.startswith("/") or ".." in parts or "." in parts or "" in parts or "\0" in raw
+                or "\n" in raw or parts[0] == ".git"):
+            raise AgentboxError(f"{where}: {name} {raw!r}: a file path under the project root (no leading '/', "
+                                "no '.' or '..' segments, nothing under .git)")
+        if raw not in out:
+            out.append(raw)
+    return out
+
+
+def _external_names(name, where, value, **_kw):
+    if not isinstance(value, list) or not all(isinstance(p, str) and EXTERNAL_NAME.match(p) for p in value):
+        raise AgentboxError(f"{where}: {name} must be a list of podman volume or network names")
+    return sorted(set(value))
+
+
 def masked_name(fn):
     """Would the secret masks hide a file with this name? (mounts' own patterns, exemptions included.)"""
     return fn not in mounts.MASK_EXEMPT and any(fnmatch.fnmatchcase(fn, p) for p in mounts.MASK_FILES)
@@ -538,6 +605,11 @@ VALIDATORS = {
     "preset_name": _preset_name,
     "grant_rw": _grant,
     "grant_ro": _grant,
+    "grant_deploy": _grant,
+    "ipv4": _ipv4,
+    "ports": _ports,
+    "rel_files": _rel_files,
+    "external_names": _external_names,
 }
 
 

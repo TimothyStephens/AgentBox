@@ -181,6 +181,26 @@ def dev_config(session, *, bind_roots, mode="enforce", rules=None):
     return json.dumps(doc, indent=2) + "\n"
 
 
+DEPLOY_LABEL = "agentbox.deploy"       # gate.DEPLOY_LABEL (the gate imports nothing of the launcher's)
+DEPLOY_RULES = DEV_RULES[:-1] + [{"match": {"method": "*", "path": "/**"}, "action": "deny",
+                                  "reason": "agentbox deploy: not an operation on the project's live stack"}]
+
+
+def deploy_config(project, *, bind_roots, mode="enforce", rules=None):
+    """Sockguard for `ab deploy`, behind the deploy-mode gate: the dev tier's endpoint set, with owner isolation
+    on the deploy label instead of a session's (agentbox.deploy=<project>, which the gate stamps on everything
+    the stack creates), so it reaches the project's live stack and nothing else. Bind sources: the deploy copy,
+    the project's deploy_binds and the host's timezone files (the gate decides which, and read-only for those)."""
+    if mode not in ("enforce", "audit"):
+        raise AgentboxError(f"sockguard mode {mode!r}")
+    if not project or "=" in project or "," in project:
+        raise AgentboxError(f"project {project!r} cannot be used as an owner label")
+    doc = json.loads(dev_config(project, bind_roots=bind_roots, mode=mode,
+                                rules=rules if rules is not None else DEPLOY_RULES))
+    doc["ownership"] = {"owner": project, "label_key": DEPLOY_LABEL, "allow_unowned_images": True}
+    return json.dumps(doc, indent=2) + "\n"
+
+
 def dev_discovery_config(session, *, bind_roots):
     """Deny-all in audit mode for the dev tier: tests only."""
     return dev_config(session, bind_roots=bind_roots, mode="audit",

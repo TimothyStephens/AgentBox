@@ -3274,3 +3274,20 @@ silent; four of those were Tim's call:
 - **`external:` volumes and networks.** Refused unless the project lists the name in `deploy_external`.
 
 Still strict and not asked about: static IPs and MACs, network IPAM options, and pods with an infra container.
+
+**Step 3 (17 Nov, built strict where the proposal is silent; pending Tim's call).** The run is built
+(`docs/deploy-proposal.md`, "Step 3 (built)"). Chosen strict, to be confirmed: a deploy trusts only its own build
+record (`deploy-built-images.json`), never the sessions'; unlabelled `<compose_project>_*` volumes are refused
+before the run (no adoption); `deploy_binds` may not overlap the project's own root or another project's grants;
+`external:` objects are enforced in the gate (cfg `external_ok`), not by reading the compose file.
+
+**Step 3 decision (17 Nov, Tim).** A hand-run stack's `<compose_project>_*` volumes cannot carry deploy labels
+(podman cannot relabel an existing volume), so they are **adopted by name**. After the user has stopped the old
+stack, `ab deploy <p> --adopt-volumes` lists them and asks on a terminal, then stores the names in
+`deploy_adopted`. The deploy gate uses those volumes exactly as it uses `deploy_external` ones: by exact name,
+existing, never created or removed. The alternatives were copying into new labelled volumes (twice the disk)
+or refusing and migrating by hand.
+
+**Also fixed in step 3 (17 Nov).** The deploy copy kept owner-only modes (0600/0700), so a container whose app
+runs as a non-root user could not read files it was built from. The copy now keeps git's modes (0644/0755)
+under a 0700 top directory. `.env` stays 0600.

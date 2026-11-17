@@ -45,7 +45,11 @@ BUILT_RECORD = "built-images.json"
 BACKUPS = "backups"
 LOCK_FILE = "session.lock"
 CLONES = "clones"             # per-session clones of the root (clone mode; toulmin.py, session.clone_root)
-PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, CLONES, LOCK_FILE, LOCK_FILE + ".tmp"})
+DEPLOYS = "deploys"           # `ab deploy`'s staging copies, one per deploy (deployrun.py)
+DEPLOY_LOCK = "deploy.lock"   # one `ab deploy` per project at a time (flock)
+DEPLOY_BUILT_RECORD = "deploy-built-images.json"   # images a deploy-mode gate built (never a session's)
+PROJECT_ENTRIES = frozenset({PROJECT_FILE, BUILT_RECORD, BACKUPS, CLONES, LOCK_FILE, LOCK_FILE + ".tmp", DEPLOYS,
+                             DEPLOY_LOCK, DEPLOY_BUILT_RECORD, "deploys.jsonl"})
 
 
 def project_dir(data_dir, project):
@@ -134,6 +138,14 @@ class Settings:
 
     def built_record(self, project):
         return os.path.join(self.project_dir(project), BUILT_RECORD)
+
+    def deploy_built_record(self, project):
+        """The images `ab deploy`'s gate built for this project. Apart from the sessions' record: a deploy runs
+        only images built from a reviewed commit, never one an agent built in a session."""
+        return os.path.join(self.project_dir(project), DEPLOY_BUILT_RECORD)
+
+    def deploys_dir(self, project):
+        return os.path.join(self.project_dir(project), DEPLOYS)
 
     def clones_dir(self, project):
         """Per-session clones of the project's root (clone mode): `<clones>/<session>/`, kept after the

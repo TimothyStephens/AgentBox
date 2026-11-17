@@ -1,5 +1,7 @@
 """The argv shapes of a session's isolated networks and egress proxy, shared with `ab profile install`.
 Moved out of session.py (item 54); session re-exports it."""
+import os
+
 from . import sockguard
 
 
@@ -55,3 +57,35 @@ def proxy_run_argv(settings, labels, name, *, conf_path, networks):
     args += [SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE,
              f"--mount=type=bind,src={conf_path},dst=/etc/squid/squid.conf,ro", s.squid_image]
     return args
+
+
+def sockguard_run_argv(settings, labels, name, *, service_sock, socket_path, conf_path, cgroup_parent):
+    """`podman run -d` for a sockguard in front of a private podman service: no network, read-only, every
+    capability dropped, its config read-only. A session's (in its slice) and a deploy's (`ab deploy`: the host's
+    default cgroup, D5) share this shape."""
+    s = settings
+    args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE]
+    args += [f"--label={k}={v}" for k, v in labels.items()]
+    args += ["--network=none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}", "--cap-drop=ALL",
+             "--security-opt=no-new-privileges", "--read-only", f"--memory={s.sockguard_memory}",
+             f"--memory-swap={s.sockguard_memory}", "--pids-limit=128", f"--oom-score-adj={int(s.oom_score_adj)}"]
+    if cgroup_parent:
+        args.append(f"--cgroup-parent={cgroup_parent}")
+    args += [f"--mount=type=bind,src={service_sock},dst={sockguard.UPSTREAM}",
+             f"--mount=type=bind,src={os.path.dirname(socket_path)},dst={os.path.dirname(sockguard.LISTEN)}",
+             f"--mount=type=bind,src={conf_path},dst=/etc/sockguard/sockguard.yaml,ro",
+             s.sockguard_image, "serve", "-c", "/etc/sockguard/sockguard.yaml"]
+    return args
+
+
+def holder_run_argv(settings, labels, name, *, network, cgroup_parent):
+    """A container that only sleeps on `network`: the gate's builds run their RUN steps in its network
+    namespace (gate_images.holder_ns)."""
+    s = settings
+    args = ["run", "-d", f"--name={name}", f"--hostname={name}", SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE]
+    args += [f"--label={k}={v}" for k, v in labels.items()]
+    args += [f"--network={network}", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
+             "--memory=32m", "--memory-swap=32m", "--pids-limit=16", f"--oom-score-adj={int(s.oom_score_adj)}"]
+    if cgroup_parent:
+        args.append(f"--cgroup-parent={cgroup_parent}")
+    return args + ["--entrypoint=/bin/sleep", s.squid_image, "infinity"]
