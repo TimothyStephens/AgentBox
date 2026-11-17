@@ -1211,7 +1211,7 @@ examples:
 Install the plugins a profile declares, in a sandbox, into the tree sessions mount read-only.
 
 ```text
-usage: ab profile install [-h] [--dry-run] {claude,omp}
+usage: ab profile install [-h] [--dry-run] [--resolve] {claude,omp}
 
 install the plugins the profile declares, in a sandbox, into a tree sessions mount read-only
 
@@ -1222,11 +1222,16 @@ options:
   -h, --help    show this help message and exit
   --dry-run     print what would be installed and the script that would run;
                 change nothing
+  --resolve     print each entry's pin beside what its source has today (a git
+                source's default branch HEAD, an npm package's `latest`),
+                checked in the same sandboxed container; install nothing and
+                change nothing. Exit 1 if an entry could not be checked
 
 examples:
   ab profile install omp
   ab profile install claude
   ab profile install omp --dry-run
+  ab profile install omp --resolve
 ```
 
 ### `ab profile dismiss`

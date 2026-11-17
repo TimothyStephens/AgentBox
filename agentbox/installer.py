@@ -316,7 +316,9 @@ class Install:
         return egress.squid_conf("packages", model_domains=[], model_host="", model_port=s.model_port,
                                  host_addrs=addrs, dns=dns)
 
-    def container_args(self, script):
+    def container_args(self, script, *, mount_tree=True):
+        """`mount_tree=False` is `--resolve`: it only reads the network and writes nothing, so nothing of the
+        host is mounted at all."""
         s = self.settings
         args = ["run", "--rm", f"--name={self.name}", f"--hostname={self.name}"]
         opts = [f"--label={k}={v}" for k, v in self.labels("install").items()]
@@ -339,11 +341,13 @@ class Install:
         opts += [f"--env={k}={v}" for k, v in env.items()]
         # The one thing mounted, read-write, AT THE PATH A SESSION WILL SEE IT AT.
         dst = tree_dst(self.agent)
-        opts.append(f"--mount=type=bind,src={os.path.realpath(self.staging)},dst={dst}")
-        opts.append(f"--workdir={dst}")
+        srcs, dsts = ([os.path.realpath(self.staging)], [dst]) if mount_tree else ([], [])
+        if mount_tree:
+            opts.append(f"--mount=type=bind,src={srcs[0]},dst={dst}")
+        opts.append(f"--workdir={dst if mount_tree else HOME}")
         opts.append("--entrypoint=/bin/sh")
-        hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=[os.path.realpath(self.staging)],
-                        allowed_mount_dsts=[dst], networks=[self.int_net], tmpfs_dirs=tuple(tmpfs_dirs))
+        hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=srcs,
+                        allowed_mount_dsts=dsts, networks=[self.int_net], tmpfs_dirs=tuple(tmpfs_dirs))
         return args + opts + [self.adapter.image, "-c", script]
 
     def start_infra(self):
@@ -434,6 +438,84 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
                        if isinstance(v, list))
     warn(f"agentbox: installed. The tree reports {counts or 'nothing'}")
     return doc
+
+
+# ---- `ab profile install <agent> --resolve`: what each pinned entry would be pinned to today -------------
+RESOLVE_TAG = "AB-RESOLVE"
+# The registry's `latest` dist-tag for one package, read in the container (python3 comes with agentbox-base;
+# urllib honours HTTPS_PROXY). A scoped name keeps its `@` and has its `/` escaped, as the registry expects.
+_NPM_LATEST = ("import json,sys,urllib.parse,urllib.request; "
+               "u='https://registry.npmjs.org/'+urllib.parse.quote(sys.argv[1], safe='@')+'/latest'; "
+               "print(json.load(urllib.request.urlopen(u, timeout=60))['version'])")
+
+
+def _resolve_url(e):
+    return clone_url(e.source) if e.kind == "plugin" else e.url
+
+
+def resolve_script(entries):
+    """One line of `AB-RESOLVE<TAB>index<TAB>ok|err<TAB>text` per entry. A git source is asked for its HEAD
+    (the default branch: plugins.toml names no branch) with `git ls-remote`, which needs no clone; an npm
+    package for its `latest` version. One failing entry does not stop the others."""
+    q = shlex.quote
+    lines = ["set -u", "err=/tmp/ab-resolve.err"]
+    for i, e in enumerate(entries):
+        cmd = (f"python3 -I -c {q(_NPM_LATEST)} {q(e.name)}" if e.kind == "npm"
+               else f"git ls-remote {q(_resolve_url(e))} HEAD")
+        lines.append(f'if out=$({cmd} 2>"$err"); then '
+                     f"printf '{RESOLVE_TAG}\\t%s\\tok\\t%s\\n' {i} \"$out\"; else "
+                     f"printf '{RESOLVE_TAG}\\t%s\\terr\\t%s\\n' {i} \"$(tr '\\n\\t' '  ' <\"$err\" | tail -c 300)\"; fi")
+    return "\n".join(lines) + "\n"
+
+
+def declared_pin(e):
+    return e.version if e.kind == "npm" else e.ref
+
+
+def parse_resolve(stdout, entries):
+    """[{entry, declared, current, error}] in declaration order, from the script's tagged lines."""
+    got = {}
+    for line in (stdout or "").splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) == 4 and parts[0] == RESOLVE_TAG and parts[1].isdigit():
+            got[int(parts[1])] = (parts[2], parts[3].strip())
+    out = []
+    for i, e in enumerate(entries):
+        status, text = got.get(i, ("err", "no answer from the resolve container"))
+        current, error = None, None
+        if status == "ok":
+            current = text.split()[0] if text.split() else ""
+            if e.kind != "npm" and not plugins.SHA40.match(current):
+                current, error = None, f"no HEAD sha in `git ls-remote` output: {text[:120]!r}"
+            elif e.kind == "npm" and not plugins.NPM_VERSION.match(current):
+                current, error = None, f"the registry gave {text[:60]!r}, not a version"
+        else:
+            error = text or "failed"
+        out.append({"entry": e, "declared": declared_pin(e), "current": current, "error": error})
+    return out
+
+
+def resolve(settings, agent, *, podman=None, warn=lambda m: None):
+    """What every entry in the agent's plugins.toml would be pinned to today. Changes nothing: no tree, no
+    lock, no staging directory; the container mounts nothing of the host."""
+    src = settings.profile_src(agent)
+    entries = plugins.load(os.path.join(src, "plugins.toml"), plugins.sections_for(agent))
+    if not entries:
+        raise AgentboxError(f"{os.path.join(src, 'plugins.toml')} declares no plugins; nothing to resolve")
+    job = Install(settings, agent, podman=podman, warn=warn)
+    job.name = f"{settings.name_prefix}resolve-{agent}"          # never the same containers as an install
+    job.run_dir = os.path.join(settings.run_dir, "installs", job.name)
+    warn(f"agentbox: asking the sources of {plugins.summary(entries)} for their current versions")
+    try:
+        job.start_infra()
+        p = job.podman.run(job.container_args(resolve_script(entries), mount_tree=False), check=False,
+                           timeout=RUN_TIMEOUT)
+    finally:
+        job.teardown()
+    if RESOLVE_TAG not in (p.stdout or ""):
+        tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
+        raise AgentboxError("the resolve container failed:\n  " + "\n  ".join(tail))
+    return parse_resolve(p.stdout, entries)
 
 
 def _take_lock(tree, agent):

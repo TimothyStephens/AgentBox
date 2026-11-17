@@ -25,8 +25,8 @@ install is not reproducible."* It is applied to `[[repo]]` too -- the reason doe
 and a branch would make the tree a session mounts depend on when it happened to be installed. An earlier
 draft of this module allowed a branch for git entries, on the grounds that the sources are tracked on
 `main`; the profile's rule is the better one. "A sha is a nuisance to look up" is a tooling problem --
-`git ls-remote <url> <branch>` prints one, and a `--resolve` that reports the current sha of every entry
-is on the backlog (TODO.md) -- not a reason to loosen the file. npm entries name an exact version for the
+`git ls-remote <url> <branch>` prints one, and `ab profile install <agent> --resolve` reports the current
+sha of every entry (17 Nov) -- not a reason to loosen the file. npm entries name an exact version for the
 same reason.
 
 **There is no lockfile for this file to need.** An earlier draft promised

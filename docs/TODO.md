@@ -32,25 +32,13 @@ are not asked for by anything else and are not on the backlog.
 
 ## 2. Ready to implement — scoped, no decision needed
 
-### 2.1 `ab profile install --resolve`: print the current sha of every declared entry
+### 2.1 Done 17 Nov: `ab profile install <agent> --resolve`
 
-**What.** `plugins.toml` pins every `ref` to a 40-character sha, deliberately (a catalog is mutable, so a
-branch is not a pin). Bumping one means looking it up: `git ls-remote <url> <branch>` for a repo or a
-catalog, the npm registry for a package. `--resolve` should do that for every entry and print
-`declared → current`, so a bump is one command and a diff in the profile repo.
-
-**Why it matters.** Low, but it is the friction that makes people reach for a branch. The rule holds
-better if keeping it is cheap.
-
-**Done looks like.** `ab profile install omp --resolve` prints one line per entry and changes nothing. It
-runs in the same hardened container the install uses (network belongs in a container, not in `ab`), needs
-no clone — `git ls-remote` and an npm registry read are enough — and says plainly when an entry is already
-current.
-
-**Where to start.** `agentbox/installer.py` (`Install.container_args`, `_script`: this is a second, much
-smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install` for the flag.
-
-**The gate.** `make test`; by hand on the host once, since it reaches the network.
+Prints each entry's pin beside its source's current one (`git ls-remote <url> HEAD` for marketplaces and repos,
+the registry's `latest` for npm), in the install's hardened container with nothing of the host mounted, and
+changes nothing; it prints the `ref = "…"` / `version = "…"` line to paste. Exit 1 if an entry could not be
+checked. The script was run for real against the omp profile's sources from a session (3 of 7 entries had
+newer pins). Unverified on the host: one `ab profile install omp --resolve`, which adds the container.
 
 ### 2.2 Done 17 Nov: `make omp-live` refuses at once when no model is chosen
 

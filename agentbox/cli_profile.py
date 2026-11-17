@@ -184,6 +184,8 @@ def cmd_profile_install(s, a):
     just one hardened container behind the same sealed networks and squid a session gets, with the tree
     mounted at the path a session will see it at (installer.py says why that matters)."""
     from . import installer
+    if getattr(a, "resolve", False):
+        return _profile_resolve(s, a, installer)
     doc = installer.install(s, a.agent, podman=Podman(s.podman), warn=warn, dry_run=a.dry_run)
     if a.dry_run:
         print(f"would install {len(doc['entries'])} entry(ies); the container would run:\n")
@@ -202,6 +204,40 @@ def cmd_profile_install(s, a):
     print(f"  lockfile {os.path.join(tree, installer.LOCKFILE)}")
     print("Sessions mount this read-only. `ab profile install` again after editing plugins.toml.")
     return 0
+
+
+def _profile_resolve(s, a, installer):
+    """`ab profile install <agent> --resolve`: each entry's pin beside what its source has today. Changes
+    nothing; the new pins are for the user to paste into the profile repo's plugins.toml (TODO 2.1)."""
+    from . import plugins
+    path = os.path.join(s.profile_src(a.agent), "plugins.toml")
+    if a.dry_run:
+        entries = plugins.load(path, plugins.sections_for(a.agent))
+        print(f"would ask the sources of {len(entries)} entry(ies); the container would run:\n")
+        print(installer.resolve_script(entries))
+        return 0
+    rows = installer.resolve(s, a.agent, podman=Podman(s.podman), warn=warn)
+    width = max(len(r["entry"].label) for r in rows)
+    newer = failed = 0
+    for r in rows:
+        e = r["entry"]
+        head = f"  {e.kind:<7} {e.label:<{width}}  "
+        if r["error"]:
+            failed += 1
+            print(head + f"could not tell: {r['error']}")
+        elif r["current"] == r["declared"]:
+            print(head + f"current ({r['declared']})")
+        else:
+            newer += 1
+            key = "version" if e.kind == "npm" else "ref"
+            print(head + f"{r['declared']} -> {r['current']}   ({key} = \"{r['current']}\")")
+    print(f"{newer} of {len(rows)} entr{'y has' if newer == 1 else 'ies have'} a newer pin"
+          + (f", {failed} could not be checked" if failed else "")
+          + ". Git sources are compared with their default branch's HEAD, npm packages with `latest`.")
+    if newer:
+        print(f"Nothing was changed. To move a pin, edit {path} (or the profile repo it comes from), "
+              f"then `ab profile install {a.agent}`.")
+    return 1 if failed else 0
 
 
 def cmd_profile_dismiss(s, a):
@@ -233,10 +269,15 @@ def add_verbs(prof_p, add, ex):
     x.set_defaults(fn=cmd_profile_promote)
     x = add(prof_p, "install", "install the plugins the profile declares, in a sandbox, into a tree "
                                "sessions mount read-only",
-            ex("ab profile install omp", "ab profile install claude", "ab profile install omp --dry-run"))
+            ex("ab profile install omp", "ab profile install claude", "ab profile install omp --dry-run",
+               "ab profile install omp --resolve"))
     x.add_argument("agent", choices=adapters.NAMES, help="whose plugins.toml to install")
     x.add_argument("--dry-run", action="store_true",
                    help="print what would be installed and the script that would run; change nothing")
+    x.add_argument("--resolve", action="store_true",
+                   help="print each entry's pin beside what its source has today (a git source's default "
+                        "branch HEAD, an npm package's `latest`), checked in the same sandboxed container; "
+                        "install nothing and change nothing. Exit 1 if an entry could not be checked")
     x.set_defaults(fn=cmd_profile_install)
     x = add(prof_p, "dismiss", "mark an inbox item reviewed and leave it where it is (deletes nothing)",
             ex("ab profile dismiss web/notes.md"))

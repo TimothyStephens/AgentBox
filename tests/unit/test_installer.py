@@ -643,3 +643,83 @@ class TheCli(SettingsCase):
         self.assertEqual(code, 0, out)
         self.assertIn("omp plugin install egm@egm", out)
         self.assertFalse(os.path.exists(installer.tree_dir(self.settings, "omp")))
+
+
+NEW = "72d06f52a248aaaabbbbccccddddeeeeffff0000"
+
+
+class Resolve(SettingsCase):
+    """TODO 2.1: `ab profile install <agent> --resolve` prints each pin beside what its source has today, so a
+    bump is one command rather than a `git ls-remote` per entry."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["FAKE_PODMAN_IMAGE_JSON"] = json.dumps(IMAGE_DOC)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_IMAGE_JSON", None)
+        src = self.settings.profile_src("omp")
+        os.makedirs(src, mode=0o700, exist_ok=True)
+        with open(os.path.join(src, "plugins.toml"), "w") as f:
+            f.write(DECLARED)
+        self.entries = plugins.load(os.path.join(src, "plugins.toml"), plugins.sections_for("omp"))
+
+    def answer(self, stdout):
+        """A podman whose resolve container prints `stdout`; records the run argv."""
+        import subprocess
+        pod = Podman(self.settings.podman)
+        real = pod.run
+        self.argv = None
+
+        def runner(argv, **kw):
+            if argv[:1] == ["run"] and "--rm" in argv:
+                self.argv = argv
+                return subprocess.CompletedProcess(argv, 0, stdout, "")
+            return real(argv, **kw)
+        return mock.patch.object(pod, "run", side_effect=runner), pod
+
+    def test_the_script_asks_git_for_head_and_npm_for_latest_and_never_clones(self):
+        script = installer.resolve_script(self.entries)
+        self.assertIn("git ls-remote https://github.com/google/elephant-goldfish-model.git HEAD", script)
+        self.assertIn("git ls-remote https://github.com/TimothyStephens/pi-session-stats.git HEAD", script)
+        self.assertIn("pi-lens", script)
+        self.assertNotIn("git clone", script)
+        self.assertNotIn("omp plugin", script)
+
+    def test_the_container_mounts_nothing_of_the_host(self):
+        out = "".join(f"AB-RESOLVE\t{i}\tok\t{v}\n" for i, v in enumerate([f"{SHA}\tHEAD", "4.4.9",
+                                                                             f"{REPO_SHA}\tHEAD"]))
+        patch, pod = self.answer(out)
+        with patch:
+            installer.resolve(self.settings, "omp", podman=pod)
+        self.assertFalse([a for a in self.argv if a.startswith("--mount")], self.argv)
+        self.assertFalse(os.path.exists(installer.tree_dir(self.settings, "omp")))
+        self.assertFalse(os.path.exists(installer.staging_dir(self.settings, "omp")))
+
+    def test_newer_current_and_failed_entries_are_told_apart(self):
+        out = (f"AB-RESOLVE\t0\tok\t{NEW}\tHEAD\n"
+               "AB-RESOLVE\t1\tok\t4.4.9\n"
+               "AB-RESOLVE\t2\terr\tfatal: repository not found\n")
+        rows = installer.parse_resolve(out, self.entries)
+        self.assertEqual([(r["current"], r["error"]) for r in rows],
+                         [(NEW, None), ("4.4.9", None), (None, "fatal: repository not found")])
+
+    def test_a_garbled_answer_is_an_error_not_a_pin(self):
+        rows = installer.parse_resolve("AB-RESOLVE\t0\tok\tmain\nAB-RESOLVE\t1\tok\t<html>\n", self.entries)
+        self.assertTrue(all(r["current"] is None and r["error"] for r in rows), rows)
+
+    def test_the_cli_prints_the_pins_to_paste_and_exits_1_when_one_could_not_be_checked(self):
+        out = (f"AB-RESOLVE\t0\tok\t{NEW}\tHEAD\n"
+               "AB-RESOLVE\t1\tok\t4.5.1\n"
+               "AB-RESOLVE\t2\terr\tfatal: repository not found\n")
+        patch, pod = self.answer(out)
+        with patch, mock.patch("agentbox.cli_profile.Podman", return_value=pod):
+            code, text = self.ab("profile", "install", "omp", "--resolve")
+        self.assertEqual(code, 1, text)
+        self.assertIn(f'ref = "{NEW}"', text)
+        self.assertIn('version = "4.5.1"', text)
+        self.assertIn("could not tell: fatal: repository not found", text)
+        self.assertIn("2 of 3 entries have a newer pin, 1 could not be checked", text)
+
+    def test_resolve_with_dry_run_prints_the_script_only(self):
+        code, text = self.ab("profile", "install", "omp", "--resolve", "--dry-run")
+        self.assertEqual(code, 0, text)
+        self.assertIn("git ls-remote", text)
