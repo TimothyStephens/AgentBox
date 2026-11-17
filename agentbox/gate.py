@@ -233,6 +233,9 @@ class Gate(MountsMixin, ImagesMixin):
         self.deploy = mode == "deploy"
         self.session = cfg["session"]
         self.network = None if self.deploy else cfg["network"]
+        # Sessions' containers die first under memory pressure (1000); a deployed live service keeps the
+        # host's default (0), like a service started by hand (Tim, 17 Nov).
+        self.oom_score = 0 if self.deploy else 1000
         self.labels = dict(cfg["labels"])
         if self.deploy:
             self._check_deploy_cfg()
@@ -548,7 +551,7 @@ class Gate(MountsMixin, ImagesMixin):
                 bad.append(f"restart policy {(hc.get('RestartPolicy') or {}).get('Name')} (not {DEPLOY_RESTART})")
         elif (hc.get("RestartPolicy") or {}).get("Name") not in (None, "", "no"):
             bad.append("a restart policy")
-        if hc.get("OomScoreAdj") != 1000:
+        if hc.get("OomScoreAdj") != self.oom_score:
             bad.append(f"OOM score {hc.get('OomScoreAdj')}")
         mem, swap, pids = hc.get("Memory") or 0, hc.get("MemorySwap"), hc.get("PidsLimit") or 0
         if not 0 < mem <= self.memory_max:
@@ -1018,8 +1021,8 @@ class Gate(MountsMixin, ImagesMixin):
             raise Deny(f"cgroups mode {spec['cgroups_mode']} is not allowed")
         if spec.get("seccomp_policy") not in (None, "", "default"):
             raise Deny("a seccomp policy from the image is not allowed")
-        if spec.get("oom_score_adj") not in (None, 1000):
-            raise Deny(f"OOM score {spec['oom_score_adj']} is not allowed (the gate sets 1000)")
+        if spec.get("oom_score_adj") not in (None, self.oom_score):
+            raise Deny(f"OOM score {spec['oom_score_adj']} is not allowed (the gate sets {self.oom_score})")
         if "keep-groups" in (spec.get("groups") or []):
             raise Deny("keep-groups is not allowed")
         if spec.get("health_check_on_failure_action") in ("restart", 3):
@@ -1066,7 +1069,7 @@ class Gate(MountsMixin, ImagesMixin):
         spec["systemd"] = "false"
         if not self.deploy:
             spec["cgroup_parent"] = self.cfg["cgroup_parent"]
-        spec["oom_score_adj"] = 1000
+        spec["oom_score_adj"] = self.oom_score
         rl = spec.get("resource_limits") or {}
         mem = cget(rl, "memory") or {}
         limit = cget(mem, "limit") or self.cfg["memory"]
@@ -1143,8 +1146,8 @@ class Gate(MountsMixin, ImagesMixin):
         for opt in hc.get("SecurityOpt") or []:
             if not re.match(r"^no-new-privileges([:=]true)?$", str(opt)):
                 raise Deny(f"security option {opt} is not allowed")
-        if hc.get("OomScoreAdj") not in (None, 0, 1000):
-            raise Deny(f"OOM score {hc['OomScoreAdj']} is not allowed (the gate sets 1000)")
+        if hc.get("OomScoreAdj") not in (None, 0, self.oom_score):
+            raise Deny(f"OOM score {hc['OomScoreAdj']} is not allowed (the gate sets {self.oom_score})")
         self.check_sysctls(hc.get("Sysctls"), "container")
         hc["Annotations"] = self.check_annotations(hc.get("Annotations"), "container")
         log = hc.get("LogConfig") or {}
@@ -1201,7 +1204,7 @@ class Gate(MountsMixin, ImagesMixin):
             hc["RestartPolicy"] = {"Name": DEPLOY_RESTART}
         else:
             hc["CgroupParent"] = self.cfg["cgroup_parent"]
-        hc["OomScoreAdj"] = 1000
+        hc["OomScoreAdj"] = self.oom_score
         if not hc.get("Memory"):
             hc["Memory"] = self.cfg["memory"]
         hc["MemorySwap"] = hc["Memory"]

@@ -3261,3 +3261,16 @@ now: 19.9 s to 0.9 s on the same tree (0c441a2).
 the LAN with real secrets. A static check misses build steps and podman-compose extras. Deploying the working
 tree would let the agent change files between the review and the run. design.md is updated as each part lands;
 the proposal file is deleted when the whole is built.
+
+**Step 2 decisions (17 Nov, Tim, all as recommended).** The deploy-mode gate was built strict wherever §6 was
+silent; four of those were Tim's call:
+- **OOM score.** A deployed live service keeps the host default (0); session containers keep 1000, so they die
+  first.
+- **Timezone.** `/etc/localtime`, `/etc/timezone` and `/usr/share/zoneinfo` may be bound read-only without a
+  `deploy_binds` entry; a writable bind of them is refused.
+- **Stacks deployed by hand.** Their containers lack the deploy labels. The first `ab deploy` refuses and prints
+  the `podman-compose -p <name> down` for the user to run (volumes kept). agentbox never removes what it did
+  not create.
+- **`external:` volumes and networks.** Refused unless the project lists the name in `deploy_external`.
+
+Still strict and not asked about: static IPs and MACs, network IPAM options, and pods with an infra container.

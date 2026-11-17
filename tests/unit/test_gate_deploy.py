@@ -20,7 +20,7 @@ LAN = "10.0.0.103"
 def dcontainer(cid, labels=DEPLOY, **extra):
     doc = {"Id": cid, "Config": {"Labels": labels}, "Mounts": [],
            "NetworkSettings": {"Networks": {"shop_default": {}}},
-           "HostConfig": {"PortBindings": {}, "CgroupParent": "user.slice", "OomScoreAdj": 1000,
+           "HostConfig": {"PortBindings": {}, "CgroupParent": "user.slice", "OomScoreAdj": 0,
                           "RestartPolicy": {"Name": "unless-stopped"}, "NetworkMode": "bridge",
                           "Memory": 1 << 30, "MemorySwap": 1 << 30, "PidsLimit": 1024}}
     doc.update(extra)
@@ -389,7 +389,7 @@ class CgroupLimitsAndProxy(Base):
         spec = self.create(g, self.body())
         self.assertNotIn("cgroup_parent", spec)
         self.assertEqual((spec["resource_limits"]["memory"]["limit"], spec["resource_limits"]["pids"]["limit"],
-                          spec["oom_score_adj"]), (1 << 30, 1024, 1000))
+                          spec["oom_score_adj"]), (1 << 30, 1024, 0), "a live service keeps the host default OOM score")
         self.assertNotIn("cgroup_parent", json.loads(decide(g, "POST", "/v5/libpod/pods/create",
                                                             {"name": "pod_shop", "no_infra": True})[1]))
         self.assertEqual(g.container_violations(dcontainer("c")), [], "any cgroup parent podman picks")
@@ -481,3 +481,26 @@ class DevModeUnchanged(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Decided17Nov(Base):
+    """Tim's answers to the step-2 "needs a decision" list (decisions.md, 17 Nov)."""
+
+    def test_a_live_service_keeps_the_host_default_oom_score_and_sessions_keep_1000(self):
+        self.assertEqual(self.create(self.g(), self.body())["oom_score_adj"], 0)
+        self.assertEqual(gate.Gate(dict(Fake().cfg)).oom_score, 1000)
+
+    def test_the_timezone_may_be_bound_read_only_and_only_read_only(self):
+        g = self.g()
+        for src in ("/etc/localtime", "/etc/timezone", "/usr/share/zoneinfo"):
+            if not os.path.exists(src):
+                continue
+            real = os.path.realpath(src)
+            with self.subTest(src=src):
+                self.assertIsNone(g.deploy_bind_refusal(real, rw=False))
+                self.assertIn("read-only", g.deploy_bind_refusal(real, rw=True))
+                doc = dcontainer("c", Mounts=[{"Type": "bind", "Source": src, "Destination": "/etc/localtime",
+                                               "RW": True}])
+                self.assertTrue(g.container_violations(doc))
+        self.refused(g, self.body(mounts=[{"type": "bind", "source": "/etc/passwd", "destination": "/p",
+                                            "options": ["ro"]}]))

@@ -22,6 +22,10 @@ MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosui
 # Deploy mode: never a bind source, whatever the stage or deploy_binds hold (the host's kernel and device
 # interfaces, and /run, where the user's podman and systemd sockets live).
 DEPLOY_SYSTEM = ("/proc", "/sys", "/dev", "/run")
+# The host's timezone, which compose files commonly bind read-only. Allowed in deploy mode without a
+# deploy_binds entry, read-only only (Tim, 17 Nov). /etc/localtime is a link into zoneinfo, so its real path
+# is what the gate sees.
+DEPLOY_TIMEZONE = ("/etc/localtime", "/etc/timezone", "/usr/share/zoneinfo")
 
 
 def parse_mountinfo_opts(text):
@@ -145,7 +149,7 @@ class MountsMixin:
             if t == "bind" and self.own_storage(m, cid):
                 continue
             if t == "bind" and self.deploy:
-                why = self.deploy_bind_refusal(os.path.realpath(m.get("Source") or "/"))
+                why = self.deploy_bind_refusal(os.path.realpath(m.get("Source") or "/"), rw=m.get("RW", True))
                 if why:
                     bad.append(f"bind {m.get('Source')} ({why})")
             elif t == "bind":
@@ -418,11 +422,14 @@ class MountsMixin:
                        "created in this session")
         raise Deny(f"bind mount {src} is outside the project's grants")
 
-    def deploy_bind_refusal(self, real):
+    def deploy_bind_refusal(self, real, rw=None):
         """Deploy mode: why the real path `real` may not be bound, or None. Inside the deploy copy or a
         deploy_binds path (by real path, so a symlink in the copy cannot lead out), and never a system
         interface, a socket, or a directory holding the gate's or podman's sockets. The dev tier's covers,
         masks and foreign-owner check do not apply: the copy holds the real .env by design."""
+        if any(real == z or inside(real, z) for z in
+               {os.path.realpath(t) for t in DEPLOY_TIMEZONE} | set(DEPLOY_TIMEZONE)) and real != "/":
+            return "the host's timezone, which may only be bound read-only" if rw else None
         if real == "/" or any(inside(real, s) for s in DEPLOY_SYSTEM):
             return "a system path"
         for sock in (self.cfg.get("raw"), self.cfg.get("upstream"), self.cfg.get("listen")):
