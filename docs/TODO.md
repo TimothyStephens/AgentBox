@@ -115,16 +115,13 @@ Left:
 | D-E9 | the network-less `Session` path | **removed, 5 Nov** (decisions.md). `Session` and `NetSession` are one class; `make_session` has one thing to return. |
 | D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` | **keep.** A deliberate knob that makes two checks always refuse — a constant branch, not dead code. |
 
-### 4.2 Duplicated enforcement logic — consolidate only when a bug traces to the drift
+### 4.2 Done 17 Nov: duplicated enforcement logic
 
-Do not merge pre-emptively; add tests pinning the shared behaviour first.
-
-- **Secret-name test: one list and one matcher since 16 Nov.** `grantcheck` and the gate's N6 check both call
-  `mounts._masked` (review item 28; the profiling entry). The gate still ignores custom swap targets. **Known drift:** a custom swap target (e.g. `secrets.env`) is masked, but
-  the gate's N6 check does not flag one created mid-session. That is the accepted host-writes-during-session
-  limitation, not a bug to fix here.
-- ~~**`mask_skip` resolved twice**~~ — **done, 16 Nov** (review item 56): both now resolve through
-  `mounts.mask_skip_paths`.
+The secret-name list and matcher were made one on 16 Nov (item 28), and `mask_skip` one resolver (item 56).
+The "known drift" recorded here was not real: every swap target must be a masked name (F-12), so the gate's
+late-secret check (N6) already found a mid-session `secrets.env`; a test pins it. The real gap of the same
+kind was the project's own `mask` names: the gate now gets them and refuses a bind containing a file or
+directory of that name that appeared after the start.
 
 ### 4.3 Done 17 Nov: gate error paths covered
 

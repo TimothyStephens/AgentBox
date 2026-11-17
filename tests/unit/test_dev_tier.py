@@ -86,7 +86,7 @@ class GateConfig(SettingsCase):
         cfg = self.config(s)
         self.assertEqual(sorted(cfg), sorted([
             "listen", "upstream", "raw", "session", "network", "labels", "proxy_env", "bind_roots", "covered",
-            "covered_ids", "ro_roots", "masked", "subnets", "cgroup_parent", "slice", "memory", "pids",
+            "covered_ids", "ro_roots", "masked", "mask_names", "subnets", "cgroup_parent", "slice", "memory", "pids",
             "memory_max", "pids_max", "build_memory", "holder", "registries", "images", "spool", "built_record",
             "build_proxy_env", "build_dns", "log"]))
         self.assertEqual((cfg["listen"], cfg["upstream"], cfg["raw"]),

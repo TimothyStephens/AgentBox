@@ -309,3 +309,49 @@ class CannotConfirmMounts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LateMasksOfTheProjectsOwn(unittest.TestCase):
+    """TODO 4.2 (17 Nov). The project's own `mask` names masked only what existed at the start, so a `data`
+    directory or `state.db` that appeared mid-session could be bound into a dev container. And the "custom swap
+    target" drift the TODO recorded is pinned as not real: every swap target must be a masked name (F-12)."""
+
+    def setUp(self):
+        from tests.unit.test_review_step5 import CoversAudit
+        self._audit = CoversAudit("setUp")
+        self._audit.setUp()
+        self.addCleanup(self._audit.doCleanups)
+        self.proj = self._audit.proj
+        self.base = os.path.join(self.proj, "app")
+
+    def gate(self, names=()):
+        g = self._audit.gate()
+        g.cfg["mask_names"] = list(names)
+        return g
+
+    def test_a_late_directory_with_a_mask_name_is_refused(self):
+        os.makedirs(os.path.join(self.base, "data"))
+        self.assertIsNone(self.gate().unmasked_secret_under(self.base), "without the name it is ordinary")
+        self.assertEqual(self.gate(["data"]).unmasked_secret_under(self.base), os.path.join(self.base, "data"))
+
+    def test_a_late_file_with_a_mask_name_is_refused(self):
+        with open(os.path.join(self.base, "state.db"), "w") as f:
+            f.write("rows")
+        self.assertEqual(self.gate(["state.db"]).unmasked_secret_under(self.base),
+                         os.path.join(self.base, "state.db"))
+
+    def test_a_covered_mask_name_is_not_a_finding(self):
+        os.makedirs(os.path.join(self.proj, "secrets", "data"))         # under a covered path
+        self.assertIsNone(self.gate(["data"]).unmasked_secret_under(os.path.join(self.proj, "secrets")))
+
+    def test_a_late_custom_swap_target_is_already_found(self):
+        with open(os.path.join(self.base, "secrets.env"), "w") as f:
+            f.write("K=V")
+        self.assertEqual(self.gate().unmasked_secret_under(self.base), os.path.join(self.base, "secrets.env"))
+
+    def test_the_session_passes_its_mask_names_and_not_its_mask_paths(self):
+        import inspect
+        from agentbox import session
+        src = inspect.getsource(session.Session.gate_config)
+        self.assertIn('"mask_names"', src)
+        self.assertIn("mask_is_path", src)

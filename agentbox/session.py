@@ -1087,6 +1087,7 @@ class Session:
             "proxy_env": proxy_env, "bind_roots": self.bind_roots, "covered": self.covered_paths(),
             "covered_ids": self.cover_ids(), "ro_roots": [os.path.realpath(r) for r in self.project.data_ro],
             "masked": self.masked_paths(),
+            "mask_names": [m for m in self.project.mask if not mounts.mask_is_path(m)],
             "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
             "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,

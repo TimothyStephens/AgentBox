@@ -445,9 +445,9 @@ class Gate:
                        "under a masked or covered path")
         new = self.unmasked_secret_under(real)
         if new is not None:
-            raise Deny(f"bind mount {src} contains {new}, a file named like a secret that the session does not "
-                       "mask (it appeared after the session started). Move it out of the project, or start a new "
-                       "session so it is masked")
+            raise Deny(f"bind mount {src} contains {new}, named like a secret or like one of the project's own "
+                       "masks, which the session does not mask (it appeared after the session started). Move it "
+                       "out of the project, or start a new session so it is masked")
 
     def unmasked_secret_under(self, real):
         """A non-empty file named like a secret (the names mounts.py masks: MASK_FILES less MASK_EXEMPT, or
@@ -458,16 +458,23 @@ class Gate:
         if not os.path.isdir(real):
             return None
         covered = self._covered()
+        # The project's own `mask` NAMES (a bare `data`, `state.db`) mask whatever has that name at the start;
+        # one that appears later is as unmasked as a new `.env` (TODO 4.2, 17 Nov). Its PATH entries are made
+        # at the start if missing, so they are always covered.
+        names = set(self.cfg.get("mask_names") or [])
         n = 0
         for dirpath, dirnames, filenames in os.walk(real, followlinks=False):
             dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
             n += len(dirnames) + len(filenames)
             if n > BIND_SCAN_LIMIT:
                 return f"{real} (over {BIND_SCAN_LIMIT} entries; too large to check)"
+            for d in dirnames:
+                if d in names and not any(inside(os.path.join(dirpath, d), c) for c in covered):
+                    return os.path.join(dirpath, d)
             in_secrets = any(p in _m.MASK_DIRS for p in os.path.relpath(dirpath, real).split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
-                if not (in_secrets or _m._masked(fn)):
+                if not (in_secrets or _m._masked(fn) or fn in names):
                     continue
                 try:
                     st = os.lstat(p)
