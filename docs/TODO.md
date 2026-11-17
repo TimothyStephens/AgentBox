@@ -7,14 +7,14 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 16 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
+**State as of 17 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
 `agentbox-{claude,omp}` → optional personal layer, each agent CLI installed at a Makefile pin the build
 asserts. Plugins for both agents come from `ab profile install <agent>` (the profile's `plugins.toml`,
-installed in a sandbox, mounted read-only); `~/.omp` is not an input and `omp_home` is a retired setting.
-Which gates are green, and at which commit, is recorded in `docs/progress.md` (Status) and the dated run
-records in `docs/decisions.md`; this file keeps no counts. The independent review of 16 Nov and the fixes it
-led to are one decisions.md entry ("Review 2026-11-16"); the host gates on that tree (`make check`, `itest`,
-`claude-live`, `omp-live`, both profiles deployed and installed, both selftests) passed the same day.
+installed in a sandbox, mounted read-only). Which gates are green, and at which commit, is recorded in
+`docs/progress.md` (Status) and the dated run records in `docs/decisions.md`; this file keeps no counts.
+**Sections 1, 2 and 4 were emptied on 17 Nov**; the work is in "Recently closed" below and in decisions.md.
+That day's changes (backup caches, scan fingerprints, gate fixes and split, `--resolve`, `--podman none`)
+pass the unit suite; `make itest` and the other host gates have not run on them yet.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -23,34 +23,14 @@ led to are one decisions.md entry ("Review 2026-11-16"); the host gates on that 
 
 ## 1. Open questions — a decision is needed before any code
 
-None open. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox, as its own container, and
-nothing of it remains in the launcher (decisions.md, 2026-11-15). The three session features its plan
-listed (a sealed network for gate-created containers, a combined keys file on tmpfs, worktree-aware scan)
-are not asked for by anything else and are not on the backlog.
+None. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox as its own container (decisions.md).
 
 ---
 
 ## 2. Ready to implement — scoped, no decision needed
 
-### 2.1 Done 17 Nov: `ab profile install <agent> --resolve`
-
-Prints each entry's pin beside its source's current one (`git ls-remote <url> HEAD` for marketplaces and repos,
-the registry's `latest` for npm), in the install's hardened container with nothing of the host mounted, and
-changes nothing; it prints the `ref = "…"` / `version = "…"` line to paste. Exit 1 if an entry could not be
-checked. The script was run for real against the omp profile's sources from a session (3 of 7 entries had
-newer pins). Unverified on the host: one `ab profile install omp --resolve`, which adds the container.
-
-### 2.2 Done 17 Nov: `make omp-live` refuses at once when no model is chosen
-
-Both halves: with neither `AB_LIVE_MODEL` nor `~/.config/agentbox/omp/config.yml` it exits 2 before making
-anything, naming both fixes; and `config.yml` is now copied into the run's config beside `models.yml`, so a
-default model set there is actually used (it was not copied before, so it could not have helped).
-Unverified on the host: one `make omp-live`.
-
-### 2.3 Done 16 Nov: regression review of the 16 Nov fixes
-
-Four fresh reviewers over `c782560..`; seven findings fixed with tests (`docs/reviews/2026-11-16-regression.md`).
-One left for a decision: `--podman none` keeps the preset's `live = observe`.
+None. The candidates for the next round are the features in section 3, which each need a decision first,
+and the two "decide later" items in section 5.
 
 ---
 
@@ -98,60 +78,10 @@ within-session undo (explicitly not a data backup), so unwanted edits are a `git
 
 ## 4. Maintainability backlog
 
-Deferred work with a stated trigger, carried from `docs/reviews/2026-10-06-cleanup.md`. Line numbers drift —
-treat them as a starting point and confirm before acting.
-
-### 4.1 Enforcement dead code — 9 of 11 removed (4 Nov)
-
-The rule was "remove only after a real-use baseline, each with a test proving the **live** guard bites
-first". The baseline arrived with the image restructure and nine went (decisions.md, 4 Nov — including the
-two that were worth more than the deletion: `check_limits` had no test at all, and `hardening`'s `/dev/null`
-branch returned *before* the grant check, so the tests that used it were skipping that check unintentionally).
-
-Left:
-
-| ID | Where | Status |
-|---|---|---|
-| D-E9 | the network-less `Session` path | **removed, 5 Nov** (decisions.md). `Session` and `NetSession` are one class; `make_session` has one thing to return. |
-| D-E11 | `gate.py` `SYSCTL_ALLOWED = ()` | **keep.** A deliberate knob that makes two checks always refuse — a constant branch, not dead code. |
-
-### 4.2 Done 17 Nov: duplicated enforcement logic
-
-The secret-name list and matcher were made one on 16 Nov (item 28), and `mask_skip` one resolver (item 56).
-The "known drift" recorded here was not real: every swap target must be a masked name (F-12), so the gate's
-late-secret check (N6) already found a mid-session `secrets.env`; a test pins it. The real gap of the same
-kind was the project's own `mask` names: the gate now gets them and refuses a bind containing a file or
-directory of that name that appeared after the start.
-
-### 4.3 Done 17 Nov: gate error paths covered
-
-E5, E6, E9, E10, E11 and E12 have tests (`test_gate_error_paths.py`, `test_gate_http_build_errors.py`, 53
-tests). Writing them found three fail-open or late-failing paths, all fixed: the `# escape=` directive read
-outside buildkit's rule (it could hide a FROM), `ignoreIfExists` spellings, and a build chunk buffered before
-the size limit (`docs/reviews/2026-11-17-gate-error-paths.md`).
-
-### 4.4 Support refactors (no behaviour change)
-
-Do these **only alongside a change that already touches the area**, with the suite as the net.
-
-- **Module-level splits done, 16 Nov** (review item 54): `gate.py` lost its schema tables, Containerfile
-  reader, mountinfo parsers and HTTP framing to `gate_*` modules; `session.py` lost notes, liveness, state,
-  infra, lifecycle, the lock and the project record to their own modules; `cli.py` has one module per noun.
-- **`Gate` class split done, 17 Nov** (no behaviour change; every method's AST and `dir(gate.Gate)` compared
-  equal before and after). `Gate` (now ~950 lines, `gate.py` 2,082 → 1,381) keeps policy and dispatch and
-  inherits two mixins: `gate_mounts.MountsMixin` (grant roots and covers, `covers_intact`, `covers_overlap`,
-  bind and mount-option checks, grant volumes, `mount_violations`, `prepare_start`/`after_start_checked` and
-  the per-container locks) and `gate_images.ImagesMixin` (`check_image*`, `check_build_images`,
-  `check_context_masks`, build/pull rewrites, `holder_ns`, the built-image record), with the module-level
-  names they use (`ROLE_GRANT`, `MOUNT_OPTION_OK`; the build key tables, `LocalImage`, `_member_key`,
-  `image_created`; `DEV_OWNER` to `gate_schema`), all re-exported from `gate.py`. `unmasked_secret_under`
-  stays in `gate.py`: a test lowers `gate.BIND_SCAN_LIMIT` to reach its cutoff, which would not reach a copy
-  in another module. Not done, on purpose: the long methods (`decide` ~85 lines, `rewrite_libpod_container`
-  ~70, `check_common_libpod` ~58) are left whole; the pod inspects on a pod start are left as they are (four,
-  not three: `require_dev` and `start_targets` by ID, `check_start`'s infra lookup and `decide`'s
-  `require_dev` by the client's name, the last after the containers were stopped and initialised; the server
-  is threaded, so another request can change the pod between them, and they are not provably one state).
-  A single snapshot would be a deliberate behaviour change with its own test.
+Empty since 17 Nov: dead enforcement code removed (4-5 Nov), the duplicated secret-name and `mask_skip` logic
+made one (16 Nov) with the project-mask gap it hid closed, the gate's untested error paths covered (53 tests,
+three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (16-17 Nov). Keep
+`SYSCTL_ALLOWED = ()` in gate.py: a deliberate knob, not dead code.
 
 ---
 
@@ -162,22 +92,23 @@ Do these **only alongside a change that already touches the area**, with the sui
   items; `make egress-soak` is the measurement.
 - **`make omp-live`'s local model is slow** — about 257 s for one turn, which is why that check used to fail
   intermittently. **Accepted** (4 Nov). The recorded passes since 13 Nov use
-  `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash` (about 50 s); see 2.2 for running without one.
+  `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash` (about 50 s). Without it omp-live needs a default model in
+  `~/.config/agentbox/omp/config.yml`, and refuses at once if neither is set (17 Nov). A run on the
+  config.yml model hung on 17 Nov with the memory pool full; not yet explained.
 - **OMP's Anthropic provider cannot reach api.anthropic.com from a session** (`getaddrinfo ENOTFOUND`, 11 Nov,
   again 16 Nov): OMP's Anthropic client resolves the name itself instead of going through `HTTPS_PROXY`; its
   OpenAI-compatible client is fine. Upstream OMP behaviour; not tested through a third-party route by choice
   (12 Nov). Act if Anthropic models are wanted in OMP sessions.
-- **Session start time** (profiled 16 Nov, decisions.md). After the log-driver and stop-timeout changes the
-  rest is podman's own container starts and the host's `podman images`. Sockguard's `podman run -d` varied
-  0.7-6.7 s in the first profile (journald log driver) and 0.5-0.9 s in all 13 runs after the switch to
-  k8s-file (17 Nov, from `perf-results/`). What is left is one sidecar `run -d` in about one start in four
-  taking 1.7-3.2 s (sockguard-dev or holder, not the same one each time) with nothing of agentbox's
-  running beside it: podman's own variance, likely its storage or database lock. No launcher change.
-  The grants are walked about five times per start, but a bare walk is cheap (0.45 s on 98k files in a
-  session, 17 Nov); the cost was per-file work inside them. Fixed 17 Nov: the mask plan (19.9 s to 0.9 s)
-  and the scan record (16.4 s to 2.1 s, no executable hashed, tagged caches skipped). Left: grantcheck's
-  per-file lstat (11.6 s there, for the foreign-owner warning and sizes); decide after toulmin's numbers on
-  the host. `tests/perf/run.sh` re-measures.
+- **Session start time.** Profiled 16-17 Nov (decisions.md). What remains is podman's own: about one start in
+  four has one sidecar `run -d` taking 1.7-3.2 s (journald was the bigger spread, gone since the k8s-file
+  switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches); left is
+  grantcheck's per-file lstat (11.6 s on 98k files inside a session, likely well under 1 s on the host warm).
+  **Decide after a toulmin start on the host**: limit it to files whose name or suffix matters, at the cost
+  of the foreign-owner warning for ordinary files. `tests/perf/run.sh` re-measures.
+- **A pod start inspects the pod four times** (`require_dev`, `start_targets`, `check_start`'s infra lookup,
+  `decide`'s second `require_dev`), and the gate serves requests on threads, so the pod can change in between.
+  Not a known bug: each inspect is checked on its own. Reading it once would make the checks agree on one
+  state; that is a behaviour change in the gate, so it waits for a decision.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
   when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 
@@ -206,6 +137,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 17 Nov | TODO sections 2 and 4 emptied: `ab profile install --resolve`; omp-live refuses without a model; the gate's error paths tested (escape directive, `ignoreIfExists` spellings and build-chunk buffering fixed); late project-mask names refused in binds; the `Gate` class split. Also: backups skip `CACHEDIR.TAG` caches and can prune read-only trees, the scan fingerprints executables by metadata, the mask plan 20× faster on big trees, `--podman none` clears live access, long steps print progress |
 | 16 Nov | The independent review's findings fixed (about 100 commits, one test each); modules split along their seams; host gates, both profile deploys and both selftests pass on the result |
 | 15 Nov | MAGS-CodeDev decided: it stays outside agentbox as its own container; a failed plugin install keeps the previous tree, and a `[[repo]]` without a `package.json` is refused before linking |
 | 13 Nov | OMP's OpenAI-compatible providers (OpenRouter) work through squid |
