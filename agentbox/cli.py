@@ -6,7 +6,7 @@ import sys
 from . import config, layout, presets, session
 from .errors import AgentboxError
 from .podman import Podman
-from . import cli_keys, cli_profile, cli_project, cli_session
+from . import cli_deploy, cli_keys, cli_profile, cli_project, cli_session
 from .cli_project import (CLEAR_FLAGS, SECURITY_OVERRIDES, SETTING_FLAGS, UNSETTABLE,  # noqa: F401
                           _add_identity_args, _add_project_setting_args, _add_project_unset_args, _add_registered,
                           _apply_project_settings, _check, _given, _grant_kw, _grants_more, _history_secrets,
@@ -160,6 +160,8 @@ def parser(settings=None):
         epilog=ex("ab keys rotate claude", "ab keys set openai", "ab keys ls", "ab keys rm openai"))
     ks = ks_noun.add_subparsers(dest="sub", required=True, metavar="<verb>")
     cli_keys.add_verbs(ks, add, ex)
+
+    cli_deploy.add_command(sub, add, ex)
 
     # Everyday nouns first; the host-setup and repair nouns still parse but list under `advanced`.
     finish(p, demote(sub, ["profile", "image", "keys"]), "commands")

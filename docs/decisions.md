@@ -3244,3 +3244,20 @@ An executable the agent drops into `target/` is not reported; Cargo overwrites t
 
 **Also, same day.** The mask plan tested each file's type (two stats) before its name; the name comes first
 now: 19.9 s to 0.9 s on the same tree (0c441a2).
+
+## 2026-11-17 · `ab deploy`: the shape decided
+
+**What.** Tim's decisions on `docs/deploy-proposal.md`, all as recommended:
+- **D1, enforcement.** podman-compose runs in a short-lived runner container whose only podman access is the
+  gate in a deploy mode, so every create, build and published port is checked as podman-compose makes it.
+  This is design.md's "sockguard deploy profile, never the raw socket", made concrete; it is not a YAML check.
+- **D2, source.** A commit, never the working tree: a clean tracked tree is required, the commit is copied out
+  with `git archive` plus the real `.env`, and everything is built and run from that copy.
+- **D3, egress.** The live stack gets its own podman networks with ordinary egress; never host networking.
+- **D4, binds.** Binds outside the copy come only from a per-project `deploy_binds` allowlist.
+- **D5, cgroup.** The live stack runs in the host's default cgroup, not agentbox.slice.
+
+**Why.** The compose file, Containerfile and code are agent-written, and deploy is when they start running on
+the LAN with real secrets. A static check misses build steps and podman-compose extras. Deploying the working
+tree would let the agent change files between the review and the run. design.md is updated as each part lands;
+the proposal file is deleted when the whole is built.

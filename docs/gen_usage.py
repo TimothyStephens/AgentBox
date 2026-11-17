@@ -47,6 +47,9 @@ GROUPS = [
         ("ab screen layouts", ["screen", "layouts"]),
         ("ab screen config", ["screen", "config"]),
     ]),
+    ("ab deploy", [
+        ("ab deploy", ["deploy"]),
+    ]),
     ("ab profile", [
         ("ab profile", ["profile"]),
         ("ab profile harvest", ["profile", "harvest"]),
@@ -76,6 +79,8 @@ INTENT = {
                "named volume) and register it, so a fresh project starts a session with no warnings.",
     "ab session start": "Start an agent session against a project in the foreground — build the sandbox, run the "
                         "agent, tear it down on exit.",
+    "ab deploy": "Start a project's live stack from a reviewed commit, on the host. Being built (decisions.md, "
+                 "17 Nov): `--check` runs every check and shows the review; the deploy itself is not built yet.",
     "ab session attach": "Re-attach a terminal to the session already running for a project (or a session id).",
     "ab screen": "tmux workspaces, one per project: agent panes (each an `ab session start`) and host shells in a "
                  "layout from ~/.config/agentbox/screen.toml. The verbs mirror `ab session`.",

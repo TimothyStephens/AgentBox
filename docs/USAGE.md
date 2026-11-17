@@ -14,6 +14,7 @@ For the two command namespaces and when to reach for each, see `docs/design.md` 
 - [ab project](#ab-project)
 - [ab session](#ab-session)
 - [ab screen](#ab-screen)
+- [ab deploy](#ab-deploy)
 - [ab profile](#ab-profile)
 - [ab image](#ab-image)
 - [ab keys](#ab-keys)
@@ -35,6 +36,7 @@ positional arguments:
     session   the live runs: start, attach, list, preview, kill, gc
     screen    tmux workspaces: one per project, agent panes and host shells in
               a layout
+    deploy    start a project's live stack from a reviewed commit (host only)
 
 options:
   -h, --help  show this help message and exit
@@ -1135,6 +1137,36 @@ options:
 
 examples:
   ab screen config > ~/.config/agentbox/screen.toml
+```
+
+## ab deploy
+
+### `ab deploy`
+
+Start a project's live stack from a reviewed commit, on the host. Being built (decisions.md, 17 Nov): `--check` runs every check and shows the review; the deploy itself is not built yet.
+
+```text
+usage: ab deploy [-h] [--lan ADDR:PORT] [--commit REF] [--check] project
+
+start a project's live stack from a reviewed commit (host only)
+
+positional arguments:
+  project          the registered project whose live stack to deploy
+
+options:
+  -h, --help       show this help message and exit
+  --lan ADDR:PORT  the address of this host and the port the stack publishes
+                   on; nothing else is published
+  --commit REF     deploy this commit instead of HEAD (a redeploy or a
+                   rollback); the working tree need not be clean then, since
+                   nothing is taken from it but the real .env
+  --check          show the review and run every check, then stop: start
+                   nothing, record nothing
+
+examples:
+  ab deploy filelab --check
+  ab deploy filelab --lan 10.0.0.103:8095
+  ab deploy filelab --commit 3f2a9c1 --check
 ```
 
 ## ab profile
