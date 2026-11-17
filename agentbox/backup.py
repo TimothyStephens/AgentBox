@@ -2,9 +2,11 @@
 import datetime
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 from .errors import AgentboxError
 from .fsutil import rmtree
@@ -97,7 +99,10 @@ def _run_rsync(argv, progress=None):
         return p.returncode, p.stdout, p.stderr
     argv = argv[:1] + ["--info=progress2", "--no-inc-recursive"] + argv[1:]
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=err)
+        # Its own process group: a local rsync is two processes (sender and receiver), and killing only the
+        # one we started left the receiver writing into the snapshot while it was being removed, so an
+        # interrupted backup could leave `.incomplete` behind (seen under load, 17 Nov).
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=err, start_new_session=True)
         kept, buf = [], b""
         try:
             while True:
@@ -116,7 +121,10 @@ def _run_rsync(argv, progress=None):
             kept.append(buf)
             proc.wait()
         except BaseException:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             proc.wait()
             raise
         finally:
@@ -124,6 +132,16 @@ def _run_rsync(argv, progress=None):
         err.seek(0)
         return (proc.returncode, b"\n".join(kept).decode(errors="replace"),
                 err.read().decode(errors="replace"))
+
+
+def _remove(path):
+    """Remove a cut-short snapshot. Retried briefly: a killed rsync's last write can land just after the
+    first pass."""
+    for _ in range(10):
+        rmtree(path, ignore_errors=True)
+        if not os.path.lexists(path):
+            return
+        time.sleep(0.05)
 
 
 def _snapshots(backups):
@@ -192,17 +210,17 @@ def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
             # session -- but as a condition with a fix in it, not a traceback (the same shape as a missing
             # podman binary, audit F-2). Only a missing binary gets the install advice: a full /tmp or a
             # closed stderr is an OSError too (review 16 Nov, R-7).
-            rmtree(work, ignore_errors=True)
+            _remove(work)
             if not (isinstance(e, FileNotFoundError) and e.filename in (None, argv[0])):
                 raise AgentboxError(f"backup of {g} failed: {e}")
             raise AgentboxError(f"cannot run rsync ({e}); agentbox needs it for the pre-session snapshot of "
                                 f"{g}. Install it (`apt-get install rsync`) -- see docs/INSTALL.md.")
         except BaseException:
-            rmtree(work, ignore_errors=True)
+            _remove(work)
             raise
         # 24 = some files vanished during the copy; the snapshot is still usable.
         if rc not in (0, 24):
-            rmtree(work, ignore_errors=True)
+            _remove(work)
             raise AgentboxError(f"backup of {g} failed (rsync {rc}): {err.strip()[-300:]}")
         total += _total_size(out)
     os.rename(work, final)

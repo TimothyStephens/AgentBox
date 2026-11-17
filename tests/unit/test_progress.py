@@ -101,6 +101,28 @@ class BackupProgress(TempCase):
         with self.assertRaises(KeyboardInterrupt):
             backup.snapshot(self.backups, "s1", [self.src], step=_Recorder(raise_at=0.0))
         self.assertEqual(os.listdir(self.backups), [])
+        self.assertEqual(self._rsyncs_into(self.backups), [], "rsync's receiver is killed too")
+
+    @staticmethod
+    def _rsyncs_into(path):
+        found = []
+        for pid in os.listdir("/proc"):
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read().decode(errors="replace")
+            except OSError:
+                continue
+            if cmd.startswith("rsync") and path in cmd:
+                found.append(pid)
+        return found
+
+    def test_the_whole_rsync_process_group_is_killed(self):
+        """A local rsync forks a receiver; killing only the parent left it writing into the snapshot."""
+        from unittest import mock
+        with mock.patch("agentbox.backup.os.killpg", wraps=os.killpg) as killpg, \
+                self.assertRaises(KeyboardInterrupt):
+            backup.snapshot(self.backups, "s1", [self.src], step=_Recorder(raise_at=0.0))
+        self.assertEqual(killpg.call_count, 1)
 
 
 if __name__ == "__main__":
