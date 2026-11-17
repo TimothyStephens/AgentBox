@@ -2,16 +2,60 @@
 import datetime
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 
 from .errors import AgentboxError
+from .fsutil import rmtree
 
 EXCLUDE_NAMES = (".venv", "venv", "node_modules", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache",
                  ".ruff_cache", ".tox", ".nox", ".gradle", ".parcel-cache", ".turbo", ".next")
 SNAP = re.compile(r"^(\d{8})-(\d{6})-(.+)$")
+# The Cache Directory Tagging spec (bford.info/cachedir): a folder holding a CACHEDIR.TAG that starts with
+# this line is a cache its tool can rebuild, and backups may leave it out. Cargo tags every `target/`, which
+# in a Rust project is most of the tree (a 56 GB target/ in a 65 GB project took the backup to 53 GB).
+CACHEDIR_TAG = "CACHEDIR.TAG"
+CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+
+
+def _tagged_cache(path):
+    try:
+        with open(os.path.join(path, CACHEDIR_TAG), "rb") as f:
+            return f.read(len(CACHEDIR_SIGNATURE)) == CACHEDIR_SIGNATURE
+    except OSError:
+        return False
+
+
+def cache_dirs(grant, skip_rel=(), exclude_rel=()):
+    """Folders under `grant` (relative paths) tagged as caches with a valid CACHEDIR.TAG. The walk does not
+    enter what the backup leaves out anyway (EXCLUDE_NAMES, `skip_rel`, `exclude_rel`) or a tagged folder,
+    and follows no symlink. The tag is looked for in each folder's own listing, which the walk reads anyway,
+    so an untagged tree costs one scandir per folder and no failed opens. The grant itself is never
+    reported: a project root is not a cache."""
+    pruned = {os.path.normpath(s.strip("/")) for s in (*skip_rel, *exclude_rel)}
+    found, stack = [], [""]
+    while stack:
+        rel = stack.pop()
+        path = os.path.join(grant, rel)
+        try:
+            with os.scandir(path) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        if rel and any(e.name == CACHEDIR_TAG for e in entries) and _tagged_cache(path):
+            found.append(rel)
+            continue
+        for e in entries:
+            try:
+                if not e.is_dir(follow_symlinks=False) or e.name in EXCLUDE_NAMES:
+                    continue
+            except OSError:
+                continue
+            r = os.path.join(rel, e.name)
+            if r not in pruned:
+                stack.append(r)
+    return sorted(found)
 
 
 def _rsync_literal(s):
@@ -130,29 +174,35 @@ def snapshot(backups, session, grants, *, skip_rel_for=lambda g: (),
             cand = os.path.join(backups, prev[-1], g.lstrip("/"))
             if os.path.isdir(cand):
                 link = cand
-        argv = rsync_argv(g, dst, link_dest=link, skip_rel=skip_rel_for(g), exclude_rel=exclude_rel_for(g))
+        skip, excl = skip_rel_for(g), exclude_rel_for(g)
+
+        def copy(progress=None):
+            caches = cache_dirs(g, skip, excl)
+            argv = rsync_argv(g, dst, link_dest=link, skip_rel=[*skip, *caches], exclude_rel=excl)
+            return argv, _run_rsync(argv, progress)
+        argv = ["rsync"]
         try:
             if step is None:
-                rc, out, err = _run_rsync(argv)
+                argv, (rc, out, err) = copy()
             else:
                 with step(g) as st:
-                    rc, out, err = _run_rsync(argv, st.progress)
+                    argv, (rc, out, err) = copy(st.progress)
         except OSError as e:
             # The pre-session snapshot is the session's only undo, so a missing rsync has to stop the
             # session -- but as a condition with a fix in it, not a traceback (the same shape as a missing
             # podman binary, audit F-2). Only a missing binary gets the install advice: a full /tmp or a
             # closed stderr is an OSError too (review 16 Nov, R-7).
-            shutil.rmtree(work, ignore_errors=True)
+            rmtree(work, ignore_errors=True)
             if not (isinstance(e, FileNotFoundError) and e.filename in (None, argv[0])):
                 raise AgentboxError(f"backup of {g} failed: {e}")
             raise AgentboxError(f"cannot run rsync ({e}); agentbox needs it for the pre-session snapshot of "
                                 f"{g}. Install it (`apt-get install rsync`) -- see docs/INSTALL.md.")
         except BaseException:
-            shutil.rmtree(work, ignore_errors=True)
+            rmtree(work, ignore_errors=True)
             raise
         # 24 = some files vanished during the copy; the snapshot is still usable.
         if rc not in (0, 24):
-            shutil.rmtree(work, ignore_errors=True)
+            rmtree(work, ignore_errors=True)
             raise AgentboxError(f"backup of {g} failed (rsync {rc}): {err.strip()[-300:]}")
         total += _total_size(out)
     os.rename(work, final)
@@ -178,11 +228,11 @@ def retain(backups, *, keep=5, daily_days=7, today=None):
     removed = []
     for s in snaps:
         if s not in keep_set:
-            shutil.rmtree(os.path.join(backups, s), ignore_errors=True)
+            rmtree(os.path.join(backups, s), ignore_errors=True)
             removed.append(s)
     # Leftovers of interrupted backups; a day's grace so a concurrent session's copy is never removed.
     for d in os.listdir(backups) if os.path.isdir(backups) else []:
         full = os.path.join(backups, d)
         if d.endswith(".incomplete") and os.path.getmtime(full) < datetime.datetime.now().timestamp() - 86400:
-            shutil.rmtree(full, ignore_errors=True)
+            rmtree(full, ignore_errors=True)
     return removed

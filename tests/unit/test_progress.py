@@ -136,3 +136,87 @@ class ReviewR5toR7(TempCase):
                 backup.snapshot(self.mkdir("bk"), "s1", [src], step=_Recorder())
         self.assertNotIn("install", str(cm.exception).lower())
         self.assertIn("No space left", str(cm.exception))
+
+
+class CachesAreNotBackedUp(TempCase):
+    """A folder tagged with CACHEDIR.TAG is a rebuildable cache (Cargo tags every target/); toulmin-build's
+    56 GB target/ made each pre-session backup 53 GB."""
+    SIG = "Signature: 8a477f597d28d172789f06886806bc55\n# cargo\n"
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.mkdir("proj")
+        self.write("proj/src/main.rs", "fn main() {}")
+        self.write("proj/target/CACHEDIR.TAG", self.SIG)
+        self.write("proj/target/debug/big.rlib", "x" * 1000)
+        self.write("proj/crates/a/target/CACHEDIR.TAG", self.SIG)
+        self.write("proj/crates/a/target/debug/x.o", "x")
+        self.write("proj/notcache/CACHEDIR.TAG", "not the signature")
+        self.write("proj/notcache/keep.txt", "keep")
+
+    def test_tagged_folders_are_left_out_and_the_rest_is_kept(self):
+        snap = backup.snapshot(self.mkdir("bk"), "s1", [self.src])
+        root = os.path.join(snap, self.src.lstrip("/"))
+        self.assertTrue(os.path.isfile(os.path.join(root, "src", "main.rs")))
+        self.assertTrue(os.path.isfile(os.path.join(root, "notcache", "keep.txt")), "a wrong signature is no tag")
+        self.assertFalse(os.path.exists(os.path.join(root, "target")))
+        self.assertFalse(os.path.exists(os.path.join(root, "crates", "a", "target")))
+
+    def test_the_walk_skips_what_the_backup_skips_and_follows_no_symlink(self):
+        self.write("proj/skipped/target/CACHEDIR.TAG", self.SIG)
+        os.symlink(os.path.join(self.src, "target"), os.path.join(self.src, "link"))
+        self.assertEqual(backup.cache_dirs(self.src, skip_rel=["skipped"]), ["crates/a/target", "target"])
+
+    def test_a_tagged_grant_root_is_still_backed_up(self):
+        self.write("proj/CACHEDIR.TAG", self.SIG)
+        self.assertNotIn("", backup.cache_dirs(self.src))
+        self.assertNotIn(".", backup.cache_dirs(self.src))
+
+
+class ReadOnlyFoldersAreRemoved(TempCase):
+    """rsync -a keeps a folder's mode, so a toolchain's 0555 bin/ made a snapshot that a plain rmtree could not
+    remove: pruning silently kept every snapshot of toulmin-build, and its `.incomplete` leftovers."""
+
+    def tearDown(self):
+        for dirpath, dirnames, _ in os.walk(self.tmp):
+            for d in dirnames:
+                try:
+                    os.chmod(os.path.join(dirpath, d), 0o755)
+                except OSError:
+                    pass
+        super().tearDown()
+
+    def _tree(self, name):
+        root = self.mkdir(name)
+        self.write(f"{name}/bin/tool", "x")
+        self.write(f"{name}/locked/inner/f", "x")
+        os.chmod(os.path.join(root, "locked", "inner"), 0o000)
+        os.chmod(os.path.join(root, "locked"), 0o500)
+        os.chmod(os.path.join(root, "bin"), 0o555)
+        return root
+
+    def test_pruning_removes_snapshots_with_read_only_folders(self):
+        import datetime
+        src = self.mkdir("src")
+        self.write("src/bin/tool", "x")
+        os.chmod(os.path.join(src, "bin"), 0o555)
+        bk = self.mkdir("bk")
+        for i in range(4):
+            backup.snapshot(bk, "s", [src], now=datetime.datetime(2026, 1, 1, 0, 0, i))
+        backup.retain(bk, keep=2, daily_days=0)
+        self.assertEqual(sorted(os.listdir(bk)), ["20260101-000002-s", "20260101-000003-s"])
+
+    def test_rmtree_removes_unwritable_and_unreadable_folders(self):
+        from agentbox.fsutil import rmtree
+        root = self._tree("t")
+        rmtree(root)
+        self.assertFalse(os.path.exists(root))
+
+    def test_rmtree_does_not_touch_a_folder_a_symlink_points_at(self):
+        from agentbox.fsutil import rmtree
+        outside = self._tree("outside")
+        root = self.mkdir("t2")
+        os.symlink(outside, os.path.join(root, "link"))
+        rmtree(root)
+        self.assertFalse(os.path.exists(root))
+        self.assertEqual(os.stat(os.path.join(outside, "bin")).st_mode & 0o777, 0o555)

@@ -3171,3 +3171,30 @@ any interruption now removes it.
 **Not done.** `.local-tools`-style trees remain expensive to back up. `mask_skip` cannot be used for one that
 holds `.pem` CA bundles (grantcheck refuses them as unmasked); moving such toolchains out of the root, as a
 `data_ro` grant, is the advice.
+
+## 2026-11-17 · The backup leaves out folders tagged as caches (CACHEDIR.TAG)
+
+**What.** The pre-session backup no longer copies a folder holding a `CACHEDIR.TAG` that starts with the
+spec's signature line (bford.info/cachedir). Cargo writes one into every `target/`. design.md's backup bullet
+lists it with the other build caches.
+
+**Why.** The 16 Nov entry blamed `.local-tools/` for `toulmin-build`'s slow start. Measured on 17 Nov:
+`.local-tools/` is 9.7 GB, `target/` 56 GB (52 GB in `target/debug`), and the last snapshot 53 GB. The bulk
+was Cargo's build output, which Cargo rebuilds and which the tag exists to mark as safe to leave out.
+`target` is not added to EXCLUDE_NAMES because in other projects (Maven aside) a `target/` can be source;
+the tag is the tool's own statement. A tag without the signature line does not count.
+
+**Cost.** One extra walk per grant, before rsync. It skips what the backup skips (EXCLUDE_NAMES, `mask_skip`,
+the covers) and does not enter a tagged folder. It finds the tag in each folder's listing rather than
+opening a file per folder. Measured in a session on 20 000 files in 7 600 folders: 0.9 s, against 1.6 s for a
+bare `os.walk` of the same tree. That is about a quarter on top of rsync's 3.3-4 s for a tree with no cache,
+and it removes 56 GB from toulmin's copy.
+
+**Restore.** A restored snapshot has no `target/`; the next `cargo build` recreates it.
+
+**Also fixed (17 Nov).** Snapshot pruning, the cleanup of a cut-short backup, `ab project purge`,
+`ab project clean` and a failed clone-mode `ab project add` removed trees with `shutil.rmtree`, which cannot
+unlink anything inside a read-only folder. rsync -a keeps a folder's mode, so toulmin's 0555 toolchain
+`bin/` folders made snapshots that pruning silently never removed (and 54 GB of `.incomplete` leftovers the
+user's own `rm -rf` refused). `fsutil.rmtree` makes such a folder writable by its owner and retries; it
+chmods only folders inside the tree being removed and follows no symlink.

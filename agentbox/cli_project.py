@@ -302,8 +302,8 @@ def cmd_project_add(s, a):
         _add_registered(s, a, reg, presets_map, grant_kw)
     except BaseException:
         if made_clone:
-            import shutil
-            shutil.rmtree(made_clone, ignore_errors=True)
+            from .fsutil import rmtree
+            rmtree(made_clone, ignore_errors=True)
             warn(f"ab: removed the clone {made_clone} made for {a.name}, since it was not registered")
         raise
 
@@ -648,7 +648,7 @@ def _state_summary(s, project):
 def cmd_project_purge(s, a):
     """Delete the project's directory: agent state, inbox, grant backups, built-image record, identity. The
     one command that does -- and since one project is one directory, nothing of it is left anywhere else."""
-    import shutil
+    from .fsutil import rmtree
     registry.check_name(a.name)       # registered or not, but a NAME: `../x` must not become the rmtree target
     base = s.project_dir(a.name)
     if not os.path.isdir(base):
@@ -664,7 +664,7 @@ def cmd_project_purge(s, a):
     if not a.yes:
         print("nothing was deleted. Add --yes to go ahead.")
         return 1
-    shutil.rmtree(base)
+    rmtree(base)
     print(f"deleted {base}")
     return 0
 
@@ -686,7 +686,7 @@ def cmd_project_sync(s, a):
 
 def cmd_project_clean(s, a):
     """Remove a project's per-session clones (clone mode) that no live session uses."""
-    import shutil
+    from .fsutil import rmtree
     from .podman import Podman
     registry.check_name(a.name)       # as purge: the name goes straight into a path that is rmtree'd
     base = s.clones_dir(a.name)
@@ -704,7 +704,7 @@ def cmd_project_clean(s, a):
         if not a.yes:
             print(f"  would remove {path}")
             continue
-        shutil.rmtree(path, ignore_errors=True)
+        rmtree(path, ignore_errors=True)
         gone.append(path)
         print(f"  removed {path}")
     if not a.yes and os.listdir(base):
