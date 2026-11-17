@@ -1777,7 +1777,10 @@ class Gate:
                     return target, json.dumps(fn(spec)).encode(), kind
             if RE["net_create"].match(path):
                 q = parse_qsl(urlsplit(target).query)
-                if any(k.lower() == "ignoreifexists" and v.lower() in ("1", "true") for k, v in q):
+                # Fail closed on the spelling: podman decodes the flag with gorilla/schema, which takes "on" and
+                # every strconv.ParseBool true ("t", "T", "1", "TRUE", ...); only a plain false passes (review
+                # of the gate's error paths, 17 Nov).
+                if any(k.lower() == "ignoreifexists" and v.lower() not in ("", "0", "f", "false") for k, v in q):
                     raise Deny("ignoreIfExists is not allowed (an existing network would be reported as created)")
                 spec = self.rewrite_network(strict_loads(body, "network"), compat="/libpod/" not in path)
                 return target, json.dumps(spec).encode(), "net_create"

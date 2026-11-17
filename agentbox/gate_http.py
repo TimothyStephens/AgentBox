@@ -211,13 +211,25 @@ def spool_body(client, headers, rest, out, limit=MAX_BUILD_BODY):
             if len(buf) > end:
                 raise Deny("pipelined requests are not accepted (one request per connection)")
             return size
-        need = len(line) + 2 + n + 2
-        while len(buf) < need:
+        # Refused on the declared size, before any of it is read, and the payload streamed to `out` as it
+        # arrives: buffering a whole chunk first let one chunk declared at 8 GiB take 8 GiB of memory before
+        # the limit applied (item 43 fixed read_chunked, not this; review of the gate's error paths, 17 Nov).
+        if size + n > limit:
+            raise Deny("the build context is too large")
+        buf = after
+        put(buf[:n])
+        left, buf = n - min(n, len(buf)), buf[n:]
+        while left > 0:
+            chunk = client.recv(min(1 << 20, left))
+            if not chunk:
+                raise ValueError("connection closed mid-body")
+            put(chunk[:left])
+            buf, left = chunk[left:], left - min(left, len(chunk))
+        while len(buf) < 2:
             buf += more()
-        if buf[need - 2:need] != b"\r\n":
+        if buf[:2] != b"\r\n":
             raise ValueError("malformed chunk")
-        put(buf[len(line) + 2:need - 2])
-        buf = buf[need:]
+        buf = buf[2:]
 
 
 def recv_all(sock):

@@ -126,21 +126,12 @@ Do not merge pre-emptively; add tests pinning the shared behaviour first.
 - ~~**`mask_skip` resolved twice**~~ — **done, 16 Nov** (review item 56): both now resolve through
   `mounts.mask_skip_paths`.
 
-### 4.3 Uncovered gate HTTP error paths — cover opportunistically
+### 4.3 Done 17 Nov: gate error paths covered
 
-Reachable only through the HTTP/plumbing layer, mostly fail-closed error returns. Add a test when touching
-the area; none is a known defect. The 16 Nov fixes added framing tests (chunked bodies, smuggled requests
-after a body, `100 Continue`) in `test_review_step5.py`, so check E9 against them before writing new ones;
-the HTTP framing now lives in `gate_http.py` and the Containerfile reader in `gate_dockerfile.py`.
-
-| ID | What is untested |
-|---|---|
-| E5 | the `remove` failure path (the fake `raw_request` always returns 200) |
-| E6 | grant-volume create failure; a name collision with a non-grant volume; named-volume create failure |
-| E9 | `Content-Length` with `Transfer-Encoding`; an unsupported transfer encoding; a build context over 8 GB; a body/head over the limit |
-| E10 | build-context errors: unreadable dockerfile param, no Containerfile, Containerfile not a file, bad tar, `FROM` with no image, `# escape=` |
-| E11 | network create with `ignoreIfExists`; an unrecognised `/create` endpoint |
-| E12 | `mount_violations`' "cannot confirm what is mounted" branches |
+E5, E6, E9, E10, E11 and E12 have tests (`test_gate_error_paths.py`, `test_gate_http_build_errors.py`, 53
+tests). Writing them found three fail-open or late-failing paths, all fixed: the `# escape=` directive read
+outside buildkit's rule (it could hide a FROM), `ignoreIfExists` spellings, and a build chunk buffered before
+the size limit (`docs/reviews/2026-11-17-gate-error-paths.md`).
 
 ### 4.4 Support refactors (no behaviour change)
 

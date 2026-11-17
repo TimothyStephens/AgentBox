@@ -37,17 +37,44 @@ def _subst(value, args):
 _WS = re.compile(r"[ \t\v\f\r]+")
 
 
+# A parser directive, as buildkit reads one (frontend/dockerfile/parser/directives.go): `# name = value`,
+# leading whitespace allowed, names case-insensitive. Only these three are directives; any other name is a
+# comment, and like any comment it ends the directives.
+_DIRECTIVE = re.compile(r"^#\s*([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$")
+_KNOWN_DIRECTIVES = {"syntax", "escape", "check"}
+
+
+def parser_escape(lines):
+    """The escape character the Containerfile sets, read the way buildkit reads it: only from the leading run
+    of directive lines. The first line that is not a known directive (an instruction, an empty line, a plain
+    comment, an unknown directive) ends the run, and a `# escape=` after it is a comment. The gate used to
+    look at any of the first five lines, so `FROM a`, `# escape=\``, `RUN x \``, `FROM localhost/live` hid the
+    second FROM from the image check while buildah built from it (review of the gate's error paths, 17 Nov).
+    A repeated escape or a value other than `\\` or a backtick is refused, as buildkit refuses it."""
+    escape, seen = "\\", False
+    for line in lines:
+        m = _DIRECTIVE.match(line.lstrip(" \t"))
+        if not m or m.group(1).lower() not in _KNOWN_DIRECTIVES:
+            break
+        if m.group(1).lower() != "escape":
+            continue
+        if seen:
+            raise Deny("build: the Containerfile sets the escape directive twice")
+        if m.group(2) not in ("\\", "`"):
+            raise Deny(f"build: invalid escape directive {m.group(2)!r} (buildkit takes only \\ or a backtick)")
+        escape, seen = m.group(2), True
+    return escape
+
+
 def dockerfile_images(text, buildargs=None):
     """[(instruction, image ref)] a Containerfile uses: FROM, COPY/ADD --from, RUN --mount=...,from=. Stage
     names, stage numbers and `scratch` are not images. ARG defaults and build args are substituted."""
-    escape = "\\"
+    # buildkit drops a leading byte-order mark before it parses anything; left in, it would hide a first FROM.
+    text = text[1:] if text.startswith("\ufeff") else text
     # Lines end at "\n" only (buildkit's scanner; a trailing "\r" is dropped): str.splitlines would also break a
     # line at \v, \f or a lone \r, and see an instruction where buildkit sees one argument.
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
-    for line in lines[:5]:
-        m = re.match(r"^#\s*escape\s*=\s*(\S)\s*$", line, re.I)
-        if m:
-            escape = m.group(1)
+    escape = parser_escape(lines)
     logical, cur, heredocs = [], "", []
     for line in lines:
         if heredocs:
