@@ -123,7 +123,10 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         # new preset's live applies.
         stored = None if (newly_chosen and old_preset) else entry.get("podman")
         current = stored or presets_map.get(entry.get("preset"), {}).get("podman") or {}
-        entry["podman"] = {"tier": a.podman, **({"live": current["live"]} if current.get("live") else {})}
+        # `--podman none` means no podman access at all: it clears `live` too, so "none" on build, pods or
+        # operate no longer leaves the live stack observable (review 16 Nov; Tim chose this, 17 Nov).
+        keep_live = a.podman != "none" and current.get("live")
+        entry["podman"] = {"tier": a.podman, **({"live": current["live"]} if keep_live else {})}
     if a.compose_project:
         entry["compose_project"] = _check(a.name, "compose_project", a.compose_project)
     if a.observe_logs is not None:
@@ -805,8 +808,9 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                         "yours to back up (repeatable)")
     x.add_argument("--podman", choices=presets.PODMAN_TIERS, metavar="TIER",
                    help="podman tier: `none`, `observe` (read the live stack), or `dev` (run the agent's own "
-                        "<project>-dev stack). The preset's live-stack component (`live = observe` on build "
-                        "and operate) is kept; `--unset podman` returns the whole value to the preset's. "
+                        "<project>-dev stack). `observe` and `dev` keep the preset's live-stack component "
+                        "(`live = observe` on build, pods and operate); `none` removes it too, so the agent "
+                        "has no podman access at all. `--unset podman` returns the whole value to the preset's. "
                         "`exec` is refused — not built (default: inherited from the preset)")
     x.add_argument("--compose-project", metavar="NAME",
                    help="the live stack's compose project name for the observe tier (default: the project name)")

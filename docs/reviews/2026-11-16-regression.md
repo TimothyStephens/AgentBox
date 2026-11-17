@@ -32,7 +32,7 @@ fixer before it was fixed; each fix has a unit test that fails without it.
 
 - **`ab project set p --podman none` keeps the preset's `live = observe`** (1886181, recorded in decisions.md
   items 46-50). On `build`, `pods` and `operate` the agent can still read the live stack after "none", and
-  no CLI route removes it short of changing preset. The fixer's view: `none` should clear `live` too.
+  no CLI route removes it short of changing preset. The fixer's view: `none` should clear `live` too. **Decided 17 Nov:** Tim chose that; `none` now clears `live` (decisions.md, 17 Nov).
 
 ## Checked and found fine (summary)
 

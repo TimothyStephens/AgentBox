@@ -351,6 +351,21 @@ class PodmanTierKeepsLive(SetBase):
         self.assertEqual(self.rc("project", "set", "p5", "--preset", "script", "--podman", "none"), 0)
         self.assertEqual(self.entry("p5")["podman"], {"tier": "none"}, "script has no live component")
 
+    def test_none_clears_live_too(self):
+        """`none` reads as "no podman access"; keeping live = observe made it untrue (review 16 Nov)."""
+        from agentbox.project import podman_access
+        for name, preset in (("p6", "build"), ("p7", "operate")):
+            self.project(name, preset=preset)
+            self.assertIsNotNone(podman_access(session.load_project(self.settings, name)), "observe before")
+            self.assertEqual(self.rc("project", "set", name, "--podman", "none"), 0)
+            self.assertEqual(self.entry(name)["podman"], {"tier": "none"})
+            self.assertIsNone(podman_access(session.load_project(self.settings, name)), "no live access after")
+
+    def test_none_clears_a_stored_live_override(self):
+        self.project("p3", preset="script", podman={"tier": "dev", "live": "observe"})
+        self.assertEqual(self.rc("project", "set", "p3", "--podman", "none"), 0)
+        self.assertEqual(self.entry("p3")["podman"], {"tier": "none"})
+
     def test_show_prints_the_kept_live(self):
         self.project("p2", preset="build")
         self.rc("project", "set", "p2", "--podman", "observe")

@@ -199,10 +199,12 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        The preset's live-stack component (`live = observe` on
-                        build and operate) is kept; `--unset podman` returns
-                        the whole value to the preset's. `exec` is refused —
-                        not built (default: inherited from the preset)
+                        `observe` and `dev` keep the preset's live-stack
+                        component (`live = observe` on build, pods and
+                        operate); `none` removes it too, so the agent has no
+                        podman access at all. `--unset podman` returns the
+                        whole value to the preset's. `exec` is refused — not
+                        built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -350,10 +352,12 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        The preset's live-stack component (`live = observe` on
-                        build and operate) is kept; `--unset podman` returns
-                        the whole value to the preset's. `exec` is refused —
-                        not built (default: inherited from the preset)
+                        `observe` and `dev` keep the preset's live-stack
+                        component (`live = observe` on build, pods and
+                        operate); `none` removes it too, so the agent has no
+                        podman access at all. `--unset podman` returns the
+                        whole value to the preset's. `exec` is refused — not
+                        built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)
@@ -539,10 +543,12 @@ options:
                         (repeatable)
   --podman TIER         podman tier: `none`, `observe` (read the live stack),
                         or `dev` (run the agent's own <project>-dev stack).
-                        The preset's live-stack component (`live = observe` on
-                        build and operate) is kept; `--unset podman` returns
-                        the whole value to the preset's. `exec` is refused —
-                        not built (default: inherited from the preset)
+                        `observe` and `dev` keep the preset's live-stack
+                        component (`live = observe` on build, pods and
+                        operate); `none` removes it too, so the agent has no
+                        podman access at all. `--unset podman` returns the
+                        whole value to the preset's. `exec` is refused — not
+                        built (default: inherited from the preset)
   --compose-project NAME
                         the live stack's compose project name for the observe
                         tier (default: the project name)

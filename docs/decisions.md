@@ -3198,3 +3198,14 @@ unlink anything inside a read-only folder. rsync -a keeps a folder's mode, so to
 `bin/` folders made snapshots that pruning silently never removed (and 54 GB of `.incomplete` leftovers the
 user's own `rm -rf` refused). `fsutil.rmtree` makes such a folder writable by its owner and retries; it
 chmods only folders inside the tree being removed and follows no symlink.
+
+## 2026-11-17 · `--podman none` clears the live-stack component too
+
+**What.** `ab project set <p> --podman none` (and `add`/`init` with it) now stores `{tier = "none"}` with no
+`live`, so on `build`, `pods` and `operate` the agent loses its read access to the live stack as well.
+`--podman observe` and `--podman dev` keep the preset's or the stored `live`, as item 46 made them.
+
+**Why.** The 16 Nov regression review found that "none" kept `live = observe`, so the word said "no podman
+access" while the agent could still list, inspect and stat the live stack, and no flag removed it short of
+changing preset. Tim chose to make "none" mean none (option A of three; the others were a notice, or no
+change). "Keep watching the live stack, no dev stack" is `--podman observe`, or the `operate` preset.
