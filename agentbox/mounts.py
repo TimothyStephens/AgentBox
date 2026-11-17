@@ -126,11 +126,15 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
                 mounts.append(Mount("bind", dst, os.path.join(dirpath, dev), ro=ro))
                 handled.add(target)
         for fn in filenames:
-            full = os.path.join(dirpath, fn)
-            if fn in handled or os.path.islink(full) or not os.path.isfile(full):
+            # The name test first: it is a regex, the two file-type tests are a stat each, and nearly every
+            # file in a tree is not a mask candidate (two stats per file were 45% of a session's mask plan on
+            # a 100k-file Rust tree, 17 Nov).
+            if fn in handled or not _masked(fn):
                 continue
-            if _masked(fn):
-                mounts.append(Mount("mask", full))
+            full = os.path.join(dirpath, fn)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            mounts.append(Mount("mask", full))
     return mounts, create
 
 
