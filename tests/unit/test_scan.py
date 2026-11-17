@@ -553,3 +553,70 @@ class GitSafeIsShared(TempCase):
         with mock.patch.object(toulmin.subprocess, "run", fake_run):
             self.assertEqual(toulmin.head_of("/nowhere"), "abc123")
         self.assertEqual(seen[0][:1 + len(scan.GIT_SAFE)], ["git", *scan.GIT_SAFE], seen[0])
+
+
+class ExecutablesByMetadata(TempCase):
+    """17 Nov (Tim): executables are fingerprinted by metadata, not by hashing them, and folders tagged as caches
+    are not scanned. Hashing every executable took toulmin's start and end through GBs of target/ and
+    toolchains."""
+    SIG = "Signature: 8a477f597d28d172789f06886806bc55\n"
+
+    def setUp(self):
+        super().setUp()
+        self.g = self.mkdir("g")
+        self.tool = self.write("g/bin/tool", "#!/bin/sh\necho 1\n")
+        os.chmod(self.tool, 0o755)
+
+    def summary(self, state):
+        return " ".join(scan.report(state, [self.g], regex=REGEX)[0])
+
+    def test_no_executable_is_read_to_fingerprint_it(self):
+        with mock.patch("agentbox.scan._hash_file", side_effect=AssertionError("hashed")):
+            st = scan.files_state(self.g)
+        self.assertTrue(st["bin/tool"][2].startswith("meta:"))
+
+    def test_a_rewrite_with_mtime_set_back_is_still_a_change(self):
+        state = scan.snapshot([self.g])
+        old = os.stat(self.tool)
+        with open(self.tool, "w") as f:
+            f.write("#!/bin/sh\necho 2\n")            # same length
+        os.utime(self.tool, ns=(old.st_atime_ns, old.st_mtime_ns))
+        self.assertIn("executable(s) changed", self.summary(state))
+
+    def test_a_replaced_file_is_a_change(self):
+        state = scan.snapshot([self.g])
+        tmp = self.write("g/bin/tool.new", "#!/bin/sh\necho 1\n")
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, self.tool)
+        self.assertIn("executable(s) changed", self.summary(state))
+
+    def test_an_untouched_tree_reports_nothing(self):
+        state = scan.snapshot([self.g])
+        self.assertNotIn("executable", self.summary(state))
+
+    def test_a_tagged_cache_is_not_scanned(self):
+        self.write("g/target/CACHEDIR.TAG", self.SIG)
+        state = scan.snapshot([self.g])
+        b = self.write("g/target/debug/app", "x")
+        os.chmod(b, 0o755)
+        self.assertNotIn("target/debug/app", scan.files_state(self.g))
+        self.assertNotIn("executable", self.summary(state))
+
+    def test_files_that_run_later_are_still_compared_by_content(self):
+        mk = self.write("g/Makefile", "all:\n")
+        state = scan.snapshot([self.g])
+        os.utime(mk)                                       # touched, same bytes: no change
+        self.assertNotIn("Makefile", self.summary(state))
+        with open(mk, "w") as f:
+            f.write("all:\n\tcurl x | sh\n")
+        self.assertIn("Makefile", self.summary(state))
+
+    def test_a_start_state_with_content_hashes_still_compares_like_with_like(self):
+        """A session started on the code before 17 Nov recorded hashes; ending it on this code must not call
+        every executable changed."""
+        state = scan.snapshot([self.g])
+        state["files"][self.g]["bin/tool"][2] = scan._hash_file(self.tool)
+        self.assertNotIn("executable", self.summary(state))
+        with open(self.tool, "a") as f:
+            f.write("echo 3\n")
+        self.assertIn("executable(s) changed", self.summary(state))

@@ -3219,3 +3219,28 @@ It also copies `~/.config/agentbox/omp/config.yml` into the run's temporary conf
 ignored: omp-live runs with its own config directory and copied only `models.yml`, so the launcher never saw
 the user's `config.yml` and OMP still fell back to its default provider. `config.yml` holds no keys and the
 session mounts it read-only, as it does in a real session.
+
+## 2026-11-17 · The end-of-session scan fingerprints executables by metadata and skips tagged caches
+
+**What.** The scan's start and end records fingerprint an executable that is not a "file that runs later" by
+inode, size, mode, mtime and ctime (ns) instead of a sha256 of its content, and do not enter a folder tagged
+with a valid `CACHEDIR.TAG` (Cargo's `target/`). Files that run later (Makefile, `.envrc`, `.pth`, …) are
+still compared by content. A start record written by earlier code (content hashes) is compared like with
+like: those executables are hashed again at the end. design.md's step 5 line says so.
+
+**Why.** Measured in a session on a 98k-file tree shaped like toulmin (sources, a tagged 80k-file `target/`
+with 600 MB of executables, a toolchain folder with 200 MB): the record took 16.4 s, 2.1 s now. toulmin has
+far more executable bytes (`target/debug` is 52 GB, plus `.local-tools`), and the record runs at the start
+and again at the end of every session. Inside a cache, a rebuild changes every binary, so its entries were
+noise in the report. Tim chose metadata plus skipping caches over the alternatives: caches only (toolchains
+still hashed every time), metadata only (Cargo noise stays), or no change.
+
+**Soundness.** The agent can set mtime back (`touch -r`) but not ctime: the kernel moves it on every write,
+chmod, link and utime, and only a host clock change resets it, which a rootless container cannot make. A
+replaced file has a new inode. Tested: a same-length rewrite with mtime restored is reported.
+
+**Cost.** A file rewritten with identical bytes, or only chmod'ed and chmod'ed back, now reports as changed.
+An executable the agent drops into `target/` is not reported; Cargo overwrites that folder on the next build.
+
+**Also, same day.** The mask plan tested each file's type (two stats) before its name; the name comes first
+now: 19.9 s to 0.9 s on the same tree (0c441a2).

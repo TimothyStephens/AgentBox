@@ -132,11 +132,38 @@ def is_run_later(rel):
             or (rel.endswith(".pth") and any(f"{v}/" in rel for v in VENV_DIRS)))
 
 
-def files_state(grant, skip=()):
-    """{rel: [run_later, executable, hash]} for the files that matter, ignored files included."""
+def _meta_fingerprint(st):
+    """What changes when an executable's content, mode or identity does, without reading it: inode, size,
+    mode, mtime and ctime (ns). An agent can set mtime back (`touch -r`) but not ctime, which the kernel moves
+    on every write, chmod, link or utime and which only a host clock change could reset; a replaced file has a
+    new inode. Hashing every executable took toulmin's start and end through GBs of build output and
+    toolchains (17 Nov, Tim chose this). The cost: a file rewritten with the same bytes reports as changed."""
+    return f"meta:{st.st_ino}:{st.st_size}:{st.st_mode & 0o7777:o}:{st.st_mtime_ns}:{st.st_ctime_ns}"
+
+
+def _cache_dir(dirpath, filenames):
+    """A folder tagged as a rebuildable cache (backup.CACHEDIR_TAG with the spec's signature: Cargo's target/)."""
+    if "CACHEDIR.TAG" not in filenames:
+        return False
+    from .backup import _tagged_cache
+    return _tagged_cache(dirpath)
+
+
+def files_state(grant, skip=(), like=None):
+    """{rel: [run_later, executable, fingerprint]} for the files that matter, ignored files included.
+
+    A file that runs later is fingerprinted by content (they are few and small, and a touch must not read as
+    a change); any other executable by its metadata (`_meta_fingerprint`). A folder tagged as a cache
+    (CACHEDIR.TAG, Cargo's target/) is not looked at: a rebuild there changes every binary, and the report
+    would be noise. `like` is the start state this one will be compared with: an executable that state
+    recorded by content hash (a session started before 17 Nov) is hashed again, so it compares like with like."""
     out = {}
+    like = like or {}
     for dirpath, dirnames, filenames in os.walk(grant, followlinks=False):
         rel_dir = os.path.relpath(dirpath, grant)
+        if rel_dir != "." and _cache_dir(dirpath, filenames):
+            dirnames[:] = []
+            continue
         in_venv = any(part in VENV_DIRS for part in rel_dir.split(os.sep))
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not os.path.islink(os.path.join(dirpath, d))
                        and not _skipped(os.path.normpath(os.path.join(rel_dir, d)), skip)]
@@ -152,8 +179,10 @@ def files_state(grant, skip=()):
             run_later = is_run_later(rel)
             executable = stat.S_ISREG(st.st_mode) and bool(st.st_mode & 0o111) and not in_venv
             if run_later or executable:
+                old = (like.get(rel) or [None, None, None])[2]
+                by_content = run_later or (old is not None and not str(old).startswith("meta:"))
                 try:
-                    out[rel] = [run_later, executable, _hash_file(p)]
+                    out[rel] = [run_later, executable, _hash_file(p) if by_content else _meta_fingerprint(st)]
                 except OSError as e:
                     out[rel] = [run_later, executable, f"unreadable: {e.strerror}"]
     return out
@@ -496,7 +525,7 @@ def report(state, grants, regex=None, skip=None, base_branch=None):
     start_files = (state or {}).get("files") or {}
     for g in grants:
         before = start_files.get(g) or {}
-        now = files_state(g, (skip or {}).get(g, ()))
+        now = files_state(g, (skip or {}).get(g, ()), like=before)
         section = [f"## files in {g}"]
         run_later = sorted(r for r in set(now) | set(before)
                            if (now.get(r) or before.get(r))[0] and (now.get(r) or [0, 0, None])[2]
