@@ -16,11 +16,12 @@ the key-leak scan or the teardown check. It is still a FAIL naming the command -
 but one the rest of the run survives.
 """
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
 
-from tests.live.omp_live import Run, bring_plugin_tree, model_calls, tls_tunnels
+from tests.live.omp_live import Run, bring_plugin_tree, copy_seeds, model_calls, no_model_reason, tls_tunnels
 
 # Real `make omp-live` proxy access-log lines (host, 4 Nov 2026): two model calls to the LAN server and
 # five denied CONNECTs to provider endpoints OMP probes at startup.
@@ -128,3 +129,41 @@ class PluginTree(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoModelRefusesAtOnce(unittest.TestCase):
+    """TODO 2.2: without AB_LIVE_MODEL and without a config.yml seed, OMP fell back to its own default provider
+    and the run spent 20 minutes on a FAIL that did not name the cause."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="abt-omplive-")
+        self.addCleanup(shutil.rmtree, self.d)
+        self.real = os.path.join(self.d, "real")
+        os.makedirs(os.path.join(self.real, "omp"))
+
+    def test_neither_model_nor_config_is_refused_with_the_fix_in_the_message(self):
+        why = no_model_reason("", self.real)
+        self.assertIn("AB_LIVE_MODEL=", why)
+        self.assertIn(os.path.join(self.real, "omp", "config.yml"), why)
+
+    def test_a_model_or_a_config_yml_is_enough(self):
+        self.assertIsNone(no_model_reason("openrouter/x", self.real))
+        with open(os.path.join(self.real, "omp", "config.yml"), "w") as f:
+            f.write("defaultModel: x\n")
+        self.assertIsNone(no_model_reason("", self.real))
+
+    def test_main_exits_2_before_making_anything(self):
+        from unittest import mock
+        from tests.live import omp_live
+        with mock.patch.object(omp_live, "REAL_CFG", self.real), mock.patch.object(omp_live, "MODEL", ""), \
+                mock.patch.object(omp_live.harness, "Env", side_effect=AssertionError("made a run")), \
+                mock.patch("sys.stderr"):
+            self.assertEqual(omp_live.main(), 2)
+
+    def test_config_yml_is_copied_beside_models_yml(self):
+        for fn in ("models.yml", "config.yml"):
+            with open(os.path.join(self.real, "omp", fn), "w") as f:
+                f.write("x: 1\n")
+        cfg = os.path.join(self.d, "cfg")
+        self.assertEqual(copy_seeds(self.real, cfg), ["models.yml", "config.yml"])
+        self.assertTrue(os.path.isfile(os.path.join(cfg, "omp", "config.yml")))

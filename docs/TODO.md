@@ -52,23 +52,12 @@ smaller script), `agentbox/plugins.py` for the entry kinds, `cmd_profile_install
 
 **The gate.** `make test`; by hand on the host once, since it reaches the network.
 
-### 2.2 `make omp-live` refuses at once when no model is chosen
+### 2.2 Done 17 Nov: `make omp-live` refuses at once when no model is chosen
 
-**What.** omp-live copies the keyless `models.yml` seed but not `config.yml`. Run without `AB_LIVE_MODEL`
-and without `~/.config/agentbox/omp/config.yml`, OMP falls back to its own default provider (Anthropic),
-retries for about 10 minutes, and step 2 repeats it: a 20-minute run that ends in a FAIL that says nothing
-about the cause (16 Nov, decisions.md).
-
-**Why it matters.** Low; it costs a host run and a misdiagnosis, not correctness.
-
-**Done looks like.** Before starting a session, omp-live exits 2 with "set AB_LIVE_MODEL=<provider/model> or
-create ~/.config/agentbox/omp/config.yml" when neither is there; or it copies `config.yml` beside
-`models.yml` (it is mounted read-only as an overlay, and holds no keys). Pick one; the first is simpler.
-
-**Where to start.** `tests/live/omp_live.py` `main`, beside the `models.yml` seed copy; a unit test in the
-style of the existing `bring_plugin_tree` tests.
-
-**The gate.** `make test`; one `make omp-live` on the host.
+Both halves: with neither `AB_LIVE_MODEL` nor `~/.config/agentbox/omp/config.yml` it exits 2 before making
+anything, naming both fixes; and `config.yml` is now copied into the run's config beside `models.yml`, so a
+default model set there is actually used (it was not copied before, so it could not have helped).
+Unverified on the host: one `make omp-live`.
 
 ### 2.3 Done 16 Nov: regression review of the 16 Nov fixes
 

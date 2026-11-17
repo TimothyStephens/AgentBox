@@ -6,7 +6,8 @@ into the test config if it exists (it holds no keys; the launcher refuses one th
 lives under /tmp/abt-<run>/ and is removed afterwards.
 
   1. `omp -p` must answer AB_OK with the default model (the local model server must be up, or a keyed
-     provider must be the default in ~/.config/agentbox/omp/config.yml);
+     provider must be the default in ~/.config/agentbox/omp/config.yml, which is copied in like models.yml);
+     with neither that file nor AB_LIVE_MODEL the run exits 2 at once rather than spend 20 minutes failing;
   2. OMP is asked to use its browser tool on https://pypi.org/ and its bash tool to import debugpy;
      reported as INFO from OMP's own output;
   3. no key value may appear in any state file, log, backup or output.
@@ -141,14 +142,44 @@ def bring_plugin_tree(real_tree, tree, run=subprocess.run, say=print):
     return False
 
 
+# The keyless seeds copied into the run's own config: models.yml (the providers) and config.yml (OMP's own
+# config, the default model among it). Both hold no keys; the session mounts them read-only.
+SEEDS = ("models.yml", "config.yml")
+
+
+def no_model_reason(model, real_cfg):
+    """Why the run would have no model to use, or None. Without AB_LIVE_MODEL and without a config.yml seed,
+    OMP falls back to its own default provider, retries for about ten minutes, and step 2 does it again: a
+    20-minute run whose FAIL says nothing about the cause (16 Nov). Refusing up front costs nothing."""
+    if model or os.path.isfile(os.path.join(real_cfg, "omp", "config.yml")):
+        return None
+    return ("no model chosen: set AB_LIVE_MODEL=<provider/model> (e.g. "
+            "`AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash make omp-live`) or create "
+            f"{os.path.join(real_cfg, 'omp', 'config.yml')} with a default model. Without either, OMP falls back "
+            "to its own default provider and retries for about ten minutes per step.")
+
+
+def copy_seeds(real_cfg, cfg):
+    """Copy the keyless seeds that exist into the run's config; returns the names copied."""
+    copied = []
+    for fn in SEEDS:
+        src = os.path.join(real_cfg, "omp", fn)
+        if os.path.isfile(src) and not os.path.islink(src):
+            os.makedirs(os.path.join(cfg, "omp"), exist_ok=True)
+            shutil.copyfile(src, os.path.join(cfg, "omp", fn))
+            copied.append(fn)
+    return copied
+
+
 def main():
+    reason = no_model_reason(MODEL, REAL_CFG)
+    if reason:
+        print(f"omp-live: {reason}", file=sys.stderr)
+        return 2
     env = harness.Env()
     with open(os.path.join(env.cfg, "agentbox.toml"), "a") as f:
         f.write(f'keys_dir = "{os.path.join(REAL_CFG, "keys")}"\n')
-    seed = os.path.join(REAL_CFG, "omp", "models.yml")
-    if os.path.isfile(seed):
-        os.makedirs(os.path.join(env.cfg, "omp"), exist_ok=True)
-        shutil.copyfile(seed, os.path.join(env.cfg, "omp", "models.yml"))
+    seeds = copy_seeds(REAL_CFG, env.cfg)
     # The REAL installed plugin tree, so this check keeps the one property only it has: that a plugin
     # actually loads. It used to come for free, when `omp_home` defaulted to the host's ~/.omp; the tree
     # lives in the config dir now and omp-live runs with a temporary one, so it is brought in explicitly.
@@ -163,7 +194,7 @@ def main():
               "(`ab profile install omp`)]", flush=True)
     extra = [] if MODE == "packages" else ["--egress", MODE]
     root = env.make_project("omplive", extra=extra, secrets_files=False)
-    print(f"[omp-live run {harness.RUN}: egress {MODE}, project {root}, seed {'yes' if os.path.isfile(seed) else 'none'}]",
+    print(f"[omp-live run {harness.RUN}: egress {MODE}, project {root}, seeds {', '.join(seeds) or 'none'}]",
           flush=True)
     keys = real_keys()
 

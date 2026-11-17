@@ -3209,3 +3209,13 @@ chmods only folders inside the tree being removed and follows no symlink.
 access" while the agent could still list, inspect and stat the live stack, and no flag removed it short of
 changing preset. Tim chose to make "none" mean none (option A of three; the others were a notice, or no
 change). "Keep watching the live stack, no dev stack" is `--podman observe`, or the `operate` preset.
+
+## 2026-11-17 · `make omp-live` refuses without a model, and copies `config.yml`
+
+**What.** TODO 2.2. omp-live exits 2 at once, naming `AB_LIVE_MODEL` and `config.yml`, when it has neither.
+It also copies `~/.config/agentbox/omp/config.yml` into the run's temporary config with `models.yml`.
+
+**Why both.** The TODO offered either. The refusal alone would have accepted a `config.yml` that the run then
+ignored: omp-live runs with its own config directory and copied only `models.yml`, so the launcher never saw
+the user's `config.yml` and OMP still fell back to its default provider. `config.yml` holds no keys and the
+session mounts it read-only, as it does in a real session.
