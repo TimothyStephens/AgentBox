@@ -181,7 +181,11 @@ Do these **only alongside a change that already touches the area**, with the sui
   (12 Nov). Act if Anthropic models are wanted in OMP sessions.
 - **Session start time** (profiled 16 Nov, decisions.md). After the log-driver and stop-timeout changes the
   rest is podman's own container starts and the host's `podman images`. Sockguard's `podman run -d` varied
-  0.8-6.6 s with no pattern. The grants are walked about five times per start (masks, grantcheck, the scan
+  0.7-6.7 s in the first profile (journald log driver) and 0.5-0.9 s in all 13 runs after the switch to
+  k8s-file (17 Nov, from `perf-results/`). What is left is one sidecar `run -d` in about one start in four
+  taking 1.7-3.2 s (sockguard-dev or holder, not the same one each time) with nothing of agentbox's
+  running beside it: podman's own variance, likely its storage or database lock. No launcher change.
+  The grants are walked about five times per start (masks, grantcheck, the scan
   before and after, history); one shared walk is the next step if a large tree makes it hurt.
   `tests/perf/run.sh` re-measures.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
