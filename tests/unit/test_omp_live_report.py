@@ -167,3 +167,20 @@ class NoModelRefusesAtOnce(unittest.TestCase):
         cfg = os.path.join(self.d, "cfg")
         self.assertEqual(copy_seeds(self.real, cfg), ["models.yml", "config.yml"])
         self.assertTrue(os.path.isfile(os.path.join(cfg, "omp", "config.yml")))
+
+
+class ATimedOutRunIsEnded(unittest.TestCase):
+    """A timeout left the session running: no proxy log kept, step 2 refused, teardown FAIL (17 Nov)."""
+
+    def test_the_session_is_killed_after_a_timeout(self):
+        from tests.live.omp_live import run_omp
+        calls = []
+
+        class Env:
+            def ab(self, *args, timeout=None):
+                calls.append(args[:2])
+                if args[1] == "start":
+                    raise AssertionError("did not finish in 900s")
+        r = run_omp(Env(), ["-p", "x"], 900)
+        self.assertTrue(r.timed_out)
+        self.assertEqual(calls, [("session", "start"), ("session", "kill")])

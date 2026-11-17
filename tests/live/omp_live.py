@@ -92,6 +92,13 @@ def run_omp(env, prompt_args, timeout):
                    timeout=timeout)
         return Run(p, time.time() - started)
     except AssertionError as e:
+        # The harness kills `ab` on a timeout, so the session was never torn down: its proxy log was never
+        # kept (step 1 then reads as "nothing reached a model" when nothing was recorded), step 2 is refused
+        # as a second session of the project, and the teardown check fails (17 Nov). End it properly.
+        try:
+            env.ab("session", "kill", "omplive", timeout=180)
+        except AssertionError:
+            pass
         return Run(None, time.time() - started, str(e))
 
 
