@@ -192,3 +192,23 @@ Deviations and choices made strict, pending a decision:
 - **Observe tier:** a deployed stack's containers have their working dir in the copy under the data dir; the
   live-stack ownership check now accepts that dir only for containers with the deploy labels.
 - `--yes` on a first deploy is refused (there is no "last deploy" to equal).
+
+## Step 4 (written, not yet run)
+
+`tests/integration/test_deploy.py` (runs in `make itest`; needs `localhost/agentbox-base:latest` and
+`docker.io/library/busybox:1.36`, skipped otherwise). A two-service stack (a built web server, a worker, one
+named volume) deployed from a test repo on the host's first IPv4 address and a free port.
+- **Deploys:**
+  - the first deploy serves v1 there;
+  - the live containers carry the deploy labels and `unless-stopped`, run outside agentbox.slice with OOM
+    score 0, and publish only that address and port;
+  - the deploy's helpers are gone afterwards;
+  - a redeploy serves v2 and keeps a file in the volume;
+  - `--yes` redeploys the same commit.
+- **Refusals,** each with a failed record: privileged, a bind of `/etc`, host networking, an unlisted second
+  port, and an unlisted `external:` volume.
+- **Hand-run stacks:** one is refused with the `down` command and is left running; its volume is adopted with
+  `--adopt-volumes` and then used by the deploy.
+
+Written in a session, where there is no podman: **it has never run**. Expect the first `make itest` to find
+mismatches with real podman-compose; the "only verifiable on the host" list under step 3 is what it tests.
