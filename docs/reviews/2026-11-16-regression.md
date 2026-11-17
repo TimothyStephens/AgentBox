@@ -20,11 +20,11 @@ fixer before it was fixed; each fix has a unit test that fails without it.
 
 | # | Sev | Finding | Regression? | Fix |
 |---|---|---|---|---|
-| R-4 | high | `ab profile install omp` refused the absolute `node_modules/<pkg>` links `omp plugin link` writes, so every profile with a `[[repo]]` entry (the shipped omp profile has two) failed to install. | Yes, cf09b11 | 3863ee9: under `node_modules/`, an absolute target below `C_TREE` is judged as the same path in the staging tree. Unverified on the host. |
+| R-4 | high | `ab profile install omp` refused the absolute `node_modules/<pkg>` links `omp plugin link` writes, so every profile with a `[[repo]]` entry (the shipped omp profile has two) failed to install. | Yes, cf09b11 | 3863ee9: under `node_modules/`, an absolute target below `C_TREE` is judged as the same path in the staging tree. Verified on the host 17 Nov: `ab profile install omp` installs the shipped profile again. |
 | R-1 | medium | The git-history secret check missed names git quotes (`café.env`, `secrets/é.txt`, a newline or `"` in a name). | Older for users on git's defaults; a regression (7cf862a) for users whose global config set `core.quotepath=false`, since git's global config is no longer read | 605d56d: `git log -z`; non-UTF-8 names decoded with replacement |
 | R-3 | medium | A later `././Containerfile` in a build context replaced the Containerfile the gate checked; `x/../Containerfile` and `/Containerfile` did the same. | `././` yes (46c2409); the other two older | be30abe: tar members keyed by the path they unpack to |
 | R-2 | medium | `core.hooksPath` naming a grant's root was neither covered (covering it covers the grant) nor reported. | No: a gap in new code (7cf862a) | 42ddd21: a grantcheck finding |
-| R-5 | low | Sidecar logs under `k8s-file` had no size limit, and squid logs every request to stdout. | Yes, df862d3 | `--log-opt=max-size=256mb` on every sidecar |
+| R-5 | low | Sidecar logs under `k8s-file` had no size limit, and squid logs every request to stdout. | Yes, df862d3 | `--log-opt=max-size=256mb` on every sidecar; podman accepts it (`make itest` 17 Nov, 190 OK, starts real sidecars). Rotation at the cap is not tested. |
 | R-6 | low | The progress heartbeat thread and the main thread both wrote through `print`, which writes text and newline separately, so lines could interleave; a Ctrl-C at `Thread.start` left the heartbeat running. | Yes, 2b332c3 | the default `warn` writes a whole line in one call; `__enter__` stops the heartbeat if `start` is interrupted |
 | R-7 | low | Any `OSError` in the backup's progress path (full `/tmp`, closed stderr) was reported as "install rsync". | Yes, 2b332c3 | only a missing binary gets the install advice |
 
