@@ -6,6 +6,7 @@ its name and runs with the Gate as `self`). Split out of gate.py, which re-expor
 here. `Gate.unmasked_secret_under` stays in gate.py: tests lower gate.BIND_SCAN_LIMIT to reach its cutoff."""
 import os
 import re
+import stat
 import threading
 from urllib.parse import quote
 
@@ -18,6 +19,9 @@ MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosui
                              r"r?bind|z|Z|idmap(=.*)?|nocopy|copy|notmpcopyup|tmpcopyup|size=\d+[kmgKMG]?|"
                              r"mode=[0-7]{3,4}|uid=\d+|gid=\d+|relatime|norelatime|noatime|strictatime|"
                              r"src-nofollow|dest-nofollow)$")
+# Deploy mode: never a bind source, whatever the stage or deploy_binds hold (the host's kernel and device
+# interfaces, and /run, where the user's podman and systemd sockets live).
+DEPLOY_SYSTEM = ("/proc", "/sys", "/dev", "/run")
 
 
 def parse_mountinfo_opts(text):
@@ -47,6 +51,9 @@ def parse_mountinfo(text):
 class MountsMixin:
     # ---- grant roots and covers -------------------------------------------------------------------
     def _roots(self):
+        """Where binds may come from: the grant roots; in deploy mode the deploy copy and the deploy_binds."""
+        if self.deploy:
+            return [os.path.realpath(r) for r in [self.cfg["stage"]] + list(self.cfg.get("deploy_binds") or [])]
         return [os.path.realpath(r) for r in self.cfg["bind_roots"]]
 
     def _inside_roots(self, src):
@@ -137,15 +144,22 @@ class MountsMixin:
             t = m.get("Type")
             if t == "bind" and self.own_storage(m, cid):
                 continue
-            if t == "bind":
+            if t == "bind" and self.deploy:
+                why = self.deploy_bind_refusal(os.path.realpath(m.get("Source") or "/"))
+                if why:
+                    bad.append(f"bind {m.get('Source')} ({why})")
+            elif t == "bind":
                 if not self._is_root(m.get("Source", "")):
                     bad.append(f"bind {m.get('Source')} (only a grant root itself)")
             elif t == "volume":
                 name = m.get("Name") or ""
                 vdoc = self.inspect("volumes", name) if name else None
                 labels = self.labels_in("volumes", vdoc) if vdoc else None
+                if self.deploy and labels is not None and not self.anonymous_volume(name, labels) \
+                        and not name.startswith(f"{self.cfg['compose_project']}_"):
+                    labels = None
                 if labels is None or not (self.is_dev(labels) or self.anonymous_volume(name, labels)
-                                          or self.grant_volume_root(vdoc)):
+                                          or (not self.deploy and self.grant_volume_root(vdoc))):
                     bad.append(f"volume {name or m.get('Source')} is not this session's")
             elif t == "image":
                 # the image the mount serves must be one the dev tier may use (item 8): the create's
@@ -274,7 +288,8 @@ class MountsMixin:
                 bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
                 continue
             dev, root, opts = got
-            hosts = [h for d, p, h in located if dev == d and root == p]
+            # dev: exactly a grant root (sub-paths are grant volumes); deploy: anywhere inside an allowed root
+            hosts = [h for d, p, h in located if dev == d and (inside(root, p) if self.deploy else root == p)]
             if not hosts:
                 bad.append(f"{m.get('Destination')} is {root} (device {dev}; stored as {m.get('Type')} "
                            f"{m.get('Source')}), not a grant root")
@@ -357,9 +372,7 @@ class MountsMixin:
         if doc is None:
             raise NotFound(f"no such container: {cid[:12]!r}")
         for dep in doc.get("Dependencies") or []:
-            with self.lock:
-                ok = dep in self.verified
-            if not ok:
+            if not self.dep_ok(dep):
                 raise Deny(f"dependency {str(dep)[:12]} has not passed the gate's post-create check")
             self.prepare_start(dep, False, seen)
         status = (doc.get("State") or {}).get("Status")
@@ -389,6 +402,11 @@ class MountsMixin:
         if not isinstance(src, str) or not src.startswith("/"):
             raise Deny(f"bind mount source {src!r} must be an absolute path")
         real = os.path.realpath(src)
+        if self.deploy:
+            why = self.deploy_bind_refusal(real)
+            if why:
+                raise Deny(f"bind mount {src}: {why}")
+            return real
         if self._is_root(real):
             self._refuse_if_covered(real, src)       # the whole root contains the covers; refuse binding it
             return real
@@ -399,6 +417,25 @@ class MountsMixin:
                        "by then). Bind the root and use the sub-path inside the container, or use a named volume "
                        "created in this session")
         raise Deny(f"bind mount {src} is outside the project's grants")
+
+    def deploy_bind_refusal(self, real):
+        """Deploy mode: why the real path `real` may not be bound, or None. Inside the deploy copy or a
+        deploy_binds path (by real path, so a symlink in the copy cannot lead out), and never a system
+        interface, a socket, or a directory holding the gate's or podman's sockets. The dev tier's covers,
+        masks and foreign-owner check do not apply: the copy holds the real .env by design."""
+        if real == "/" or any(inside(real, s) for s in DEPLOY_SYSTEM):
+            return "a system path"
+        for sock in (self.cfg.get("raw"), self.cfg.get("upstream"), self.cfg.get("listen")):
+            if sock and inside(os.path.realpath(sock), real):
+                return "holds the podman or gate socket"
+        try:
+            if stat.S_ISSOCK(os.stat(real).st_mode):
+                return "a socket"
+        except OSError:
+            pass                     # missing: podman refuses it itself; the root check below still applies
+        if not any(inside(real, r) for r in self._roots()):
+            return "outside the deploy copy and the project's deploy_binds"
+        return None
 
     def check_mount_options(self, opts, where):
         for o in opts or []:

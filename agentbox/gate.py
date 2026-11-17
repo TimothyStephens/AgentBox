@@ -62,6 +62,16 @@ and start re-checks, the upstream helpers) and the connection handler. `Gate` in
 locks) from `gate_mounts.MountsMixin`, and image handling (image allowlist, build and pull rewrites, the
 built-image record) from `gate_images.ImagesMixin`; schema tables, Containerfile reading and HTTP framing are
 in `gate_schema`, `gate_dockerfile` and `gate_http`. Every module-level name of those is re-exported here.
+
+Deploy mode (`cfg["mode"] == "deploy"`; absent or "dev" is everything above, unchanged): the same gate in front
+of a per-deploy podman service, for `podman-compose up` of the LIVE stack (docs/deploy-proposal.md section 6).
+The decision points branch on `self.deploy` and nowhere else: what is owned is what carries
+agentbox.role=deploy and agentbox.deploy=<project> (labels alone: a fresh gate must reach the previous deploy's
+objects for `--remove-orphans` and recreation; a dev gate always forces role=dev, so it can never make one);
+containers join only the stack's own networks; ports only on cfg["lan_addr"] and cfg["ports"]; binds only
+inside cfg["stage"] or cfg["deploy_binds"] (never /proc, /sys, /dev, /run, a socket, or a directory holding
+the gate's sockets); named volumes only `<compose_project>_*`; restart forced to unless-stopped; no cgroup
+parent, no proxy variables. Privilege, image and build checks are the dev tier's.
 """
 import http.client
 import json
@@ -181,6 +191,15 @@ INFRA_ROOTFS = "/libpod/tmp/infra-container"
 VOLUME_OPTS = ("ro", "rw", "z", "Z", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
 
+# ---- deploy mode (docs/deploy-proposal.md, section 6) ----
+DEPLOY_LABEL = "agentbox.deploy"     # =<project>: what a deploy-mode gate may reach (with agentbox.role=deploy)
+ROLE_DEPLOY = "deploy"
+COMPOSE_LABELS = ("io.podman.compose.project", "com.docker.compose.project")
+DEPLOY_RESTART = "unless-stopped"
+DEPLOY_LIBPOD_REFUSED = {k: v for k, v in LIBPOD_REFUSED.items() if k != "portmappings"}
+DEPLOY_HOSTCONFIG_REFUSED = {k: v for k, v in HOSTCONFIG_REFUSED.items() if k != "PortBindings"}
+DEPLOY_NET_ENTRY_KEYS = ("aliases",)   # per-network options a container may set on one of the stack's networks
+
 
 def canonical_path(target):
     """The request path, decoded segment by segment. Refused: empty, `.` and `..` segments (also encoded), a
@@ -208,9 +227,16 @@ def canonical_path(target):
 class Gate(MountsMixin, ImagesMixin):
     def __init__(self, cfg):
         self.cfg = cfg
+        mode = cfg.get("mode") or "dev"
+        if mode not in ("dev", "deploy"):
+            raise ValueError(f"gate mode {mode!r} is neither dev nor deploy")
+        self.deploy = mode == "deploy"
         self.session = cfg["session"]
-        self.network = cfg["network"]
+        self.network = None if self.deploy else cfg["network"]
         self.labels = dict(cfg["labels"])
+        if self.deploy:
+            self._check_deploy_cfg()
+            self.refused = set()         # deploy mode: IDs the gate removed (labels alone decide ownership)
         self.exec_ids = {}               # exec session id -> container id
         self.slots = threading.BoundedSemaphore(int(cfg.get("max_connections", MAX_CONNECTIONS)))
         self.verified = set()            # IDs (volume names) whose post-create check passed
@@ -222,6 +248,38 @@ class Gate(MountsMixin, ImagesMixin):
         self.ctr_locks = {}
         self._tls = threading.local()
         self.log_path = cfg.get("log")
+
+    def _check_deploy_cfg(self):
+        cfg = self.cfg
+        if not self.labels.get(DEPLOY_LABEL):
+            raise ValueError(f"deploy mode needs the {DEPLOY_LABEL} label in cfg['labels']")
+        cp = cfg.get("compose_project")
+        if not isinstance(cp, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", cp):
+            raise ValueError(f"deploy mode: compose_project {cp!r} is not a compose project name")
+        if not isinstance(cfg.get("lan_addr"), str) or not cfg["lan_addr"] or cfg["lan_addr"] in ("0.0.0.0", "::"):
+            raise ValueError("deploy mode needs lan_addr (one address, not 0.0.0.0)")
+        ports = cfg.get("ports")
+        if not isinstance(ports, list) or not all(isinstance(p, int) and 0 < p < 65536 for p in ports):
+            raise ValueError("deploy mode: ports must be a list of host port numbers")
+        for p in [cfg.get("stage")] + list(cfg.get("deploy_binds") or []):
+            if not isinstance(p, str) or not p.startswith("/") or os.path.realpath(p) == "/":
+                raise ValueError(f"deploy mode: bind root {p!r} must be an absolute path other than /")
+
+    def passed(self, oid):
+        """An object already known to be this gate's (by labels, checked by the caller) may be used. Dev: it
+        passed this gate's post-create check (`verified`). Deploy: labels decide, so a redeploy reaches the last
+        deploy's objects; only one this gate removed is refused (its delete may not have taken effect)."""
+        with self.lock:
+            return oid not in self.refused if self.deploy else oid in self.verified
+
+    def dep_ok(self, dep):
+        """A dependency container (podman starts it with the dependent one)."""
+        if not self.deploy:
+            with self.lock:
+                return dep in self.verified
+        doc = self.inspect("containers", dep)
+        return doc is not None and self.is_dev(self.labels_in("containers", doc)) and self.passed(self.ident(
+            "containers", doc))
 
     def remember_exec(self, exec_id, cid):
         """Record an exec session made through the gate; bounded, the oldest forgotten first (item 43: the map
@@ -295,6 +353,9 @@ class Gate(MountsMixin, ImagesMixin):
         return doc.get("Labels") or doc.get("labels") or (doc.get("Config") or {}).get("Labels") or {}
 
     def is_dev(self, labels):
+        """The object is this gate's: the session's dev stack, or in deploy mode the project's live stack."""
+        if self.deploy:
+            return labels.get("agentbox.role") == ROLE_DEPLOY and labels.get(DEPLOY_LABEL) == self.labels[DEPLOY_LABEL]
         return labels.get(DEV_OWNER) == self.session and labels.get("agentbox.role") == "dev"
 
     def require_dev(self, kind, ref):
@@ -308,9 +369,7 @@ class Gate(MountsMixin, ImagesMixin):
             # live stack's object exists (review of 785ee15, L1)
             raise NotFound(f"no such {kind[:-1]}: {ref!r}")
         oid = self.ident(kind, doc)
-        with self.lock:
-            ok = oid in self.verified
-        if not ok:
+        if not self.passed(oid):
             raise Deny(f"{kind[:-1]} {ref!r} has not passed the gate's post-create check")
         return oid
 
@@ -323,8 +382,11 @@ class Gate(MountsMixin, ImagesMixin):
                 "networks": f"/libpod/networks/{quote(oid, safe='')}?force=true"}[kind]
         with self.lock:
             # THE protection: nothing can use an object that is not in `verified`, whether or not the
-            # delete below takes effect. (A second `refused` set was written here and never read.)
+            # delete below takes effect. (A second `refused` set was written here and never read.) Deploy mode
+            # trusts labels instead of `verified`, so there it is `refused`, read by `passed`.
             self.verified.discard(oid)
+            if self.deploy:
+                self.refused.add(oid)
         for _attempt in range(2):
             try:
                 status = self.raw_request("DELETE", path)
@@ -376,7 +438,9 @@ class Gate(MountsMixin, ImagesMixin):
         """Shared by containers and pod infra containers."""
         hc = doc.get("HostConfig") or {}
         bad = []
-        if any(v for v in (hc.get("PortBindings") or {}).values()):
+        if self.deploy:
+            bad += self.port_binding_violations(hc)
+        elif any(v for v in (hc.get("PortBindings") or {}).values()):
             bad.append("published ports")
         if hc.get("Privileged"):
             bad.append("privileged")
@@ -427,9 +491,7 @@ class Gate(MountsMixin, ImagesMixin):
         if (doc.get("Config") or {}).get("Secrets"):
             bad.append("podman secrets")
         for dep in doc.get("Dependencies") or []:
-            with self.lock:
-                ok = dep in self.verified
-            if not ok:
+            if not self.dep_ok(dep):
                 bad.append(f"dependency container {str(dep)[:12]} is not this session's")
         if hc.get("VolumesFrom"):
             bad.append("volumes from other containers")
@@ -478,9 +540,13 @@ class Gate(MountsMixin, ImagesMixin):
                 bad += self.network_violations(doc)
         else:
             bad += self.network_violations(doc)
-        if self.cfg.get("cgroup_parent") and self.cfg["cgroup_parent"] not in (hc.get("CgroupParent") or ""):
+        if not self.deploy and self.cfg.get("cgroup_parent") and \
+                self.cfg["cgroup_parent"] not in (hc.get("CgroupParent") or ""):
             bad.append(f"cgroup parent {hc.get('CgroupParent')}")
-        if (hc.get("RestartPolicy") or {}).get("Name") not in (None, "", "no"):
+        if self.deploy:
+            if (hc.get("RestartPolicy") or {}).get("Name") != DEPLOY_RESTART:
+                bad.append(f"restart policy {(hc.get('RestartPolicy') or {}).get('Name')} (not {DEPLOY_RESTART})")
+        elif (hc.get("RestartPolicy") or {}).get("Name") not in (None, "", "no"):
             bad.append("a restart policy")
         if hc.get("OomScoreAdj") != 1000:
             bad.append(f"OOM score {hc.get('OomScoreAdj')}")
@@ -494,6 +560,8 @@ class Gate(MountsMixin, ImagesMixin):
         return bad
 
     def network_violations(self, doc):
+        if self.deploy:
+            return self.deploy_network_violations(doc)
         hc = doc.get("HostConfig") or {}
         bad = []
         mode = hc.get("NetworkMode") or ""
@@ -503,6 +571,111 @@ class Gate(MountsMixin, ImagesMixin):
         if nets != {self.network}:
             bad.append(f"networks {sorted(nets)}")
         return bad
+
+    # ---- deploy mode: networks and ports -------------------------------------------------------------
+    def network_owned(self, name):
+        """A network of the stack's own (deploy labels), by name or ID."""
+        if not isinstance(name, str) or not name:
+            return False
+        doc = self.inspect("networks", name)
+        return doc is not None and self.is_dev(self.labels_in("networks", doc)) and self.passed(
+            doc.get("id") or doc.get("Id") or name)
+
+    def require_own_network(self, name):
+        if not self.network_owned(name):
+            raise Deny(f"network {name!r} is not one of this stack's networks (only networks the stack created, "
+                       "labelled for this deploy, can be joined)")
+
+    def deploy_network_violations(self, doc):
+        hc = doc.get("HostConfig") or {}
+        mode = hc.get("NetworkMode") or ""
+        nets = set(((doc.get("NetworkSettings") or {}).get("Networks") or {}).keys())
+        if mode == "none":
+            return [f"networks {sorted(nets)} with network mode none"] if nets else []
+        bad = []
+        if mode == "host" or mode.startswith(("ns:", "/", "container:", "slirp4netns", "pasta", "private")):
+            bad.append(f"NetworkMode {mode}")
+        elif mode not in ("bridge", "default", "") and mode not in nets:
+            bad.append(f"NetworkMode {mode}")
+        if not nets:
+            bad.append("no network of the stack's own")
+        for n in sorted(nets):
+            if not self.network_owned(n):
+                bad.append(f"network {n} is not this stack's")
+        return bad
+
+    def deploy_port(self, host_ip, host_port, where):
+        """One published port: on the LAN address (an empty or 0.0.0.0 address becomes it), and a host port the
+        project lists. Returns the host IP to store."""
+        lan, ports = self.cfg["lan_addr"], self.cfg["ports"]
+        ip = host_ip or ""
+        if ip in ("", "0.0.0.0"):
+            ip = lan
+        if ip != lan:
+            raise Deny(f"{where}: published on {host_ip}, not the deploy's LAN address {lan}")
+        if isinstance(host_port, bool) or not isinstance(host_port, int) or host_port not in ports:
+            raise Deny(f"{where}: host port {host_port!r} is not one of the project's deploy ports {ports} "
+                       "(a random or unlisted host port is refused)")
+        return ip
+
+    def deploy_portmappings(self, maps):
+        if not isinstance(maps, list):
+            raise Deny("portmappings must be a list")
+        for m in maps:
+            if not isinstance(m, dict):
+                raise Deny("a port mapping must be an object")
+            for k in m:
+                if k.lower() not in ("host_ip", "container_port", "host_port", "range", "protocol"):
+                    raise Deny(f"port mapping field {k!r} is not one the gate knows")
+            if cget(m, "range") not in (None, 0, 1):
+                raise Deny("port ranges are not allowed in a deploy (list each port)")
+            cp = cget(m, "container_port")
+            if isinstance(cp, bool) or not isinstance(cp, int) or not 0 < cp < 65536:
+                raise Deny(f"container port {cp!r} is not allowed")
+            for proto in str(cget(m, "protocol") or "tcp").split(","):
+                if proto not in ("tcp", "udp", "sctp"):
+                    raise Deny(f"port protocol {proto!r} is not allowed")
+            cset(m, "host_ip", self.deploy_port(cget(m, "host_ip"), cget(m, "host_port"), "published port"))
+        return maps
+
+    def deploy_port_bindings(self, pb):
+        """Docker API PortBindings: {"80/tcp": [{"HostIp": "", "HostPort": "8090"}]}."""
+        if not isinstance(pb, dict):
+            raise Deny("PortBindings must be an object")
+        for key, binds in pb.items():
+            for b in binds or []:
+                hp = str(cget(b, "HostPort") or "")
+                if not hp.isdigit():
+                    raise Deny(f"published port {key}: host port {hp!r} (a range or a random port) is not allowed")
+                cset(b, "HostIp", self.deploy_port(cget(b, "HostIp"), int(hp), f"published port {key}"))
+                cset(b, "HostPort", hp)
+        return pb
+
+    def port_binding_violations(self, hc):
+        """What podman stored: every binding on the LAN address and a listed port; no publish-all."""
+        bad = ["publish all ports"] if hc.get("PublishAllPorts") else []
+        for key, binds in (hc.get("PortBindings") or {}).items():
+            for b in binds or []:
+                hp = str((b or {}).get("HostPort") or "")
+                if (b or {}).get("HostIp") != self.cfg["lan_addr"] or not hp.isdigit() \
+                        or int(hp) not in self.cfg["ports"]:
+                    bad.append(f"published port {key} on {(b or {}).get('HostIp')}:{hp}")
+        return bad
+
+    def check_compose_project(self, labels, required):
+        """The compose project the client names must be the deploy's (podman-compose labels everything it
+        creates with it)."""
+        cp = self.cfg["compose_project"]
+        got = [str(labels.get(k)) for k in COMPOSE_LABELS if k in (labels or {})]
+        if any(g != cp for g in got):
+            raise Deny(f"compose project {', '.join(got)} is not this deploy's ({cp})")
+        if required and not got:
+            raise Deny(f"a deploy container must carry the compose project label ({cp})")
+
+    def deploy_volume_name(self, name, where):
+        prefix = f"{self.cfg['compose_project']}_"
+        if not isinstance(name, str) or not name.startswith(prefix):
+            raise Deny(f"{where}: volume {name!r} is not this stack's (its named volumes start with {prefix!r})")
 
     @property
     def memory_max(self):
@@ -524,12 +697,16 @@ class Gate(MountsMixin, ImagesMixin):
             bad.append("published ports")
         if infra.get("HostNetwork"):
             bad.append("host network")
-        if doc.get("InfraContainerID"):
+        if self.deploy:
+            if doc.get("InfraContainerID"):
+                bad.append("an infra container (deploy pods have none)")
+        elif doc.get("InfraContainerID"):
             if "net" not in (doc.get("SharedNamespaces") or []):
                 bad.append("an infra container that does not share its network")
             if set(infra.get("Networks") or []) != {self.network}:
                 bad.append(f"networks {infra.get('Networks')}")
-        if self.cfg.get("cgroup_parent") and self.cfg["cgroup_parent"] not in (doc.get("CgroupParent") or ""):
+        if not self.deploy and self.cfg.get("cgroup_parent") and \
+                self.cfg["cgroup_parent"] not in (doc.get("CgroupParent") or ""):
             bad.append(f"cgroup parent {doc.get('CgroupParent')}")
         return bad
 
@@ -552,7 +729,7 @@ class Gate(MountsMixin, ImagesMixin):
             bad.append("missing the dev labels")
         if (doc.get("driver") or doc.get("Driver")) != "bridge":
             bad.append(f"driver {doc.get('driver') or doc.get('Driver')}")
-        if not (doc.get("internal") or doc.get("Internal")):
+        if not self.deploy and not (doc.get("internal") or doc.get("Internal")):
             bad.append("not internal")
         if doc.get("ipv6_enabled"):
             bad.append("IPv6")
@@ -636,9 +813,7 @@ class Gate(MountsMixin, ImagesMixin):
         if kind == "pod_start":
             infra = (self.inspect("pods", ref) or {}).get("InfraContainerID") or ""
         for cid in ids:
-            with self.lock:
-                ok = cid in self.verified
-            if not ok:
+            if not self.passed(cid):
                 raise Deny(f"container {cid[:12]} has not passed the gate's post-create check")
             doc = self.inspect("containers", cid)
             if doc is None:
@@ -653,6 +828,13 @@ class Gate(MountsMixin, ImagesMixin):
 
     # ---- create rewrites --------------------------------------------------------------------------
     def stamp(self, labels):
+        if self.deploy:
+            # the client's own agentbox.* labels are dropped: only the gate says what a live object belongs to
+            out = {k: v for k, v in (labels or {}).items() if not (k == "agentbox" or str(k).startswith("agentbox."))}
+            self.check_compose_project(out, required=False)
+            out.update(self.labels)
+            out["agentbox.role"] = ROLE_DEPLOY
+            return out
         out = dict(labels or {})
         out.update(self.labels)
         out[DEV_OWNER] = self.session
@@ -703,6 +885,8 @@ class Gate(MountsMixin, ImagesMixin):
             return
         if "/" in name or name.startswith(".") or "~" in name or not re.match(r"^[A-Za-z0-9][\w.-]*$", name):
             raise Deny(f"{where}: {name!r} is neither an absolute bind source nor a volume name")
+        if self.deploy:
+            self.deploy_volume_name(name, where)
         doc = self.inspect("volumes", name)
         if doc is None:
             status = self.raw_request("POST", "/libpod/volumes/create",
@@ -725,7 +909,7 @@ class Gate(MountsMixin, ImagesMixin):
         with self.lock:
             verified = set(self.verified)
         keep = [d for d in docs if isinstance(d, dict) and self.is_dev(d.get("Labels") or {})
-                and (d.get("Id") or "") in verified]
+                and ((d.get("Id") or "") not in self.refused if self.deploy else (d.get("Id") or "") in verified)]
         return (json.dumps(keep) + "\n").encode()
 
     def check_annotations(self, ann, where):
@@ -780,7 +964,7 @@ class Gate(MountsMixin, ImagesMixin):
             t = cget(m, "type")
             if t == "bind":
                 self.check_mount_options(cget(m, "options"), cget(m, "destination"))
-                sub = self.grant_subpath(cget(m, "source")) if what == "container" else None
+                sub = self.grant_subpath(cget(m, "source")) if what == "container" and not self.deploy else None
                 if sub:
                     # A path below a grant root: mounted as the gate's bind-backed volume over that root with a
                     # SubPath, which podman resolves inside the volume (openat2 in-root), so a symlink swapped in
@@ -817,7 +1001,9 @@ class Gate(MountsMixin, ImagesMixin):
             spec.pop(k, None)
 
     def rewrite_libpod_container(self, spec):
-        self.check_common_libpod(spec, LIBPOD_REFUSED, "container")
+        self.check_common_libpod(spec, DEPLOY_LIBPOD_REFUSED if self.deploy else LIBPOD_REFUSED, "container")
+        if self.deploy and spec.get("portmappings"):
+            spec["portmappings"] = self.deploy_portmappings(spec["portmappings"])
         if spec.get("dependencyContainers"):
             # depends_on (podman-compose's --requires): only containers of this session, passed by ID
             spec["dependencyContainers"] = [self.require_dev("containers", str(d))
@@ -848,6 +1034,8 @@ class Gate(MountsMixin, ImagesMixin):
         if pod:
             # by ID from here on: the name could be reused, and sockguard's owner policy resolves IDs
             pod = spec["pod"] = self.require_dev("pods", pod)
+            if self.deploy and self.pod_has_infra(pod):
+                raise Deny("a pod with an infra container cannot be joined in a deploy")
             if not self.pod_has_infra(pod):
                 # A pod without an infra container sharing its network (podman-compose's default has none)
                 # gives its containers nothing: membership is dropped and the container pinned like any other.
@@ -857,6 +1045,8 @@ class Gate(MountsMixin, ImagesMixin):
             # The infra container owns the network: the member takes it, nothing of its own.
             spec.pop("netns", None)
             spec.pop("Networks", None)
+        elif self.deploy:
+            self.deploy_libpod_network(spec)
         else:
             mode = cget(spec.get("netns"), "nsmode")
             if mode in ("host", "path", "container", "ns", "slirp4netns", "pasta"):
@@ -866,11 +1056,16 @@ class Gate(MountsMixin, ImagesMixin):
                 aliases += cget(net, "aliases") or []
             spec["netns"] = {"nsmode": "bridge"}
             spec["Networks"] = {self.network: {"aliases": sorted(set(aliases))} if aliases else {}}
+        if self.deploy:
+            self.check_compose_project(spec.get("labels") or {}, required=True)
         spec["labels"] = self.stamp(spec.get("labels"))
         spec.pop("restart_policy", None)
         spec.pop("restart_tries", None)
+        if self.deploy:
+            spec["restart_policy"] = DEPLOY_RESTART
         spec["systemd"] = "false"
-        spec["cgroup_parent"] = self.cfg["cgroup_parent"]
+        if not self.deploy:
+            spec["cgroup_parent"] = self.cfg["cgroup_parent"]
         spec["oom_score_adj"] = 1000
         rl = spec.get("resource_limits") or {}
         mem = cget(rl, "memory") or {}
@@ -882,11 +1077,36 @@ class Gate(MountsMixin, ImagesMixin):
         cset(pids, "limit", cget(pids, "limit") or self.cfg["pids"])
         cset(rl, "pids", pids)
         spec["resource_limits"] = rl
-        own = [spec.get("name", ""), spec.get("hostname", "")]
-        own += [a for net in (spec.get("Networks") or {}).values() for a in cget(net, "aliases") or []]
-        spec["env"] = self.proxy_env(spec.get("env"), as_list=False, own_names=own)
+        if not self.deploy:
+            own = [spec.get("name", ""), spec.get("hostname", "")]
+            own += [a for net in (spec.get("Networks") or {}).values() for a in cget(net, "aliases") or []]
+            spec["env"] = self.proxy_env(spec.get("env"), as_list=False, own_names=own)
         self.split_case_variants(spec)
         return spec
+
+    def deploy_libpod_network(self, spec):
+        """Deploy mode: the container joins the stack's own networks (bridge), or none. Never podman's default
+        network (not the stack's), host, another container's or a path namespace, pasta or slirp4netns."""
+        mode = cget(spec.get("netns"), "nsmode")
+        nets = spec.get("Networks") or {}
+        if not isinstance(nets, dict):
+            raise Deny("Networks must be an object")
+        if mode == "none":
+            if nets:
+                raise Deny("network mode none with networks")
+            spec.pop("Networks", None)
+            return
+        if mode not in (None, "", "bridge"):
+            raise Deny(f"network mode {mode} is not allowed")
+        if not nets:
+            raise Deny("a deploy container must join one of the stack's own networks (podman's default network "
+                       "is not the stack's)")
+        for name, opts in nets.items():
+            self.require_own_network(name)
+            for k, v in (opts or {}).items() if isinstance(opts, dict) else [("?", opts)]:
+                if k.lower() not in DEPLOY_NET_ENTRY_KEYS and v:
+                    raise Deny(f"network {name}: option {k} is not allowed (aliases only)")
+        spec["netns"] = {"nsmode": "bridge"}
 
     @staticmethod
     def split_case_variants(spec):
@@ -912,7 +1132,9 @@ class Gate(MountsMixin, ImagesMixin):
         for key in ("MaskedPaths", "ReadonlyPaths"):
             if hc.get(key) is not None:          # an empty list means "unmask everything"
                 raise Deny(f"changed {key} are not allowed")
-        for key, why in HOSTCONFIG_REFUSED.items():
+        if self.deploy and hc.get("PortBindings"):
+            hc["PortBindings"] = self.deploy_port_bindings(hc["PortBindings"])
+        for key, why in (DEPLOY_HOSTCONFIG_REFUSED if self.deploy else HOSTCONFIG_REFUSED).items():
             if hc.get(key):
                 raise Deny(f"{why} are not allowed" if why.endswith("s") else f"{why} is not allowed")
         for key in ("PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"):
@@ -940,8 +1162,11 @@ class Gate(MountsMixin, ImagesMixin):
         aliases = []
         for ep in (cget(spec.get("NetworkingConfig"), "EndpointsConfig") or {}).values():
             aliases += cget(ep, "Aliases") or []
-        hc["NetworkMode"] = self.network
-        spec["NetworkingConfig"] = {"EndpointsConfig": {self.network: {"Aliases": sorted(set(aliases))}}}
+        if self.deploy:
+            self.deploy_compat_network(spec, hc)
+        else:
+            hc["NetworkMode"] = self.network
+            spec["NetworkingConfig"] = {"EndpointsConfig": {self.network: {"Aliases": sorted(set(aliases))}}}
         binds = []
         for b in hc.get("Binds") or []:
             src, _, rest = str(b).partition(":")
@@ -972,7 +1197,10 @@ class Gate(MountsMixin, ImagesMixin):
             elif t != "tmpfs":
                 raise Deny(f"{t!r} mounts are not allowed")
         hc.pop("RestartPolicy", None)
-        hc["CgroupParent"] = self.cfg["cgroup_parent"]
+        if self.deploy:
+            hc["RestartPolicy"] = {"Name": DEPLOY_RESTART}
+        else:
+            hc["CgroupParent"] = self.cfg["cgroup_parent"]
         hc["OomScoreAdj"] = 1000
         if not hc.get("Memory"):
             hc["Memory"] = self.cfg["memory"]
@@ -980,10 +1208,41 @@ class Gate(MountsMixin, ImagesMixin):
         if not hc.get("PidsLimit"):
             hc["PidsLimit"] = self.cfg["pids"]
         spec["HostConfig"] = hc
+        if self.deploy:
+            self.check_compose_project(spec.get("Labels") or {}, required=True)
         spec["Labels"] = self.stamp(spec.get("Labels"))
-        own = [spec.get("Hostname", "")] + aliases
-        spec["Env"] = self.proxy_env(spec.get("Env"), as_list=True, own_names=own)
+        if not self.deploy:
+            own = [spec.get("Hostname", "")] + aliases
+            spec["Env"] = self.proxy_env(spec.get("Env"), as_list=True, own_names=own)
         return spec
+
+    def deploy_compat_network(self, spec, hc):
+        """Deploy mode, Docker API: NetworkMode one of the stack's networks (or none), every endpoint too."""
+        mode = hc.get("NetworkMode") or ""
+        eps = cget(spec.get("NetworkingConfig"), "EndpointsConfig") or {}
+        if not isinstance(eps, dict):
+            raise Deny("EndpointsConfig must be an object")
+        if mode == "none":
+            if eps:
+                raise Deny("network mode none with networks")
+            spec.pop("NetworkingConfig", None)
+            return
+        names = list(eps)
+        if mode not in ("", "bridge", "default") and mode not in names:
+            names.insert(0, mode)
+        if not names:
+            raise Deny("a deploy container must join one of the stack's own networks (podman's default network "
+                       "is not the stack's)")
+        out = {}
+        for name in names:
+            self.require_own_network(name)
+            ep = eps.get(name) or {}
+            for k, v in ep.items() if isinstance(ep, dict) else [("?", ep)]:
+                if k.lower() != "aliases" and v:
+                    raise Deny(f"network {name}: endpoint setting {k} is not allowed (aliases only)")
+            out[name] = {"Aliases": sorted(set(cget(ep, "Aliases") or []))}
+        hc["NetworkMode"] = names[0]
+        spec["NetworkingConfig"] = {"EndpointsConfig": out}
 
     def pod_has_infra(self, ref):
         """The pod has an infra container whose network namespace its members share."""
@@ -998,6 +1257,9 @@ class Gate(MountsMixin, ImagesMixin):
         for opt in spec.get("security_opt") or []:
             if not re.match(r"^no-new-privileges([:=]true)?$", str(opt)):
                 raise Deny(f"pod security option {opt} is not allowed")
+        if self.deploy and not spec.get("no_infra"):
+            raise Deny("pods with an infra container are not supported in a deploy (podman-compose's default pods "
+                       "have none)")
         if not spec.get("no_infra") and not self.cfg.get("infra_pods"):
             # The dev sockguard's owner policy cannot resolve pods (1 Oct: it refuses every container that
             # names one), so a pod's infra container would only ever be an empty network namespace. Refused;
@@ -1016,7 +1278,8 @@ class Gate(MountsMixin, ImagesMixin):
         spec.pop("restart_policy", None)
         spec.pop("restart_tries", None)
         spec["labels"] = self.stamp(spec.get("labels"))
-        spec["cgroup_parent"] = self.cfg["cgroup_parent"]
+        if not self.deploy:
+            spec["cgroup_parent"] = self.cfg["cgroup_parent"]
         return spec
 
     def rewrite_network(self, spec, *, compat):
@@ -1033,8 +1296,8 @@ class Gate(MountsMixin, ImagesMixin):
             if cget(ipam, "Config") or cget(ipam, "Driver") not in (None, "", "default") or cget(ipam, "Options"):
                 raise Deny("choosing subnets or IPAM is not allowed")
             self.network_options(spec.pop("Options", None))
-            spec.update({"Internal": True, "Driver": "bridge", "EnableIPv6": False,
-                         "Labels": self.stamp(spec.get("Labels"))})
+            spec.update({"Internal": bool(spec.get("Internal")) if self.deploy else True, "Driver": "bridge",
+                         "EnableIPv6": False, "Labels": self.stamp(spec.get("Labels"))})
             return spec
         spec = canonical(spec, NETWORK_KEYS, "network")
         if spec.get("driver") not in (None, "", "bridge"):
@@ -1043,8 +1306,8 @@ class Gate(MountsMixin, ImagesMixin):
             if spec.get(k):
                 raise Deny(f"network {k} is not allowed")
         self.network_options(spec.pop("options", None))
-        spec.update({"internal": True, "driver": "bridge", "ipv6_enabled": False,
-                     "labels": self.stamp(spec.get("labels"))})
+        spec.update({"internal": bool(spec.get("internal")) if self.deploy else True, "driver": "bridge",
+                     "ipv6_enabled": False, "labels": self.stamp(spec.get("labels"))})
         return spec
 
     @staticmethod
@@ -1064,6 +1327,8 @@ class Gate(MountsMixin, ImagesMixin):
             raise Deny("IgnoreIfExists is not allowed (an existing volume would be reported as created)")
         if not re.match(r"^[A-Za-z0-9][\w.-]*$", spec.get("Name") or "x"):
             raise Deny(f"volume name {spec.get('Name')!r} is not allowed")
+        if self.deploy:
+            self.deploy_volume_name(spec.get("Name"), "volume create")
         # podman's libpod API reads "Label", the Docker API "Labels"; the other spelling is ignored, so a
         # stamp under the wrong one would leave the volume unlabelled.
         key, other = ("Labels", "Label") if compat else ("Label", "Labels")
@@ -1118,7 +1383,7 @@ class Gate(MountsMixin, ImagesMixin):
         if m:
             with self.lock:
                 cid = self.exec_ids.get(m.group(1))
-                ok = cid is not None and cid in self.verified
+                ok = cid is not None and (cid not in self.refused if self.deploy else cid in self.verified)
                 if ok and m.group(2) == "remove":
                     self.exec_ids.pop(m.group(1), None)        # removed (or failed closed: unusable either way)
             if not ok:

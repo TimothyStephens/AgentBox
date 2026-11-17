@@ -101,3 +101,45 @@ Deploy is a second policy on the same machinery.
      a port on 0.0.0.0, host networking, a foreign volume);
   5. design.md and USAGE.
 - **Verification:** `make itest` on the host, then one real deploy, which is yours to run.
+
+## Deploy mode (step 2, built)
+
+The gate (`agentbox/gate.py`, `gate_mounts.py`, `gate_images.py`) has a deploy mode, selected by its config
+(`"mode": "deploy"`; absent or `"dev"` is the dev tier, unchanged). Every decision point branches on
+`Gate.deploy`; tests in `tests/unit/test_gate_deploy.py`. What step 3 must put in the config: `session`,
+`labels` (must hold `agentbox.deploy=<project>`), `compose_project`, `lan_addr`, `ports`, `stage`,
+`deploy_binds`, `memory`, `pids`, `registries`, `raw`, `upstream`, `listen`, `holder` (builds), and
+`built_record` (without it a redeploy cannot reuse its own `localhost/` tags).
+
+As built, against the table in section 6:
+- **Ownership** is labels only: `agentbox.role=deploy` and `agentbox.deploy=<project>` (the gate stamps both
+  and drops any client `agentbox.*` label). Not the dev tier's "passed this gate's check" record, because a
+  fresh per-deploy gate must reach the previous deploy's objects for `--remove-orphans` and recreation; a dev
+  gate always forces `role=dev`, so a session can never make an object a deploy gate owns. An object the
+  gate removed is refused for the rest of the run. Starting a container of an earlier deploy re-runs the full
+  post-create check on it first. Other `cfg["labels"]` (a per-run id, say) are stamped but do not scope.
+- **Compose project**: a compose project label that differs from `compose_project` is refused on anything; a
+  container create without one is refused.
+- **Networks**: created networks are bridge, labelled, `internal` as the client asked. Kept from the dev
+  tier (strictest reading): no options, subnets, IPAM, interfaces, routes or IPv6. A container must join
+  one or more of the stack's networks (podman's default network is not the stack's) or `none`; per-network
+  settings other than aliases (static IPs, MAC) are refused. Pods with an infra container are refused.
+- **Ports**: on `lan_addr` only (empty or `0.0.0.0` rewritten to it), host port in `ports`; no ranges,
+  random ports or publish-all; pods cannot publish.
+- **Binds**: inside `stage` or a `deploy_binds` path by real path, and never `/proc`, `/sys`, `/dev`, `/run`,
+  a socket, or a directory holding the gate's or podman's socket; the same rule at start against
+  `/proc/<pid>/mountinfo` (anywhere inside an allowed root). The dev tier's covers, masks, secret scan and
+  foreign-owner check do not apply (the copy holds the real `.env` by design; a data dir is often
+  container-owned).
+- **Named volumes**: `<compose_project>_*` only, created labelled or reused if it carries the deploy labels.
+- **Restart** forced to `unless-stopped` (libpod and Docker API), and required by the post-create check.
+- **cgroup**: no cgroup parent on containers, pods or builds (no buildcap). Memory and pids defaults and
+  caps, swap off and OOM score 1000 are kept as in the dev tier: they come from `cfg["memory"]`/`["pids"]`,
+  not from agentbox.slice.
+- **Proxy**: no proxy variables in containers or build args.
+- Privilege, image, pull and build-path checks are the dev tier's code, unchanged.
+
+Open for step 3: a stack deployed by hand before has unlabelled containers and volumes; the gate will not
+reuse or remove them (volumes `<compose_project>_*` without the labels are refused), so the first `ab deploy`
+of such a project needs a migration step. `external:` volumes and networks, binds of `/etc/localtime` and
+similar, and the OOM score of a live service are refused or kept strict until decided.

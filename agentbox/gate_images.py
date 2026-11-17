@@ -239,7 +239,9 @@ class ImagesMixin:
             return False
         labels = self.labels_in("images", doc)
         created = image_created(doc)
-        if labels.get("agentbox.session") != self.session or created is None or created < since - 5:
+        # deploy mode: stamped with the deploy labels (stamp), not a session label
+        mine = self.is_dev(labels) if self.deploy else labels.get("agentbox.session") == self.session
+        if not mine or created is None or created < since - 5:
             self.log("not-recorded", "-", "build", f"image {image_id[:12]} is not this build's "
                      f"(session label {labels.get('agentbox.session')!r}, created {created})")
             return False
@@ -285,9 +287,10 @@ class ImagesMixin:
         # Dropped, so the service's defaults apply: the client's security and namespace knobs (a seccomp or
         # AppArmor profile path names a file on the host; isolation and id mappings change the sandbox).
         q = [(k, v) for k, v in q if k.lower() not in NS_KEYS + DROPPED_BUILD_KEYS]
+        # deploy mode: the host default cgroup, not agentbox.slice (proposal D5)
         q = buildcap.rewrite_build_query(q, slice_name=self.cfg["slice"], session=self.session,
                                          memory_bytes=self.cfg["build_memory"],
-                                         state=self.slice_state) if self.cfg["slice"] else q
+                                         state=self.slice_state) if not self.deploy and self.cfg["slice"] else q
         orig = dict(parse_qsl(parts.query, keep_blank_values=True))
         try:
             args = json.loads(orig.get("buildargs") or "{}")
@@ -295,7 +298,8 @@ class ImagesMixin:
             args = {}
         # By the proxy's IP, in both spellings: a build's RUN steps run in the holder's network namespace with
         # their own resolv.conf, where the proxy's container name does not resolve (trial, 2 Oct).
-        args.update(self.cfg.get("build_proxy_env") or self.cfg["proxy_env"])
+        if not self.deploy:                # the session's proxy is a session thing
+            args.update(self.cfg.get("build_proxy_env") or self.cfg["proxy_env"])
         try:
             labels = json.loads(orig.get("labels") or "{}")
         except ValueError:
