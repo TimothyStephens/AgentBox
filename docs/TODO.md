@@ -185,9 +185,11 @@ Do these **only alongside a change that already touches the area**, with the sui
   k8s-file (17 Nov, from `perf-results/`). What is left is one sidecar `run -d` in about one start in four
   taking 1.7-3.2 s (sockguard-dev or holder, not the same one each time) with nothing of agentbox's
   running beside it: podman's own variance, likely its storage or database lock. No launcher change.
-  The grants are walked about five times per start (masks, grantcheck, the scan
-  before and after, history); one shared walk is the next step if a large tree makes it hurt.
-  `tests/perf/run.sh` re-measures.
+  The grants are walked about five times per start, but a bare walk is cheap (0.45 s on 98k files in a
+  session, 17 Nov); the cost was per-file work inside them. Fixed 17 Nov: the mask plan (19.9 s to 0.9 s)
+  and the scan record (16.4 s to 2.1 s, no executable hashed, tagged caches skipped). Left: grantcheck's
+  per-file lstat (11.6 s there, for the foreign-owner warning and sizes); decide after toulmin's numbers on
+  the host. `tests/perf/run.sh` re-measures.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
   when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 
