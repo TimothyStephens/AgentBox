@@ -137,9 +137,21 @@ Do these **only alongside a change that already touches the area**, with the sui
 - **Module-level splits done, 16 Nov** (review item 54): `gate.py` lost its schema tables, Containerfile
   reader, mountinfo parsers and HTTP framing to `gate_*` modules; `session.py` lost notes, liveness, state,
   infra, lifecycle, the lock and the project record to their own modules; `cli.py` has one module per noun.
-- **Left: the `Gate` class itself** (~1,600 of `gate.py`'s ~2,050 lines) still mixes policy, image handling
-  and mount verification. Long methods: `decide` (~85 lines), `rewrite_libpod_container`
-  (~70), `check_common_libpod` (~58). A pod start inspects the pod three times. Splitting it is pure refactoring.
+- **`Gate` class split done, 17 Nov** (no behaviour change; every method's AST and `dir(gate.Gate)` compared
+  equal before and after). `Gate` (now ~950 lines, `gate.py` 2,082 → 1,381) keeps policy and dispatch and
+  inherits two mixins: `gate_mounts.MountsMixin` (grant roots and covers, `covers_intact`, `covers_overlap`,
+  bind and mount-option checks, grant volumes, `mount_violations`, `prepare_start`/`after_start_checked` and
+  the per-container locks) and `gate_images.ImagesMixin` (`check_image*`, `check_build_images`,
+  `check_context_masks`, build/pull rewrites, `holder_ns`, the built-image record), with the module-level
+  names they use (`ROLE_GRANT`, `MOUNT_OPTION_OK`; the build key tables, `LocalImage`, `_member_key`,
+  `image_created`; `DEV_OWNER` to `gate_schema`), all re-exported from `gate.py`. `unmasked_secret_under`
+  stays in `gate.py`: a test lowers `gate.BIND_SCAN_LIMIT` to reach its cutoff, which would not reach a copy
+  in another module. Not done, on purpose: the long methods (`decide` ~85 lines, `rewrite_libpod_container`
+  ~70, `check_common_libpod` ~58) are left whole; the pod inspects on a pod start are left as they are (four,
+  not three: `require_dev` and `start_targets` by ID, `check_start`'s infra lookup and `decide`'s
+  `require_dev` by the client's name, the last after the containers were stopped and initialised; the server
+  is threaded, so another request can change the pod between them, and they are not provably one state).
+  A single snapshot would be a deliberate behaviour change with its own test.
 
 ---
 

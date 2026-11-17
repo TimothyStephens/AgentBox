@@ -55,31 +55,37 @@ counted) and then:
     on a container that passed its check.
 
 Everything else is forwarded to sockguard, whose rules and owner isolation apply on top.
+
+Layout: this module holds the request policy and dispatch (`Gate.decide`, the create rewrites, the post-create
+and start re-checks, the upstream helpers) and the connection handler. `Gate` inherits mount verification
+(grant roots and covers, bind checks, grant volumes, the mountinfo checks at start and their per-container
+locks) from `gate_mounts.MountsMixin`, and image handling (image allowlist, build and pull rewrites, the
+built-image record) from `gate_images.ImagesMixin`; schema tables, Containerfile reading and HTTP framing are
+in `gate_schema`, `gate_dockerfile` and `gate_http`. Every module-level name of those is re-exported here.
 """
-import fnmatch
 import http.client
 import json
 import os
-import posixpath
 import re
 import socket
 import socketserver
 import sys
-import tarfile
 import tempfile
 import threading
 import time
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from . import buildcap, builtrec
 from .errors import AgentboxError
 from .fsutil import inside
 from .gate_schema import (COMPAT_KEYS, COMPAT_NETWORK_KEYS, DATA_PATHS, HOSTCONFIG_KEYS,  # noqa: F401
                           HOSTCONFIG_REFUSED, LIBPOD_KEYS, LIBPOD_REFUSED, NETWORK_KEYS, POD_KEYS, POD_REFUSED,
-                          VOLUME_KEYS, Deny, NotFound, UpstreamError, _Obj, canonical, cget, cset, strict_loads)
+                          VOLUME_KEYS, DEV_OWNER, Deny, NotFound, UpstreamError, _Obj, canonical, cget, cset,
+                          strict_loads)
 from .gate_dockerfile import (_HEREDOC, _WS, _subst, check_run_mount, dockerfile_images,  # noqa: F401
                               heredoc_markers, image_name, instruction_words, normalize_ref)
-from .gate_mounts import parse_mountinfo, parse_mountinfo_opts  # noqa: F401
+from .gate_mounts import MOUNT_OPTION_OK, ROLE_GRANT, MountsMixin, parse_mountinfo, parse_mountinfo_opts  # noqa: F401
+from .gate_images import (BUILD_KEYS, DROPPED_BUILD_KEYS, NET_ENABLED, NS_KEYS, REFUSED_BUILD_KEYS,  # noqa: F401
+                          SECRET_SRC, ImagesMixin, LocalImage, _member_key, image_created)
 from .gate_http import (MAX_BODY, MAX_BUILD_BODY, MAX_HEAD, TOKEN, UPSTREAM_TIMEOUT, UnixHTTP,  # noqa: F401
                         build_cut_off_message, early_reply,
                         _BytesSocket, build_head, build_response, deny, hget, hset, parse_head, parse_response,
@@ -142,7 +148,6 @@ DENIED = [(m, re.compile(p), why) for m, p, why in (
     (None, r"^/system/(?!df$).*$", "system operations"),
 )]
 
-DEV_OWNER = "agentbox.dev-owner"     # sockguard's ownership label key for the dev tier
 # The client's side (item 43): a client that stops sending its request (or reading the gate's own reply) is
 # dropped after this long, per read or write. Lifted for what is meant to be long-lived: upgraded exec/attach
 # streams, a build's reply, and a relayed reply (wait, logs -f, events).
@@ -151,39 +156,11 @@ MAX_CONNECTIONS = 128                # concurrent client connections; one more i
 MAX_EXEC_IDS = 4096                  # exec sessions remembered; the oldest are forgotten (refused) past this
 BIND_SCAN_LIMIT = 200000             # entries walked under a bind source looking for new secret files (N6)
 
-# podman's build API: networkmode is buildah's NetworkConfigurationPolicy as a number
-NET_ENABLED = "2"
-NS_KEYS = ("networkmode", "nsoptions")
-REFUSED_BUILD_KEYS = ("cgroupparent",)
-DROPPED_BUILD_KEYS = ("pull", "pullpolicy", "labels", "buildargs", "httpproxy", "seccomp", "apparmor", "isolation",
-                      "idmappingoptions", "cgroupns", "ipcns", "pidns", "utsns", "userns", "devices", "capadd",
-                      "privileged", "securityopt", "addhost", "dnsservers", "dnsoptions", "dnssearch", "labelopts",
-                      "tlsverify")
-# Build query keys passed through (after the checks below). Anything not listed here or above is refused:
-# addcaps, volume, remote, additionalbuildcontexts, cachefrom/cacheto (registry access), outputs (writes on the
-# host), rusagelogfile (a host path), registry, manifest, allplatforms, groupadd, ssh.
-BUILD_KEYS = ("dockerfile", "t", "output", "outputformat", "forcerm", "rm", "q", "nocache", "layers", "jobs",
-              "target", "platform", "squash", "squashall", "inheritannotations", "inheritlabels", "annotations",
-              "unsetannotation", "unsetlabel", "unsetenv", "setenv", "envs", "timestamp", "sourcedateepoch",
-              "rewritetimestamp", "identitylabel", "omithistory", "createdannotation", "skipunusedstages",
-              "compatvolumes", "excludes", "ignorefile", "dropcaps", "nohosts", "extrahosts", "shmsize", "ulimits",
-              "retry", "retry-delay", "secrets", "memory", "memswap", "cpushares", "cpusetcpus", "cpuperiod",
-              "cpuquota", "cpusetmems", "osfeature", "osversion", "layerlabel", "osversion", "logsplit")
-SECRET_SRC = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
 class LocalReply(Exception):
     """A GET the gate answers itself (200, JSON), from the raw service and filtered to the session's objects."""
     def __init__(self, body):
         super().__init__(len(body))
         self.body = body
-
-
-class LocalImage(Exception):
-    """A pull of an image that is already present and allowed: answered by the gate, never forwarded."""
-    def __init__(self, image_id):
-        super().__init__(image_id)
-        self.image_id = image_id
 
 
 # Annotations with an effect on the runtime or OCI hooks (crun reads run.oci.*, e.g. keep_original_groups).
@@ -197,17 +174,12 @@ ANNOTATION_DROPPED = "io.podman.annotations."
 ANNOTATION_FROM_IMAGE = ("org.opencontainers.",)
 SYSCTL_ALLOWED = ()                  # none: the dev sockguard refuses every sysctl (1 Oct), so the gate does too
 INFRA_ROOTFS = "/libpod/tmp/infra-container"
-ROLE_GRANT = "grant"                 # the gate's bind-backed volumes over the grant roots (sub-path binds)
 # No `U`/`chown` (audit 6 Oct, cheap half of H1): they recursively re-own the bound host files to the
 # container user, and an accidental re-own of a grant's files is a mistake-model harm. They are refused up
 # front by MOUNT_OPTION_OK in check_mount_options; this VOLUME_OPTS allowlist is a second layer that, by
 # then, never sees them.
 VOLUME_OPTS = ("ro", "rw", "z", "Z", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
-MOUNT_OPTION_OK = re.compile(r"^(r?(shared|slave|private|unbindable)|ro|rw|nosuid|suid|nodev|dev|noexec|exec|"
-                             r"r?bind|z|Z|idmap(=.*)?|nocopy|copy|notmpcopyup|tmpcopyup|size=\d+[kmgKMG]?|"
-                             r"mode=[0-7]{3,4}|uid=\d+|gid=\d+|relatime|norelatime|noatime|strictatime|"
-                             r"src-nofollow|dest-nofollow)$")
 
 
 def canonical_path(target):
@@ -233,13 +205,7 @@ def canonical_path(target):
     return "/" + "/".join(out)
 
 
-
-def _member_key(name):
-    """A build-context tar member's name as the path it unpacks to, relative to the context: "." for the root."""
-    n = posixpath.normpath("/" + name).lstrip("/")
-    return n or "."
-
-class Gate:
+class Gate(MountsMixin, ImagesMixin):
     def __init__(self, cfg):
         self.cfg = cfg
         self.session = cfg["session"]
@@ -370,85 +336,6 @@ class Gate:
         self.log("remove-failed", "DELETE", path, f"{why}; last status {status}")
         return False
 
-    def _roots(self):
-        return [os.path.realpath(r) for r in self.cfg["bind_roots"]]
-
-    def _inside_roots(self, src):
-        if not isinstance(src, str) or not src.startswith("/"):
-            return False
-        real = os.path.realpath(src)
-        return any(inside(real, r) for r in self._roots())
-
-    def _is_root(self, src):
-        """Only a grant root itself may be bind-mounted (Tim, 1 Oct): podman resolves a bind source again when
-        the container starts, and a path below a root is one the agent can swap for a symlink in between. A
-        grant root is a mount point in the agent's container, so the agent cannot replace it."""
-        return isinstance(src, str) and src.startswith("/") and os.path.realpath(src) in self._roots()
-
-    def _covered(self):
-        """The covered paths as recorded at session start. Never resolved again: a symlink left at a cover's old
-        name must not move the entry somewhere harmless (audit 5 Oct, H1)."""
-        return list(self.cfg.get("covered", []))
-
-    def covers_intact(self):
-        """Every cover still has the identity it had at session start (st_dev, st_ino; not following links).
-        A cover renamed away, replaced or deleted means the path-based check can no longer be trusted."""
-        for c, ident in (self.cfg.get("covered_ids") or {}).items():
-            try:
-                st = os.lstat(c)
-            except OSError:
-                return c
-            if [st.st_dev, st.st_ino] != list(ident):
-                return c
-        return None
-
-    def is_ro_root(self, real):
-        """`real` is a read-only grant, or inside one."""
-        return any(inside(real, r) for r in self.cfg.get("ro_roots") or [])
-
-    def covers_overlap(self, real):
-        """A covered path (a mask or a read-only cover in the agent's own container) that `real` overlaps: the
-        same path, one under `real`, or `real` under it. The agent's in-container masks and read-only covers do
-        not exist in a container it spawns through the gate, so a bind that reaches a covered path would expose
-        or let it write the real data (crit 5 Oct). Returns the covered path, or None."""
-        for c in self._covered():
-            if inside(real, c) or inside(c, real):
-                return c
-        return None
-
-    def _refuse_if_foreign(self, real, src):
-        """A bind source owned by another user is almost certainly a container's data directory: under keep-id
-        the agent's own files are owned by the user on the host, so a foreign uid means bytes a rootless
-        container wrote (a live stack's database, say). Binding it into a spawned container is a
-        mistake-model harm — refuse it (audit 6 Oct, H1, the half the gate must enforce; grantcheck also
-        warns about it at scan time). The grant root itself is always user-owned, so this only ever bites a
-        sub-path."""
-        try:
-            uid = os.lstat(real).st_uid
-        except OSError:
-            return          # a missing source is podman's to reject; the cover checks below still run
-        if uid != os.getuid():
-            raise Deny(f"bind mount {src}: owned by uid {uid}, not you — a container's data directory? agentbox "
-                       "binds only paths you own; move it out of the project")
-
-    def _refuse_if_covered(self, real, src):
-        self._refuse_if_foreign(real, src)
-        moved = self.covers_intact()
-        if moved is not None:
-            raise Deny(f"bind mount {src}: the covered path {moved} was moved or replaced during the session (by "
-                       "the agent, or on the host: `git config` or an editor that saves by renaming does this), so no "
-                       "bind into the project is accepted any more (end the session and start a new one)")
-        c = self.covers_overlap(real)
-        if c is not None:
-            raise Deny(f"bind mount {src} reaches {c}, which is masked or covered read-only in the session; a "
-                       "spawned container would see the real data. Bind a path that does not contain or sit "
-                       "under a masked or covered path")
-        new = self.unmasked_secret_under(real)
-        if new is not None:
-            raise Deny(f"bind mount {src} contains {new}, named like a secret or like one of the project's own "
-                       "masks, which the session does not mask (it appeared after the session started). Move it "
-                       "out of the project, or start a new session so it is masked")
-
     def unmasked_secret_under(self, real):
         """A non-empty file named like a secret (the names mounts.py masks: MASK_FILES less MASK_EXEMPT, or
         anything under a MASK_DIRS directory), under `real`, that is not covered: it appeared after the
@@ -566,94 +453,6 @@ class Gate:
             if k.startswith(ANNOTATION_FROM_IMAGE):
                 out.setdefault(k, v)
         return out
-
-    @staticmethod
-    def own_storage(m, cid):
-        """After start podman shows an image volume as a bind from the container's own storage dir; a client
-        cannot name that as a bind source (sources must be inside the grants)."""
-        return bool(cid) and f"/overlay-containers/{cid}/userdata/" in (m.get("Source") or "")
-
-    def mount_rule_violations(self, mounts, cid=""):
-        bad = []
-        for m in mounts:
-            t = m.get("Type")
-            if t == "bind" and self.own_storage(m, cid):
-                continue
-            if t == "bind":
-                if not self._is_root(m.get("Source", "")):
-                    bad.append(f"bind {m.get('Source')} (only a grant root itself)")
-            elif t == "volume":
-                name = m.get("Name") or ""
-                vdoc = self.inspect("volumes", name) if name else None
-                labels = self.labels_in("volumes", vdoc) if vdoc else None
-                if labels is None or not (self.is_dev(labels) or self.anonymous_volume(name, labels)
-                                          or self.grant_volume_root(vdoc)):
-                    bad.append(f"volume {name or m.get('Source')} is not this session's")
-            elif t == "image":
-                # the image the mount serves must be one the dev tier may use (item 8): the create's
-                # image_volumes are checked, but what podman stored is what counts
-                try:
-                    self.check_image(m.get("Source") or "", "image mount")
-                except Deny as e:
-                    bad.append(str(e))
-            elif t != "tmpfs":
-                bad.append(f"{t} mount")
-        return bad
-
-    # ---- grant volumes: bind-backed volumes over the grant roots, for sub-path binds ----------------------
-    def grant_volume_root(self, doc):
-        """The grant root a gate-made grant volume covers, or None if `doc` is not exactly one."""
-        labels = self.labels_in("volumes", doc or {})
-        opts = (doc or {}).get("Options") or {}
-        if labels.get(DEV_OWNER) != self.session or labels.get("agentbox.role") != ROLE_GRANT:
-            return None
-        if (doc.get("Driver") or "local") != "local" or set(opts) != {"type", "o", "device"} \
-                or opts.get("type") != "none" or opts.get("o") != "bind":
-            return None
-        dev = os.path.realpath(opts.get("device") or "")
-        return dev if dev in self._roots() else None
-
-    def grant_volume(self, root):
-        """The session's grant volume for one grant root, created on the raw service on first use. Its role is
-        `grant`, so the agent can name it in no request; only the gate puts it into a create."""
-        name = f"{self.session}-grant{self._roots().index(root)}"
-        doc = self.inspect("volumes", name)
-        if doc is None:
-            labels = self.stamp({})
-            labels["agentbox.role"] = ROLE_GRANT
-            status = self.raw_request("POST", "/libpod/volumes/create", {
-                "Name": name, "Driver": "local", "Label": labels,
-                "Options": {"type": "none", "o": "bind", "device": root}})
-            if not (isinstance(status, int) and 200 <= status < 300):
-                raise Deny(f"could not create the grant volume for {root} (status {status})")
-            doc = self.inspect("volumes", name)
-        if self.grant_volume_root(doc) != root:
-            raise Deny(f"volume {name} exists but is not this session's grant volume for {root}")
-        return name
-
-    def grant_subpath(self, src):
-        """(grant volume, sub-path) for a bind source strictly below a grant root (by real path), else None."""
-        if not isinstance(src, str) or not src.startswith("/"):
-            return None
-        real = os.path.realpath(src)
-        holders = [r for r in self._roots() if real.startswith(r.rstrip("/") + "/")]
-        if not holders or self._is_root(real):
-            return None
-        self._refuse_if_covered(real, src)           # the sub-path (via a grant-volume SubPath) must miss covers
-        root = max(holders, key=len)
-        try:
-            crosses = os.stat(real).st_dev != os.stat(root).st_dev
-        except OSError:
-            crosses = False
-        if crosses:                                  # N7: grant volumes are non-recursive binds
-            raise Deny(f"bind mount {src} is on a different filesystem from its grant root {root} (a mount inside "
-                       "the project); bind a path that does not cross a mount")
-        return self.grant_volume(root), os.path.relpath(real, root)
-
-    @staticmethod
-    def anonymous_volume(name, labels):
-        """podman's anonymous volumes have a 64-hex name and no labels."""
-        return bool(re.fullmatch(r"[0-9a-f]{64}", name or "")) and not labels
 
     def container_violations(self, doc):
         """What is wrong with a created container, judged by what podman stored (not by the request)."""
@@ -852,176 +651,6 @@ class Gate:
             self.prepare_start(cid, restart=(op == "restart"), seen=seen)
         return ids
 
-    def read_mountinfo(self, pid):
-        with open(f"/proc/{pid}/mountinfo") as f:
-            return f.read()
-
-    def host_mountinfo(self):
-        with open("/proc/self/mountinfo") as f:
-            return f.read()
-
-    def allowed_fs(self, with_root=False):
-        """[(dev, path within that filesystem)] of every grant root, as the host sees them."""
-        mounts = parse_mountinfo(self.host_mountinfo())
-        out = []
-        for real in self._roots():
-            best = None
-            for mp, dev, root in mounts:
-                if inside(real, mp) or mp == "/":
-                    if best is None or len(mp) >= len(best[0]):
-                        best = (mp, dev, root)
-            if best:
-                mp, dev, root = best
-                rel = real[len(mp):].lstrip("/") if mp != "/" else real.lstrip("/")
-                loc = (dev, os.path.join(root, rel) if rel else root)
-                out.append(loc + (real,) if with_root else loc)
-        return out
-
-    def mount_violations(self, doc, strict=False):
-        """What the runtime actually mounted, read from /proc/<pid>/mountinfo: a plain bind must be a grant root,
-        a grant volume must land inside its root, neither may reach a covered path, and both must be read-only
-        when the grant is. `strict` (before the entrypoint runs, after init): a missing PID or an unreadable
-        mount table is itself a violation (audit 5 Oct, H2)."""
-        pid = (doc.get("State") or {}).get("Pid")
-        binds = [m for m in doc.get("Mounts") or [] if m.get("Type") == "bind"
-                 and not self.own_storage(m, doc.get("Id") or "")]
-        grants = []
-        for m in doc.get("Mounts") or []:
-            if m.get("Type") == "volume" and (m.get("Name") or "").startswith(f"{self.session}-grant"):
-                grants.append((m, self.grant_volume_root(self.inspect("volumes", m["Name"]))))
-        if not (binds or grants):
-            return []
-        if not pid:
-            return ["cannot read the container's mounts (no process)"] if strict else []
-        try:
-            mounted = parse_mountinfo_opts(self.read_mountinfo(pid))
-        except OSError:
-            return ["cannot read the container's mounts"] if strict else []
-        located = self.allowed_fs(with_root=True)
-        bad = []
-
-        def check_host(dest, host, opts):
-            c = self.covers_overlap(os.path.normpath(host))
-            if c is not None:
-                bad.append(f"{dest} resolved onto {c}, which is masked or covered")
-            if self.is_ro_root(host) and "ro" not in opts:
-                bad.append(f"{dest} is a read-only grant mounted read-write")
-
-        for m in binds:
-            got = mounted.get(m.get("Destination"))
-            if got is None:
-                bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
-                continue
-            dev, root, opts = got
-            hosts = [h for d, p, h in located if dev == d and root == p]
-            if not hosts:
-                bad.append(f"{m.get('Destination')} is {root} (device {dev}; stored as {m.get('Type')} "
-                           f"{m.get('Source')}), not a grant root")
-                continue
-            check_host(m.get("Destination"), hosts[0], opts)
-        by_root = {h: (d, p) for d, p, h in located}
-        for m, groot in grants:
-            got = mounted.get(m.get("Destination"))
-            want = by_root.get(groot)
-            if got is None or want is None:
-                bad.append(f"cannot confirm what is mounted at {m.get('Destination')}")
-                continue
-            dev, root, opts = got
-            if not (dev == want[0] and inside(root, want[1])):
-                bad.append(f"{m.get('Destination')} is {root} (device {dev}), outside its grant root {groot}")
-                continue
-            host = groot if root == want[1] else os.path.join(groot, os.path.relpath(root, want[1]))
-            check_host(m.get("Destination"), host, opts)
-        return bad
-
-    # ---- per-container locks (N1) ---------------------------------------------------------------------
-    def begin_request(self):
-        self._tls.held, self._tls.checked = [], {}
-
-    def hold(self, cid):
-        """Take container `cid`'s lock for the rest of this request (released by release_held)."""
-        held = getattr(self._tls, "held", None)
-        if held is None:
-            self.begin_request()
-            held = self._tls.held
-        if any(c == cid for c, _ in held):
-            return
-        with self.lock:
-            lock = self.ctr_locks.setdefault(cid, threading.Lock())
-        if not lock.acquire(timeout=UPSTREAM_TIMEOUT):
-            raise Deny(f"container {cid[:12]} is busy (a start is in progress); try again")
-        held.append((cid, lock))
-
-    def release_held(self):
-        for _cid, lock in reversed(getattr(self._tls, "held", None) or []):
-            lock.release()
-        self._tls.held, self._tls.checked = [], {}
-
-    def after_start_checked(self):
-        """After podman's start reply, with the locks still held: a container the gate initialised must still
-        be the process it checked. A different PID means it was re-initialised after the check: removed and
-        refused. Still running from the checked PID: its mounts are read again, strictly. Already exited: the
-        held lock means nothing re-initialised it in between, so the checked mounts were the ones it ran with."""
-        for cid, pid in (getattr(self._tls, "checked", None) or {}).items():
-            doc = self.inspect("containers", cid) or {}
-            state = doc.get("State") or {}
-            now = state.get("Pid") or 0
-            if now and now != pid:
-                self.remove("containers", cid, f"process {now} is not the checked {pid}")
-                raise Deny(f"container {cid[:12]} was re-initialised after the gate checked it; removed it")
-            if state.get("Status") == "running" and now == pid:
-                bad = self.mount_violations(doc, strict=True)
-                if bad:
-                    self.remove("containers", cid, "; ".join(bad))
-                    raise Deny(f"container {cid[:12]} mounted something it may not ({'; '.join(bad)}); removed it")
-
-    def prepare_start(self, cid, restart=False, seen=None):
-        """Before a container runs: stop it first if this is a restart, have podman set up its mounts without
-        running the entrypoint (init), and check what was mounted. Its dependencies (which podman would start
-        with it) get the same treatment first. On any violation the container is removed and the start
-        refused. A concurrent stop would re-initialise the container and undo this check, so the handler holds
-        each container's lock from here through the start reply, and rechecks the PID afterwards (audit 6 Oct,
-        N1); that is what makes a swapped sub-path never reach a running process (audit 5 Oct, H2)."""
-        seen = set() if seen is None else seen
-        if cid in seen:
-            return
-        seen.add(cid)
-        self.hold(cid)
-        moved = self.covers_intact()                 # N5: at start too, not only at create
-        if moved is not None:
-            raise Deny(f"the covered path {moved} was moved or replaced during the session (by the agent, or on the "
-                       "host: `git config` or an editor that saves by renaming does this); no container starts with "
-                       "binds into the project any more. End the session and start a new one")
-        doc = self.inspect("containers", cid)
-        if doc is None:
-            raise NotFound(f"no such container: {cid[:12]!r}")
-        for dep in doc.get("Dependencies") or []:
-            with self.lock:
-                ok = dep in self.verified
-            if not ok:
-                raise Deny(f"dependency {str(dep)[:12]} has not passed the gate's post-create check")
-            self.prepare_start(dep, False, seen)
-        status = (doc.get("State") or {}).get("Status")
-        if status == "running" and not restart:
-            return                                       # its mounts were checked when it started
-        if status in ("running", "paused") and restart:
-            self.raw_request("POST", f"/libpod/containers/{quote(cid, safe='')}/stop?timeout=10")
-            doc = self.inspect("containers", cid) or {}
-            status = (doc.get("State") or {}).get("Status")
-        if status != "initialized":
-            st = self.raw_request("POST", f"/libpod/containers/{quote(cid, safe='')}/init")
-            if not (isinstance(st, int) and (200 <= st < 300 or st == 304)):
-                raise Deny(f"container {cid[:12]} could not be prepared for start (init: {st})")
-            doc = self.inspect("containers", cid) or {}
-        bad = self.mount_violations(doc, strict=True)
-        if bad:
-            self.remove("containers", cid, "; ".join(bad))
-            raise Deny(f"container {cid[:12]} mounted something it may not ({'; '.join(bad)}); removed it "
-                       "before it ran")
-        if not hasattr(self._tls, "checked"):
-            self.begin_request()
-        self._tls.checked[cid] = (doc.get("State") or {}).get("Pid") or 0
-
     # ---- create rewrites --------------------------------------------------------------------------
     def stamp(self, labels):
         out = dict(labels or {})
@@ -1068,28 +697,6 @@ class Gate:
                 out[k] = v
         return out
 
-    def check_bind(self, src):
-        """A bind source: absolute, and by its real path exactly a grant root (see _is_root). Returns the real
-        path, which is what gets forwarded."""
-        if not isinstance(src, str) or not src.startswith("/"):
-            raise Deny(f"bind mount source {src!r} must be an absolute path")
-        real = os.path.realpath(src)
-        if self._is_root(real):
-            self._refuse_if_covered(real, src)       # the whole root contains the covers; refuse binding it
-            return real
-        if self._inside_roots(real):
-            roots = ", ".join(self._roots())
-            raise Deny(f"bind mount {src}: only a grant root itself can be bind-mounted ({roots}), not a path "
-                       "inside one (podman resolves the path again at start, and it could be swapped for a symlink "
-                       "by then). Bind the root and use the sub-path inside the container, or use a named volume "
-                       "created in this session")
-        raise Deny(f"bind mount {src} is outside the project's grants")
-
-    def check_mount_options(self, opts, where):
-        for o in opts or []:
-            if not isinstance(o, str) or not MOUNT_OPTION_OK.match(o):
-                raise Deny(f"mount option {o!r} on {where} is not allowed")
-
     def named_volume(self, name, where):
         """A named volume a create refers to: this session's own, or a new name, created here labelled."""
         if not isinstance(name, str) or not name:
@@ -1107,47 +714,6 @@ class Gate:
             return
         self.require_dev("volumes", name)
 
-    def check_image_volume(self, src):
-        if not isinstance(src, str) or not src or self.image_doc(src) is None:
-            raise Deny(f"image volume {src!r}: only images already present are allowed (no pulls)")
-        self.check_image(src, "image volume")
-
-    # ---- which images the dev tier may run or build from (Tim, 1 Oct) ------------------------------
-    def image_doc(self, ref):
-        return self.inspect("images", ref)
-
-    def check_image(self, ref, where):
-        """An image the dev tier runs, mounts or builds from must be: named from an allowlisted public
-        registry, built through the gate for this project (in any session; by the gate's record, not labels),
-        or matched by the project's dev_images patterns. So a localhost/ image of another project or a live
-        stack (its files, its ENV) is out of reach unless listed."""
-        doc = self.image_doc(ref)
-        if doc is None:
-            raise Deny(f"{where}: image {ref} is not present (pull it first; builds and creates never pull)")
-        if self.built_here(doc):
-            return
-        names = list(doc.get("RepoTags") or []) + list(doc.get("RepoDigests") or [])
-        for n in names:
-            if "/" in n and n.split("/", 1)[0] in self.cfg["registries"]:
-                return
-            if any(fnmatch.fnmatchcase(n, pat) for pat in self.cfg.get("images") or []):
-                return
-        raise Deny(f"{where}: image {ref} ({', '.join(names) or 'untagged'}) is not allowed in the dev tier: "
-                   f"only images from {', '.join(self.cfg['registries'])}, this project's own builds, or names "
-                   "matching the project's dev_images (`ab project add --dev-image`)")
-
-    def check_image_read(self, ref):
-        """An image inspect, history, exists or tree (review 2026-11-16, item 13): the same rule as running it.
-        A present image the tier may not use is answered as missing, as a foreign container is (L1): the
-        status must not tell whether another project's or a live stack's image exists. A missing one is left
-        to podman, which answers 404 itself."""
-        if self.image_doc(ref) is None:
-            return
-        try:
-            self.check_image(ref, "image inspect")
-        except Deny:
-            raise NotFound(f"no such image: {ref!r}")
-
     def list_pods(self, target):
         """GET /libpod/pods/json, answered by the gate: podman's list (from the raw service, the client's query
         kept), filtered to pods carrying the dev labels that passed the post-create check. Sockguard's owner
@@ -1161,74 +727,6 @@ class Gate:
         keep = [d for d in docs if isinstance(d, dict) and self.is_dev(d.get("Labels") or {})
                 and (d.get("Id") or "") in verified]
         return (json.dumps(keep) + "\n").encode()
-
-    def check_build_images(self, context_path, target):
-        """Every image the build's Containerfile(s) use (FROM, COPY --from, RUN --mount from=) must pass
-        check_image. The context is the spooled request body (a tar)."""
-        q = dict((k.lower(), v) for k, v in parse_qsl(urlsplit(target).query, keep_blank_values=True))
-        raw = q.get("dockerfile") or ""
-        try:
-            files = json.loads(raw) if raw.startswith("[") else ([raw] if raw else [])
-        except ValueError:
-            raise Deny("build dockerfile is not readable")
-        try:
-            args = json.loads(q.get("buildargs") or "{}")
-        except ValueError:
-            args = {}
-        try:
-            with tarfile.open(context_path, "r:*") as tar:
-                # Keyed by the path the member unpacks to, as extraction cleans it: `./x`, `././x`, `a/../x`
-                # and `/x` are all `x`, and the last of them wins, as it does on disk. Keying on the raw name
-                # let a second `././Containerfile` replace the one checked here (review 16 Nov, R-3). Not
-                # lstrip("./"): that is a set of characters, and turned "./.env" into "env" (item 42).
-                members = {_member_key(m.name): m for m in tar.getmembers()}
-                if not files:
-                    files = [n for n in ("Containerfile", "Dockerfile") if n in members][:1]
-                if not files:
-                    raise Deny("the build context has no Containerfile or Dockerfile")
-                for name in files:
-                    if not isinstance(name, str) or name.startswith("/") or ".." in name.split("/"):
-                        raise Deny(f"build dockerfile {name!r} must be inside the context")
-                    m = members.get(_member_key(name))
-                    if m is None or not m.isfile():
-                        raise Deny(f"build dockerfile {name!r} is not a file in the build context")
-                    text = tar.extractfile(m).read(1 << 20).decode("utf-8", errors="replace")
-                    for _instr, ref in dockerfile_images(text, args):
-                        self.check_image(self.own_short_name(ref) or ref, f"build {_instr}")
-                self.check_context_masks(members)
-        except tarfile.TarError as e:
-            raise Deny(f"the build context is not a readable tar ({e})")
-
-    def check_context_masks(self, members):
-        """A build context is packed by the client in the agent's own mount namespace, where every mask reads
-        as empty, so a COPY of a masked file or directory can only ever carry nothing. If a context arrives
-        carrying content at a masked path, it was not packed through the masks: refuse it (Tim, 5 Oct). The
-        context's host directory is not sent, so it is inferred: a directory D for which a member sits at a
-        masked path and every top-level member exists on disk under D."""
-        masked = list(self.cfg.get("masked") or [])
-        if not masked:
-            return
-        tops = {n.split("/", 1)[0] for n in members if n and n not in (".", "./")}
-        valid = {}
-
-        def context_ok(d):
-            if d not in valid:
-                valid[d] = self._inside_roots(d) and all(os.path.lexists(os.path.join(d, t)) for t in tops)
-            return valid[d]
-        for name, m in members.items():
-            n = name.strip("/")
-            if not n or not m.isfile() or m.size == 0:
-                continue
-            parts = n.split("/")
-            for i in range(len(parts), 0, -1):
-                prefix = "/".join(parts[:i])
-                for c in masked:
-                    if c.endswith("/" + prefix) and context_ok(c[:-len(prefix) - 1]):
-                        raise Deny(f"the build context carries content at {n}, which is masked in the session "
-                                   f"({c}); a context packed in the session has it empty")
-        # N8 (audit 6 Oct) is left as a heuristic, not a name-based backstop: a dev-swap `.env` is non-empty by
-        # design, so refusing every non-empty secret-named member would break ordinary `COPY . /app` builds.
-        # The agent cannot get a cover's real content into a context anyway (it reads empty in the session).
 
     def check_annotations(self, ann, where):
         out = {}
@@ -1573,190 +1071,6 @@ class Gate:
         spec.pop(other, None)
         return spec
 
-    # ---- build and pull ---------------------------------------------------------------------------
-    def holder_ns(self):
-        """/proc/<pid>/ns/net of the session's holder, re-read on every build. The container must be running
-        with this session's holder labels, and the PID podman reports must sit in that container's own cgroup
-        (its ID in the cgroup path), so a reused PID is never taken for the holder."""
-        status, doc = self.raw_json(f"/libpod/containers/{quote(self.cfg['holder'], safe='')}/json")
-        if status != 200 or not isinstance(doc, dict):
-            raise Deny("the session's build holder is not running")
-        labels = (doc.get("Config") or {}).get("Labels") or {}
-        state = doc.get("State") or {}
-        if labels.get("agentbox.session") != self.session or labels.get("agentbox.role") != "holder" \
-                or not state.get("Running") or not state.get("Pid"):
-            raise Deny("the session's build holder is not running")
-        pid, cid = int(state["Pid"]), doc.get("Id") or ""
-        try:
-            with open(f"/proc/{pid}/cgroup") as f:
-                cgroup = f.read()
-            ns = os.readlink(f"/proc/{pid}/ns/net")
-        except OSError:
-            raise Deny("the build holder's process is gone")
-        if not cid or cid not in cgroup:
-            raise Deny("the build holder's PID does not belong to its container")
-        return f"/proc/{pid}/ns/net", pid, ns
-
-    def check_build_tag(self, ref):
-        """A build may only name localhost/ images, never localhost/agentbox-*, and never a name an image
-        outside this project's dev builds already has (that would move another stack's or another project's
-        tag onto the agent's image)."""
-        name = image_name(ref)
-        if not name.startswith("localhost/"):
-            raise Deny(f"build tag {ref}: only local names (localhost/...) are allowed")
-        if name[len("localhost/"):].startswith("agentbox"):
-            raise Deny(f"build tag {ref}: agentbox's own image names are reserved")
-        doc = self.inspect("images", name)
-        if doc is not None and not self.built_here(doc):
-            raise Deny(f"build tag {ref}: an image this project did not build through the gate already has that name")
-
-    def own_short_name(self, ref):
-        """`localhost/<ref>` when `ref` is a short name (no registry) and that image is in this project's build
-        record. podman-compose builds localhost/<project>_<service> and then runs the short name, which would
-        otherwise resolve to docker.io (trial 2, 2 Oct)."""
-        if not isinstance(ref, str) or not ref or ref.startswith("sha256:") or re.fullmatch(r"[0-9a-f]{12,64}", ref):
-            return None
-        first = ref.split("/", 1)[0]
-        if "/" in ref and ("." in first or ":" in first or first == "localhost"):
-            return None
-        cand = image_name(ref)
-        doc = self.image_doc(cand)
-        return cand if doc is not None and self.built_here(doc) else None
-
-    def built_here(self, doc):
-        """The image is one the gate built for this project (its record, never labels: anyone can label)."""
-        rec = self.cfg.get("built_record")
-        image_id = (doc.get("Id") or "").split(":", 1)[-1]
-        return bool(rec and image_id and image_id in builtrec.ids(rec))
-
-    def record_build(self, image_id, since=0.0):
-        """Record the image a build ended with. Also required (a second check, review of 785ee15 H1): it
-        carries this session's label, as the gate stamped it, and was created after the build started."""
-        rec = self.cfg.get("built_record")
-        doc = self.image_doc(image_id) if rec and image_id else None
-        if doc is None:
-            return False
-        labels = self.labels_in("images", doc)
-        created = image_created(doc)
-        if labels.get("agentbox.session") != self.session or created is None or created < since - 5:
-            self.log("not-recorded", "-", "build", f"image {image_id[:12]} is not this build's "
-                     f"(session label {labels.get('agentbox.session')!r}, created {created})")
-            return False
-        builtrec.add(rec, image_id, self.session)
-        self.log("built", "-", "build", f"recorded image {image_id[:12]} for this project")
-        return True
-
-    @staticmethod
-    def check_build_secrets(value):
-        try:
-            items = json.loads(value or "[]")
-        except ValueError:
-            raise Deny("build secrets are not a JSON list")
-        for item in items if isinstance(items, list) else [items]:
-            for tok in str(item).split(","):
-                k, _, v = tok.partition("=")
-                k = k.strip().lower()
-                if k == "env" or (k == "type" and v.strip() == "env"):
-                    raise Deny("build secrets from the service's environment are not allowed")
-                if k in ("src", "source") and not SECRET_SRC.match(v.strip()):
-                    raise Deny("build secrets must come from the build context")
-
-    def rewrite_build(self, target):
-        parts = urlsplit(target)
-        q = parse_qsl(parts.query, keep_blank_values=True)
-        for k, v in q:
-            kl = k.lower()
-            if kl in REFUSED_BUILD_KEYS:
-                raise Deny("a client-chosen cgroup parent is not allowed")
-            if kl not in BUILD_KEYS + NS_KEYS + DROPPED_BUILD_KEYS:
-                raise Deny(f"build option {k} is not allowed")
-            if kl in ("t", "output") and v:
-                self.check_build_tag(v)
-            if kl == "secrets":
-                self.check_build_secrets(v)
-        ns_path, pid, ns_id = self.holder_ns()
-        try:
-            opts = json.loads(dict((k.lower(), v) for k, v in q).get("nsoptions") or "[]")
-        except ValueError:
-            opts = []
-        kept = [o for o in opts if isinstance(o, dict) and o.get("Name") == "user"]
-        nsopts = [{"Name": "network", "Host": False, "Path": ns_path}] + kept
-        # Dropped, so the service's defaults apply: the client's security and namespace knobs (a seccomp or
-        # AppArmor profile path names a file on the host; isolation and id mappings change the sandbox).
-        q = [(k, v) for k, v in q if k.lower() not in NS_KEYS + DROPPED_BUILD_KEYS]
-        q = buildcap.rewrite_build_query(q, slice_name=self.cfg["slice"], session=self.session,
-                                         memory_bytes=self.cfg["build_memory"],
-                                         state=self.slice_state) if self.cfg["slice"] else q
-        orig = dict(parse_qsl(parts.query, keep_blank_values=True))
-        try:
-            args = json.loads(orig.get("buildargs") or "{}")
-        except ValueError:
-            args = {}
-        # By the proxy's IP, in both spellings: a build's RUN steps run in the holder's network namespace with
-        # their own resolv.conf, where the proxy's container name does not resolve (trial, 2 Oct).
-        args.update(self.cfg.get("build_proxy_env") or self.cfg["proxy_env"])
-        try:
-            labels = json.loads(orig.get("labels") or "{}")
-        except ValueError:
-            labels = {}
-        q += [("networkmode", NET_ENABLED), ("nsoptions", json.dumps(nsopts, separators=(",", ":"))),
-              ("pull", "false"), ("pullpolicy", "never"), ("buildargs", json.dumps(args)),
-              ("labels", json.dumps(self.stamp(labels)))]
-        if self.cfg.get("build_dns"):
-            q.append(("dnsservers", json.dumps(self.cfg["build_dns"])))   # podman's DNS on the session network
-        # The holder is read again in finalize_build, which the handler calls after the context has been spooled
-        # and read, just before the build head goes upstream: the PID could be reused in between.
-        self._tls.build_holder = (ns_path, pid, ns_id)
-        return parts.path + "?" + urlencode(q)
-
-    def finalize_build(self, target):
-        """Just before a build is forwarded (after the body spool, which can take a while): the holder must still
-        be the process rewrite_build pinned the build's network namespace to (review 2026-11-16, item 11: the
-        re-check used to run inside rewrite_build, before the spool, leaving the spool time unchecked)."""
-        first = getattr(self._tls, "build_holder", None)
-        self._tls.build_holder = None
-        if first is None:
-            raise Deny("build was not prepared")
-        if self.holder_ns() != first:
-            raise Deny("the build holder changed during the build request")
-        return target
-
-    def slice_state(self, name):
-        return buildcap.slice_state(name)
-
-    def rewrite_pull(self, target, path):
-        parts = urlsplit(target)
-        q = parse_qsl(parts.query, keep_blank_values=True)
-        key = "reference" if "/libpod/" in path else "fromImage"
-        refs = [v for k, v in q if k.lower() == key.lower()]
-        if any(k.lower() in ("fromsrc", "repo") for k, _ in q) or len(refs) != 1:
-            raise Deny("image imports and ambiguous pulls are not allowed")
-        ref = normalize_ref(refs[0])
-        if key == "fromImage":
-            tag = [v for k, v in q if k.lower() == "tag"]
-            if tag and tag[0] and ":" not in ref.rsplit("/", 1)[-1] and "@" not in ref:
-                ref = f"{ref}:{tag[0]}"
-            q = [(k, v) for k, v in q if k.lower() != "tag"]
-        own = self.own_short_name(refs[0]) if "/libpod/" in path else None
-        if own:
-            raise LocalImage((self.image_doc(own).get("Id") or "").split(":", 1)[-1])
-        registry = ref.split("/", 1)[0]
-        if registry not in self.cfg["registries"]:
-            # podman run/compose up pull with policy=missing before every create. An image that is already
-            # present and that the dev tier may use (its own build, or listed) is answered here, never pulled.
-            # One answer whether the image is absent or present but not the dev tier's (review of 785ee15, L2).
-            doc = self.image_doc(ref) if "/libpod/" in path else None
-            if doc is not None:
-                try:
-                    self.check_image(ref, "pull")
-                except Deny:
-                    doc = None
-            if doc is not None:
-                raise LocalImage((doc.get("Id") or "").split(":", 1)[-1])
-            raise Deny(f"pulls from {registry} are not allowed (allowed: {', '.join(self.cfg['registries'])})")
-        q = [(k, v) for k, v in q if k.lower() != key.lower()] + [(key, ref)]
-        return parts.path + "?" + urlencode(q)
-
     # ---- dispatch ---------------------------------------------------------------------------------
     def decide(self, method, target, headers, body):
         """Returns (target, body, kind) to forward, or raises Deny."""
@@ -1876,21 +1190,6 @@ def by_id(target, kind, oid):
     parts = urlsplit(target)
     path = re.sub(rf"(/{kind}/)[^/]+", lambda m: m.group(1) + quote(oid, safe=""), parts.path, count=1)
     return path + (f"?{parts.query}" if parts.query else "")
-
-
-def image_created(doc):
-    """An image's creation time as a Unix time, or None."""
-    from datetime import datetime
-    value = (doc or {}).get("Created")
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str) and value:
-        v = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
-        try:
-            return datetime.fromisoformat(v).timestamp()
-        except ValueError:
-            return None
-    return None
 
 
 def make_handler(gate):

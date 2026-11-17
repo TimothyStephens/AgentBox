@@ -1,7 +1,10 @@
-"""The gate's request-body schema: the refusal exceptions, the create bodies' known and refused field tables,
-and the strict JSON reading that keeps the gate and podman agreeing on field names (podman matches them
-case-insensitively). Split out of gate.py; gate.py re-exports every name here."""
+"""The gate's request-body schema: the refusal exceptions, the dev-tier owner label key, the create bodies'
+known and refused field tables, and the strict JSON reading that keeps the gate and podman agreeing on field
+names (podman matches them case-insensitively). Split out of gate.py; gate.py re-exports every name here."""
 import json
+
+
+DEV_OWNER = "agentbox.dev-owner"     # sockguard's ownership label key for the dev tier
 
 
 class Deny(Exception):
