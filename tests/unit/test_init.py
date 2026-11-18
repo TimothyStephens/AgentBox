@@ -135,6 +135,44 @@ class DeployContractTest(InitCase):
                                         text=True).stdout, "", "and it is all committed")
 
 
+class PodAppStopsOnSigtermTest(InitCase):
+    """The pod app runs as the container's PID 1, which gets no default SIGTERM action: without its own handler
+    `podman stop` / a redeploy waits 10 s and SIGKILLs it. The scaffolded app must exit 0 on SIGTERM. Run here as
+    a normal process, the default action would kill it with -15, so exit status 0 is what proves the handler."""
+
+    def test_pod_app_exits_cleanly_on_sigterm(self):
+        import signal
+        import socket
+        import sys
+        import time
+        import urllib.request
+
+        self.init("pod", "stopdemo")
+        app = os.path.join(self.repos, "stopdemo", "app", "main.py")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        proc = subprocess.Popen([sys.executable, app], env={**os.environ, "PORT": str(port)},
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.poll() is None and (proc.kill(), proc.wait()))
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
+                    self.assertEqual(r.read(), b"ok\n")
+                break
+            except OSError:
+                if time.monotonic() > deadline or proc.poll() is not None:
+                    self.fail("the scaffolded app never answered")
+                time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            rc = proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.fail("the app did not exit within 3 s of SIGTERM")
+        self.assertEqual(rc, 0, "a clean exit from its own handler (-15 means no handler)")
+
+
 class GitIdentityTest(unittest.TestCase):
     """`ab project init` and sessions read the author through one lookup (session.git_user); init only adds
     a fallback so the scaffold commit can be made."""

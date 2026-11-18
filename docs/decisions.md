@@ -3392,3 +3392,11 @@ podman by hand, i.e. working around the tool that started it. Tim: keep the volu
 delete them that is off by default. Data deletion is never a script's decision, so `--yes` does not apply to
 `--volumes`.
 
+## 18 Nov 2026: the `pod` template's app stops on SIGTERM
+
+**What.** The scaffolded `app/main.py` installs a SIGTERM/SIGINT handler that exits 0 (closing the server). A
+unit test starts a fresh scaffold's app, sends SIGTERM and requires exit 0 within 3 s. The `python` template is
+not a server and is unchanged.
+
+**Why.** The app runs as the container's PID 1, which gets no default signal action, so `podman stop`, `rm -f`
+and every redeploy of a fresh scaffold waited the full 10 s and then SIGKILLed it.
