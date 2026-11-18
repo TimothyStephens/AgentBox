@@ -615,3 +615,84 @@ class ContractCheck(RunCase):
         self.assertEqual(code, 0, out)
         self.assertIn("the contract check did not run", out)
         self.assertIn("the deploy gate still enforces it", out)
+
+
+class Down(RunCase):
+    """`ab deploy <p> --down` (Tim, 18 Nov): stop and remove the live stack's containers, pods and networks; its
+    volumes only with `--volumes`, which is off by default and always asks on a terminal."""
+    DEPLOYED = {"agentbox.role": "deploy", "agentbox.deploy": "web"}
+
+    def setUp(self):
+        super().setUp()
+        env = {
+            "FAKE_PODMAN_PSJSON": json.dumps([
+                {"Id": "c1", "Names": ["web_web_1"], "Labels": self.DEPLOYED, "State": "running"},
+                {"Id": "c2", "Names": ["other_1"], "Labels": {"agentbox.role": "deploy", "agentbox.deploy": "x"}}]),
+            "FAKE_PODMAN_NETJSON": json.dumps([
+                {"name": "web_default", "labels": self.DEPLOYED}, {"name": "x_default", "labels": {}}]),
+            "FAKE_PODMAN_VOLJSON": json.dumps([
+                {"Name": "web_data", "Labels": self.DEPLOYED},
+                {"Name": "web_old", "Labels": {}},                 # adopted from a hand-run stack: never removed
+                {"Name": "x_data", "Labels": {"agentbox.role": "deploy", "agentbox.deploy": "x"}}]),
+        }
+        for k, v in env.items():
+            os.environ[k] = v
+            self.addCleanup(os.environ.pop, k, None)
+
+    def removals(self):
+        return [c for c in self.podman_calls()
+                if c[:1] in (["rm"], ["stop"]) or c[:2] in (["pod", "rm"], ["network", "rm"], ["volume", "rm"])]
+
+    def test_down_removes_containers_and_networks_and_keeps_volumes_by_default(self):
+        code, out = self.deploy("--down")
+        self.assertEqual(code, 0, out)
+        flat = [" ".join(c) for c in self.removals()]
+        self.assertTrue(any(c.startswith("rm") and "web_web_1" in c for c in flat), flat)
+        self.assertTrue(any(c.startswith("network rm") and "web_default" in c for c in flat), flat)
+        self.assertFalse([c for c in flat if c.startswith("volume rm")], "volumes stay without --volumes")
+        self.assertFalse([c for c in flat if "other_1" in c or "x_default" in c], "only this project's stack")
+        self.assertIn("web_data", out, "the kept volumes are named, with how to remove them")
+        self.assertIn("--volumes", out)
+        self.assertEqual(deploy.records(self.settings, "web")[-1]["result"], "down")
+
+    def test_volumes_removes_only_the_stacks_own_labelled_volumes(self):
+        code, out = self.deploy("--down", "--volumes")
+        self.assertEqual(code, 0, out)
+        vols = [c for c in self.removals() if c[:2] == ["volume", "rm"]]
+        self.assertEqual([c[-1] for c in vols], ["web_data"], vols)
+        self.assertIn("web_old", out, "an adopted or unlabelled volume is kept, and said so")
+
+    def test_volumes_always_asks_on_a_terminal(self):
+        code, out = self.deploy("--down", "--volumes", "--yes", stdin=Pipe(""))
+        self.assertNotEqual(code, 0)
+        self.assertIn("terminal", out)
+        self.assertEqual(self.removals(), [])
+
+    def test_a_script_may_take_it_down_without_volumes(self):
+        code, out = self.deploy("--down", "--yes", stdin=Pipe(""))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.removals())
+
+    def test_answering_no_removes_nothing(self):
+        code, out = self.deploy("--down", answer="n\n")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.removals(), [])
+
+    def test_nothing_running_says_so(self):
+        for k in ("FAKE_PODMAN_PSJSON", "FAKE_PODMAN_NETJSON", "FAKE_PODMAN_VOLJSON"):
+            os.environ[k] = "[]"
+        code, out = self.deploy("--down")
+        self.assertEqual(code, 0, out)
+        self.assertIn("nothing", out)
+        self.assertEqual(self.removals(), [])
+
+    def test_volumes_needs_down_and_down_takes_no_deploy_options(self):
+        self.assertNotEqual(self.deploy("--volumes")[0], 0)
+        self.assertNotEqual(self.deploy("--down", "--lan", f"{LAN}:8095")[0], 0)
+        self.assertNotEqual(self.deploy("--down", "--check")[0], 0)
+
+    def test_a_down_is_not_the_last_deploy(self):
+        first = self.git("rev-parse", "HEAD")
+        deploy.record(self.settings, "web", {"commit": first, "result": "ok"})
+        self.assertEqual(self.deploy("--down")[0], 0)
+        self.assertEqual(deploy.last_deployed(self.settings, "web"), first)

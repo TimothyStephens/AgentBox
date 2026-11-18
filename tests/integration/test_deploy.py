@@ -9,6 +9,7 @@ podman service, sockguard and gate, and podman-compose in the runner. Checked:
   * the deploy's own helpers (service, sockguard, gate, holder, runner) are gone afterwards;
   * a redeploy of a new commit serves it and keeps the data volume's contents;
   * `--yes` redeploys the same commit from a script;
+  * `--down` removes the stack and keeps its volume; `--down --volumes` asks on a terminal and deletes it;
   * each refusal bites twice: the CLI's contract check refuses before anything starts, and the gate alone
     (deployrun.Deploy in-process, no check) refuses privileged, a bind outside the copy, an unlisted port,
     host networking and an unlisted `external:` volume on real podman; a stack started by hand is refused;
@@ -213,6 +214,22 @@ class A_FirstDeployAndRedeploy(unittest.TestCase):
         p = ENV.ab("deploy", MAIN, "--yes")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self._get_or_none(), "v2")
+
+    def test_6_down_removes_the_stack_and_keeps_its_volume(self):
+        p = ENV.ab("deploy", MAIN, "--down", "--yes")          # stdin is not a terminal: a script's down
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(stack(MAIN), [])
+        self.assertIsNone(self._get_or_none(), "nothing serves on the LAN address any more")
+        self.assertEqual(harness.podman("volume", "exists", f"{MAIN}_data").returncode, 0, "the data stays")
+        self.assertEqual(records(MAIN)[-1]["result"], "down")
+
+    def test_7_down_volumes_asks_and_deletes_the_data(self):
+        p = ENV.ab("deploy", MAIN, "--down", "--volumes", "--yes")
+        self.assertNotEqual(p.returncode, 0, "--volumes never runs from a script")
+        self.assertEqual(harness.podman("volume", "exists", f"{MAIN}_data").returncode, 0)
+        code, out = deploy_tty(MAIN, "--down", "--volumes")
+        self.assertEqual(code, 0, out)
+        self.assertNotEqual(harness.podman("volume", "exists", f"{MAIN}_data").returncode, 0, out)
 
     @staticmethod
     def _get_or_none():

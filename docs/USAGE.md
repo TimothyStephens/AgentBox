@@ -1235,7 +1235,7 @@ Start a project's live stack from a reviewed commit, on the host: checks the com
 
 ```text
 usage: ab deploy [-h] [--lan ADDR:PORT] [--commit REF] [--yes]
-                 [--adopt-volumes] [--check]
+                 [--adopt-volumes] [--down] [--volumes] [--check]
                  project
 
 start a project's live stack from a reviewed commit (host only)
@@ -1259,6 +1259,12 @@ options:
                    run by hand left (after you stopped it with `podman-compose
                    down`), so their data carries over; asks first, then
                    deploys nothing
+  --down           stop and remove the live stack's containers and networks
+                   (what `ab deploy` made, by label); its volumes stay unless
+                   --volumes. Asks first; --yes from a script
+  --volumes        with --down: also delete the stack's own volumes and their
+                   data (off by default; always asks on a terminal; adopted
+                   and external volumes are never deleted)
   --check          show the review and run every check (including the contract
                    check, a no-network YAML parse in the base image), then
                    stop: start no service or stack, record nothing
@@ -1268,6 +1274,7 @@ examples:
   ab deploy filelab --lan 192.0.2.10:8095
   ab deploy filelab
   ab deploy filelab --commit 3f2a9c1
+  ab deploy filelab --down
 ```
 
 ## ab profile

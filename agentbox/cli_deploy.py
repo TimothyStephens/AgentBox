@@ -43,12 +43,65 @@ def cmd_deploy(s, a):
     p = session.load_project(s, a.project)
     host = set(s.host_addrs) | set(egress.host_addresses())
     lan = deploy.parse_lan(a.lan, host) if a.lan else None
+    if a.volumes and not a.down:
+        raise AgentboxError("--volumes goes with --down (it removes the stack's own volumes as it comes down)")
+    if a.down:
+        if a.lan or a.commit or a.check or a.adopt_volumes:
+            raise AgentboxError("--down takes no deploy options (--lan, --commit, --check, --adopt-volumes)")
+        with deployrun.lock(s, p.name):
+            return _down(s, a, p)
     if a.adopt_volumes:
         return _adopt(s, p)
     if a.check:
         return _deploy(s, a, p, lan, host)
     with deployrun.lock(s, p.name):
         return _deploy(s, a, p, lan, host)
+
+
+def _down(s, a, p, stdin=None):
+    """`--down`: stop and remove the live stack; its own volumes only with --volumes, which always asks on a
+    terminal (data loss is never a script's decision)."""
+    stdin = stdin or sys.stdin
+    podman = Podman(s.podman)
+    objs = deployrun.stack_objects(podman, p)
+    adopted = sorted(set(p.deploy_adopted) | set(p.deploy_external) | set(deployrun.unlabelled_volumes(podman, p)))
+    if not objs["containers"] and not objs["networks"] and not (a.volumes and objs["volumes"]):
+        print(f"nothing of {p.name}'s live stack is running (label agentbox.deploy={p.name})"
+              + (f"; its volumes are kept: {', '.join(objs['volumes'])}" if objs["volumes"] else ""))
+        return 0
+    print(f"ab deploy {p.name} --down: stops and removes")
+    for kind in ("containers", "networks"):
+        if objs[kind]:
+            print(f"  {kind}: {', '.join(objs[kind])}")
+    if a.volumes and objs["volumes"]:
+        print(f"  volumes, AND THEIR DATA: {', '.join(objs['volumes'])}")
+    tty = bool(getattr(stdin, "isatty", lambda: False)())
+    if a.volumes and not tty:
+        raise AgentboxError("--volumes deletes the stack's data: run it on a terminal and confirm (--yes does not "
+                            "apply)")
+    if a.yes and tty:
+        raise AgentboxError("--yes is for scripts (stdin not a terminal); on a terminal, answer the prompt")
+    if not a.yes:
+        if not tty:
+            raise AgentboxError("no terminal to confirm on: run `ab deploy --down` on a terminal, or add --yes "
+                                "from a script (never with --volumes)")
+        print(f"Take down the live {p.name} stack{' and delete its volumes' if a.volumes else ''}? [y/N] ",
+              end="", flush=True)
+        if stdin.readline().strip().lower() not in ("y", "yes"):
+            print("nothing removed.")
+            return 1
+    failed = deployrun.down(s, podman, p, objs, volumes=a.volumes)
+    kept = [] if a.volumes else objs["volumes"]
+    if kept:
+        print(f"kept volumes (the stack's data): {', '.join(kept)}. `ab deploy {p.name} --down --volumes` removes "
+              f"them; the next deploy reuses them")
+    if adopted:
+        print(f"never removed by agentbox (adopted, external, or not made by a deploy): {', '.join(adopted)}")
+    if failed:
+        warn(f"ab deploy: could not remove: {', '.join(failed)}")
+        return 1
+    print(f"{p.name}'s live stack is down. Its images and deploy copies stay (a redeploy reuses them).")
+    return 0
 
 
 def _adopt(s, p, stdin=None):
@@ -148,7 +201,7 @@ def _deploy(s, a, p, lan, host):
 def add_command(sub, add, ex):
     x = add(sub, "deploy", "start a project's live stack from a reviewed commit (host only)",
             ex("ab deploy filelab --check", "ab deploy filelab --lan 192.0.2.10:8095", "ab deploy filelab",
-               "ab deploy filelab --commit 3f2a9c1"))
+               "ab deploy filelab --commit 3f2a9c1", "ab deploy filelab --down"))
     x.add_argument("project", help="the registered project whose live stack to deploy")
     x.add_argument("--lan", metavar="ADDR:PORT",
                    help="the address of this host the stack publishes on, and a port it may publish; after a "
@@ -164,6 +217,12 @@ def add_command(sub, add, ex):
                    help="take over, by name, the <compose_project>_* volumes a stack run by hand left (after "
                         "you stopped it with `podman-compose down`), so their data carries over; asks first, "
                         "then deploys nothing")
+    x.add_argument("--down", action="store_true",
+                   help="stop and remove the live stack's containers and networks (what `ab deploy` made, by "
+                        "label); its volumes stay unless --volumes. Asks first; --yes from a script")
+    x.add_argument("--volumes", action="store_true",
+                   help="with --down: also delete the stack's own volumes and their data (off by default; always "
+                        "asks on a terminal; adopted and external volumes are never deleted)")
     x.add_argument("--check", action="store_true",
                    help="show the review and run every check (including the contract check, a no-network YAML parse in "
                         "the base image), then stop: start no service or stack, record nothing")

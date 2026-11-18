@@ -145,6 +145,43 @@ def contract_report(settings, podman, project, root, commit, lan_addr, ports, bi
     return deploycheck.check(doc, ctx, [t for t in tree.stdout.split("\0") if t]), ""
 
 
+def stack_objects(podman, project):
+    """What `ab deploy` made for this project and is still there: containers, networks and volumes carrying
+    both deploy labels (the gate stamps them on everything a deploy creates). Read-only."""
+    mine = {"agentbox.role": "deploy", "agentbox.deploy": project.name}
+    names = lambda rows, key: sorted(str((r.get(key) or [r.get("Id")])[0] if key == "Names" else r.get(key))
+                                     for r in rows)
+    return {"containers": names(podman.containers_json(mine), "Names"),
+            "networks": names(podman.networks_json(mine), "name"),
+            "volumes": names(podman.volumes_json(mine), "Name")}
+
+
+def down(settings, podman, project, objs, *, volumes, out=print):
+    """Stop and remove the live stack: containers (10 s to stop), then its networks, then -- only with
+    `volumes` -- its own labelled volumes. Adopted and external volumes are never removed. Records a
+    `result: down` line (not a deploy: last_deployed is unchanged). Returns the names that could not go."""
+    failed = []
+
+    def rm(argv, name):
+        if podman.run(argv + [name], check=False, timeout=60).returncode != 0:
+            failed.append(name)
+    for c in objs["containers"]:
+        podman.run(["stop", "-t", "10", c], check=False, timeout=60)
+        rm(["rm", "-f"], c)
+    for n in objs["networks"]:
+        rm(["network", "rm"], n)
+    removed_vols = []
+    if volumes:
+        for v in objs["volumes"]:
+            rm(["volume", "rm"], v)
+            if v not in failed:
+                removed_vols.append(v)
+    deploy.record(settings, project.name, {
+        "action": "down", "result": "down" if not failed else "failed", "containers": objs["containers"],
+        "networks": objs["networks"], "volumes_removed": removed_vols, "error": ", ".join(failed)})
+    return failed
+
+
 def unlabelled_volumes(podman, project):
     """Names of `<compose_project>_*` volumes without the deploy labels (a stack run by hand)."""
     cp = project.compose_project

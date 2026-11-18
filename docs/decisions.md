@@ -3381,3 +3381,14 @@ the repo is pushed to GitHub. Values that only make sense on one host belong in 
 defaults. Unset defaults fail loudly where they matter (selftest, itest) instead of quietly probing someone
 else's network.
 
+## 18 Nov 2026: `ab deploy <p> --down`, with `--volumes` off by default
+
+**What.** `--down` stops and removes a project's live stack (containers and networks with both deploy labels);
+`--volumes` also deletes the stack's own labelled volumes, and always asks on a terminal. Adopted, external
+and unlabelled volumes are never removed; images and deploy copies stay.
+
+**Why.** A real deploy of a scaffolded project (18 Nov) showed there was no way to remove a deployed stack but
+podman by hand, i.e. working around the tool that started it. Tim: keep the volumes by default, with a flag to
+delete them that is off by default. Data deletion is never a script's decision, so `--yes` does not apply to
+`--volumes`.
+
