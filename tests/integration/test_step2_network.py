@@ -116,7 +116,7 @@ class Step2(unittest.TestCase):
         p = ENV.ab("session", "start", "claude", "n-locked", "--shell", "--no-tty", "--",
                    "-c", 'echo "P=$HTTPS_PROXY"; echo "N=$NO_PROXY"', timeout=300)
         self.assertRegex(p.stdout, r"P=http://abt-\S+-proxy:3128")
-        self.assertNotIn("10.0.0.2", p.stdout.split("N=")[1])
+        self.assertNotIn(harness.need_host("model_host"), p.stdout.split("N=")[1])
 
     def test_zz_no_leftovers(self):
         self.assertEqual(harness.leftovers(), [])

@@ -30,7 +30,7 @@ from .helpers import SettingsCase
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-# tests/unit/fixtures/podman_network_ls.json is `podman network ls --format json` from ubuntu-dev, podman
+# tests/unit/fixtures/podman_network_ls.json is `podman network ls --format json` from the development host, podman
 # 5.7, verbatim -- trimmed by Tim to agentbox's own networks and podman's default one, nothing edited and
 # nothing added (29 Oct). It holds two sessions' networks (`-egr` and `-int` each) and the label-less
 # `podman` network.

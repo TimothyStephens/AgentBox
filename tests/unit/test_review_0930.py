@@ -39,7 +39,7 @@ class F3HostAddressesFailClosed(SettingsCase):
         with mock.patch("agentbox.egress.host_addresses", return_value=[]):
             text = s.squid_conf()
         acl = next(line for line in text.splitlines() if line.startswith("acl hostaddr"))
-        self.assertIn("10.0.0.103", acl.split())
+        self.assertIn("192.0.2.10", acl.split())
 
 
 class F4IPv4OnlyNetworks(SettingsCase):
@@ -162,8 +162,8 @@ class F9ProxyLogHasNoPaths(TempCase):
     """#9: the kept access log records destinations (host:port), not URL paths that can carry data."""
 
     def test_logformat(self):
-        text = egress.squid_conf("open", model_domains=["api.anthropic.com"], model_host="10.0.0.2",
-                                 model_port=8080, host_addrs=["10.0.0.103"])
+        text = egress.squid_conf("open", model_domains=["api.anthropic.com"], model_host="192.0.2.2",
+                                 model_port=8080, host_addrs=["192.0.2.10"])
         fmt = next(line for line in text.splitlines() if line.startswith("logformat"))
         self.assertNotIn("%ru", fmt)
         self.assertNotIn("%>ru", fmt)

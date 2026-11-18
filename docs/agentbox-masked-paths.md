@@ -1,4 +1,4 @@
-# Spec: per-project masked paths in agentbox, and masking `data/` for life-updates
+# Spec: per-project masked paths in agentbox, and masking a live `data/` directory
 
 > **Status: IMPLEMENTED on 10 Nov 2026 as the `mask` project setting** (`ab project add/set --mask PATH`; `docs/decisions.md`, 10 Nov; `docs/design.md`, "The project's own masks"). The key is `mask`, not `masked_paths`; a bare name masks every file or directory of that name in the grants, `./data` masks that one path. The rest of this file is the spec it was built from and its measurements; §5.1's in-session errno probe is not an automated test yet.
 
@@ -17,9 +17,9 @@ Add a per-project **`masked_paths`** setting that applies the same
 (`.env`, `.env.*`, `*.pem`, `*.key`, `secrets/`) to **arbitrary paths, including
 directories**, named per project.
 
-Then add `data/` to life-updates' masks.
+Then add `data/` to the masks of a project that keeps live data there.
 
-Motivation: life-updates keeps its **live** SQLite database at `data/app.db`
+Motivation: a project that keeps its **live** SQLite database at `data/live.db`
 inside the repo, and the repo is mounted read-write into agent sessions. So
 every agent session has had full read access to the production database.
 
@@ -29,14 +29,12 @@ Measured from inside a session on 2026-10-05, uid 1001:
 
 | Probe | Result |
 |---|---|
-| `stat data/` , `stat data/app.db` | `uid=999 gid=999`, modes `drwxr-xr-x` / `-rw-r--r--` |
+| `stat data/` , `stat data/live.db` | `uid=999 gid=999`, modes `drwxr-xr-x` / `-rw-r--r--` |
 | `touch data/.probe` | `Permission denied` |
-| `open("data/app.db", "r+b")` | `Permission denied` |
+| `open("data/live.db", "r+b")` | `Permission denied` |
 | `sqlite3` read via `?immutable=1` | **succeeded** |
 
-Contents readable: **4,814 items** with real titles, plus the `chat_messages`,
-`chat_session_items` and `processed_emails` tables — i.e. real LLM conversation
-history and real email UIDs.
+Contents readable: every table, i.e. all of the application's real user data.
 
 Via the session's **direct filesystem access** this is read-only, because the
 directory is owned by uid 999 (the live container's user) and the session runs as
@@ -49,7 +47,7 @@ which bypasses both the ownership and any session-namespace mount:
 
 ```
 $ podman run --rm --user root -v "$PWD":/src:ro --network none IMG python -c \
-    "import sqlite3;c=sqlite3.connect('file:/src/data/app.db?immutable=1',uri=True);
+    "import sqlite3;c=sqlite3.connect('file:/src/data/live.db?immutable=1',uri=True);
      print(c.execute('SELECT COUNT(*) FROM items').fetchone())"
   items readable from inside a container: 4814
   chat_messages readable: 4
@@ -70,9 +68,9 @@ The request said "same empty read-only cover as `.env` masks". In a project that
 has a `.env.dev`, `.env` is **not** an empty read-only cover:
 
 ```
-.env      6890 bytes  md5 57228e9ac7628848314aebfd9721f900
-.env.dev  6890 bytes  md5 57228e9ac7628848314aebfd9721f900
-/dev/mapper/... /home/vmuser/.../life-updates/.env ext4 rw,relatime
+.env      N bytes  md5 <h>
+.env.dev  N bytes  md5 <h>
+/dev/mapper/... /home/user/repos/webapp/.env ext4 rw,relatime
 ```
 
 Byte-identical to `.env.dev`, mounted **rw**, and `open(".env", "a")` succeeds.
@@ -88,7 +86,7 @@ before relying on it.
 agentbox already mounts a directory read-only — `.git/hooks`:
 
 ```
-/dev/mapper/... /home/vmuser/.../life-updates/.git/hooks ext4 ro,relatime
+/dev/mapper/... /home/user/repos/webapp/.git/hooks ext4 ro,relatime
 $ touch .git/hooks/.probe
 touch: cannot touch '.git/hooks/.probe': Read-only file system
 ```
@@ -149,8 +147,8 @@ names below as prescriptive:
 
 ```yaml
 projects:
-  life-updates:
-    path: /home/vmuser/repos/Life_Updates/life-updates
+  webapp:
+    path: /home/user/repos/webapp
     masked_paths:
       - data/            # live SQLite DB; dev/data is separate and stays visible
 ```
@@ -199,7 +197,7 @@ def test_masked_directory_is_empty():
 
 def test_masked_directory_hides_the_real_contents():
     # The specific file this mask exists for.
-    assert not (MASK / "app.db").exists()
+    assert not (MASK / "live.db").exists()
 
 def test_cannot_create_in_a_masked_directory():
     with pytest.raises(OSError) as exc:
@@ -227,7 +225,7 @@ def test_a_sibling_path_is_unaffected():
 
 def test_no_traversal_out_of_the_mask():
     # Guards against a nested-mount or symlink shape that re-exposes the data.
-    assert not (MASK / ".." / "data" / "app.db").exists()
+    assert not (MASK / ".." / "data" / "live.db").exists()
 ```
 
 Also assert the application-level failure mode, because it is **not** a
@@ -239,9 +237,9 @@ with `unable to open database file`:
 ```python
 def test_the_app_fails_cleanly_rather_than_misleadingly():
     import sqlite3
-    from app.db import connect
+    from weblive.db import connect
     with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
-        connect(str(MASK / "app.db"))
+        connect(str(MASK / "live.db"))
 ```
 
 ### 5.2 The bypass test (do not ship the feature without this)
@@ -256,7 +254,7 @@ def test_a_container_bind_cannot_reach_a_masked_path():
     # Without a gate-level overlap check this read succeeds, defeating the mask.
     result = run_in_session(
         "podman run --rm --user root -v $PWD:/src:ro --network none "
-        "IMG sh -c 'cat /src/data/app.db | head -c 16'"
+        "IMG sh -c 'cat /src/data/live.db | head -c 16'"
     )
     assert result.returncode != 0
     assert "masked" in result.stderr.lower()
@@ -352,18 +350,18 @@ write, both confirmed. So:
   compose-created containers too), and a rejected bind fails loudly whereas a
   missed cover fails silently. Prefer rejection.
 - `--user root` is worth noting independently: it defeats the uid-based
-  protection that currently, incidentally, keeps `data/app.db` read-only.
+  protection that currently, incidentally, keeps `data/live.db` read-only.
 
-## 7. Compatibility check for life-updates
+## 7. Compatibility check for the motivating project
 
 Masking `data/` is safe for this project. Everything that references it:
 
 | Reference | Effect of the mask |
 |---|---|
 | `deploy/compose.yaml` ×2: `../data:/data:U` | **None** — runs on the host, outside any session. |
-| `app/config.py`: `db_path = "/data/app.db"` | **None** — a *container* path, not the repo directory. |
+| `app/config.py`: `db_path = "/data/live.db"` | **None** — a *container* path, not the repo directory. |
 | `dev/compose.dev.yaml`: `./data:/devdata` | **None** — resolves to `dev/data`, a sibling. |
-| `tests/` | **None** — the suite uses `:memory:` and tempfiles; verified 280 passed with no access to `data/`. |
+| `tests/` | **None** — the suite uses `:memory:` and tempfiles; verified passing with no access to `data/`. |
 
 No code reads the repo-level `data/` directory. The only loss is the agent's
 ability to read the live database, which is the point.
@@ -372,14 +370,14 @@ ability to read the live database, which is the point.
 
 ### Appendix: reproducing the measurements
 
-All figures above came from inside an agentbox session on life-updates:
+All figures above came from inside an agentbox session on that project:
 
 ```sh
-stat -c '%n uid=%u gid=%g mode=%A' data data/app.db
+stat -c '%n uid=%u gid=%g mode=%A' data data/live.db
 touch data/.probe                                    # expect: Permission denied
-python3 -c "open('data/app.db','r+b')"               # expect: Permission denied
-python3 -c "import sqlite3;c=sqlite3.connect('file:data/app.db?immutable=1',uri=True);print(c.execute('SELECT COUNT(*) FROM items').fetchone())"
-grep -E 'agentbox|life-updates' /proc/mounts         # shows which covers are mounts
+python3 -c "open('data/live.db','r+b')"               # expect: Permission denied
+python3 -c "import sqlite3;c=sqlite3.connect('file:data/live.db?immutable=1',uri=True);print(c.execute('SELECT COUNT(*) FROM items').fetchone())"
+grep -E 'agentbox|webapp' /proc/mounts         # shows which covers are mounts
 md5sum .env .env.dev                                 # equal when .env.dev exists
 touch .git/hooks/.probe                              # expect: Read-only file system
 ```
@@ -394,7 +392,7 @@ podman run --rm --user root -v "$PWD":/src --network none IMG sh -c '
 
 # the live DB, read and written from a container
 podman run --rm --user root -v "$PWD":/src:ro --network none IMG python -c \
-  "import sqlite3;print(sqlite3.connect('file:/src/data/app.db?immutable=1',uri=True).execute('SELECT COUNT(*) FROM items').fetchone())"
+  "import sqlite3;print(sqlite3.connect('file:/src/data/live.db?immutable=1',uri=True).execute('SELECT COUNT(*) FROM items').fetchone())"
 podman run --rm --user root -v "$PWD":/src --network none IMG sh -c 'touch /src/data/.probe && rm -f /src/data/.probe'
 ```
 

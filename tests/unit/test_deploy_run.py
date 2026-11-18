@@ -14,7 +14,7 @@ from .helpers import read_file
 from .test_deploy import DeployCase
 from .test_gate_deploy import DFake
 
-LAN = "10.0.0.103"
+LAN = "192.0.2.10"
 
 
 class TTY(io.StringIO):
@@ -98,7 +98,7 @@ class Settings(RunCase):
 
     def test_validators(self):
         v = projectkeys.validate_value
-        self.assertEqual(v("lan_addr", "p", "10.0.0.103"), "10.0.0.103")
+        self.assertEqual(v("lan_addr", "p", "192.0.2.10"), "192.0.2.10")
         for bad in ("0.0.0.0", "127.0.0.1", "10.0.0.256", "10.0.0", "010.0.0.1", "::1", 5):
             with self.assertRaises(AgentboxError, msg=bad):
                 v("lan_addr", "p", bad)

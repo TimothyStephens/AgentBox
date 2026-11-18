@@ -69,7 +69,7 @@ class RegistryTest(TempCase):
         for bad in ("", "A", "has space", "../x", "x" * 41, "-lead"):
             with self.assertRaises(AgentboxError, msg=bad):
                 registry.check_name(bad)
-        registry.check_name("life-updates_2")
+        registry.check_name("webapp_2")
 
 
 class PresetTest(unittest.TestCase):

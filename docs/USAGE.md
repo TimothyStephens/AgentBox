@@ -1265,7 +1265,7 @@ options:
 
 examples:
   ab deploy filelab --check
-  ab deploy filelab --lan 10.0.0.103:8095
+  ab deploy filelab --lan 192.0.2.10:8095
   ab deploy filelab
   ab deploy filelab --commit 3f2a9c1
 ```

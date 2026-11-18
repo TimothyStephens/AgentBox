@@ -147,7 +147,7 @@ def _deploy(s, a, p, lan, host):
 
 def add_command(sub, add, ex):
     x = add(sub, "deploy", "start a project's live stack from a reviewed commit (host only)",
-            ex("ab deploy filelab --check", "ab deploy filelab --lan 10.0.0.103:8095", "ab deploy filelab",
+            ex("ab deploy filelab --check", "ab deploy filelab --lan 192.0.2.10:8095", "ab deploy filelab",
                "ab deploy filelab --commit 3f2a9c1"))
     x.add_argument("project", help="the registered project whose live stack to deploy")
     x.add_argument("--lan", metavar="ADDR:PORT",

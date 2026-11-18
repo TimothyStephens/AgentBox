@@ -74,11 +74,13 @@ DEFAULTS = {
     "squid_memory": "256m",
     "sockguard_image": "docker.io/codeswhat/sockguard@sha256:3ae41b2fd646132de4fe212326d72fe3786ffd89f65e4500eff1124ac34587ef",  # 2.2.1
     "sockguard_memory": "64m",
-    "model_host": "10.0.0.2",
+    # Host facts with no committed default (they are the user's network, not agentbox's): set them in
+    # ~/.config/agentbox/agentbox.toml. model_host: the LAN model server sessions may reach ("" = none).
+    "model_host": "",
     "model_port": 8080,
     "build_memory": "2g",   # per-build memory limit the gate sets (step 5); a project may override it
-    "host_addrs": ["10.0.0.103"],   # the VM's own addresses, always refused by the proxy (plus any found)
-    "lan_targets": ["10.0.0.103:8088", "10.0.0.103:8003"],   # selftest: must be refused, proxied and direct
+    "host_addrs": [],    # the host's own addresses, always refused by the proxy, besides those found at start
+    "lan_targets": [],   # selftest: live LAN services (host:port) that must be refused, proxied and direct
     "backup_keep": 5,
     "backup_daily_days": 7,
     "backup_warn_mb": 2048,

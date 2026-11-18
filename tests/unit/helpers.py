@@ -94,8 +94,12 @@ class SettingsCase(TempCase):
         os.environ.update(env)
         self.addCleanup(_restore, old)
         with open(os.path.join(self.cfg, "agentbox.toml"), "w") as f:
+            # A configured host, as the user's agentbox.toml sets it (no committed default): documentation
+            # addresses (RFC 5737), never a real network's.
             f.write('name_prefix = "abt-unit-"\ncgroup_parent = ""\n'
-                    'labels = { "agentbox-test" = "1" }\n')
+                    'labels = { "agentbox-test" = "1" }\n'
+                    'model_host = "192.0.2.2"\nhost_addrs = ["192.0.2.10"]\n'
+                    'lan_targets = ["192.0.2.10:8080"]\n')
         self.settings = config.load()
 
     def token(self, value="fake-token-UNIT-0123456789", mode=0o600):

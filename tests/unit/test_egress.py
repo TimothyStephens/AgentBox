@@ -9,8 +9,8 @@ from .helpers import SettingsCase
 
 def conf(mode, **kw):
     kw.setdefault("model_domains", ["api.anthropic.com"])
-    kw.setdefault("host_addrs", ["10.0.0.103"])
-    return egress.squid_conf(mode, model_host="10.0.0.2", model_port=8080, **kw)
+    kw.setdefault("host_addrs", ["192.0.2.10"])
+    return egress.squid_conf(mode, model_host="192.0.2.2", model_port=8080, **kw)
 
 
 def access_lines(text):
@@ -38,7 +38,7 @@ class SquidConfTest(SettingsCase):
         The ordering matters as much as the absence: `deny private` must still be the first rule, so
         dropping the allow cannot leave a gap above it."""
         text = egress.squid_conf("packages", model_domains=[], model_host="", model_port=8080,
-                                 host_addrs=["10.0.0.103"])
+                                 host_addrs=["192.0.2.10"])
         self.assertNotIn("localmodel", text)
         self.assertNotIn("modelport", text)
         rules = access_lines(text)
@@ -52,7 +52,7 @@ class SquidConfTest(SettingsCase):
         for bad in ("api.example.com", "10.0.0", "1.2.3.4.5", " "):
             with self.subTest(model_host=bad), self.assertRaises(ValueError):
                 egress.squid_conf("packages", model_domains=[], model_host=bad, model_port=8080,
-                                  host_addrs=["10.0.0.103"])
+                                  host_addrs=["192.0.2.10"])
 
     def test_modes(self):
         locked, packages, opened = (access_lines(conf(m, extra_domains=["huggingface.co"])) for m in egress.MODES)
@@ -91,7 +91,7 @@ class SquidConfTest(SettingsCase):
         env = egress.proxy_env("s-proxy")
         self.assertEqual(env["HTTPS_PROXY"], "http://s-proxy:3128")
         self.assertEqual(env["http_proxy"], "http://s-proxy:3128")
-        self.assertNotIn("10.0.0.2", env["NO_PROXY"])
+        self.assertNotIn("192.0.2.2", env["NO_PROXY"])
 
 
 class SessionNetworkTest(SettingsCase):

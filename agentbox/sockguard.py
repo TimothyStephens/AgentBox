@@ -5,7 +5,7 @@ agent --> gate --> a dev sockguard (owner isolation) --> podman service.
 
     [observe] agent --(/run/agentbox/podman.sock)--> sockguard --> <service dir>/podman.sock --> podman service
 
-The podman service is started per session by the launcher (no user unit is enabled on ubuntu-dev, and
+The podman service is started per session by the launcher (no user unit is enabled on the host, and
 enabling one would be a systemd change), listens on a socket in <run>/services/<session> — deliberately
 OUTSIDE the session's run dir, so no launcher mount rule can reach the raw socket (review #6) — and is
 stopped at teardown. Only the sockguard container mounts it. The agent gets sockguard's socket.

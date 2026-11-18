@@ -26,7 +26,7 @@ Fuller detail, with the review item numbers, is in `docs/decisions.md` (6 Oct).
 
 ## Summary
 
-One launcher, `agentbox` (`ab`), runs a coding agent (Claude Code and OMP today; Pi and Codex planned) in a hardened rootless podman container on ubuntu-dev, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it. This document is the full design; several commands and tiers described below are not built yet — `docs/progress.md`'s Status table is the authoritative built / deferred / not-built list, and the "Planned / not built" section near the end collects what is still to come.
+One launcher, `agentbox` (`ab`), runs a coding agent (Claude Code and OMP today; Pi and Codex planned) in a hardened rootless podman container on a single Linux host, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it. This document is the full design; several commands and tiers described below are not built yet — `docs/progress.md`'s Status table is the authoritative built / deferred / not-built list, and the "Planned / not built" section near the end collects what is still to come.
 
 **Goals**
 
@@ -50,25 +50,24 @@ The design targets one VM that is both the dev environment and a home server, wi
 
 | Item | Value | Consequence |
 | --- | --- | --- |
-| Host | ubuntu-dev, Ubuntu, remote dev VM | All projects and home services share one kernel and one user |
+| Host | One Ubuntu VM (a remote dev box) | All projects and home services share one kernel and one user |
 | User | `vmuser`, no root | No AppArmor profiles, no bwrap on the host, no LVM snapshots |
 | Kernel | 7.0.0-31 | Landlock ABI 8; path-based Unix socket blocking arrives in 7.1 (ABI 9) |
 | Filesystem | ext4 on LVM | No reflink snapshots; use hypervisor snapshots and git |
 | Container engine | Rootless podman 5.7.0, pasta networking | Container escape lands as `vmuser` |
 | Network backend | netavark 1.16.1 | Bridge networks are not isolated by default; `isolate=strict` must be set |
 | Compose | podman-compose | Every container carries `io.podman.compose.project=<name>` |
-| Local models | `http://10.0.0.2:8080/v1` on another machine | Must be allowlisted through the egress proxy |
+| Local models | `http://192.0.2.2:8080/v1` on another machine | Must be allowlisted through the egress proxy |
 | Remote models | Cloud APIs over HTTPS | Allowlisted by domain |
 
-**Services already on this VM**
+**Services already on the host** (the kinds the design has to live beside)
 
 | Service | Exposure today | Notes |
 | --- | --- | --- |
-| media\_server (gluetun, caddy, \*arr, deluge, jellyfin) | `10.0.0.103:8088`, `:8112` (LAN, intended) | All share gluetun's network namespace on network `trashguides` |
-| life-updates (`web`, `collector`) + ollama | `*:8000`, `*:11434` | Compose project named `deploy`; ollama is only used by life-updates |
-| js-render-server | `0.0.0.0:8082` (stopped) | Ad hoc `podman run`, no compose label |
-| glances | `0.0.0.0:8003` | Host process; exposes the process list |
-| two python3 servers | `0.0.0.0:8004`, `:8006` | Host processes, not yet identified |
+| A media stack | LAN ports on the host address (intended) | Its containers share one network namespace on one network |
+| A live web app stack + a local model runtime | Ports on all interfaces | Compose project named after its directory; the model runtime only serves that app |
+| Ad hoc containers | `0.0.0.0:<port>` | `podman run` with no compose label |
+| Host processes (monitoring, small servers) | `0.0.0.0:<port>` | Not containers; some expose process lists |
 
 ## Threats and controls
 
@@ -79,8 +78,8 @@ The controls below are sized for the threat model at the top: mistakes and misdi
 | Accidental destruction | `rm -rf /*`, deleting a state directory | Only granted paths are mounted; read-write grants backed up first |
 | Agent self-repair | Killing processes, `mount`, renaming shared state, reverse-engineering its own code (all seen in the probes) | Zero capabilities, seccomp, `no-new-privileges`, per-session state |
 | Cross-project leakage | Reading another project's transcripts, browser cookies, service definitions, caches | Per-project mounts, per-session `run` tmpfs, per-project caches |
-| Lateral network access | Hitting another project's ports, the media stack, the LAN | Internal session network; proxy refuses private and host addresses in every egress mode |
-| Agent-built images and containers | A Containerfile `RUN curl 10.0.0.103:8088`, a container on podman's default network | Host-side gate pins every container and build to the project network and proxy |
+| Lateral network access | Hitting another project's ports, other live stacks, the LAN | Internal session network; proxy refuses private and host addresses in every egress mode |
+| Agent-built images and containers | A Containerfile `RUN curl 192.0.2.10:8080`, a container on podman's default network | Host-side gate pins every container and build to the project network and proxy |
 | Over-broad pod access | `podman run -v ~:/h`, `rm -f` on a live pod | Gate + sockguard: own dev stack only, binds inside the project |
 | Exfiltration over open egress (best effort, non-goal) | An injected agent sending data out | No host secrets in the sandbox (only a dedicated, revocable model token); `packages` by default, `open` only when the project says so; `locked` for sensitive projects; image pulls allowlisted by registry. A determined agent on `open` egress can still send out what the sandbox holds — this is not closed |
 | Prompt injection (best effort, non-goal) | Web page or repo text telling the agent to escape | Same controls; injection gains nothing beyond what the agent could already do, but it is not defended against as such |
@@ -148,7 +147,7 @@ Applied to every session; no adapter or profile can override it.
 - Never `--privileged`, never `seccomp=unconfined` or `apparmor=unconfined`, never `--network=host`.
 - Read-only root filesystem with tmpfs for `/tmp`; PID and memory limits.
 - `--userns=keep-id`, so the agent runs as `vmuser` and written files stay owned by `vmuser`; `HOME` is a tmpfs at the host home path.
-- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=500` (sized from ubuntu-dev: 9.8 GB RAM, 6 cores). The OOM score makes the kernel kill agent containers before live services (host-wide, 500 is worth about 17 GB of RAM plus swap); containers the gate creates get 1000, so inside the slice a dev stack dies before the agent unless the agent uses more than 2.2 GB beyond it (see decisions.md).
+- Limits: `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=500` (sized from the host's RAM and cores). The OOM score makes the kernel kill agent containers before live services (host-wide, 500 is worth about 17 GB of RAM plus swap); containers the gate creates get 1000, so inside the slice a dev stack dies before the agent unless the agent uses more than 2.2 GB beyond it (see decisions.md).
 - Every agentbox container, including the ones the gate creates for the agent, runs under `--cgroup-parent=agentbox.slice`, one kernel-enforced memory, swap and task cap for all sessions together (`deploy/agentbox.slice`, installed with `make install-slice`).
 
 ### Harness adapters
@@ -202,7 +201,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
 - `.env` files are masked (a read-only empty file bound over them); masks always apply and cannot be turned off (see Project secrets for the full mask list).
 - `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory that exists inside a read-write grant when the session starts: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. A `core.hooksPath` or `include.path`/`includeIf.*.path` in a covered config that names a path inside a read-write grant is covered read-only too (a hooks directory as a read-only bind, a file as a read-only bind), so the cover cannot be redirected to a writable path; one that names a path outside every grant, a grant's own root (it cannot be covered without covering the grant), or that cannot be read, is a `grantcheck` finding (the session refuses until it is accepted or removed) (16 Nov 2026). Folders in `mask_skip` are not searched. A repo the agent creates during a session has writable hooks and config: the end-of-session report names it (NEW GIT REPO) and never runs git in it; check its `.git/config` and hooks before you use git there.
-- Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on ubuntu-dev (30 Sep).
+- Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on the host (30 Sep).
 - Deferred-execution denylist, never writable: `~/.config/containers`, `~/.config/systemd`, `~/.config/autostart`, `~/.local/bin`, shell rc files.
 - Read-write grants are rsynced to `~/.local/share/agentbox/projects/<project>/backups/<timestamp>-<session>/` before the session starts (`config.project_backups_dir`), as `--link-dest` snapshots (unchanged files shared). Excluded are exactly the gate's covered paths — the secret masks and the read-only covers (`.git/config`, `.git/hooks`, the compose files) — so a snapshot never holds a plaintext copy of a secret the agent could not damage (`.git/config` can hold credentials); the rest of `.git` is kept. Also not copied: `.venv`, `venv`, `node_modules`, `__pycache__`, build caches, any folder tagged as a cache with a valid `CACHEDIR.TAG` (Cargo's `target/`; 17 Nov 2026) and the project's `mask_skip` folders. Kept: the last 5 snapshots plus one per day for 7 days. A warning is printed above a configured size. No grant may include the backups directory. **Restore** by copying a snapshot's grant back over the project *without* `rsync --delete` (e.g. `rsync -a <snapshot>/<grant>/ <project>/`), so the excluded covered files already in place (`.git/config`, hooks, compose, the real `.env`) are preserved, not removed (decisions.md, 2026-10-15). A snapshot cut short (an rsync error or Ctrl-C) is removed, never left as `.incomplete`. A copy that runs past a couple of seconds reports its share of the file list done (16 Nov 2026).
 
@@ -227,7 +226,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 
 ```
 # always
-acl localmodel dst 10.0.0.2
+acl localmodel dst 192.0.2.2
 acl modelport  port 8080
 acl private    dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12
                192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4
@@ -245,7 +244,7 @@ http_access allow models
 http_access deny  all
 ```
 
-- `10.0.0.2` must not be in the sandbox's `NO_PROXY`.
+- `192.0.2.2` must not be in the sandbox's `NO_PROXY`.
 
 ### Model key gateway
 
@@ -299,7 +298,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 
 ### Podman access via sockguard
 
-One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in `<run>/services/<session>`, deliberately outside the session's own run dir so no mount rule can reach the raw socket (no user-wide podman socket is enabled on ubuntu-dev); `ab session gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
+One host-side gate and one sockguard per session. The sandbox gets only the gate's 0600 Unix socket; the gate forwards to sockguard, and sockguard to a podman API service the launcher starts for the session, in a transient scope under `agentbox.slice`, on a socket in `<run>/services/<session>`, deliberately outside the session's own run dir so no mount rule can reach the raw socket (no user-wide podman socket is enabled on the host); `ab session gc` stops services left by crashed sessions. The observe tier alone mounts its sockguard's socket at `/run/agentbox/podman.sock`. The dev tier gets the gate there (gate → a dev sockguard with owner isolation → the service), and with observe on the live stack too, the live sockguard is a second socket, `/run/agentbox/podman-live.sock`.
 
 | Tier | Agent can | Enforced by |
 | --- | --- | --- |
@@ -493,7 +492,7 @@ A power loss or reboot ends every running session, but everything written to the
 | Session proxy, gate, sockguard | Gone; restarted per session |
 | Agent dev stacks (`<project>-dev`) | Stay stopped: the gate strips restart policies from agent-created containers |
 | Leftover session networks and stopped containers | Remain until cleaned up |
-| Live stacks (media, life-updates, `ab deploy`) | Restart only if configured to (below) |
+| Live stacks (hand-run ones and `ab deploy`'s) | Restart only if configured to (below) |
 
 **Bringing sessions back**
 
@@ -520,7 +519,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 - A host-side baseline runs first on every selftest. Direct targets that return `000` from the host are skipped, not passed; zero live direct targets fails the run.
 - With podman access on, the cross-project cases need a canary container (`docker.io/library/busybox:1.36`); if it cannot be created the run fails rather than skipping those cases: pull the image on the host.
-- Negatives always target the VM's address (`10.0.0.103`), never `127.0.0.1`, which inside a sandbox is the sandbox itself.
+- Negatives always target the VM's address (`192.0.2.10`), never `127.0.0.1`, which inside a sandbox is the sandbox itself.
 
 **Cases**
 
@@ -533,17 +532,17 @@ A power loss or reboot ends every running session, but everything written to the
 | Proxied IPv6 literal | Not reachable (IPv4-only networks) |
 | Write outside grants, write to `.git/hooks`, read `~/.ssh` | Fail |
 | Read another project's root or session bucket | Fail |
-| Proxied `http://10.0.0.2:8080/v1/models` | Not `403` |
-| Proxied `10.0.0.2:22`, `10.0.0.103:8088`, `10.0.0.103:8003` | `403` in every egress mode |
+| Proxied `http://192.0.2.2:8080/v1/models` | Not `403` |
+| Proxied `192.0.2.2:22`, the configured `lan_targets` (e.g. `192.0.2.10:8080`) | `403` in every egress mode |
 | Proxied public name that resolves to a private address | `403` |
 | Proxied `example.com` | `403` in `locked` and `packages`; not `403` in `open` |
 | Proxied `pypi.org` | `403` in `locked`; not `403` otherwise |
-| Direct `10.0.0.2:8080`, `10.0.0.103:8088`, `10.0.0.103:8003`, `example.com` | Unreachable |
+| Direct `192.0.2.2:8080`, the configured `lan_targets`, `example.com` | Unreachable |
 | Connect to the real podman socket path | Fail |
 | `podman run -v $HOME:/h`, `podman stop allowed other` | Denied |
 | Create a container with no network, or on another network | Lands on `<session>-int`, or denied |
 | Create a container with a published port | Denied |
-| Build with `RUN curl 10.0.0.103:8088` | Build step fails |
+| Build with `RUN curl 192.0.2.10:8080` | Build step fails |
 | `podman logs`/`exec` on another project's container | Denied (checked against a canary container the selftest creates in a project of its own) |
 | Observe tier: list shows only the live stack; inspect redacts the environment; exec, stop, create, pull | Only the live stack; empty environment; all denied |
 | Adapter's required tools (e.g. `python`, `debugpy`) | Present |
@@ -590,18 +589,18 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.om
 Existing stacks change one at a time, each after a hypervisor snapshot, and only after the launcher passes its selftest on a dummy project.
 
 1. **Snapshot the VM** at the hypervisor.
-2. **Clean up leftovers:** `podman rm omp-1 omp-2 omp-3 happy_spence xenodochial_borg romantic_jones`; with no OMP running anywhere, `rm -rf ~/.omp/run`.
+2. **Clean up leftovers:** remove stopped ad hoc containers from earlier agent setups; with no OMP running anywhere, `rm -rf ~/.omp/run`.
 3. **Archive** the `--workspace--` and `-tmp*` session buckets.
-4. **life-updates:**
-   - set `name: life-updates` in its compose file (today it is `deploy`);
-   - move ollama into this project and onto its network;
-   - recreate that network with `isolate=strict`, replacing `shared`;
-   - remove ollama's `ports:` line; bind `8000` to `127.0.0.1` unless used from the LAN.
-5. **media\_server:** recreate `trashguides` with `isolate=strict`; keep the `10.0.0.103` LAN bindings; delete the orphan `media_server_trashguides`.
-6. **js-render-server:** move into a compose file with a `name:`, publish on `127.0.0.1`.
-7. **Host processes:** identify the python3 servers on `8004`/`8006`; decide whether glances on `8003` needs LAN exposure.
-8. **Register projects with presets:** life-updates as `lockdown`, or `build` when an agent should run its stack; then run `ab project selftest` for each.
-9. **Retire** `omp-workspace`, `claudeCode_start` and `podman-allow`.
+4. **Each live stack, one at a time:**
+   - set an explicit `name:` in its compose file instead of relying on the directory name;
+   - move any helper service only it uses (a model runtime, say) into its compose project and onto its network;
+   - recreate its networks with `isolate=strict`;
+   - publish only what the LAN needs, on the host address, and everything else on `127.0.0.1` or not at all.
+5. **Shared networks:** recreate them with `isolate=strict`; delete orphaned networks.
+6. **Ad hoc containers:** move each into a compose file with a `name:`, publish on `127.0.0.1`.
+7. **Host processes:** identify every listening process; decide which need LAN exposure.
+8. **Register projects with presets:** a sensitive project as `lockdown`, or `build` when an agent should run its stack; then run `ab project selftest` for each.
+9. **Retire** the earlier hand-made agent launch scripts.
 
 Every compose network change needs a `down`/`up`, so each step briefly takes that stack offline.
 
@@ -782,8 +781,8 @@ inbox items would be lost.
 ab project add helper ~/repos/helper --preset build
 ab screen start helper                           # the tmux workspace; or plain: ab session start claude helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
-ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
-ab deploy helper --lan 10.0.0.103:8090           # review the diff, confirm
+ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> <host>
+ab deploy helper --lan 192.0.2.10:8090           # review the diff, confirm
 ```
 
 **A data-processing script (`python`)**
@@ -798,8 +797,8 @@ ab screen start dataproc --agent omp
 **A sensitive project (`lockdown`)**
 
 ```bash
-ab project add life-updates ~/repos/Life_Updates --preset lockdown
-ab screen start life-updates --agent omp
+ab project add webapp ~/repos/webapp --preset lockdown
+ab screen start webapp --agent omp
 ```
 
 ## Worked example: a new pod for the home server
@@ -849,7 +848,7 @@ Detach with `Ctrl-b d` and return with `ab session attach filelab`.
 
 ```bash
 ab session preview <session> web:8000         # on the server (a free port unless --port is given)
-ssh -N -L <port>:127.0.0.1:<port> ubuntu-dev  # on your desktop, with the port ab session preview printed
+ssh -N -L <port>:127.0.0.1:<port> <host>       # on your desktop, with the port ab session preview printed
 ```
 
 Open `http://localhost:<port>`, try it, and type feedback into the agent pane. Repeat steps 3 and 4 until it's right. If the agent hits a wall, loosen only that setting with `ab project set filelab --egress open` (or whichever flag it is) and start a fresh session — a settings change applies to the next session, not the running one.
@@ -867,18 +866,18 @@ ab session kill <session>
 
 ```bash
 nano ~/repos/filelab/.env                # real config, never visible to the agent
-ab deploy filelab --lan 10.0.0.103:8095
+ab deploy filelab --lan 192.0.2.10:8095
 ```
 
 - `ab deploy` checks the commit and the real .env's variable names, shows the diff since the last deploy, asks for confirmation, and starts the live `filelab` stack from a copy of that commit, every podman call through the gate's deploy mode, with a restart policy.
 - Uploads land in the live stack's own volume, which no agent session is ever granted (the gate refuses any named volume the session did not create).
-- Add a login, or basic auth through caddy, before deploying: an unauthenticated upload page is open to every device on the LAN.
+- Add a login, or basic auth through a reverse proxy, before deploying: an unauthenticated upload page is open to every device on the LAN.
 
 **7. Later changes**
 
 - `ab screen start filelab --agent claude` starts a fresh `filelab-dev` stack.
 - The agent can read the live stack's logs (observe) to chase a reported bug, but builds fixes only in `filelab-dev`.
-- Ship each change with `ab deploy filelab --lan 10.0.0.103:8095`, reviewing the diff each time.
+- Ship each change with `ab deploy filelab --lan 192.0.2.10:8095`, reviewing the diff each time.
 
 ## Planned / not built
 
@@ -901,15 +900,15 @@ adapters, `--data-bind` and the `dev/data` overlay are each a Status row there, 
 
 ## Spike results
 
-Five runs on ubuntu-dev (29 September 2026) confirmed the egress design, compose isolation, exec scoping in the gate, and builds that reach the project proxy but not the LAN. The key gateway is deferred: Claude Code uses a subscription token instead.
+Five runs on the host (29 September 2026) confirmed the egress design, compose isolation, exec scoping in the gate, and builds that reach the project proxy but not the LAN. The key gateway is deferred: Claude Code uses a subscription token instead.
 
 | Spike | Result | Consequence for the design |
 | --- | --- | --- |
 | 1 · Gate: containers | Pass: created containers pinned to the internal network, `--network host` rewritten, port publishing refused | The gate can be a thin rewrite layer for creates |
 | 1 · Gate: builds | Pass: a build joined to a holder container's network namespace reached the stand-in proxy and not the LAN, run directly and when forced through the gate (both strategies). Forcing offline also works. Builds on a named network fail on this host (`did not get container start message from parent: EOF`) | Each session gets a holder container on its network, and the gate points every build at the holder's namespace. The gate must never pass through a namespace path the client sends: the observe run showed the client forwards one as-is |
-| 1 · Baseline | Containers on podman's default network and on plain bridge networks both reach `10.0.0.103:8088` | Every agent-created container and build must go through the gate |
+| 1 · Baseline | Containers on podman's default network and on plain bridge networks both reach a LAN service on the host address | Every agent-created container and build must go through the gate |
 | 2 · Sockguard | List, inspect and logs are scoped by compose label. A client driving the API directly can create and start an exec session in another project's container | Sockguard alone does not scope exec. With the gate in front, the cross-project exec and a foreign session start were refused (run 3, 15 of 15). A second pass hit gate timeouts on a slow host; the timeout is now 60 s |
-| 3 · Squid | 14 of 14: `locked` and `open` modes, `10.0.0.2:8080` allowed, other ports and the LAN refused, a public name resolving to a private address refused, no route when bypassed | Egress design confirmed as written |
+| 3 · Squid | 14 of 14: `locked` and `open` modes, `192.0.2.2:8080` allowed, other ports and the LAN refused, a public name resolving to a private address refused, no route when bypassed | Egress design confirmed as written |
 | 4 · Key gateway | Plumbing works: the gateway forwarded the call with the real key and Anthropic refused it (organization disabled). Claude Code rejected a made-up model alias | Skipped for now: no paid API key. With a subscription login, Claude Code's credential has to live inside the sandbox (see Open items). The gateway stays useful only for remote models billed by API key |
 | 5 · Compose isolation | `isolate: "strict"` reaches the network and blocks another network; two plain networks can reach each other | Compose files can carry isolation, and must: it is off by default |
 
@@ -933,11 +932,11 @@ are `busybox:1.36` (decisions.md, 29 Sep).
 - [ ] Model key gateway: deferred. LiteLLM forwarding works (spike 4); needed only if a remote model is billed by API key.
 - [x] OMP's browser and web tools honour the proxy variables: OMP runs on bun, whose fetch honours `HTTPS_PROXY`/`NO_PROXY`; its browser gets the proxy through `PUPPETEER_PROXY` (step 3, `make itest`). OMP's own `PI_PROXY` is not set: it bypasses private ranges, so the local model would go direct and fail.
 - [x] podman-compose passes `driver_opts: isolate: "strict"` through to the network, and it isolates (spike 5).
-- [x] Squid IP-literal rules for `10.0.0.2:8080`, and private-address refusal after DNS resolution, behave as written (spike 3, 14 of 14).
+- [x] Squid IP-literal rules for `192.0.2.2:8080`, and private-address refusal after DNS resolution, behave as written (spike 3, 14 of 14).
 - [x] OMP's shared browser works with `run` as a real tmpfs (step 3: `~/.omp` is a tmpfs of its own; OMP opened example.com through the proxy in its shared headless browser).
 - [x] OMP's session directory naming follows the real project path once mounted there (step 3).
 - [x] Claude Code's config splits cleanly into a read-only token plus per-project state (step 1: token mounted read-only and exported at start; whole `CLAUDE_CONFIG_DIR` per project, seeded by copy).
-- [ ] Identify the python3 servers on `8004`/`8006`.
+- [ ] Identify every listening host process.
 - [x] OMP's flag for turning its approval prompts off: `--approval-mode=yolo|write|always-ask` (step 3). The third-party `pi-permission-system` extension is a separate policy layer; not installed (it would be a `plugins.toml` entry in the profile), Tim to decide.
 - [x] OMP with the real keys, the installed plugin tree and the local model: `make omp-live`, run by Tim (passes; last recorded 13 Nov 2026 with the installed plugins present, decisions.md).
 - [ ] Claude Code credentials: reopened. Subscription login only, so no gateway. Proposed: a dedicated long-lived token from `claude setup-token`, passed as `CLAUDE_CODE_OAUTH_TOKEN` from a 0600 file, never the host's `~/.claude` credentials. To verify: it works in the sandbox, and revoking it doesn't log out the host.

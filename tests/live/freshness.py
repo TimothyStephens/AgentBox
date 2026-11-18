@@ -8,14 +8,13 @@ handles tokens or keys has changed since that commit, so a stale pass is never m
 """
 import datetime
 import os
-import socket
 import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PASS_FILE = os.path.join(REPO, "tests", "live", "claude-live-pass.txt")
 # Append-only provenance beside the one-line record. The record says WHICH commit last passed and is
-# overwritten by the next run; the log keeps every run (commit, timestamp, egress mode, host), so an
+# overwritten by the next run; the log keeps every run (commit, timestamp, egress mode), so an
 # overwrite is visible after the fact and a line nobody remembers producing can be traced -- or shown to
 # have no run behind it. Both files are committed together.
 PASS_LOG = os.path.join(REPO, "tests", "live", "claude-live-pass.log")
@@ -71,7 +70,7 @@ def record(mode, *, from_live_run=False):
         f.write(f"{head} {datetime.date.today().isoformat()} egress={mode}\n")
     when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     with open(PASS_LOG, "a") as f:
-        f.write(f"{head} {when} egress={mode} host={socket.gethostname()}\n")
+        f.write(f"{head} {when} egress={mode}\n")
     print(f"claude-live pass recorded for {head[:12]} in {os.path.relpath(PASS_FILE, REPO)} (commit it)")
     return True
 

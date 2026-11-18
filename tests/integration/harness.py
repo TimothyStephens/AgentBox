@@ -40,6 +40,31 @@ def arm_cleanup():
         atexit.register(cleanup)
 
 
+# The host's network facts are the user's, not the repo's (no committed default since 18 Nov): the itests copy
+# them from the user's own agentbox.toml into each run's config, so the LAN and model-server cases probe the
+# real network without its addresses ever being written into the repo.
+HOST_KEYS = ("model_host", "model_port", "host_addrs", "lan_targets")
+
+
+def host_facts():
+    from agentbox import config
+    path = os.path.join(os.environ.get("AB_CONFIG_DIR") or os.path.expanduser("~/.config/agentbox"),
+                        "agentbox.toml")
+    user = config.load_toml(path) if os.path.exists(path) else {}
+    return {k: user[k] for k in HOST_KEYS if k in user}
+
+
+HOST = host_facts()
+
+
+def need_host(key):
+    """A host fact a test cannot run without: a FAIL naming the setting, never a silent skip."""
+    if not HOST.get(key):
+        raise AssertionError(f"set {key} in ~/.config/agentbox/agentbox.toml (the host's own value; agentbox "
+                             "has no committed default) for this test to run")
+    return HOST[key]
+
+
 class Env:
     def __init__(self):
         arm_cleanup()
@@ -53,7 +78,8 @@ class Env:
         with open(os.path.join(self.cfg, "agentbox.toml"), "w") as f:
             f.write(f'name_prefix = "abt-{RUN}-"\n'
                     f'cgroup_parent = "{"agentbox.slice" if self.slice else ""}"\n'
-                    f'labels = {{ "agentbox-test" = "1", "agentbox-test-run" = "{RUN}" }}\n')
+                    f'labels = {{ "agentbox-test" = "1", "agentbox-test-run" = "{RUN}" }}\n'
+                    + "".join(f"{k} = {json.dumps(v)}\n" for k, v in HOST.items()))
         tok = os.path.join(self.cfg, "claude-oauth-token")
         with open(tok, "w") as f:
             f.write(FAKE_TOKEN + "\n")

@@ -27,7 +27,7 @@ class MiniYaml(TempCase):
         with open(FIXTURE_MODELS) as f:
             doc = miniyaml.loads(f.read())
         self.assertEqual(list(doc["providers"]), ["llama-cpp", "gemini", "openai", "anthropic", "openrouter"])
-        self.assertEqual(doc["providers"]["llama-cpp"]["baseUrl"], "http://10.0.0.2:8080/v1")
+        self.assertEqual(doc["providers"]["llama-cpp"]["baseUrl"], "http://192.0.2.2:8080/v1")
         self.assertIs(doc["providers"]["llama-cpp"]["models"][0]["reasoning"], True)
         self.assertEqual(doc["providers"]["openrouter"]["models"][0]["maxTokens"], 8192)
 
@@ -53,8 +53,17 @@ class BuildModels(TempCase):
     def build(self, keys_present=(), seed=None, warnings=None):
         seed = miniyaml.loads(seed_without_keys()) if seed is None else seed
         k = {p: f"/keys/{p}" for p in keys_present}
-        return omp.build_models(seed, keys=k, model_host="10.0.0.2", model_port=8080,
+        return omp.build_models(seed, keys=k, model_host="192.0.2.2", model_port=8080,
                                 warn=(warnings.append if warnings is not None else lambda m: None))
+
+    def test_no_model_host_means_no_local_provider(self):
+        """model_host has no committed default (18 Nov): unset, no `http://:8080` provider is invented, and a
+        seed provider on a LAN address is left out like any unreachable one."""
+        warnings = []
+        doc, _domains, _used = omp.build_models(miniyaml.loads(seed_without_keys()), keys={}, model_host="",
+                                                model_port=8080, warn=warnings.append)
+        self.assertNotIn(omp.LOCAL_PROVIDER, doc.get("providers", {}))
+        self.assertFalse([p for p in doc.get("providers", {}).values() if "http://:" in str(p.get("baseUrl"))])
 
     def test_no_keys_local_model_only(self):
         warnings = []
@@ -112,7 +121,7 @@ class BuildModels(TempCase):
         from the check while leaving it in the file."""
         for bad in ("https://tim:tok@llm.acme.example/v1", "https://tok@llm.acme.example/v1",
                     "https://llm.acme.example/v1?api_key=x", "https://llm.acme.example/v1#frag",
-                    "http://u:p@10.0.0.2:8080/v1"):
+                    "http://u:p@192.0.2.2:8080/v1"):
             with self.subTest(url=bad), self.assertRaises(AgentboxError) as cm:
                 self.build(["acme"], seed={"providers": {
                     "acme": {"api": "openai-completions", "baseUrl": bad}}})
@@ -120,7 +129,7 @@ class BuildModels(TempCase):
 
     def test_no_seed(self):
         doc, domains, _used = self.build(seed={})
-        self.assertEqual(doc["providers"]["llama-cpp"]["baseUrl"], "http://10.0.0.2:8080/v1")
+        self.assertEqual(doc["providers"]["llama-cpp"]["baseUrl"], "http://192.0.2.2:8080/v1")
         self.assertEqual(domains, [])
 
     def test_unused_key_is_reported(self):

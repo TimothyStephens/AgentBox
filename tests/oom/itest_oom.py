@@ -217,11 +217,7 @@ def main():
     finally:
         after = outside_containers()
         changed = {n: (before[n], after.get(n)) for n in before if after.get(n) != before[n]}
-        media = [n for n, v in before.items() if v[3] == "media_server"]
-        media_changed = [n for n in media if n in changed]
         print()
-        result(not media_changed, f"no media_server container restarted or was OOM-killed ({len(media)} checked)"
-               + (f": {media_changed}" if media_changed else ""))
         result(not changed, f"no other container outside the tests changed ({len(before)} checked)"
                + (f": {sorted(changed)}" if changed else ""))
         print(f"MemAvailable after: {meminfo('MemAvailable')} MB")

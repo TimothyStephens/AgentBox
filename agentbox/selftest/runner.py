@@ -279,8 +279,12 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
         "PASS" if "lo" in obs.split() and len(obs.split()) == 2 else "FAIL", obs))
 
     # --- proxied: the local model (another machine, may be off) ----------------------------
-    model_live = live(mhost, mport)
-    if model_live:
+    # model_host and lan_targets are the user's host facts, set in agentbox.toml (no committed default).
+    model_live = bool(mhost) and live(mhost, mport)
+    if not mhost:
+        b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [], "proxied local model allowed",
+                            lambda obs: ("SKIP", "no model_host in agentbox.toml: no local model server to test")))
+    elif model_live:
         b.add("get", [f"http://{mhost}:{mport}/v1/models", f"{mhost}:{mport}"],
               f"proxied local model http://{mhost}:{mport}/v1/models allowed", allowed)
     else:
@@ -288,7 +292,12 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
                             f"proxied local model http://{mhost}:{mport}/v1/models allowed",
                             lambda obs: ("SKIP", f"the model server {mhost}:{mport} is not answering from the host")))
     # --- proxied: refused in every mode --------------------------------------------------
-    b.add("get", [f"http://{mhost}:22/", f"{mhost}:22"], f"proxied {mhost}:22 refused", refused)
+    if mhost:
+        b.add("get", [f"http://{mhost}:22/", f"{mhost}:22"], f"proxied {mhost}:22 refused", refused)
+    if not lan_targets:
+        b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [], "proxied LAN targets refused",
+                            lambda obs: ("FAIL", "no lan_targets in agentbox.toml (live LAN services, host:port): "
+                                         "the LAN refusal cases did not run")))
     for t in lan_targets:
         b.add("get", [f"http://{t}/", t], f"proxied LAN {t} refused", refused)
         h, p = t.rsplit(":", 1)
@@ -324,7 +333,7 @@ def network_cases(b, mode, *, model, lan_targets, model_domains, extra_domains=(
           refused)
 
     # --- direct, bypassing the proxy ----------------------------------------------------------
-    direct = [(mhost, mport)] + [tuple(t.rsplit(":", 1)) for t in lan_targets]
+    direct = ([(mhost, mport)] if mhost else []) + [tuple(t.rsplit(":", 1)) for t in lan_targets]
     live_count = 0
     for h, p in direct:
         if (model_live if (h, p) == (mhost, mport) else live(h, p)):

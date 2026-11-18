@@ -1,5 +1,5 @@
 Independent re-review gating the first REAL project. Defensive audit for the author — do not edit files or
-start containers. This is the sign-off CLAUDE.md requires before any real repo (life-updates) runs in a
+start containers. This is the sign-off CLAUDE.md requires before any real repo runs in a
 session, so the bar is "would I trust this with my real `.env` and a live database next to the grant?"
 
 Range: everything since the last security audit, base commit a02fbdd (docs/reviews/2026-10-06-final.md) to

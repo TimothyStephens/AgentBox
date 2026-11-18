@@ -7,13 +7,13 @@ from agentbox.selftest import runner
 
 def build(model_live):
     b = runner.Builder()
-    runner.network_cases(b, "locked", model=("10.0.0.2", 8080), lan_targets=["10.0.0.103:8088"], model_domains=[],
-                         live=lambda h, p: model_live if h == "10.0.0.2" else True)
+    runner.network_cases(b, "locked", model=("192.0.2.2", 8080), lan_targets=["192.0.2.10:8088"], model_domains=[],
+                         live=lambda h, p: model_live if h == "192.0.2.2" else True)
     return b
 
 
 class ModelLine(unittest.TestCase):
-    LABEL = "proxied local model http://10.0.0.2:8080/v1/models allowed"
+    LABEL = "proxied local model http://192.0.2.2:8080/v1/models allowed"
 
     def result(self, model_live):
         b = build(model_live)
@@ -60,7 +60,7 @@ class EgressDiagnostics(unittest.TestCase):
     def test_targets(self):
         b = build(True)
         targets = {runner.proxied_target(c) for c in b.cases} - {None}
-        self.assertTrue({"pypi.org", "example.com", "10.0.0.2", "::ffff:10.0.0.103", "2606:4700:4700::1111"} <= targets,
+        self.assertTrue({"pypi.org", "example.com", "192.0.2.2", "::ffff:192.0.2.10", "2606:4700:4700::1111"} <= targets,
                         targets)
 
 
@@ -145,3 +145,27 @@ class CanaryLine(unittest.TestCase):
     def test_present_canary_is_no_line(self):
         from agentbox import selftest
         self.assertIsNone(selftest.canary_result("ab-x-canary"))
+
+
+class UnconfiguredHost(unittest.TestCase):
+    """model_host and lan_targets have no committed default (they are the user's network, 18 Nov): with them
+    unset the selftest says so instead of probing an empty host, and the missing LAN cases are a FAIL."""
+
+    def results(self, **kw):
+        b = runner.Builder()
+        runner.network_cases(b, "locked", model=kw.get("model", ("", 8080)), lan_targets=kw.get("lan", []),
+                             model_domains=[], live=lambda h, p: True)
+        return runner.score(b.cases, "__done__\n")
+
+    def test_no_model_host_is_a_skip_naming_the_setting_and_nothing_probes_an_empty_host(self):
+        rs = self.results(lan=["192.0.2.10:8080"])
+        [m] = [r for r in rs if "local model" in r.label]
+        self.assertEqual(m.verdict, "SKIP")
+        self.assertIn("model_host", m.detail)
+        self.assertFalse([r for r in rs if r.label.startswith(("proxied :", "direct :"))])
+
+    def test_no_lan_targets_is_a_fail_naming_the_setting(self):
+        rs = self.results(model=("192.0.2.2", 8080))
+        [m] = [r for r in rs if r.label == "proxied LAN targets refused"]
+        self.assertEqual(m.verdict, "FAIL")
+        self.assertIn("lan_targets", m.detail)

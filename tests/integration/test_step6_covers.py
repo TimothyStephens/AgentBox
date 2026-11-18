@@ -1,4 +1,4 @@
-"""Critical (5 Oct, life-updates spec 6.2) and its independent audit (docs/reviews/2026-10-05-covers.md): the
+"""Critical (5 Oct, masked-paths spec 6.2) and its independent audit (docs/reviews/2026-10-05-covers.md): the
 agent's in-container masks and read-only covers are absent in a container it starts through the gate, so the
 gate refuses any bind that reaches a covered path. Run from inside a session, through the gate, as the agent
 would: the spec's 5.2 bypass test plus the audit's cases.

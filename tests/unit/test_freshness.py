@@ -2,7 +2,6 @@
 import datetime
 import io
 import os
-import socket
 import shutil
 import subprocess
 import tempfile
@@ -65,7 +64,7 @@ class Freshness(unittest.TestCase):
         for line, mode in zip(lines, ("locked", "packages")):
             self.assertIn(head, line)
             self.assertIn(f"egress={mode}", line)
-            self.assertIn(f"host={socket.gethostname()}", line)
+            self.assertNotIn("host=", line, "the log is committed: no hostname in it (18 Nov)")
             stamp = line.split()[1]
             datetime.datetime.fromisoformat(stamp)        # a real ISO timestamp, not a date
             self.assertIn("T", stamp, "the log carries the time of day, which the record does not")

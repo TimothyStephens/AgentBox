@@ -8,6 +8,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 GUARD = os.path.join(HERE, "guard.py")
+# The host's live stacks come from a local file (guard.py, LIVE_STACKS_FILE); these checks use made-up names.
+import tempfile  # noqa: E402
+_LIVE = tempfile.NamedTemporaryFile("w", prefix="abt-guard-live-", suffix=".txt", delete=False)
+_LIVE.write("# test names\nmedia-stack\nwebapp\nprod\n")
+_LIVE.close()
 
 BLOCK = [
     "podman system reset -f",
@@ -16,12 +21,12 @@ BLOCK = [
     "podman image prune -a",
     "podman rm -af",
     "podman stop --all",
-    "podman rm -f media_server_web_1",
+    "podman rm -f media_stack_web_1",
     "podman rm -f 3f2a9c1d",
-    "podman exec -it jellyfin sh",
-    "podman logs media_server-web",
-    "podman-compose -p deploy down",
-    "cd ~/life-updates && podman-compose down",
+    "podman exec -it player sh",
+    "podman logs media_stack-web",
+    "podman-compose -p prod down",
+    "cd ~/webapp && podman-compose down",
     "podman-compose up -d",
     "podman compose up -d",
     "podman-compose -p myapp up -d",
@@ -42,7 +47,7 @@ BLOCK = [
     "rm -rf ..",
     "rm -rf ~/.config",
     "cd /tmp && rm -rf /home/vmuser/*",
-    "echo $(podman rm -f media_server)",
+    "echo $(podman rm -f media_stack)",
     "cat ~/.config/agentbox/claude-oauth-token",
     "cat ~/.claude/.credentials.json",
     "ls ~/.ssh/",
@@ -74,8 +79,8 @@ BLOCK = [
     "printf 'web\\n' | xargs podman rm -f",
     "podman ps -q | xargs -r podman rm -f",
     "echo media | xargs -I{} podman stop {}",
-    "sh -c 'podman rm -f media_server'",
-    "bash -lc \"podman exec -it jellyfin sh\"",
+    "sh -c 'podman rm -f media_stack'",
+    "bash -lc \"podman exec -it player sh\"",
     "bash -c 'git commit --no-verify -m x'",
     "podman build -v /home/vmuser:/h -t abt-x .",
     "podman build --volume=$HOME/.config:/c -t abt-x .",
@@ -128,7 +133,7 @@ ALLOW = [
     "git commit -am 'fix'",
     "git log -n 3",
     "git -C /tmp/x commit -m x --author 'n <n@n>'",
-    "curl -s http://10.0.0.103:8088/ -o /dev/null",
+    "curl -s http://192.0.2.10:8080/ -o /dev/null",
     "podman network ls",
     "podman images",
     "python3 -m pytest -q",
@@ -150,7 +155,7 @@ ALLOW = [
 def run(cmd):
     p = subprocess.run([sys.executable, GUARD], input=json.dumps(
         {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": ROOT}),
-        capture_output=True, text=True, env=dict(os.environ, CLAUDE_PROJECT_DIR=ROOT))
+        capture_output=True, text=True, env=dict(os.environ, CLAUDE_PROJECT_DIR=ROOT, AB_GUARD_LIVE_STACKS=_LIVE.name))
     return p.returncode, p.stderr.strip()
 
 bad = 0
@@ -168,6 +173,15 @@ p = subprocess.run([sys.executable, GUARD], input=json.dumps({"tool_name": "Read
 if p.returncode != 0:
     bad += 1
     print("non-Bash tool should pass")
-total = len(BLOCK) + len(ALLOW) + 1
+# Without the local file, the live-stack rule names nothing: `podman logs` of any name is allowed again.
+p = subprocess.run([sys.executable, GUARD], input=json.dumps(
+    {"tool_name": "Bash", "tool_input": {"command": "podman logs media_stack-web"}, "cwd": ROOT}),
+    capture_output=True, text=True, env=dict(os.environ, CLAUDE_PROJECT_DIR=ROOT,
+                                             AB_GUARD_LIVE_STACKS=_LIVE.name + ".absent"))
+if p.returncode != 0:
+    bad += 1
+    print("without the live-stacks file, a live name should not block on its own:", p.stderr.strip())
+os.unlink(_LIVE.name)
+total = len(BLOCK) + len(ALLOW) + 2
 print("%d/%d guard checks passed" % (total - bad, total))
 sys.exit(1 if bad else 0)

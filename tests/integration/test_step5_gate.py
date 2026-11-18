@@ -34,7 +34,7 @@ ENV = None
 COMPOSE = f"abt-{harness.RUN}-dv"
 CANARY = f"abt-{harness.RUN}-canary"
 CONTAINERFILE = """FROM docker.io/library/busybox:1.36
-RUN (wget -q -T 5 -O /dev/null http://10.0.0.103:8088/ && echo BUILD_LAN_REACHED) || echo BUILD_LAN_BLOCKED
+RUN (wget -q -T 5 -O /dev/null http://{lan}/ && echo BUILD_LAN_REACHED) || echo BUILD_LAN_BLOCKED
 RUN (env -u http_proxy -u https_proxy wget -q -T 5 -O /dev/null http://example.com/ && echo BUILD_DIRECT_REACHED) || echo BUILD_DIRECT_BLOCKED
 RUN echo BUILD_PROXY=$http_proxy
 """
@@ -56,7 +56,7 @@ def setUpModule():
     for name, preset, extra in (("dv", "python", ["--podman", "dev"]), ("dvp", "pods", [])):
         root = ENV.make_project(name, preset=preset, extra=extra)
         with open(os.path.join(root, "Containerfile"), "w") as f:
-            f.write(CONTAINERFILE)
+            f.write(CONTAINERFILE.format(lan=harness.need_host("lan_targets")[0]))
     # another project's container, made on the host: the dev tier must not reach it
     harness.podman("run", "-d", "--name", CANARY, "--label", "agentbox-test=1", "--label", harness.LABEL,
                    "--label", "io.podman.compose.project=abt-other", "--network=none",

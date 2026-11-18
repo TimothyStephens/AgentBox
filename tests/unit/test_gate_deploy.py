@@ -14,7 +14,7 @@ from tests.unit.test_review_step5 import Fake, container, decide
 
 DEPLOY = {"agentbox.role": "deploy", "agentbox.deploy": "shop"}
 COMPOSE = {"io.podman.compose.project": "shop", "com.docker.compose.project": "shop"}
-LAN = "10.0.0.103"
+LAN = "192.0.2.10"
 
 
 def dcontainer(cid, labels=DEPLOY, **extra):

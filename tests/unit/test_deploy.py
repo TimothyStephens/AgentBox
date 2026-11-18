@@ -216,10 +216,10 @@ class TheCommand(DeployCase):
 
     def test_lan_must_be_an_address_of_this_host(self):
         with self.assertRaises(AgentboxError):
-            deploy.parse_lan("10.0.0.99:8095", {"10.0.0.103"})
+            deploy.parse_lan("10.0.0.99:8095", {"192.0.2.10"})
         with self.assertRaises(AgentboxError):
-            deploy.parse_lan("10.0.0.103", {"10.0.0.103"})
-        self.assertEqual(deploy.parse_lan("10.0.0.103:8095", {"10.0.0.103"}), ("10.0.0.103", 8095))
+            deploy.parse_lan("192.0.2.10", {"192.0.2.10"})
+        self.assertEqual(deploy.parse_lan("192.0.2.10:8095", {"192.0.2.10"}), ("192.0.2.10", 8095))
 
     def test_check_records_nothing(self):
         self.ab("deploy", "web", "--check")

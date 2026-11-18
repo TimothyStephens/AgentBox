@@ -184,7 +184,7 @@ def build_models(seed, *, keys, model_host, model_port, warn):
     """The session's models.yml from the keyless seed.
 
     Returns (doc, domains, used_keys): providers are kept only when their key file exists, except the local
-    model server, which is always there. Each kept key is referenced by its variable name (AB_KEY_<NAME>);
+    model server, which is always there when `model_host` is set (agentbox.toml; no committed default). Each kept key is referenced by its variable name (AB_KEY_<NAME>);
     its API domains are returned for the proxy's model allowlist.
     """
     seed = seed or {}
@@ -209,7 +209,7 @@ def build_models(seed, *, keys, model_host, model_port, warn):
         if conf.get("baseUrl"):
             host, port = _host_of(conf["baseUrl"], where)
         ip = _ip(host) if host else None
-        local = ip is not None and str(ip) == str(model_host) and port == int(model_port)
+        local = bool(model_host) and ip is not None and str(ip) == str(model_host) and port == int(model_port)
         if local:
             have_local = True
             if name in keys:
@@ -238,7 +238,7 @@ def build_models(seed, *, keys, model_host, model_port, warn):
         providers[name] = conf
         used[name] = keys[name]
         domains |= want
-    if not have_local:
+    if not have_local and model_host:
         conf = {"api": "openai-completions", "baseUrl": f"http://{model_host}:{int(model_port)}/v1"}
         if LOCAL_PROVIDER in keys:
             conf["apiKey"] = keysmod.env_name(LOCAL_PROVIDER)

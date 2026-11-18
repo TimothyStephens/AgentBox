@@ -30,7 +30,7 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
 - **What:**
   - CONNECT only to port 443; plain HTTP only to ports 80 and 443 (except the local model rule).
   - The private list adds `0.0.0.0/8` (on Linux that is the proxy itself), `192.0.0.0/24`, `198.18.0.0/15`, multicast and reserved ranges, `::/128`, `ff00::/8`, and the VM's own addresses read at session start.
-  - `locked` allows the adapter's model domains only (Claude: `api.anthropic.com`), plus `10.0.0.2:8080`.
+  - `locked` allows the adapter's model domains only (Claude: `api.anthropic.com`), plus `192.0.2.2:8080`.
   - `packages` adds: `pypi.org`, `.pythonhosted.org`, `registry.npmjs.org`, `.crates.io`, `crates.io`, `.github.com`, `github.com`, `.githubusercontent.com`, `.debian.org`, `.ubuntu.com`, `dl-cdn.alpinelinux.org`, `conda.anaconda.org`, `repo.anaconda.com`, `cloud.r-project.org`, `.bioconductor.org`, `bioconductor.org`. Container registries are not on it: pulls happen on the host (next entry).
   - Anything else is a per-project `extra_domains` addition.
 - **Why:** the design's `open` rule (`allow all`) allowed CONNECT to any port, and its private list missed ranges that reach the proxy or the host.
@@ -52,10 +52,10 @@ Deviations from, and refinements of, `docs/design.md`. Newest last. The design d
 
 ## 2026-09-29 · Resource limits and one slice for all agentbox containers
 
-- **Measured (29 Sep):** 9.8 GB RAM, 6 cores, 23 GB swap; the `cpu`, `memory` and `pids` controllers are delegated to vmuser; the media stack used about 1.35 GB, ollama 3.9 GB with a model loaded, life-updates and one unlabelled container about 0.45 GB.
+- **Measured (29 Sep):** the host's RAM, cores and swap; the `cpu`, `memory` and `pids` controllers are delegated to vmuser; the other live stacks and a local model runtime (with a model loaded) used the rest.
 - **Agent container:** `--memory=4g --memory-swap=4g --cpus=3 --pids-limit=4096 --oom-score-adj=500` (900 until 30 Sep; see "The OOM score margin" below). Rootless podman can raise the OOM score, so under host memory pressure the kernel kills agent containers before live services.
 - **Containers the agent creates** (gate, step 5): `--memory=1g --pids-limit=1024 --oom-score-adj=1000` unless the compose file sets its own.
-- **One cap for everything:** every container `ab` starts, and every container the gate creates, runs with `--cgroup-parent=agentbox.slice`; the gate refuses a client-supplied cgroup parent. `deploy/agentbox.slice` sets `MemoryMax` (RAM − media stack − 3 GB for ollama − 1 GB headroom, capped at 6G), `MemorySwapMax=0` and `TasksMax`. Tim installs it with `make install-slice`. The launcher refuses to start while the slice is not loaded (unless `cgroup_parent` is set to empty), and warns when the slice is above 75% of its memory cap. If rootless `--cgroup-parent` with a user slice does not work on this host, the fallback is a gate budget counted across all sessions.
+- **One cap for everything:** every container `ab` starts, and every container the gate creates, runs with `--cgroup-parent=agentbox.slice`; the gate refuses a client-supplied cgroup parent. `deploy/agentbox.slice` sets `MemoryMax` (RAM − the other live stacks − the model runtime's share − 1 GB headroom, capped at 6G), `MemorySwapMax=0` and `TasksMax`. Tim installs it with `make install-slice`. The launcher refuses to start while the slice is not loaded (unless `cgroup_parent` is set to empty), and warns when the slice is above 75% of its memory cap. If rootless `--cgroup-parent` with a user slice does not work on this host, the fallback is a gate budget counted across all sessions.
 
 ## 2026-09-29 · Resource names and labels are configurable
 
@@ -119,7 +119,7 @@ The kernel picks the process with the highest `usage + oom_score_adj × total / 
 - **Networks:** `<session>-int` (`--internal`, `isolate=strict`: agent and proxy) and `<session>-egr` (`isolate=strict` bridge: proxy only). The proxy resolves names through the egress network's DNS.
 - **Squid:** `docker.io/ubuntu/squid` pinned by digest (6.13), run with `--cap-drop=ALL --cap-add=SETUID,SETGID` (it drops to the proxy user), no-new-privileges, read-only root, tmpfs `/var/spool/squid`, `/var/log/squid`, `/run`, `/tmp` (all `notmpcopyup`), 256 MB, 256 pids, the agent's OOM score, in the slice. The pinger is off (it needs raw sockets). `via off` and `forwarded_for delete` keep the session's addresses out of outgoing requests.
 - **Access log:** one line per request (time, client, method, destination `host:port`, status, server address, result), kept in `~/.local/share/agentbox/logs/<session>-proxy.log` when the session ends. Since 30 Sep (review #9) it holds destinations only: no URL paths or queries, which can carry data, and never headers.
-- **IPv4-mapped IPv6:** squid normalises `[::ffff:10.0.0.103]` to `10.0.0.103` before the ACLs, so the private list needs no `::ffff:0:0/96` entry (which would have matched every IPv4 address). Tested: refused.
+- **IPv4-mapped IPv6:** squid normalises `[::ffff:192.0.2.10]` to `192.0.2.10` before the ACLs, so the private list needs no `::ffff:0:0/96` entry (which would have matched every IPv4 address). Tested: refused.
 - **Result (make itest, 29 Sep):** in `locked`, `packages` and `open`, every proxied negative is `403`, the model endpoint and `api.anthropic.com` are allowed, `example.com` and `pypi.org` follow the mode, a project's `extra_domains` are allowed from `packages` up, CONNECT to a non-443 port and HTTP to a non-web port are refused, and direct attempts (LAN, model host, `example.com`, `1.1.1.1`) never connect. Two concurrent sessions cannot reach each other's agent or proxy.
 
 ## 2026-09-30 · Review of steps 1-2: what changed
@@ -128,7 +128,7 @@ The independent review (`docs/reviews/2026-09-30-steps-1-2.md`, annotated per fi
 
 - **Token at rest (#1):** `make itest` now runs Claude against a stub Messages API on `127.0.0.1` inside the sandbox that accepts the fake token, so Claude completes a turn and writes its post-authentication state; the state dir, backups, logs and run dir are then grepped for the token (none found: transcript, `.claude.json`, and Claude's own `.claude.json` backup are clean). The selftest itself now creates a container from the session's exact argv and checks podman's stored config for the token.
 - **Committed secrets (#2):** git history cannot be masked without breaking git. The launcher now warns at session start with the masked file names found in the repo's history.
-- **Host addresses (#3):** `host_addrs` (default `10.0.0.103`) is always refused, plus whatever is found at session start; with neither, the session refuses to start.
+- **Host addresses (#3):** `host_addrs` (default `192.0.2.10`) is always refused, plus whatever is found at session start; with neither, the session refuses to start.
 - **IPv6 (#4):** the networks are created with `--ipv6=false` explicitly; the selftest checks a proxied IPv6 literal fails. A `2000::/3` deny acl was rejected: squid's `dst` acl matches if any address of a name matches, so it would refuse dual-stack hosts.
 - **Git dirs (#6, and a wider gap found while testing it):** every git directory inside a writable grant is protected, not only the root's: nested repos, `.git`-file targets, bare repos, submodules.
 - **gc and teardown (#7, and a bug found while testing it):** `session.json` is written atomically; gc leaves a session alone while its agent runs, and removes orphaned proxies. Non-interactive sessions now tear down on SIGTERM/SIGHUP too (an interrupted `itest-oom` run had left a proxy running).
@@ -154,7 +154,7 @@ The independent review (`docs/reviews/2026-09-30-steps-1-2.md`, annotated per fi
 ## 2026-09-30 · Provider API keys: one file each, exported like the Claude token (step 3)
 
 - **What:** each pay-per-use provider key lives in `~/.config/agentbox/keys/<provider>` (0600, owned by the user, not a symlink; the directory is 0700), set with `ab keys set <provider>`, listed (names only) with `ab keys ls`, removed with `ab keys rm`. A key enters a session exactly like the Claude token: its file is bind-mounted read-only at `/run/agentbox/keys/<provider>`, and the session wrapper exports it as `AB_KEY_<PROVIDER>` just before exec. It is never on a command line, in podman's container config, in the generated model config (which names the variable), or in logs, state or backups. The selftest and `make itest` check all of these with fake keys, as for the token. A key file that fails the checks refuses the session rather than being skipped.
-- **Only providers with a key are offered.** The OMP model config is generated from a keyless seed, `~/.config/agentbox/omp/models.yml` (same format as OMP's; the launcher refuses a seed holding `apiKey`, a credential-like header, or a `!command` value). A provider without a key file is left out. The local model server (`10.0.0.2:8080`) is always included, with its key if `keys/llama-cpp` exists; if the seed has no provider for it, a default `llama-cpp` entry is added. A key whose provider is not in the seed is not mounted.
+- **Only providers with a key are offered.** The OMP model config is generated from a keyless seed, `~/.config/agentbox/omp/models.yml` (same format as OMP's; the launcher refuses a seed holding `apiKey`, a credential-like header, or a `!command` value). A provider without a key file is left out. The local model server (`192.0.2.2:8080`) is always included, with its key if `keys/llama-cpp` exists; if the seed has no provider for it, a default `llama-cpp` entry is added. A key whose provider is not in the seed is not mounted.
 - **Domains:** a keyed provider's API domains join the proxy's model allowlist, allowed in every egress mode (including `locked`):
 
   | Provider | Domains |
@@ -188,7 +188,7 @@ Each is refused if it is a symlink or resolves outside `~/.omp`. Never mounted: 
 
 Per project, read-write and persistent: `~/.local/share/agentbox/<project>/omp/agent` at `~/.omp/agent` and `.../omp/logs` at `~/.omp/logs`. Generated per session, read-only on top: `agent/models.yml`, `agent/AGENTS.md`. `~/.omp` itself is a tmpfs owned by the agent (`notmpcopyup`), so `run/` and caches are real tmpfs, per session. Found by the step 3 itest: without it the runtime creates `~/.omp` root-owned as a parent for the mounts, and OMP fails with `EACCES: mkdir ~/.omp/run`.
 
-**Proxy:** OMP runs on bun, whose fetch honours `HTTPS_PROXY`/`NO_PROXY`, so model calls, including those to `10.0.0.2:8080`, go through squid (itest: bun's fetch to the local model shows in the proxy log). OMP's own `PI_PROXY` is deliberately not set: it bypasses private ranges, so the local model would go direct and find no route.
+**Proxy:** OMP runs on bun, whose fetch honours `HTTPS_PROXY`/`NO_PROXY`, so model calls, including those to `192.0.2.2:8080`, go through squid (itest: bun's fetch to the local model shows in the proxy log). OMP's own `PI_PROXY` is deliberately not set: it bypasses private ranges, so the local model would go direct and find no route.
 
 ## 2026-09-30 · The OMP image is derived, not rebuilt (step 3)
 
@@ -464,7 +464,7 @@ Findings and responses are in `docs/reviews/2026-10-01-step-5{A1,A4,B,C}.md`; th
 
 ## 2026-10-01 · The local model selftest line is SKIP when the model is off
 
-- `proxied local model ... allowed` is a SKIP, with the reason, when `10.0.0.2:8080` does not answer from the host. It is the same host-side check the direct cases already use. When the model answers, the line is a real check.
+- `proxied local model ... allowed` is a SKIP, with the reason, when `192.0.2.2:8080` does not answer from the host. It is the same host-side check the direct cases already use. When the model answers, the line is a real check.
 
 ## 2026-10-02 · A project's own builds are the gate's record, not labels (Tim)
 
@@ -725,12 +725,12 @@ grant** (nothing in the grant matches the mask names); for repo-local secrets it
 is for code). The sanctioned ways a real external key reaches runtime without the agent getting read-write to
 it inside the grant:
 
-- **A key the agent itself needs** (e.g. an LLM-enrichment API the agent calls during development): `ab keys
+- **A key the agent itself needs** (e.g. a third-party API the agent calls during development): `ab keys
   set <provider>` → `~/.config/agentbox/keys/<provider>` (0600). That path is under `config_dir`, a protected
   path no grant may overlap (`paths.protected_extra`), so it is never in the grant. It is mounted read-only
   and exported as `AB_KEY_<PROVIDER>` just before the agent starts; the provider's API domain is allowlisted
   in egress. The agent can *read* the value (env) but never has read-write to the key file.
-- **A pod's own runtime secret** (the live stack's external API key, e.g. life_updates LLM enrichment): lives
+- **A pod's own runtime secret** (the live stack's external API key, e.g. a third-party API it calls): lives
   in the real `.env`, which is **host-only** and used at **deploy** (`ab deploy`, planned) when the live stack
   runs on the host. In a session the pod uses `.env.dev` (low-value dev creds) via the dev-swap; the real
   `.env` is never mounted into a session. So the keyed pod develops against dev creds and only ever uses the
@@ -2512,7 +2512,7 @@ end-of-session scan's skip list, since a host service writing into a live data d
 would otherwise be reported as the session's change. The history-secrets check is unchanged: it keys on the
 secret names.
 
-**Why now.** `ab project add` on life-updates was refused for `data/` (a compose data bind, owned by a
+**Why now.** `ab project add` on a real project was refused for `data/` (a compose data bind, owned by a
 container uid) with no answer short of acknowledging the exposure or moving the application's data layout.
 `docs/agentbox-masked-paths.md` had measured exactly this case on 5 Oct and `TODO.md` said the named-volume
 default would serve "until a real project forces it". The user asked for both ends -- extra mounts and extra
@@ -2749,7 +2749,7 @@ OMP is OMP's own compatibility shim and not a sign of Claude Code; Toulmin shoul
 not on that.
 
 **The same day's `make omp-live`** (`AB_LIVE_MODEL=llama-cpp/...`): step 2 passed end to end -- the model
-answered through squid (`POST 10.0.0.2:8080 200` in the proxy log), drove the browser to pypi.org and ran
+answered through squid (`POST 192.0.2.2:8080 200` in the proxy log), drove the browser to pypi.org and ran
 debugpy; no key in any log, state file or output. Step 1 never started: `ab: podman images --format timed
 out` (the launcher's 120 s podman timeout, on a host that was still under memory pressure), so the run is
 recorded as FAIL and is to be repeated for a clean pass. Not run, by Tim's decision: a cloud model through
@@ -3365,4 +3365,19 @@ first `--check` (no LAN address or ports stored yet) warns on those rather than 
 the project name, so the old spelling became `<n>_<n>_data` while every doc said `<n>_data`. Its AGENTS.md points
 at `deploy-check`, and a test runs the check on a fresh pod project. The check no longer warns about a
 `restart: always` the deploy would set anyway.
+
+## 18 Nov 2026: the repo carries no detail of the user's host, network or projects
+
+**What.** `config.py` has no committed default for `model_host`, `host_addrs` or `lan_targets` (empty); the
+user sets them in `~/.config/agentbox/agentbox.toml` (docs/INSTALL.md step 0), and `make itest` copies them
+into each run's config. Unset, OMP gets no local-model provider and the selftest reports the model case as a
+SKIP and the missing LAN cases as a FAIL, both naming the setting. The guard hook's live-stack names come from
+an untracked `~/.config/agentbox/guard-live-stacks`. Tests use documentation addresses (RFC 5737) and made-up
+names; the docs, reviews and the claude-live pass log were generalised (no hostname, addresses, project or
+service names, ports or host measurements). Git history is left as it is (Tim, 18 Nov).
+
+**Why.** Tim, 18 Nov: minimise cross-contamination between his repos and this one, so nothing slips through;
+the repo is pushed to GitHub. Values that only make sense on one host belong in that host's config, not in the
+defaults. Unset defaults fail loudly where they matter (selftest, itest) instead of quietly probing someone
+else's network.
 

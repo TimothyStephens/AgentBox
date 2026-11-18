@@ -36,7 +36,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`--data-bind`** (live data in `./data`) | **deferred** | Contract fixed (mask `./data` via covers; user names `--data-backup <target>`; agentbox masks, does not back up). Use the named-volume default until then. |
 | **`dev/data`→`data` overlay** | **not built** | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | **Reviewer projects** (`--reviews`, `ab project sync`) | **built** (11 Nov) | A reviewer is an ordinary project whose root is a clone of the builder's repo; the user's `ab project sync` moves the clone to the builder's last commit (detached) and copies `reviews/*.md` into the builder's `.review/`. Neither agent reaches the other's tree. design.md, "Clone mode and the Toulmin integration". |
-| **Real projects on the box** | **the user's call** | The independent re-review (`reviews/2026-10-15-pre-real-project.md`) is done and its findings actioned; the 16 Nov review's fixes are in decisions.md. First real project: `life-updates`, registered `lockdown`, run supervised. |
+| **Real projects on the box** | **the user's call** | The independent re-review (`reviews/2026-10-15-pre-real-project.md`) is done and its findings actioned; the 16 Nov review's fixes are in decisions.md. First real project: one of the user's own stacks, registered `lockdown`, run supervised. |
 
 Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`, which is
 organised by what can be acted on: §1 open questions needing a decision, §2 scoped and ready, §3 deferred by
@@ -94,7 +94,7 @@ malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant 
 - **Follow-ups** (`91f8e93`):
   - **Bind sources:** a grant root itself is bound as is. A container's sub-path bind becomes a `SubPath` of the gate's bind-backed volume over that root, which podman 5.7 resolves inside the volume. The evidence is in decisions.md: a symlink present at create, swapped in, or swapped in as an intermediate component never leads out; 0 escapes in 150 racing starts against 21 of 60 for a plain bind. Pods keep sub-paths refused.
   - **Image allowlist:** the dev tier runs and builds only from allowlisted-registry images, its own builds, or the project's `dev_images` (`--dev-image`); the gate reads a build's Containerfile first.
-  - **Selftest:** the local model line is SKIP with a reason when 10.0.0.2 does not answer from the host.
+  - **Selftest:** the local model line is SKIP with a reason when 192.0.2.2 does not answer from the host.
 - **Before the trial** (`a16a74e`):
   - a project's own builds, from any session, are allowed by the gate's record of the image IDs it built, not by labels; `ab session gc` keeps the record in step;
   - failed proxied selftest checks carry diagnostics (proxy log lines, DNS answer, timings), with no retries;
@@ -187,7 +187,7 @@ malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant 
 ## Next
 
 1. The user reruns the host gates on the 16 Nov tree and records the passes in decisions.md.
-2. The **first real project** — `life-updates`, registered `lockdown`, run supervised, its live `deploy`
+2. The **first real project** — one of the user's own stacks, registered `lockdown`, run supervised, its live
    stack untouched (design.md, Host migration).
 3. Optional and deferred work lives in `docs/TODO.md`; nothing there blocks either step.
 
@@ -198,7 +198,7 @@ malicious/injected agent) is at the top of `docs/design.md`; Track 1 (the grant 
 
 ## Watch items
 
-- **Egress flake, caught with diagnostics (5 Oct, covers-audit itest run):** `test_step2_network.test_locked`, "proxied public name resolving to 10.0.0.103 refused": squid's own log shows it spent 19,995 ms on `10-0-0-103.nip.io:8088` before the probe gave up at 20 s (`NONE_NONE_ABORTED`), while the next request to the same name was refused at once. The slow part is squid resolving nip.io (an external wildcard DNS service) to evaluate the private-address rule; the host resolved it in 629 ms. Passed on rerun. Candidate fix (not applied, for Tim): give squid a `dns_timeout` well under the probe's 20 s, or point that selftest case at a name we control.
+- **Egress flake, caught with diagnostics (5 Oct, covers-audit itest run):** `test_step2_network.test_locked`, "proxied public name resolving to 192.0.2.10 refused": squid's own log shows it spent 19,995 ms on `192-0-2-10.nip.io:<port>` before the probe gave up at 20 s (`NONE_NONE_ABORTED`), while the next request to the same name was refused at once. The slow part is squid resolving nip.io (an external wildcard DNS service) to evaluate the private-address rule; the host resolved it in 629 ms. Passed on rerun. Candidate fix (not applied, for Tim): give squid a `dns_timeout` well under the probe's 20 s, or point that selftest case at a name we control.
 - **Egress flake, measured (5 Oct):** `make egress-soak` showed 0 failures in 600 requests idle and 600 under `make itest`. squid used only IPv4 and stayed far from its memory and CPU limits. The latency tail (up to about 5 s on parallel requests) is the same straight from the host without agentbox, so it is the host's uplink. Not reproduced; diagnostics are in place for the next occurrence (decisions.md, 5 Oct).
 - **Egress flake, third test (2 Oct, last full run):** `test_step3_omp.test_chromium_follows_the_egress_mode`: with open egress, Chromium did not load example.com through squid. It failed once more alone, loaded the page in a manual rerun, then passed twice. Three tests hit it today (compose pypi 503, step 2 selftest 20 s timeouts, this one), always on squid's upstream side. The next step is to collect squid's cache.log (now kept) from a failing session and test the IPv6 suspect directly.
 - **Egress flake, with diagnostics (2 Oct, after trial 2):** in a full itest run, a step 2 selftest (packages) had `CONNECT api.anthropic.com:443` and a nip.io request get no answer within the probe's 20 s (`000 after 20011ms`). squid had logged both requests, so it accepted them and then did not answer in time. The host resolved api.anthropic.com to both IPv4 and IPv6 in 0 ms. That points at squid's upstream connect stalling (an IPv6 attempt is one suspect), not at the gate or DNS on the host. Failure details now carry the proxy's log lines themselves.

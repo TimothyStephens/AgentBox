@@ -374,8 +374,9 @@ class Step3(unittest.TestCase):
 
     def test_bun_reaches_the_local_model_through_squid(self):
         # OMP runs on bun, whose fetch honours HTTPS_PROXY/NO_PROXY. OMP's own PI_PROXY is deliberately not
-        # set: it bypasses private ranges, so the local model at 10.0.0.2 would go direct and find no route.
-        js = ("fetch('http://10.0.0.2:8080/v1/models').then(r => console.log('STATUS', r.status))"
+        # set: it bypasses private ranges, so the local model would go direct and find no route.
+        model = f"{harness.need_host('model_host')}:{harness.HOST.get('model_port', 8080)}"
+        js = (f"fetch('http://{model}/v1/models').then(r => console.log('STATUS', r.status))"
               ".catch(e => console.log('ERR', e.message))")
         p = shell("o1", f"test -z \"$PI_PROXY\" && echo PI_PROXY_UNSET; bun -e \"{js}\"", timeout=300)
         print(f"\n{p.stdout}\n{p.stderr[-500:]}")
@@ -387,7 +388,7 @@ class Step3(unittest.TestCase):
             if fn.endswith("-proxy.log"):
                 with open(os.path.join(logs, fn)) as f:
                     text += f.read()
-        self.assertIn("10.0.0.2:8080", text, "the request went through squid")
+        self.assertIn(model, text, "the request went through squid")
 
     def test_zz_no_leftovers(self):
         self.assertEqual(harness.leftovers(), [])

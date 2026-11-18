@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse guard for building agentbox on ubuntu-dev.
+"""PreToolUse guard for building agentbox on the host.
 
 Claude Code runs as vmuser on the host while it builds the sandbox, so it can reach the
 live stacks. This hook refuses the commands that could damage them or leak credentials.
@@ -16,8 +16,29 @@ import sys
 
 TEST_PREFIXES = ("abt-", "abt_", "spike")          # names the build may create and destroy
 TEST_LABELS = ("agentbox-test=1", "agentbox-spike=1")
-LIVE_NAMES = re.compile(r"\b(media[_-]?server|life[_-]?updates|ollama)\b", re.I)
-LIVE_PROJECT = re.compile(r"(?:-p|--project-name)[= ]+deploy\b|io\.podman\.compose\.project=deploy\b")
+# The host's live stacks (container, stack and compose project names) are the user's, not the repo's: one name
+# per line in a local file that never enters git (default ~/.config/agentbox/guard-live-stacks; `#` comments).
+# Without it this rule blocks nothing, so the user creates it once on each host.
+LIVE_STACKS_FILE = os.environ.get("AB_GUARD_LIVE_STACKS") or os.path.expanduser("~/.config/agentbox/guard-live-stacks")
+
+
+def _live_patterns(path=LIVE_STACKS_FILE):
+    try:
+        with open(path) as f:
+            names = [ln.split("#", 1)[0].strip() for ln in f]
+    except OSError:
+        return None, None
+    names = [n for n in names if n]
+    if not names:
+        return None, None
+    # `-` and `_` match each other (compose names containers `<project>_<service>_1` or `<project>-<service>-1`)
+    alt = "|".join("".join("[_-]" if ch in "-_" else re.escape(ch) for ch in n) for n in names)
+    edge = r"(?![A-Za-z0-9])"                       # `_1`, `-web` may follow a name; letters and digits may not
+    return (re.compile(rf"(?<![A-Za-z0-9])({alt}){edge}", re.I),
+            re.compile(rf"(?:-p|--project-name)[= ]+({alt}){edge}|io\.podman\.compose\.project=({alt}){edge}", re.I))
+
+
+LIVE_NAMES, LIVE_PROJECT = _live_patterns()
 SECRETS = re.compile(r"claude-oauth-token|\.credentials\.json|(?:^|[\s/~])\.ssh/|sk-ant-[A-Za-z0-9]")
 WRAPPERS = {"timeout", "time", "nice", "nohup", "stdbuf", "command", "builtin", "env", "exec"}
 DESTRUCTIVE = {"rm", "rmi", "stop", "kill", "restart", "pause", "unpause", "exec", "cp",
@@ -384,9 +405,9 @@ def main():
 
     if SECRETS.search(cmd):
         block("the command touches a credential (token file, .credentials.json, ~/.ssh or an API key)")
-    if LIVE_NAMES.search(cmd) or LIVE_PROJECT.search(cmd):
+    if LIVE_NAMES and (LIVE_NAMES.search(cmd) or LIVE_PROJECT.search(cmd)):
         if re.search(r"\b(podman|podman-compose|docker|kill|rm|systemctl)\b", cmd):
-            block("the command names a live stack (media_server, life-updates/deploy, ollama)")
+            block(f"the command names a live stack (listed in {LIVE_STACKS_FILE})")
     if re.search(r"(^|[\s;&|(])sudo\b", cmd):
         block("sudo")
     if re.search(r"\bsystemctl\s+--user\s+(stop|disable|mask|restart|kill|edit|enable|daemon-reload|reset-failed)\b", cmd):

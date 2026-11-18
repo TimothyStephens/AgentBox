@@ -4,7 +4,7 @@ How to install the `ab` launcher on this host, and exactly where everything it u
 
 ## Prerequisites
 
-- **ubuntu-dev** (Ubuntu), rootless **podman 5.7.0** with netavark, `python3`, `git` and **`rsync`**.
+- A Linux host (developed on Ubuntu) with rootless **podman 5.7.0** with netavark, `python3`, `git` and **`rsync`**.
   `vmuser` has no root. rsync is a hard requirement, not an optional extra: every session takes an
   `rsync --link-dest` snapshot of its read-write grants before starting (the session's only undo), so
   without it `ab session start` refuses. It is also needed to run agentbox's own test suite.
@@ -16,6 +16,19 @@ How to install the `ab` launcher on this host, and exactly where everything it u
 ## Steps
 
 Run these yourself; each touches your own config, `~/.local/bin`, or your user systemd units.
+
+0. **This host's network facts**, which agentbox has no committed default for (they are yours, not the
+   repo's). In `~/.config/agentbox/agentbox.toml`:
+   ```toml
+   host_addrs  = ["<this host's LAN address>"]        # always refused by the proxy (plus those found at start)
+   model_host  = "<the LAN model server's address>"   # omit if there is none; sessions then have no local model
+   model_port  = 8080
+   lan_targets = ["<host>:<port>", "<host>:<port>"]   # live LAN services the selftest must find refused
+   ```
+   `make itest` copies these into each run's own config. And for the guard hook (`.claude/hooks/guard.py`,
+   when an agent works on agentbox itself on the host): one name per line in
+   `~/.config/agentbox/guard-live-stacks` for each live container, stack or compose project on this host that
+   commands must not touch. Without that file the hook's live-stack rule names nothing.
 
 1. **The cgroup slice** every agentbox container runs under (one kernel-enforced memory/swap/task cap for all
    sessions together):

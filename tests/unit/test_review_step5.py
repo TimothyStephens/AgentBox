@@ -844,7 +844,7 @@ class BuiltRecord(unittest.TestCase):
 
 
 class Covers(unittest.TestCase):
-    """Critical (5 Oct, life-updates spec 6.2): the agent's in-container masks and read-only covers do not
+    """Critical (5 Oct, masked-paths spec 6.2): the agent's in-container masks and read-only covers do not
     exist in a container it spawns through the gate, so the gate refuses a bind that reaches a covered path."""
 
     def gate(self):
