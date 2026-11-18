@@ -57,6 +57,10 @@ authoritative; this is the *why*.
 
 ### 3.1 A read-only project root, for a planner preset
 
+**Proposal:** `docs/readonly-root-proposal.md` (18 Nov): the build order and eight decisions (D1-D8) for Tim before
+any code. It corrects two assumptions below: the gate is only touched if the dev tier is allowed with a
+read-only root, and grantcheck is only half moot (unmasked secrets are still readable).
+
 Separate because it is the one deferred feature with a real design cost, and because `research` *reads* as
 though the project were read-only and is not.
 
