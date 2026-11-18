@@ -211,7 +211,8 @@ class TheCommand(DeployCase):
         code, out = self.ab("deploy", "web")
         self.assertEqual(code, 2)
         self.assertIn("no LAN address", out)
-        self.assertFalse([c for c in self.podman_calls() if c[:1] == ["run"]])
+        self.assertFalse([c for c in self.podman_calls() if c[:1] == ["run"]
+                          and "--label=agentbox.role=deploy-check" not in c], "only the contract check's parse")
 
     def test_lan_must_be_an_address_of_this_host(self):
         with self.assertRaises(AgentboxError):

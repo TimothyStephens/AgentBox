@@ -68,9 +68,9 @@ of a per-deploy podman service, for `podman-compose up` of the LIVE stack (desig
 The decision points branch on `self.deploy` and nowhere else: what is owned is what carries
 agentbox.role=deploy and agentbox.deploy=<project> (labels alone: a fresh gate must reach the previous deploy's
 objects for `--remove-orphans` and recreation; a dev gate always forces role=dev, so it can never make one);
-containers join only the stack's own networks; ports only on cfg["lan_addr"] and cfg["ports"]; binds only
+containers join only the stack's own networks; ports only on cfg["lan_addr"] (or 127.0.0.1) and cfg["ports"]; binds only
 inside cfg["stage"] or cfg["deploy_binds"] (never /proc, /sys, /dev, /run, a socket, or a directory holding
-the gate's sockets); named volumes only `<compose_project>_*`; restart forced to unless-stopped; no cgroup
+the gate's sockets); named volumes only `<compose_project>_*`; restart forced to always; no cgroup
 parent, no proxy variables. Privilege, image and build checks are the dev tier's. `external:` volumes and networks
 are usable only when named in cfg["external_ok"] (the project's deploy_external) and existing: never created,
 labelled or removed, and read (inspect, exists) on the raw service, since the deploy sockguard's owner isolation
@@ -198,7 +198,11 @@ NS_REFUSED = ("host", "path", "container", "ns")
 DEPLOY_LABEL = "agentbox.deploy"     # =<project>: what a deploy-mode gate may reach (with agentbox.role=deploy)
 ROLE_DEPLOY = "deploy"
 COMPOSE_LABELS = ("io.podman.compose.project", "com.docker.compose.project")
-DEPLOY_RESTART = "unless-stopped"
+# `always`, not `unless-stopped`: rootless podman-restart.service runs `podman start --all --filter
+# restart-policy=always`, so anything else stays down after a reboot (decisions.md, 18 Nov 2026).
+DEPLOY_RESTART = "always"
+# Besides the LAN address, a listed port may be published on loopback (a local reverse proxy or tunnel).
+DEPLOY_LOOPBACK = "127.0.0.1"
 DEPLOY_LIBPOD_REFUSED = {k: v for k, v in LIBPOD_REFUSED.items() if k != "portmappings"}
 DEPLOY_HOSTCONFIG_REFUSED = {k: v for k, v in HOSTCONFIG_REFUSED.items() if k != "PortBindings"}
 DEPLOY_NET_ENTRY_KEYS = ("aliases",)   # per-network options a container may set on one of the stack's networks
@@ -617,14 +621,14 @@ class Gate(MountsMixin, ImagesMixin):
         return bad
 
     def deploy_port(self, host_ip, host_port, where):
-        """One published port: on the LAN address (an empty or 0.0.0.0 address becomes it), and a host port the
-        project lists. Returns the host IP to store."""
+        """One published port: on the LAN address (an empty or 0.0.0.0 address becomes it) or on 127.0.0.1, and
+        a host port the project lists. Returns the host IP to store."""
         lan, ports = self.cfg["lan_addr"], self.cfg["ports"]
         ip = host_ip or ""
         if ip in ("", "0.0.0.0"):
             ip = lan
-        if ip != lan:
-            raise Deny(f"{where}: published on {host_ip}, not the deploy's LAN address {lan}")
+        if ip not in (lan, DEPLOY_LOOPBACK):
+            raise Deny(f"{where}: published on {host_ip}, not the deploy's LAN address {lan} or {DEPLOY_LOOPBACK}")
         if isinstance(host_port, bool) or not isinstance(host_port, int) or host_port not in ports:
             raise Deny(f"{where}: host port {host_port!r} is not one of the project's deploy ports {ports} "
                        "(a random or unlisted host port is refused)")
@@ -664,12 +668,12 @@ class Gate(MountsMixin, ImagesMixin):
         return pb
 
     def port_binding_violations(self, hc):
-        """What podman stored: every binding on the LAN address and a listed port; no publish-all."""
+        """What podman stored: every binding on the LAN address or loopback and a listed port; no publish-all."""
         bad = ["publish all ports"] if hc.get("PublishAllPorts") else []
         for key, binds in (hc.get("PortBindings") or {}).items():
             for b in binds or []:
                 hp = str((b or {}).get("HostPort") or "")
-                if (b or {}).get("HostIp") != self.cfg["lan_addr"] or not hp.isdigit() \
+                if (b or {}).get("HostIp") not in (self.cfg["lan_addr"], DEPLOY_LOOPBACK) or not hp.isdigit() \
                         or int(hp) not in self.cfg["ports"]:
                     bad.append(f"published port {key} on {(b or {}).get('HostIp')}:{hp}")
         return bad

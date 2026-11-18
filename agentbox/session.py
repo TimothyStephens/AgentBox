@@ -327,6 +327,8 @@ class Session:
         self.setup = self.adapter.prepare_session(self, notes)
         if self.toulmin:
             self._toulmin_setup()
+        if self.podman_dev:
+            self._deploy_check_setup()
         self._check_setup()
         self._add_profile_mounts(notes)
         if self.toulmin:
@@ -366,6 +368,25 @@ class Session:
         for src, dst, _ro in self.session_mounts:
             _no_commas(src, "session mount")
             _no_commas(dst, "session mount")
+
+    def _deploy_check_setup(self):
+        """`deploy-check` for a dev-tier session (deploycheck.py): a COPY of the checker in the session's run dir
+        (never the agentbox source, which may sit in a grant) and the project's deploy values, both read-only."""
+        from . import deploycheck
+        p = self.project
+        d = os.path.join(self.settings.session_run_dir(self.name), "deploy-check")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        script = os.path.join(d, "deploy-check")
+        with open(deploycheck.__file__) as f:
+            write_private(script, f.read(), mode=0o755)
+        contract = os.path.join(d, "contract.json")
+        write_private(contract, json.dumps({
+            "root": p.root, "compose": p.deploy_compose, "lan_addr": p.lan_addr, "ports": list(p.deploy_ports),
+            "binds": list(p.deploy_binds), "external": list(p.deploy_external),
+            "adopted": list(p.deploy_adopted), "compose_project": p.compose_project}), mode=0o644)
+        self.session_mounts = list(self.session_mounts) + [
+            (script, "/run/agentbox/bin/deploy-check", True),
+            (contract, deploycheck.CONTRACT_PATH, True)]
 
     def _mount_sources(self):
         """Every host path this session binds into the container, for the must-not-mount check."""

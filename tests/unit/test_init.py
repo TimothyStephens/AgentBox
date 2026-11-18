@@ -103,10 +103,36 @@ class FreshProjectTest(InitCase):
         root = os.path.join(self.repos, "voldemo")
         with open(os.path.join(root, "compose.yaml")) as f:
             live = f.read()
-        self.assertIn("voldemo_data:/data", live, "live data in a named volume")
+        self.assertIn("- data:/data", live, "live data in a named volume (podman-compose names it voldemo_data)")
         self.assertNotIn("./data", live, "no repo-tree data bind in the live stack")
         self.assertTrue(os.path.isfile(os.path.join(root, "compose.dev.yaml")))
         self.assertFalse(os.path.isdir(os.path.join(root, "data")), "no ./data: --data-bind is deferred")
+
+
+class DeployContractTest(InitCase):
+    """The pod template's live stack meets the `ab deploy` contract by construction (deploycheck.py, 18 Nov)."""
+
+    def test_a_fresh_pod_project_passes_the_deploy_check(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed here (the agent images and the base image have it)")
+        import subprocess
+
+        from agentbox import deploycheck
+        self.init("pod", "shop")
+        root = os.path.join(self.repos, "shop")
+        with open(os.path.join(root, "compose.yaml")) as f:
+            doc = yaml.safe_load(f)
+        tracked = deploycheck.tracked_files(root)
+        self.assertIn("Containerfile", tracked, "what the live build needs is committed")
+        r = deploycheck.check(doc, {"lan_addr": "192.0.2.10", "ports": [8000], "compose_project": "shop"}, tracked)
+        self.assertFalse(r.failed, r.text())
+        self.assertNotIn("WARN", r.text(), "nothing for the deploy to replace either")
+        with open(os.path.join(root, "AGENTS.md")) as f:
+            self.assertIn("deploy-check", f.read())
+        self.assertEqual(subprocess.run(["git", "-C", root, "status", "--porcelain"], capture_output=True,
+                                        text=True).stdout, "", "and it is all committed")
 
 
 class GitIdentityTest(unittest.TestCase):

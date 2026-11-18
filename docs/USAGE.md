@@ -1259,8 +1259,9 @@ options:
                    run by hand left (after you stopped it with `podman-compose
                    down`), so their data carries over; asks first, then
                    deploys nothing
-  --check          show the review and run every check, then stop: start
-                   nothing, record nothing
+  --check          show the review and run every check (including the contract
+                   check, a no-network YAML parse in the base image), then
+                   stop: start no service or stack, record nothing
 
 examples:
   ab deploy filelab --check

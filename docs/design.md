@@ -189,7 +189,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 
 ### Scaffolding new projects (`ab project init`)
 
-`ab project init <pod|python> <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree**, not a `./data` bind, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {build|script}` itself (`pods`/`python` are aliases of those two), so the project is registered and grant-checked the moment it exists; a freshly-init'd project with no setting flags starts a session with zero warnings and zero overrides. `ab project init` takes the same setting flags as `ab project add`/`set` (`--preset`, `--egress`, `--data-ro`, …), all validated **before** anything is written, so one place configures a project completely and a bad flag leaves no half-made tree behind; it then prints the effective configuration with each value's source. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
+`ab project init <pod|python> <n>` is the easy way to a safe project: it makes the only layout that passes `grantcheck` with no override, so the safe shape is not something to get right by hand. In `<repos_dir>/<n>` (default `~/repos/<n>`, `AB_REPOS_DIR` overrides) it writes `.gitignore` (ignoring `.env` and `dev/fixtures/private/`), a real `.env` (0600, gitignored — masked in sessions), a committed fake twin `.env.dev` with the same keys (shown to the agent *as* `.env`), `AGENTS.md` stating the enforced reality (not rules to obey), `README.md` with the capture → develop → verify cycle, a minimal `app/` + `tests/` skeleton, and `dev/fixtures/` seed dir. The `pod` template adds `compose.yaml` (the live stack, **data in a named volume `<n>_data` outside the repo tree** (declared as `data`; podman-compose prefixes the project name), not a `./data` bind, restart `always`, and passing the `ab deploy` contract as made, so a repo-level `rm`/`git clean` cannot take it and no session is ever granted it; in-pod `/data` is identical dev and prod), `compose.dev.yaml` (its own `<n>-dev` project, no published ports, dev data and `.env.dev`), and a `Containerfile`. The `python` template has no live stack: its app takes its **data path from config** (`DATA_DIR` in `.env`/`.env.dev` — `./dev/data` in a session, the real path in the masked `.env`), so there is no `./data` in the repo tree and no overlay. It then `git init`s a normal working repo, makes the first commit, and — with `--upstream <url>` — adds it as `origin` and pushes (an off-box **code** backup; it does not back up `.env` or the data volume, both outside git). Finally it runs `ab project add --preset {build|script}` itself (`pods`/`python` are aliases of those two), so the project is registered and grant-checked the moment it exists; a freshly-init'd project with no setting flags starts a session with zero warnings and zero overrides. `ab project init` takes the same setting flags as `ab project add`/`set` (`--preset`, `--egress`, `--data-ro`, …), all validated **before** anything is written, so one place configures a project completely and a bad flag leaves no half-made tree behind; it then prints the effective configuration with each value's source. `--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred (see decisions.md).
 
 ### Filesystem policy
 
@@ -350,6 +350,38 @@ Without the gate, a container created with no network, or a `podman build`, runs
 - `ab session preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab session kill`, teardown, gc); `ab session preview <session> --stop` removes it earlier.
 - `ab deploy <project> [--lan ADDR:PORT] [--commit REF] [--yes] [--check] [--adopt-volumes]` (**built**, build step 6; decided 17 Nov 2026, decisions.md D1-D5 and the step 2/3 entries; verified against real podman by `tests/integration/test_deploy.py` in `make itest`, 18 Nov). Code: `deploy.py` (checks, review, copy), `deployrun.py` (the run), `cli_deploy.py`, the gate's deploy mode (`gate.py`, `gate_mounts.py`, `gate_images.py`). It is not a YAML check plus `podman-compose up`: the compose file, Containerfile and code are agent-written, and a static check misses podman-compose extras (`x-podman`, `podman_args`, extends, profiles, substitution with the real `.env`), build steps (`FROM`, `RUN --mount`) and a file changed between the review and the `up`. So every API call podman-compose makes goes through the gate, in a second policy on the dev tier's machinery.
 
+#### What `ab deploy` deploys (the contract)
+
+`ab deploy` is for stacks an agent writes, where the review is the point. It does not adapt to every layout:
+each accommodation either runs something the review did not cover or widens the gate's deploy policy. A project
+is deployable when it meets these rules (decided 18 Nov 2026, decisions.md). The gate enforces them at deploy
+time. Sessions that can build containers (the dev tier) are told them in their instructions, with the project's
+own compose path, address, ports, binds and external networks (`notes.deploy_notes`, 18 Nov), and can run
+`/run/agentbox/bin/deploy-check` on the working tree. `ab deploy` (and `--check`) runs the same check
+(`deploycheck.py`) on the compose file at the commit and refuses on a FAIL before anything starts.
+
+1. **A commit.** The tracked tree is clean, and everything the stack builds from or binds by a relative path is
+   committed. Untracked files are not in the copy, except the root `.env` and the `deploy_files`.
+2. **One compose file**, at the root or at `deploy_compose` (e.g. `deploy/compose.yaml`). No override files and
+   no second `-f`.
+3. **Secrets in the root `.env`**, with every variable name `.env.dev` has; other secret files only through
+   `deploy_files`. Services read it with `env_file:` (`../.env` from `deploy/`). `${VAR}` substitution reads
+   the `.env` in the compose file's folder (podman-compose's rule), not the root's.
+4. **Live state outside the repo**: the stack's own named volumes (preferred: created and labelled by the
+   deploy, never granted to a session), or absolute host paths listed in `deploy_binds`, which may not be in
+   any project's root. A bind into the repo would be empty in the copy, and the repo is in agents' reach.
+5. **Network**: ports published on `lan_addr` or 127.0.0.1, on host ports listed in `deploy_ports`; the stack's
+   own networks, plus external ones listed in `deploy_external`. No host networking.
+6. **Containers**: no privileged mode, added capabilities, devices, host namespaces or security options. Images
+   are built from the commit or pulled from the allowed registries. The timezone files may be bound read-only.
+   No `U`/`chown` bind options (they re-own host files): own a data directory once with `podman unshare chown`.
+7. **Set by agentbox**, whatever the compose file says: restart `always`, the host's default cgroup (not
+   agentbox.slice), OOM score 0, swap off, memory and process limits within the caps.
+
+**Out of scope, by design:** stacks you maintain yourself that need devices, system paths or host networking
+(a media server with GPU transcoding, say) stay hand-run; so do multi-file compose setups and live data kept
+inside a repo. Moving such a stack under `ab deploy` means changing it to fit the rules, not the reverse.
+
 #### Deploy: before anything starts
 
 - **Host only**: refused inside a session (`AGENTBOX_SESSION`). One deploy per project at a time (flock on `<project dir>/deploy.lock`).
@@ -358,7 +390,8 @@ Without the gate, a container created with no network, or a `podman build`, runs
 - **The LAN address**: `--lan ADDR:PORT` (an IPv4 address of this host, not 0.0.0.0 or loopback), or the stored `lan_addr`, re-checked as still this host's. Stored, and the port added to `deploy_ports`, only after a successful deploy.
 - **Objects no deploy made.** A container of the compose project without the deploy labels (a stack brought up by hand) is refused, printing `podman-compose -p <compose_project> down` for the user to run; agentbox never removes what it did not create. A `<compose_project>_*` volume without the deploy labels is refused, pointing at `ab deploy <p> --adopt-volumes`: that lists the volumes, asks on a terminal, and stores their names in `deploy_adopted` (podman cannot add labels to an existing volume). Adopted volumes are used by name from the next deploy on; nothing is copied, moved or removed.
 - **The deploy binds** are re-checked (below).
-- **The review.** First deploy: the file list, with `compose.yaml` and every `Containerfile` in full. Later: `git diff <last successful deploy>..<commit>`, the key files (compose, `Containerfile*`, lockfiles, `.env.dev`) first. Git runs with no external diff or textconv from the repo's config (it is agent-written). A last deploy no longer in history reads as a first deploy. `--check` stops here, starting and recording nothing.
+- **The review.** First deploy: the file list, with `compose.yaml` and every `Containerfile` in full. Later: `git diff <last successful deploy>..<commit>`, the key files (compose, `Containerfile*`, lockfiles, `.env.dev`) first. Git runs with no external diff or textconv from the repo's config (it is agent-written). A last deploy no longer in history reads as a first deploy.
+- **The contract check** (`deploycheck.py`, 18 Nov): the compose file at the commit, parsed to JSON in the base image (`--network=none`, no mounts, stdin only; PyYAML comes with podman-compose there, agentbox stays stdlib-only), checked against the rules above with this project's values: one PASS/WARN/FAIL line per rule, with the fix. A FAIL refuses the deploy; a check that cannot run (no base image) is a note, and the gate still enforces. With no LAN address or ports stored yet (a first `--check`), those lines warn instead of failing. `--check` stops after this and the review, recording nothing; the parse container is the only thing it runs.
 - **The prompt** `Deploy <commit> of <project> to <lan>? [y/N]` on a terminal. `--yes` only with stdin not a terminal and the commit the last successful deploy's (a scripted redeploy); refused otherwise, including on a first deploy.
 
 #### Deploy: the run
@@ -376,11 +409,11 @@ Selected by the gate config (`"mode": "deploy"`); every decision point branches 
 | Ownership | the session's owner label and this gate's record | labels only: `agentbox.role=deploy`, `agentbox.deploy=<project>` (stamped; client `agentbox.*` labels dropped), so a fresh gate reaches the last deploy's objects for `--remove-orphans`. A dev gate always forces `role=dev`, so a session can never make an object a deploy owns. Starting an earlier deploy's container re-runs the post-create check |
 | Compose project | `<project>-dev` | `compose_project` only; a create without the label is refused |
 | Networks | pinned to the session's internal network | the stack's own bridge networks, normal egress (D3), no options, subnets, IPAM, static IPs or MACs; never host, `ns:`, `container:` or podman's default; pods with an infra container refused |
-| Published ports | refused | on `lan_addr` only (empty or 0.0.0.0 rewritten to it), host port in `deploy_ports`; no ranges, random ports or publish-all |
+| Published ports | refused | on `lan_addr` (empty or 0.0.0.0 rewritten to it) or 127.0.0.1 (a local reverse proxy or tunnel; 18 Nov), host port in `deploy_ports`; no other address, ranges, random ports or publish-all |
 | Binds | inside the grants, covers enforced | inside the copy, a `deploy_binds` path (D4) or the timezone files (`/etc/localtime`, `/etc/timezone`, `/usr/share/zoneinfo`, read-only), by real path; never `/proc`, `/sys`, `/dev`, `/run`, a socket or a directory holding one; the same at start against mountinfo. Covers, masks and the secret scan do not apply (the copy holds the real `.env` by design) |
 | Named volumes | only the session's | `<compose_project>_*`, created labelled or reused if labelled; plus `deploy_adopted` and `deploy_external` names, used, never changed |
 | External volumes and networks | refused | only names in `deploy_external` (refused at the create, naming the setting) |
-| Restart policy | stripped | forced to `unless-stopped` and required by the post-create check |
+| Restart policy | stripped | forced to `always` and required by the post-create check (rootless `podman-restart.service` starts only `restart-policy=always` containers at boot; 18 Nov) |
 | cgroup, OOM score | agentbox.slice, 1000 | the host default (D5), 0 (a live service is not the first OOM victim); memory and pids caps and swap off kept |
 | Images | built ones and the dev allowlist | only images this deploy path built (`deploy-built-images.json`, never the sessions' record: a `localhost/` image an agent built in a session cannot run live) and pulls from the registries; the same build-path checks |
 | Proxy variables | injected | none |
@@ -470,8 +503,8 @@ A power loss or reboot ends every running session, but everything written to the
 
 **Bringing live stacks back**
 
-- Rootless containers do not restart on boot by themselves. They need a restart policy (`restart: unless-stopped`), podman's `podman-restart.service` enabled for your user, and lingering enabled so your user's services start without a login.
-- `ab deploy` sets the restart policy (`unless-stopped`) and checks the other two, warning if either is missing; it changes neither.
+- Rootless containers do not restart on boot by themselves. They need `restart: always` (rootless `podman-restart.service` runs `podman start --all --filter restart-policy=always`, so `unless-stopped` containers stay down), podman's `podman-restart.service` enabled for your user, and lingering enabled so your user's services start without a login.
+- `ab deploy` sets the restart policy (`always`) and checks the other two, warning if either is missing; it changes neither.
 - Check today: `loginctl show-user vmuser -p Linger` and `systemctl --user is-enabled podman-restart.service`.
 
 ## Selftest

@@ -69,6 +69,43 @@ def profile_notes(profile_loaded, inbox, inbox_kept=True, adapter=None):
     return out
 
 
+def deploy_notes(project):
+    """The `ab deploy` contract (design.md, "What `ab deploy` deploys"), for a session that builds containers:
+    so the agent builds the project to what the deploy accepts instead of the user finding out at deploy time.
+    States this project's own values; "none set yet" where the user has not set one."""
+    def listed(values):
+        return ", ".join(f"`{v}`" for v in values) if values else "none set yet"
+    compose = (f"`{project.deploy_compose}` (the project's `deploy_compose`)" if project.deploy_compose
+               else "a compose file at the project root (`compose.yaml`; another path only if the user sets "
+                    "`deploy_compose`)")
+    addr = f"`{project.lan_addr}`" if project.lan_addr else "the LAN address the user deploys to (none set yet)"
+    return [
+        "- **Deploying this project.** The user puts it live with `ab deploy` on the host (never from here): it "
+        "copies one reviewed commit, adds the real `.env`, and runs podman-compose through a policy gate. Build "
+        "the live compose file to these rules; the gate refuses anything else at deploy time:",
+        f"  - the live compose file is {compose}; keep the dev stack in its own file;",
+        "  - everything it builds from or binds by a relative path is committed: untracked files (and anything "
+        "gitignored) are not in the deploy copy;",
+        "  - secrets come from the root `.env` through `env_file:`; every variable the app needs is in `.env.dev` "
+        "with a fake value, because the deploy refuses while the real `.env` lacks a name `.env.dev` has;",
+        "  - live state goes in a named volume of the stack (preferred) or a host path the user lists in "
+        f"`deploy_binds` ({listed(project.deploy_binds)}); never a folder inside the repo, which is empty in "
+        "the copy;",
+        f"  - ports are published on {addr} or `127.0.0.1` only, on listed host ports "
+        f"({listed(project.deploy_ports)}); external networks only if listed ({listed(project.deploy_external)}); "
+        "no host networking;",
+        "  - no privileged mode, added capabilities, devices, host namespaces or security options; no `U` or "
+        "`chown` bind options (the user owns a data directory once with `podman unshare chown`); images built "
+        "from the repo or pulled from docker.io, ghcr.io, lscr.io or quay.io;",
+        "  - the deploy sets restart `always`, the cgroup and the limits itself; a setting you write there is "
+        "replaced. If the project needs something these rules refuse, say so to the user instead of working "
+        "around it;",
+        "  - `/run/agentbox/bin/deploy-check` checks the live compose file against these rules and this project's "
+        "values, one line per rule with the fix (it reads the working tree; commit what it relies on). Run it "
+        "after changing the live compose file.",
+    ]
+
+
 def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
                   inbox_kept=True, adapter=None, clone=None):
     logs = "logs, " if project.observe_logs else ""
@@ -120,6 +157,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
                  "variables cannot connect at all.")
     if podman_dev:
         lines += dev_notes(podman_live, project.dev_images)
+        lines += deploy_notes(project)
     elif podman_live:
         lines.append(f"- A podman API socket is at `/run/agentbox/podman.sock` (`CONTAINER_HOST` and `DOCKER_HOST` point at "
          f"it): read-only access to the containers of compose project `{podman_live}`, the project's live "

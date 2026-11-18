@@ -3319,3 +3319,50 @@ paths from its own folder, still inside the copy, so the gate's bind rule is unc
 substitution reads `.env` from the compose file's folder (podman-compose's rule), not the root's, exactly as
 when the stack is run by hand from `deploy/`; `env_file: ../.env` is unaffected.
 
+## 18 Nov 2026: deploys restart `always`, and may publish on loopback
+
+**What.** The deploy-mode gate forces `restart: always` (was `unless-stopped`) and requires it after the
+create. A port in `deploy_ports` may be published on 127.0.0.1 as well as on `lan_addr`; any other address is
+still refused. The `pod` template's live compose file uses `always` too.
+
+**Why.** Restart: podman's own `podman-restart.service` (rootless) runs `podman start --all --filter
+restart-policy=always`, checked on Tim's host, so an `unless-stopped` stack stays down after a reboot. The
+proposal's `unless-stopped` was my error; `ab deploy` would have left every stack it started down after a
+reboot. Loopback: a stack fronted by a local reverse proxy or tunnel publishes on 127.0.0.1; that is less
+exposed than the LAN address, which is already allowed (Tim agreed, 18 Nov).
+
+## 18 Nov 2026: `ab deploy` has a contract; it does not adapt to every layout
+
+**What.** design.md "What `ab deploy` deploys" lists seven rules a deployable project meets (a clean commit; one
+compose file at the root or `deploy_compose`; secrets in the root `.env`; live state in the stack's named
+volumes or absolute `deploy_binds` outside every project root; ports on the LAN address or loopback; no
+privileged/caps/devices/host namespaces; restart, cgroup and limits set by agentbox). Stacks that need more stay
+hand-run.
+
+**Why.** Trying a real hand-run stack (18 Nov) showed the cost of adapting: its live database was inside the
+repo, so the copy would start on an empty one, and making that work means binding into the agent-writable root
+or running files the review never covered. Tim asked whether a tool that only works in defined situations is
+acceptable and agreed it is, if those are defined ahead of time and agents are told them while they build.
+Rule 4 is the existing grant rule (code in the grant, live data outside it) applied to deploys. Rejected: an
+exception for masked directories inside the root (keeps such a layout, but bends the copy-of-a-commit
+guarantee).
+
+## 18 Nov 2026: the deploy contract is checked before a deploy, and agents can check it themselves
+
+**What.** `deploycheck.py` checks a compose file against the contract with the project's values, one line per
+rule with the fix. `ab deploy` runs it on the compose file at the commit and refuses on a FAIL before anything
+starts; dev-tier sessions get a copy at `/run/agentbox/bin/deploy-check` with the values in
+`/run/agentbox/deploy-contract.json`, and their instructions say to run it after changing the live compose file.
+
+**Why.** Tim, 18 Nov: an agent building a container project should be told how to build it to fit, and the
+rules should be known ahead of time, not found halfway through a deploy. The gate stays the enforcement; the
+check moves the feedback earlier. YAML needs a parser the stdlib lacks, so the host parses in the base image
+(no network, no mounts, stdin only) rather than adding a dependency; the agent images have PyYAML through
+podman-compose. Deviation: `--check` used to start nothing at all; it now runs that one parse container. A
+first `--check` (no LAN address or ports stored yet) warns on those rather than failing.
+
+**Also (18 Nov):** the `pod` template's live volume is declared `data`, not `<n>_data`: podman-compose prefixes
+the project name, so the old spelling became `<n>_<n>_data` while every doc said `<n>_data`. Its AGENTS.md points
+at `deploy-check`, and a test runs the check on a fresh pod project. The check no longer warns about a
+`restart: always` the deploy would set anyway.
+

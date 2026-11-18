@@ -16,6 +16,7 @@
   FAKE_PODMAN_FAIL_STATUS  the status FAKE_PODMAN_FAIL exits with (default 1). 125 is podman's own "the
                           command could not be run", which for `image exists` is neither yes nor no
   FAKE_PODMAN_RUN_OUT   stdout for `run`
+  FAKE_PODMAN_COMPOSE_JSON  stdout for the deploy check's YAML-to-JSON `run` (default: PyYAML on stdin, if any)
   FAKE_PODMAN_RUN_OUT_BY_IMAGE  {image ref: stdout} for `run`, matched against argv. `ab image build`
                           probes the harness image AND the candidate, and one canned answer for both
                           cannot tell "the layer lost a tool" from "neither has it"
@@ -261,8 +262,20 @@ elif argv[:1] == ["run"]:
     # which made a NON-interactive run (`ab profile install`'s container) block on a pipe nobody was
     # writing to -- a unit test that hung for its full timeout and then failed with a timeout message
     # instead of its actual assertion (5 Nov).
-    if "--interactive" in argv or "-i" in argv:
-        sys.stdin.read()
+    stdin = sys.stdin.read() if "--interactive" in argv or "-i" in argv else ""
+    if "--entrypoint=python3" in argv and any("yaml.safe_load" in a for a in argv):
+        # deployrun.contract_report's YAML-to-JSON in the base image: done here with PyYAML when the test's
+        # Python has it, else FAKE_PODMAN_COMPOSE_JSON, else the failure a broken image would give.
+        if os.environ.get("FAKE_PODMAN_COMPOSE_JSON"):
+            sys.stdout.write(os.environ["FAKE_PODMAN_COMPOSE_JSON"])
+            sys.exit(0)
+        try:
+            import yaml
+        except ImportError:
+            sys.stderr.write("ModuleNotFoundError: No module named 'yaml'\n")
+            sys.exit(1)
+        json.dump(yaml.safe_load(stdin), sys.stdout, default=str)
+        sys.exit(0)
     if os.environ.get("FAKE_PODMAN_RUN_SLEEP"):
         import time
         time.sleep(float(os.environ["FAKE_PODMAN_RUN_SLEEP"]))

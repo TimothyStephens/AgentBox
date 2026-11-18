@@ -66,7 +66,11 @@ class RunCase(DeployCase):
             return self.ab("deploy", "web", *extra, stdin=None)
 
     def runs(self):
-        return [c for c in self.podman_calls() if c[:1] == ["run"]]
+        """`podman run`s other than the contract check's YAML parse (no network, no mounts: it starts nothing)."""
+        return [c for c in self.podman_calls() if c[:1] == ["run"] and "--label=agentbox.role=deploy-check" not in c]
+
+    def check_runs(self):
+        return [c for c in self.podman_calls() if c[:1] == ["run"] and "--label=agentbox.role=deploy-check" in c]
 
     def runner(self):
         found = [c for c in self.runs() if "--rm" in c and any(a.endswith("-runner") for a in c)]
@@ -575,3 +579,39 @@ class ComposeInASubdirectory(RunCase):
         os.symlink(outside, os.path.join(stage, "deploy"))
         with self.assertRaises(AgentboxError):
             deploy.compose_file(stage, "deploy/compose.yaml")
+
+
+class ContractCheck(RunCase):
+    """`ab deploy` reports the contract (deploycheck.py) on the compose file at the commit, before the review,
+    and refuses on a FAIL before anything starts (Tim, 18 Nov: the rules are known ahead of time)."""
+
+    def compose_json(self, doc):
+        os.environ["FAKE_PODMAN_COMPOSE_JSON"] = json.dumps(doc)
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_COMPOSE_JSON", None)
+
+    def test_check_prints_the_report_and_the_parse_runs_with_no_network_and_no_mounts(self):
+        self.compose_json({"services": {"web": {"build": ".", "ports": ["8095:80"]}}})
+        code, out = self.ab("deploy", "web", "--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("contract:", out)
+        self.assertIn("PASS  compose", out)
+        [run] = self.check_runs()
+        self.assertIn("--network=none", run)
+        self.assertFalse([a for a in run if a.startswith(("--mount", "--volume", "-v"))])
+
+    def test_a_contract_fail_refuses_before_anything_starts(self):
+        self.compose_json({"services": {"web": {"build": ".", "privileged": True, "ports": ["8095:80"]}}})
+        code, out = self.deploy("--lan", f"{LAN}:8095")
+        self.assertEqual(code, 2, out)
+        self.assertIn("FAIL  privilege", out)
+        self.assertIn("breaks the deploy contract", out)
+        self.assertEqual(self.runs(), [])
+        self.assertFalse(self.gate_cfgs)
+
+    def test_a_parse_that_cannot_run_is_a_note_not_a_refusal(self):
+        os.environ["FAKE_PODMAN_FAIL"] = "yaml.safe_load"
+        self.addCleanup(os.environ.pop, "FAKE_PODMAN_FAIL", None)
+        code, out = self.ab("deploy", "web", "--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("the contract check did not run", out)
+        self.assertIn("the deploy gate still enforces it", out)

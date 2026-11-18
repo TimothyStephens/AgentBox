@@ -21,7 +21,7 @@ def dcontainer(cid, labels=DEPLOY, **extra):
     doc = {"Id": cid, "Config": {"Labels": labels}, "Mounts": [],
            "NetworkSettings": {"Networks": {"shop_default": {}}},
            "HostConfig": {"PortBindings": {}, "CgroupParent": "user.slice", "OomScoreAdj": 0,
-                          "RestartPolicy": {"Name": "unless-stopped"}, "NetworkMode": "bridge",
+                          "RestartPolicy": {"Name": "always"}, "NetworkMode": "bridge",
                           "Memory": 1 << 30, "MemorySwap": 1 << 30, "PidsLimit": 1024}}
     doc.update(extra)
     return doc
@@ -173,10 +173,25 @@ class Ports(Base):
         doc["HostConfig"]["PortBindings"] = {"80/tcp": [{"HostIp": LAN, "HostPort": "8090"}]}
         self.assertEqual(g.container_violations(doc), [])
 
+    def test_a_listed_port_may_also_be_published_on_loopback(self):
+        """Tim, 18 Nov: a stack fronted by a local reverse proxy or tunnel publishes on 127.0.0.1 beside the
+        LAN address. Loopback is less exposed than the LAN; only 127.0.0.1, and only a listed port."""
+        g = self.g()
+        spec = self.create(g, self.body(portmappings=[
+            {"host_ip": LAN, "host_port": 8090, "container_port": 80},
+            {"host_ip": "127.0.0.1", "host_port": 8090, "container_port": 80}]))
+        self.assertEqual([m["host_ip"] for m in spec["portmappings"]], [LAN, "127.0.0.1"])
+        doc = dcontainer("c")
+        doc["HostConfig"]["PortBindings"] = {"80/tcp": [{"HostIp": LAN, "HostPort": "8090"},
+                                                        {"HostIp": "127.0.0.1", "HostPort": "8090"}]}
+        self.assertEqual(g.container_violations(doc), [])
+
     def test_refused_other_address_unlisted_random_ranges_and_publish_all(self):
         g = self.g()
         for pm in ({"host_ip": "0.0.0.0", "host_port": 22, "container_port": 22},
-                   {"host_ip": "127.0.0.1", "host_port": 8090, "container_port": 80},
+                   {"host_ip": "127.0.0.1", "host_port": 22, "container_port": 80},
+                   {"host_ip": "127.0.0.2", "host_port": 8090, "container_port": 80},
+                   {"host_ip": "::1", "host_port": 8090, "container_port": 80},
                    {"host_ip": "10.0.0.5", "host_port": 8090, "container_port": 80},
                    {"host_ip": "::", "host_port": 8090, "container_port": 80},
                    {"host_port": 0, "container_port": 80}, {"container_port": 80},
@@ -266,21 +281,23 @@ class NamedVolumes(Base):
 
 
 class Restart(Base):
-    def test_forced_to_unless_stopped(self):
+    def test_forced_to_always(self):
+        """`always`, not `unless-stopped`: rootless podman-restart.service runs `podman start --all --filter
+        restart-policy=always`, so an unless-stopped live stack stays down after a reboot (decisions.md, 18 Nov)."""
         g = self.g()
-        for policy in (None, "always", "no", "on-failure"):
+        for policy in (None, "unless-stopped", "no", "on-failure"):
             body = self.body(restart_policy=policy, restart_tries=3) if policy else self.body()
             with self.subTest(policy=policy):
                 spec = self.create(g, body)
-                self.assertEqual(spec["restart_policy"], "unless-stopped")
+                self.assertEqual(spec["restart_policy"], "always")
                 self.assertNotIn("restart_tries", spec)
         spec = g.rewrite_compat_container({"Image": "x", "Labels": dict(COMPOSE), "HostConfig": {
-            "NetworkMode": "shop_default", "RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}}})
-        self.assertEqual(spec["HostConfig"]["RestartPolicy"], {"Name": "unless-stopped"})
+            "NetworkMode": "shop_default", "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}}})
+        self.assertEqual(spec["HostConfig"]["RestartPolicy"], {"Name": "always"})
 
     def test_a_stored_container_without_it_is_refused(self):
         g = self.g()
-        for name in ("no", "always", ""):
+        for name in ("no", "unless-stopped", ""):
             doc = dcontainer("c")
             doc["HostConfig"]["RestartPolicy"] = {"Name": name}
             with self.subTest(name=name):

@@ -109,12 +109,21 @@ def _deploy(s, a, p, lan, host):
         problems += deployrun.foreign_objects(s, podman, p)
     except AgentboxError as e:
         problems.append(f"cannot tell whether compose project {p.compose_project} has objects no deploy made: {e}")
+    report, note = (None, "") if not c["has_compose"] else deployrun.contract_report(
+        s, podman, p, root, c["commit"], lan_addr, ports, binds)
+    if report is not None and report.failed:
+        problems.append("the compose file breaks the deploy contract (the FAIL lines under \"contract\" above; "
+                        "design.md, \"What `ab deploy` deploys\")")
     print(f"ab deploy {p.name}: commit {c['commit']}"
           + (f", on {lan_addr}" if lan_addr else "") + (f", ports {', '.join(map(str, ports))}" if ports else "")
           + (f", compose project {p.compose_project}" if p.compose_project else ""))
     print(c["review"])
     if c["extra"]:
         print(f"\nnote: .env defines variables .env.dev does not: {', '.join(c['extra'])}")
+    if report is not None:
+        print("\ncontract:\n" + report.text())
+    elif note:
+        print(f"\nnote: the contract check did not run ({note}); the deploy gate still enforces it")
     if problems:
         print("\nrefused:\n" + "\n".join(f"  - {x}" for x in problems), file=sys.stderr)
         return 2
@@ -156,5 +165,6 @@ def add_command(sub, add, ex):
                         "you stopped it with `podman-compose down`), so their data carries over; asks first, "
                         "then deploys nothing")
     x.add_argument("--check", action="store_true",
-                   help="show the review and run every check, then stop: start nothing, record nothing")
+                   help="show the review and run every check (including the contract check, a no-network YAML parse in "
+                        "the base image), then stop: start no service or stack, record nothing")
     x.set_defaults(fn=cmd_deploy)

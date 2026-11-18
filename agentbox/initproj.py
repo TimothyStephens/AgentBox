@@ -41,6 +41,8 @@ This project runs in an agentbox sandbox. These are enforced outside your contro
   values you see are fake. Real runs against live credentials happen outside this sandbox.
 - {data_line}
 - You may build, run and test the dev stack (compose.dev.yaml) freely; it only affects this project.
+- compose.yaml is the LIVE stack: the user deploys it with `ab deploy` from a reviewed commit. Keep it to the
+  rules in the session notes ("Deploying this project"); `/run/agentbox/bin/deploy-check` checks it.
 - Network egress is restricted to the project's allowlist.
 Workflow: develop against dev/fixtures/; the human captures real samples and verifies live on the host.
 agentbox injects your real egress mode, data layout and limits at the start of each session — read the
@@ -87,10 +89,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - {name}_data:/data
-    restart: unless-stopped
+      - data:/data      # podman-compose names it {name}_data (the compose project's prefix)
+    restart: always   # rootless podman-restart.service starts only `always` containers at boot
 volumes:
-  {name}_data:
+  data:
 """
 
 _COMPOSE_DEV = """\

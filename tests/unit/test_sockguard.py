@@ -136,6 +136,52 @@ class Tiers(SettingsCase):
         self.assertIn("localhost/db", notes)
         self.assertIn("agentbox", notes, "and that agentbox's own names can never be listed")
 
+    def test_a_session_that_builds_containers_is_told_the_deploy_contract_with_this_projects_values(self):
+        """Tim, 18 Nov: an agent building a container project should build it to what `ab deploy` accepts, not
+        find the rules when the user deploys. Dev-tier sessions get the contract, with the project's own
+        compose path, address, ports, binds and external networks."""
+        data = self.mkdir("srv-p1-data")
+        s, _w = self.make(preset="pods", deploy_compose="deploy/compose.yaml", lan_addr="192.0.2.10",
+                          deploy_ports=[8090], deploy_binds=[data], deploy_external=["edge"])
+        notes = session.sandbox_notes(s.project, s.egress, s.podman_live, s.podman_dev)
+        for want in ("ab deploy", "deploy/compose.yaml", "192.0.2.10", "8090", "127.0.0.1", data,
+                     "edge", "named volume", "restart", "privileged", ".env.dev"):
+            with self.subTest(want=want):
+                self.assertIn(want, notes)
+        bare, _w = self.make(preset="pods")
+        notes = session.sandbox_notes(bare.project, bare.egress, bare.podman_live, bare.podman_dev)
+        self.assertIn("compose file at the project root", notes)
+        self.assertIn("none set yet", notes)
+
+    def test_a_dev_tier_session_can_run_deploy_check_with_this_projects_values(self):
+        import json
+        s, _w = self.make(preset="pods", deploy_compose="deploy/compose.yaml", lan_addr="192.0.2.10",
+                          deploy_ports=[8090], deploy_external=["edge"])
+        argv = s.run_args(["true"])
+        mounts = {a.split("dst=")[1].split(",")[0]: a.split("src=")[1].split(",")[0]
+                  for a in argv if a.startswith("--mount=type=bind")}
+        script, contract = mounts["/run/agentbox/bin/deploy-check"], mounts["/run/agentbox/deploy-contract.json"]
+        self.assertTrue(all(a.endswith(",ro") for a in argv if "deploy-check" in a or "deploy-contract" in a))
+        self.assertTrue(script.startswith(self.settings.session_run_dir(s.name)),
+                        "a copy in the session's run dir, never the agentbox source itself")
+        from agentbox import deploycheck
+        with open(script) as f, open(deploycheck.__file__) as g:
+            self.assertEqual(f.read(), g.read())
+        self.assertTrue(os.access(script, os.X_OK))
+        with open(contract) as f:
+            ctx = json.load(f)
+        self.assertEqual((ctx["compose"], ctx["lan_addr"], ctx["ports"], ctx["external"], ctx["root"]),
+                         ("deploy/compose.yaml", "192.0.2.10", [8090], ["edge"], s.project.root))
+        self.assertIn("deploy-check", session.sandbox_notes(s.project, s.egress, s.podman_live, s.podman_dev))
+
+    def test_no_deploy_check_without_the_dev_tier(self):
+        s, _w = self.make(preset="lockdown")
+        self.assertFalse([a for a in s.run_args(["true"]) if "deploy-check" in a])
+
+    def test_a_session_without_the_dev_tier_is_not_told_the_deploy_contract(self):
+        s, _w = self.make(preset="lockdown")
+        self.assertNotIn("ab deploy", session.sandbox_notes(s.project, s.egress, s.podman_live, s.podman_dev))
+
     def test_lockdown_has_none(self):
         s, _w = self.make(preset="lockdown")
         self.assertIsNone(s.podman_live)

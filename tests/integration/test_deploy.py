@@ -4,13 +4,14 @@ A two-service stack (a web server built from a Containerfile, a worker from a pu
 is deployed from a test repo through the whole path: the review, the confirmation on a pty, the per-deploy
 podman service, sockguard and gate, and podman-compose in the runner. Checked:
   * the first deploy serves the commit on the LAN address and port, and nothing else is published;
-  * the live containers carry the deploy labels and `unless-stopped`, run outside agentbox.slice, and the
+  * the live containers carry the deploy labels and restart `always`, run outside agentbox.slice, and the
     host's default OOM score;
   * the deploy's own helpers (service, sockguard, gate, holder, runner) are gone afterwards;
   * a redeploy of a new commit serves it and keeps the data volume's contents;
   * `--yes` redeploys the same commit from a script;
-  * each refusal bites: privileged, a bind outside the copy, a port that is not listed, host networking,
-    an `external:` volume that is not listed, and a stack started by hand;
+  * each refusal bites twice: the CLI's contract check refuses before anything starts, and the gate alone
+    (deployrun.Deploy in-process, no check) refuses privileged, a bind outside the copy, an unlisted port,
+    host networking and an unlisted `external:` volume on real podman; a stack started by hand is refused;
   * `--adopt-volumes` takes a hand-run stack's volume over by name;
   * a compose file in `deploy/` (the project's `deploy_compose`), building from the root, deploys.
 Everything is named abt-<run>-* / dep-<run>-* and labelled with the run, and removed at the end.
@@ -182,7 +183,7 @@ class A_FirstDeployAndRedeploy(unittest.TestCase):
             hc = doc["HostConfig"]
             with self.subTest(container=c["Names"]):
                 self.assertEqual(doc["Config"]["Labels"].get("agentbox.role"), "deploy")
-                self.assertEqual(hc["RestartPolicy"]["Name"], "unless-stopped")
+                self.assertEqual(hc["RestartPolicy"]["Name"], "always")
                 self.assertNotIn("agentbox.slice", hc.get("CgroupParent") or "")
                 self.assertEqual(hc.get("OomScoreAdj"), 0)
                 self.assertFalse(hc.get("Privileged"))
@@ -242,11 +243,40 @@ class B_Refusals(unittest.TestCase):
         self.assertNotEqual(code, 0, out)
         self.assertEqual(records(BAD)[-1]["result"], "failed", out)
 
-    def test_service_level_refusals(self):
+    def gate_only(self, compose_text):
+        """The deploy WITHOUT the CLI's contract check (deployrun.Deploy in-process): what the gate itself
+        refuses on real podman. The check refuses these first; the gate must not depend on it."""
+        from unittest import mock
+
+        from agentbox import config, deployrun, session
+        from agentbox.podman import Podman
+        commit(self.root, "compose.yaml", compose_text, "variant")
+        lines = []
+        with mock.patch.dict(os.environ, ENV.env, clear=True):
+            s = config.load()
+            p = session.load_project(s, BAD)
+            run = deployrun.Deploy(s, p, commit=git(self.root, "rev-parse", "HEAD"), lan_addr=LAN,
+                                   ports=[self.port], binds=[], podman=Podman(s.podman),
+                                   warn=lines.append, out=lines.append)
+            result = run.run()
+        return (0 if result == "ok" else 1), "\n".join(map(str, lines))
+
+    def test_service_level_refusals_by_the_contract_check(self):
         simple = (f"services:\n  web:\n    image: {BUSYBOX}\n    command: sleep 3600\n")
+        before = len(records(BAD))
         for name, extra in self.VARIANTS.items():
             with self.subTest(variant=name):
                 code, out = self.deploy_variant(simple + extra)
+                self.assertEqual(code, 2, out)
+                self.assertIn("breaks the deploy contract", out)
+                self.assertEqual(stack(BAD), [], "nothing started")
+        self.assertEqual(len(records(BAD)), before, "refused before the run: no record")
+
+    def test_service_level_refusals_by_the_gate(self):
+        simple = (f"services:\n  web:\n    image: {BUSYBOX}\n    command: sleep 3600\n")
+        for name, extra in self.VARIANTS.items():
+            with self.subTest(variant=name):
+                code, out = self.gate_only(simple + extra)
                 self.assert_refused(code, out)
                 for c in stack(BAD):
                     hc = inspect(c["Id"])["HostConfig"]
@@ -257,7 +287,7 @@ class B_Refusals(unittest.TestCase):
         other = _free_port()
         compose = (f"services:\n  web:\n    image: {BUSYBOX}\n    command: sleep 3600\n"
                    f"    ports: [\"{self.port}:8080\", \"{other}:8081\"]\n")
-        code, out = self.deploy_variant(compose)
+        code, out = self.gate_only(compose)
         self.assert_refused(code, out)
         published = harness.listing("ps", "--format", "{{.Ports}}", "--filter", f"label=agentbox.deploy={BAD}")
         self.assertNotIn(str(other), published)
@@ -267,7 +297,7 @@ class B_Refusals(unittest.TestCase):
         harness.podman("volume", "create", "--label", harness.LABEL, "--label", "agentbox-test=1", vol)
         compose = (f"services:\n  web:\n    image: {BUSYBOX}\n    command: sleep 3600\n"
                    f"    volumes: [\"x:/x\"]\nvolumes:\n  x:\n    external: true\n    name: {vol}\n")
-        code, out = self.deploy_variant(compose)
+        code, out = self.gate_only(compose)
         self.assert_refused(code, out)
 
 

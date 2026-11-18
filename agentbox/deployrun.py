@@ -104,6 +104,47 @@ def foreign_objects(settings, podman, project):
     return problems
 
 
+# Parses the compose file in the base image (PyYAML comes with podman-compose there); agentbox stays stdlib-only.
+YAML_TO_JSON = "import json, sys, yaml; json.dump(yaml.safe_load(sys.stdin), sys.stdout, default=str)"
+
+
+def contract_report(settings, podman, project, root, commit, lan_addr, ports, binds):
+    """The contract (deploycheck.py) on the compose file AT THE COMMIT, for `ab deploy` before the review.
+    Returns (Report or None, note): None with a note when the check could not run (no compose file, no base
+    image, podman failing); the gate still enforces every rule at deploy time."""
+    from . import deploycheck, scan
+    rel = next((n for n in deploy.compose_names(project.deploy_compose)
+                if scan.git(root, "cat-file", "-e", f"{commit}:{n}").returncode == 0), None)
+    if rel is None:
+        return None, "no compose file in the commit"
+    text = scan.git(root, "show", f"{commit}:{rel}")
+    tree = scan.git(root, "ls-tree", "-r", "-z", "--name-only", commit)
+    if text.returncode != 0 or tree.returncode != 0:
+        return None, f"git could not read {rel} at {commit[:12]}"
+    name = f"{deploy_name(settings, project.name)}-check-{os.getpid()}"
+    labels = {**settings.labels, "agentbox.project": project.name, "agentbox.role": "deploy-check"}
+    opts = [f"--label={k}={v}" for k, v in labels.items()]
+    opts += hardening.fixed_flags(settings, cgroup_parent="")
+    opts += ["--network=none", "--interactive", "--entrypoint=python3"]
+    hardening.audit(opts + [RUNNER_IMAGE], allowed_mount_srcs=[], allowed_mount_dsts=[], networks=["none"])
+    try:
+        p = podman.run(["run", "--rm", f"--name={name}"] + opts + [RUNNER_IMAGE, "-c", YAML_TO_JSON],
+                       check=False, input=text.stdout, timeout=120)
+    except AgentboxError as e:
+        return None, f"the compose file could not be parsed ({e})"
+    if p.returncode != 0:
+        err = (p.stderr or "").strip().splitlines()
+        return None, f"the compose file could not be parsed ({err[-1] if err else f'exit {p.returncode}'})"
+    try:
+        doc = json.loads(p.stdout or "null")
+    except ValueError as e:
+        return None, f"the compose file could not be parsed ({e})"
+    ctx = {"compose": rel, "lan_addr": lan_addr or project.lan_addr, "ports": list(ports), "binds": list(binds),
+           "external": list(project.deploy_external), "adopted": list(project.deploy_adopted),
+           "compose_project": project.compose_project}
+    return deploycheck.check(doc, ctx, [t for t in tree.stdout.split("\0") if t]), ""
+
+
 def unlabelled_volumes(podman, project):
     """Names of `<compose_project>_*` volumes without the deploy labels (a stack run by hand)."""
     cp = project.compose_project
