@@ -86,6 +86,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["preset"] = a.preset
     if a.egress:
         entry["egress"] = a.egress
+    if getattr(a, "code", None):
+        entry["code"] = a.code
     if newly_chosen and "egress" not in unset:
         # Only a newly chosen preset may write its open default (audit F1): it used to run on every edit,
         # so `ab project set p1 --build-memory 4g` on a research project wrote egress=open as a side
@@ -568,6 +570,10 @@ def _print_effective(s, name):
         if (key.name in stored and key.security and key.name in base
                 and projectkeys.is_looser(key.name, value, base[key.name][0])):
             notes.append(f"(loosens preset {p.preset}, whose value is {_render(key, base[key.name][0])[0]})")
+        if key.name == "code" and value == "ro":
+            notes.append("(the project root is read-only in sessions; writable: "
+                         + (", ".join(p.data_rw) if p.data_rw else "no grant -- add one outside the root with "
+                            f"`ab project set {name} --data-rw DIR` for the agent's plans and notes") + ")")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
             notes.append("(explicit: this stack's containers are not required to come from inside the "
                          "project root)" if p.compose_project_explicit else
@@ -801,6 +807,10 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="network egress: `locked` (model API only), `packages` (+ package registries), or "
                         "`open` (+ any public host); the LAN and host are always refused. Overrides the "
                         "preset (default: inherited from the preset)")
+    x.add_argument("--code", choices=projectkeys.BY_NAME["code"].values, metavar="ro|rw",
+                   help="the project root: `ro` mounts it read-only (write plans and notes to a --data-rw "
+                        "directory outside it), `rw` read-write. Overrides the preset (planner is ro, the "
+                        "others rw)")
     x.add_argument("--extra-domain", action="append", default=[], metavar="DOMAIN",
                    help="add a domain to the egress allowlist (repeatable)")
     x.add_argument("--build-memory", metavar="SIZE",

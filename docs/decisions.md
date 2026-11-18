@@ -3400,3 +3400,21 @@ not a server and is unchanged.
 
 **Why.** The app runs as the container's PID 1, which gets no default signal action, so `podman stop`, `rm -f`
 and every redeploy of a fresh scaffold waited the full 10 s and then SIGKILLed it.
+
+## 18 Nov 2026: a read-only project root (`code = ro`, the `planner` preset)
+
+**What.** A preset setting `code` (`ro` | `rw`): `ro` binds the project root read-only, handled like a
+`data_ro` grant (masks and the swap still apply; no git or compose covers in it; not backed up or scanned at the
+end; grantcheck refuses only what reading can leak). New preset `planner` (research's values, `code = ro`,
+`packages` egress). Every built-in states `code`; a user preset inherits lockdown's `rw`. A `data_rw` grant inside
+a read-only root and the dev tier with one are refused at load; clone mode falls back to checkout with a note.
+The gate's `ro_roots` include the root (inert while the dev tier is refused). `ab project show` and the agent's
+instructions say the root is read-only and where writes go.
+
+**Why.** `research` read as read-only and was not; a planner session should be unable to edit the code by
+mistake. Tim took the proposal's recommendations (`docs/readonly-root-proposal.md`): D1 plans in a `data_rw`
+grant outside the root (no in-root hole), D2 refuse the dev tier, D3 `packages` egress, D4 user presets stay
+`rw`, D5 checkout instead of clone, D6 no `.env` created for the swap, D7 Toulmin role stays `writer`, D8
+`research` unchanged (description corrected). Proposal steps 3-4 are therefore not built; step 2 (git hooks
+paths in read-only grants) is built separately.
+

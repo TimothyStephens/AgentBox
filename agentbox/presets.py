@@ -40,23 +40,27 @@ BUILTIN = {
     # `ceiling` is preset metadata, not a project setting: overrides may only tighten this preset. It is
     # an attribute rather than a name test, so a user's own preset can be one too (audit F5).
     "lockdown": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"}, "caps": "refused",
-                 "secrets": "locked", "approvals": "on", "data": "ro-only", "ceiling": True},
+                 "secrets": "locked", "approvals": "on", "data": "ro-only", "code": "rw", "ceiling": True},
     "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-              "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+              "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "pods": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-             "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+             "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
-                   "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+                   "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
-               "secrets": "masked", "approvals": "off", "data": "declared"},
+               "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "python": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
-               "secrets": "masked", "approvals": "off", "data": "declared"},
+               "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "research": {"compose": "ro", "egress": "open", "podman": {"tier": "none"}, "caps": "refused",
-                 "secrets": "masked", "approvals": "off", "data": "declared"},
+                 "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+    # research's values with the project root read-only and packages egress (D3): read and plan, never edit.
+    # The plan goes to a data_rw grant outside the root (D1); no podman (the dev tier is refused, D2).
+    "planner": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+                "secrets": "masked", "approvals": "off", "data": "declared", "code": "ro"},
     "operate": {"compose": "ro", "egress": "packages", "podman": {"tier": "none", "live": "observe"},
-                "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
+                "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only", "code": "rw"},
     "analysis-offline": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"}, "caps": "refused",
-                         "secrets": "masked", "approvals": "off", "data": "ro-only"},
+                         "secrets": "masked", "approvals": "off", "data": "ro-only", "code": "rw"},
 }
 
 # One line each, for `--preset`'s --help and the unknown-preset error. Aliases say so.
@@ -67,8 +71,10 @@ DESCRIPTIONS = {
     "build-open": "like build, with open web egress for fetching arbitrary sites",
     "script": "scripts and data processing, no podman access (packages egress)",
     "python": "alias of script",
-    "research": "review, planning and open web research; no podman access; the code grant is read-write, "
-                "as under every preset",
+    "research": "review, planning and open web research; no podman access; the project root is read-write "
+                "(see planner for a read-only one)",
+    "planner": "read and plan, never edit: the project root is read-only; write the plan to a data_rw grant "
+               "(packages egress, no podman access)",
     "operate": "inspect a live stack (observe tier); data grants are read-only",
     "analysis-offline": "sensitive data, no egress beyond the model API, no podman access, data read-only",
 }

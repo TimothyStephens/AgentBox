@@ -220,7 +220,23 @@ class Session:
         stored `mount` wins; otherwise clone when Toulmin is on and the root is a git repository (the
         contract's default), checkout for everything else (non-git roots, projects without the integration)."""
         p = self.project
+        if p.value("code") == "ro":
+            return "checkout"          # a clone isolates writes, and a read-only root makes none (D5, 18 Nov)
         return mount_mode_of(p.root, p.mount, p.toulmin)
+
+    @property
+    def read_only_root(self):
+        return self.project.value("code") == "ro"
+
+    def ro_roots(self):
+        """The read-only grants the gate keeps read-only in the agent's containers: data_ro, and the root when
+        code = ro (inert while the dev tier is refused with a read-only root; D2)."""
+        return ([self.project.root] if self.read_only_root else []) + list(self.project.data_ro)
+
+    def writable_grants(self):
+        """The grants the agent can change: what the pre-session backup snapshots and the end-of-session scan
+        compares. A read-only root is neither (nothing in it is the session's doing)."""
+        return ([] if self.read_only_root else [self.root_src]) + list(self.project.data_rw)
 
     @property
     def token_file(self):
@@ -266,6 +282,9 @@ class Session:
         self._write_meta()
         write_private(self.mask_file, "", mode=0o444, atomic=False)
         mode = self.mount_mode
+        if self.read_only_root and mount_mode_of(p.root, p.mount, p.toulmin) == "clone":
+            self.warn(f"agentbox: {p.name}: the project root is read-only (code = ro), so clone mode is not "
+                      "used: there is nothing for a clone to isolate. The checkout is mounted read-only")
         if mode == "clone" and dev_tier(p):
             # The gate resolves the agent's bind sources on the host, where the owner's path IS the owner's
             # checkout: it would have to translate every path into the clone. Not built (decisions.md, 10 Nov).
@@ -289,11 +308,11 @@ class Session:
         with Step(f"checking {p.root} for secrets and live data", self.warn):
             plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                      compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
-                                     mask=p.mask)
+                                     mask=p.mask, code=p.value("code"))
             exposure, warnings, exposure_fp = grantcheck.preflight(
                 self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
                                         "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask},
-                plan=plan_check)
+                plan=plan_check, code=p.value("code"))
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
         if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
@@ -303,7 +322,7 @@ class Session:
             with Step(f"finding the masks in the clone {self.root_src}", self.warn):
                 self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
                                              compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
-                                             mask=p.mask)
+                                             mask=p.mask, code=p.value("code"))
             self.plan = mounts.remap(self.plan_host, self.root_src, p.root)
         else:
             self.plan_host = self.plan = plan_check
@@ -442,7 +461,7 @@ class Session:
             gr = os.path.realpath(g)
             return [os.path.relpath(c, gr) for c in covered
                     if c != gr and c.startswith(gr.rstrip("/") + "/")]
-        backup.snapshot(self.settings.project_backups_dir(p.name), self.name, [p.root] + p.data_rw,
+        backup.snapshot(self.settings.project_backups_dir(p.name), self.name, self.writable_grants(),
                         skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
                         exclude_rel_for=covers_rel,
                         warn_mb=int(self.settings.backup_warn_mb), warn=self.warn,
@@ -616,7 +635,7 @@ class Session:
         """The end-of-session scan's starting point, kept in the run dir so every teardown (the launcher's,
         `ab session kill`, `ab session gc`) can report (review 2026-10-01 step 5C, M2)."""
         p = self.project
-        grants = [self.root_src] + list(p.data_rw)
+        grants = self.writable_grants()
         skip = {g: mounts._rel_skips(self.root_src, g, p.mask_skip) for g in grants}
         # A masked directory is not the agent's to change, and a host service may well write into it during
         # the session (a live data dir is what masks are for): leave it out of the scan rather than report
@@ -959,7 +978,7 @@ class Session:
         if not self.podman_dev:
             return []
         roots = [os.path.realpath(r) for r in self.bind_roots]
-        ro_roots = {os.path.realpath(r) for r in self.project.data_ro}
+        ro_roots = {os.path.realpath(r) for r in self.ro_roots()}
         pins = {}
         covered = self.covered_paths()
         for c in covered:
@@ -1094,7 +1113,7 @@ class Session:
             "session": self.name, "network": self.int_net,
             "labels": labels_for(s, self.project.name, self.name, "dev"),
             "proxy_env": proxy_env, "bind_roots": self.bind_roots, "covered": self.covered_paths(),
-            "covered_ids": self.cover_ids(), "ro_roots": [os.path.realpath(r) for r in self.project.data_ro],
+            "covered_ids": self.cover_ids(), "ro_roots": [os.path.realpath(r) for r in self.ro_roots()],
             "masked": self.masked_paths(),
             "mask_names": [m for m in self.project.mask if not mounts.mask_is_path(m)],
             "subnets": self.int_subnets,

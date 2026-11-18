@@ -106,6 +106,20 @@ def protected_extra(settings):
             os.path.dirname(settings.token_file("claude"))]
 
 
+def _check_read_only_root(name, root, data_rw, eff):
+    """`code = ro` (docs/readonly-root-proposal.md, decided 18 Nov 2026): a writable grant inside the root would
+    be a writable hole in it, which is not built (D1: write to a data_rw grant OUTSIDE the root); and the dev
+    podman tier is refused with a read-only root (D2: it would put the gate's bind rules in play)."""
+    inner = [d for d in data_rw if d == root or d.startswith(root.rstrip("/") + "/")]
+    if inner:
+        raise AgentboxError(f"project {name}: the project root is read-only (code = ro), so a writable data_rw "
+                            f"grant inside it ({', '.join(inner)}) is not allowed: put the writable directory "
+                            "outside the root")
+    if (eff["podman"][0] or {}).get("tier") == "dev":
+        raise AgentboxError(f"project {name}: the dev podman tier is not built with a read-only project root "
+                            "(code = ro); use `--podman none` (or observe), or `--code rw`")
+
+
 def load_project(settings, name):
     reg = registry.load(settings.registry_path)
     if name not in reg:
@@ -122,6 +136,8 @@ def load_project(settings, name):
         _no_commas(g, "grant")
     # A hand-written overlap is caught here too, not only where it was registered (audit F3).
     paths.check_overlaps(name, {"root": root, "data_ro": data_ro, "data_rw": data_rw}, reg)
+    if eff["code"][0] == "ro":
+        _check_read_only_root(name, root, data_rw, eff)
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    mask=_check(name, "mask", p.get("mask", [])),

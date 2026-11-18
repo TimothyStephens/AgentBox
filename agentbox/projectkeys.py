@@ -107,6 +107,11 @@ KEYS = (
     _key("data", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
          values=("ro-only", "declared"), security=True, clears=True, unsettable=True, display="always",
          inert="", inert_reason=""),
+    # The project root itself: `ro` mounts it read-only (the `planner` preset; docs/readonly-root-proposal.md,
+    # decided 18 Nov 2026). Writes go to the data_rw grants, which may not lie inside a read-only root.
+    _key("code", kind="preset", arity="scalar", flags=("--code",), dest="code", validate="enum",
+         values=("ro", "rw"), security=True, clears=True, unsettable=True, display="always",
+         inert="", inert_reason=""),
 
     # --- grants and the live/dev-stack settings ---
     _key("data_ro", kind="project", arity="list", flags=("--data-ro",), dest="data_ro",

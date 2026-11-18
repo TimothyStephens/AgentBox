@@ -129,6 +129,12 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
         "start if the grant holds an uncovered secret or live database. Masks and the gate's cover checks are "
         "a backstop, not the main wall: do not move secrets or production data into the grant.",
     ]
+    if project.value("code") == "ro":
+        lines.append(f"- **The project root `{project.root}` is READ-ONLY in this session** (code = ro): read and "
+                     "plan, do not try to edit it -- writes, `git commit` and `git stash` fail there. Write your "
+                     "plan and notes to "
+                     + (" or ".join(f"`{d}`" for d in project.data_rw) if project.data_rw else
+                        "the conversation (no writable grant is set up for this project)") + ".")
     for d in project.data_ro:
         lines.append(f"- Read-only data: `{d}`")
     for d in project.data_rw:

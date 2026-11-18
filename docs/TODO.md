@@ -55,29 +55,12 @@ authoritative; this is the *why*.
 | Caps / devices opt-in | The gate refuses `cap_add`, `devices` and security options under every preset; the `caps = opt-in` preset value is inert and `ab project show` says so. |
 | A profile curator | `ab profile harvest` lists, groups and marks; promoting is a human reading a skill. A curator would need the profile **read-write** (which no normal session gets), a prompt that is itself security-reviewed, and a record of what it rejected and why. **Deliberately not started until `harvest` has been lived with** — right now we would be guessing at the hard part. |
 
-### 3.1 A read-only project root, for a planner preset
+### 3.1 A writable folder inside a read-only root; the dev tier with one
 
-**Proposal:** `docs/readonly-root-proposal.md` (18 Nov): the build order and eight decisions (D1-D8) for Tim before
-any code. It corrects two assumptions below: the gate is only touched if the dev tier is allowed with a
-read-only root, and grantcheck is only half moot (unmasked secrets are still readable).
-
-Separate because it is the one deferred feature with a real design cost, and because `research` *reads* as
-though the project were read-only and is not.
-
-**What would be needed**, in order:
-
-1. A new mount mode in `mounts.plan` — the root is an unconditional read-write bind under every preset today
-   (`rw_grants = [root] + data_rw`).
-2. **The gate**, which is the expensive part: its read-only-grant handling forces `ro` on binds and on
-   grant-volume SubPaths from `ro_roots`, and the after-start mountinfo check and the cover pins all assume
-   a writable root. That is security-reviewed ground (decisions.md, 5–6 Oct).
-3. A decision on **one writable subdirectory inside a read-only root** (for the plan itself). The grant
-   validator does not model "a writable hole inside a read-only grant" at all.
-4. A preset to expose it. `grantcheck` largely becomes moot for such a project — a read-only root cannot be
-   damaged — which is worth stating rather than discovering.
-
-**Today's mitigation:** commit before a `research` session; the per-session rsync snapshot is a
-within-session undo (explicitly not a data backup), so unwanted edits are a `git diff` away.
+The read-only root is **built** (18 Nov, `planner` / `code = ro`; decisions.md). Not built, by decision (D1, D2 in
+`docs/readonly-root-proposal.md`): a writable folder *inside* the read-only root (proposal step 3: validator
+exemption, hardlink refusal, the gate's longest-root rule) and the dev tier with a read-only root (step 4).
+Build them only if plans must live in the repo, or a planner needs its own containers.
 
 ---
 

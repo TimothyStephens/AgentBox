@@ -347,14 +347,19 @@ def compose_overlays(grant, skip_rel=()):
     return out
 
 
-def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None, mask=()):
+def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None, mask=(), code="rw"):
     """Build the mount plan. All paths must already be validated real paths; `mask` is the project's own
-    mask list, as projectkeys stores it."""
+    mask list, as projectkeys stores it. `code = "ro"` mounts the root read-only: it is then handled exactly
+    like a data_ro grant (no git or compose covers in it, the swap read-only, masks over it)."""
     mounts, dirs, files, notes = [], [], [], []
-    rw_grants = [root] + list(data_rw)
+    ro_root = code == "ro"
+    rw_grants = ([] if ro_root else [root]) + list(data_rw)
+    data_ro = ([root] if ro_root else []) + list(data_ro)
+    if ro_root:
+        mounts.append(Mount("bind", root, root, ro=True))      # first: the root, then what lies elsewhere
     for g in rw_grants:
         mounts.append(Mount("bind", g, g))
-    for g in data_ro:
+    for g in data_ro[1 if ro_root else 0:]:
         mounts.append(Mount("bind", g, g, ro=True))
     git_dirs = set()
     for g in rw_grants:
@@ -369,7 +374,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     mounts += m
     dirs += d
     files += f
-    if compose == "ro":
+    if compose == "ro" and not ro_root:          # a read-only cover in a read-only root adds nothing
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
     for g in rw_grants + list(data_ro):          # secret masks always apply; there is no way to turn them off
         m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap, notes=notes)

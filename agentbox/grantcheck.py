@@ -125,7 +125,11 @@ def _under_mask_skip(root, path, mask_skip):
     return any(inside(path, full) for full in mounts.mask_skip_paths(root, mask_skip))
 
 
-def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
+# Findings a READ-ONLY grant still refuses (a read-only project root, code = ro): reading is enough to leak them.
+READABLE_REFUSED = ("unmasked secret file", "git credentials")
+
+
+def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants=()):
     """Return (findings, warnings). Each finding is {"text": <shown>, "sig": <for the fingerprint>}; a grant
     with any finding refuses to start until acknowledged. Warnings are shown but do not block (audit 6 Oct,
     the cheap half of H1: entries the scanner can't read or that another user owns). `mask_skip` is NOT
@@ -144,7 +148,7 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
         return any(inside(p, c) for c in covered)
 
     found, ro_found, warn = {}, {}, set()
-    all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants)]   # a target in any is covered
+    all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants) + list(readable_grants)]
 
     def onerror(e):
         warn.add(f"{getattr(e, 'filename', '?')}: unreadable ({getattr(e, 'strerror', e)}); a container's data "
@@ -209,10 +213,18 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=()):
         walk(grant, ro_found)
     for text in ro_found:
         warn.add(f"in a read-only data grant (allowed, since read-only, but worth knowing): {text}")
+    readable = {}
+    for grant in readable_grants:
+        walk(grant, readable)
+    for text, sig in readable.items():
+        if text.startswith(READABLE_REFUSED):
+            found[text] = sig            # readable is enough to leak it
+        else:
+            warn.add(f"in the read-only project root (it cannot be changed from the session): {text}")
     return [{"text": t, "sig": g} for t, g in sorted(found.items())], sorted(warn)
 
 
-def preflight(settings, name, entry, *, plan=None):
+def preflight(settings, name, entry, *, plan=None, code=None):
     """The one grant scan (audit F-6). `ab session start`, `ab project check` and add/set validation all come here, so
     the verdict `check` prints is the verdict `run` reaches. Returns (findings, warnings, fingerprint); the
     fingerprint is "" when there is nothing to accept.
@@ -223,15 +235,22 @@ def preflight(settings, name, entry, *, plan=None):
     project's own (see projectkeys.KEYS).
     """
     from . import presets
-    if plan is None:
+    if plan is None or code is None:
         eff = presets.effective(name, dict(entry, name=name), presets.load_presets(settings.presets_dir))
+        code = eff["code"][0] if code is None else code
+    if plan is None:
         plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []),
                            data_rw=entry.get("data_rw", []), compose=eff["compose"][0],
                            mask_skip=entry.get("mask_skip", []),
-                           swap=mounts.effective_swap(entry.get("swap")), mask=entry.get("mask", []))
-    findings, warnings = scan(entry["root"], [entry["root"]] + list(entry.get("data_rw", [])),
+                           swap=mounts.effective_swap(entry.get("swap")), mask=entry.get("mask", []), code=code)
+    # A read-only root (code = ro) is scanned as a READABLE grant: what can leave through the model API (an
+    # unmasked secret, a credential in a git remote) still refuses; what could only be damaged by a write
+    # (live data, compose data binds, git config escapes) is reported as a warning.
+    ro_root = code == "ro"
+    findings, warnings = scan(entry["root"], ([] if ro_root else [entry["root"]]) + list(entry.get("data_rw", [])),
                               entry.get("mask_skip", []), covered=mounts.hidden(plan),
-                              warn_grants=entry.get("data_ro", []))
+                              warn_grants=entry.get("data_ro", []),
+                              readable_grants=[entry["root"]] if ro_root else [])
     return findings, warnings, (fingerprint(findings) if findings else "")
 
 

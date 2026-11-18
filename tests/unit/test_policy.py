@@ -151,7 +151,7 @@ class PresetTest(unittest.TestCase):
     # --- the new preset shapes (build/build-open/script/research/operate/analysis-offline) ---
 
     EXPECTED_NAMES = {"lockdown", "build", "pods", "build-open", "script", "python",
-                      "research", "operate", "analysis-offline"}
+                      "research", "planner", "operate", "analysis-offline"}
 
     def test_exactly_these_builtin_presets_exist(self):
         self.assertEqual(set(self.P), self.EXPECTED_NAMES)
@@ -159,17 +159,19 @@ class PresetTest(unittest.TestCase):
     def test_new_preset_values(self):
         cases = {
             "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-                      "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+                      "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
-                           "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"},
+                           "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
-                       "secrets": "masked", "approvals": "off", "data": "declared"},
+                       "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "research": {"compose": "ro", "egress": "open", "podman": {"tier": "none"}, "caps": "refused",
-                         "secrets": "masked", "approvals": "off", "data": "declared"},
+                         "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "operate": {"compose": "ro", "egress": "packages", "podman": {"tier": "none", "live": "observe"},
-                        "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
+                        "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only", "code": "rw"},
             "analysis-offline": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"},
-                                 "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only"},
+                                 "caps": "refused", "secrets": "masked", "approvals": "off", "data": "ro-only", "code": "rw"},
+            "planner": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
+                        "secrets": "masked", "approvals": "off", "data": "declared", "code": "ro"},
         }
         for name, want in cases.items():
             with self.subTest(preset=name):
@@ -195,9 +197,9 @@ class PresetTest(unittest.TestCase):
     # A frozen snapshot of what "pods"/"python" resolved to before this change (docs/design.md's preset
     # table, pre-redesign). Pins that the redesign did not alter either alias's resolution.
     OLD_PODS = {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-                "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared"}
+                "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"}
     OLD_PYTHON = {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
-                  "secrets": "masked", "approvals": "off", "data": "declared"}
+                  "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"}
 
     def test_pods_and_python_resolve_identically_before_and_after(self):
         self.assertEqual(self.P["pods"], self.OLD_PODS)

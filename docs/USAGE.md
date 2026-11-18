@@ -118,13 +118,13 @@ Scaffold a new project with a safe-by-construction layout (secrets masked, live 
 
 ```text
 usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
-                       [--data-rw DIR] [--egress MODE] [--extra-domain DOMAIN]
-                       [--build-memory SIZE] [--base-branch BRANCH]
-                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
-                       [--podman TIER] [--compose-project NAME]
-                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
-                       [--toulmin | --no-toulmin] [--mount MODE]
-                       [--reviews BUILDER]
+                       [--data-rw DIR] [--egress MODE] [--code ro|rw]
+                       [--extra-domain DOMAIN] [--build-memory SIZE]
+                       [--base-branch BRANCH] [--profile on|off]
+                       [--mask-skip DIR] [--mask PATH] [--podman TIER]
+                       [--compose-project NAME] [--dev-image PATTERN]
+                       [--swap TARGET=STANDIN] [--toulmin | --no-toulmin]
+                       [--mount MODE] [--reviews BUILDER]
                        [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
                        [--deploy-port PORT] [--deploy-bind DIR]
                        [--deploy-file PATH] [--deploy-compose PATH]
@@ -155,15 +155,17 @@ options:
                         and data processing, no podman access (packages
                         egress); python — alias of script; research — review,
                         planning and open web research; no podman access; the
-                        code grant is read-write, as under every preset;
-                        operate — inspect a live stack (observe tier); data
-                        grants are read-only; analysis-offline — sensitive
-                        data, no egress beyond the model API, no podman
-                        access, data read-only. A file in
-                        ~/.config/agentbox/presets/ adds one of your own (it
-                        inherits lockdown's values for every key it omits).
-                        `ab project show` prints what a preset resolves to,
-                        and where each value came from
+                        project root is read-write (see planner for a read-
+                        only one); planner — read and plan, never edit: the
+                        project root is read-only; write the plan to a data_rw
+                        grant (packages egress, no podman access); operate —
+                        inspect a live stack (observe tier); data grants are
+                        read-only; analysis-offline — sensitive data, no
+                        egress beyond the model API, no podman access, data
+                        read-only. A file in ~/.config/agentbox/presets/ adds
+                        one of your own (it inherits lockdown's values for
+                        every key it omits). `ab project show` prints what a
+                        preset resolves to, and where each value came from
   --data-ro DIR         an extra directory to mount read-only (repeatable);
                         for input data that lives outside the code grant
   --data-rw DIR         an extra directory to mount read-write (repeatable);
@@ -172,6 +174,10 @@ options:
                         (+ package registries), or `open` (+ any public host);
                         the LAN and host are always refused. Overrides the
                         preset (default: inherited from the preset)
+  --code ro|rw          the project root: `ro` mounts it read-only (write
+                        plans and notes to a --data-rw directory outside it),
+                        `rw` read-write. Overrides the preset (planner is ro,
+                        the others rw)
   --extra-domain DOMAIN
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
@@ -297,7 +303,7 @@ Register a project with a preset, validating it against overlap and grant exposu
 
 ```text
 usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
-                      [--egress MODE] [--extra-domain DOMAIN]
+                      [--egress MODE] [--code ro|rw] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--base-branch BRANCH]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
@@ -332,15 +338,17 @@ options:
                         and data processing, no podman access (packages
                         egress); python — alias of script; research — review,
                         planning and open web research; no podman access; the
-                        code grant is read-write, as under every preset;
-                        operate — inspect a live stack (observe tier); data
-                        grants are read-only; analysis-offline — sensitive
-                        data, no egress beyond the model API, no podman
-                        access, data read-only. A file in
-                        ~/.config/agentbox/presets/ adds one of your own (it
-                        inherits lockdown's values for every key it omits).
-                        `ab project show` prints what a preset resolves to,
-                        and where each value came from
+                        project root is read-write (see planner for a read-
+                        only one); planner — read and plan, never edit: the
+                        project root is read-only; write the plan to a data_rw
+                        grant (packages egress, no podman access); operate —
+                        inspect a live stack (observe tier); data grants are
+                        read-only; analysis-offline — sensitive data, no
+                        egress beyond the model API, no podman access, data
+                        read-only. A file in ~/.config/agentbox/presets/ adds
+                        one of your own (it inherits lockdown's values for
+                        every key it omits). `ab project show` prints what a
+                        preset resolves to, and where each value came from
   --data-ro DIR         an extra directory to mount read-only (repeatable);
                         for input data that lives outside the code grant
   --data-rw DIR         an extra directory to mount read-write (repeatable);
@@ -349,6 +357,10 @@ options:
                         (+ package registries), or `open` (+ any public host);
                         the LAN and host are always refused. Overrides the
                         preset (default: inherited from the preset)
+  --code ro|rw          the project root: `ro` mounts it read-only (write
+                        plans and notes to a --data-rw directory outside it),
+                        `rw` read-write. Overrides the preset (planner is ro,
+                        the others rw)
   --extra-domain DOMAIN
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
@@ -512,7 +524,7 @@ Change a registered project's settings in place, re-validated, with the same fla
 
 ```text
 usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
-                      [--egress MODE] [--extra-domain DOMAIN]
+                      [--egress MODE] [--code ro|rw] [--extra-domain DOMAIN]
                       [--build-memory SIZE] [--base-branch BRANCH]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
@@ -550,8 +562,11 @@ options:
                         arbitrary sites; script — scripts and data processing,
                         no podman access (packages egress); python — alias of
                         script; research — review, planning and open web
-                        research; no podman access; the code grant is read-
-                        write, as under every preset; operate — inspect a live
+                        research; no podman access; the project root is read-
+                        write (see planner for a read-only one); planner —
+                        read and plan, never edit: the project root is read-
+                        only; write the plan to a data_rw grant (packages
+                        egress, no podman access); operate — inspect a live
                         stack (observe tier); data grants are read-only;
                         analysis-offline — sensitive data, no egress beyond
                         the model API, no podman access, data read-only. A
@@ -567,6 +582,10 @@ options:
                         (+ package registries), or `open` (+ any public host);
                         the LAN and host are always refused. Overrides the
                         preset (default: inherited from the preset)
+  --code ro|rw          the project root: `ro` mounts it read-only (write
+                        plans and notes to a --data-rw directory outside it),
+                        `rw` read-write. Overrides the preset (planner is ro,
+                        the others rw)
   --extra-domain DOMAIN
                         add a domain to the egress allowlist (repeatable)
   --build-memory SIZE   memory limit for each build in the dev tier (default:
@@ -674,8 +693,8 @@ options:
                         a mask)
   --unset KEY           drop a stored setting so the preset's value applies
                         again (repeatable); one of: compose, egress, podman,
-                        caps, secrets, approvals, data, data_ro, data_rw,
-                        extra_domains, compose_project, observe_logs,
+                        caps, secrets, approvals, data, code, data_ro,
+                        data_rw, extra_domains, compose_project, observe_logs,
                         dev_images, mask_skip, swap, mask, toulmin, mount,
                         reviews, base_branch, build_memory, profile, lan_addr,
                         deploy_ports, deploy_binds, deploy_files,

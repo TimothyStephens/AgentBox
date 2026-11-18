@@ -434,19 +434,19 @@ A preset is a named bundle of the settings above, so one word gives a project a 
 
 The canonical names are `build` and `script`; **`pods` and `python` are kept as aliases of those two** (the same values under their old names, so an existing registry entry resolves exactly as it always did). `ab project init pod` defaults to `build`, `ab project init python` to `script`. `--preset` lists every preset that exists, with a one-line description, and refuses an unknown name with that list.
 
-| Setting | `lockdown` | `build` (=`pods`) | `build-open` | `script` (=`python`) | `research` | `operate` | `analysis-offline` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Inspecting a live stack | Sensitive data, offline analysis |
-| Code | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up — `research` is **not** a read-only grant; the agent can write anywhere in the project root, as under every preset | Read-write, backed up | Read-write, backed up |
-| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` | Read-write | Read-only | Read-only | Read-only | Read-only |
-| Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | Read-only only | Read-only only |
-| `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
-| Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `locked` |
-| Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | dev + observe, as `build` | none | none | observe on the live stack only | none |
-| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused | Refused | Refused | Refused | Refused |
-| Agent approval prompts | On | Off (`--auto`) | Off | Off | Off | Off | Off |
+| Setting | `lockdown` | `build` (=`pods`) | `build-open` | `script` (=`python`) | `research` | `planner` | `operate` | `analysis-offline` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Read and plan, never edit | Inspecting a live stack | Sensitive data, offline analysis |
+| Code (`code`) | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up — `research` is **not** read-only; `planner` is | **Read-only** (`code = ro`): not backed up or scanned; plans go to a `data_rw` grant outside the root | Read-write, backed up | Read-write, backed up |
+| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` | Read-write | Read-only | Read-only | Read-only (the whole root) | Read-only | Read-only |
+| Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | As declared; a `data_rw` may not lie inside the root | Read-only only | Read-only only |
+| `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
+| Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `packages` | `locked` |
+| Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | dev + observe, as `build` | none | none | none (dev refused with a read-only root) | observe on the live stack only | none |
+| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused | Refused | Refused | Refused | Refused | Refused |
+| Agent approval prompts | On | Off (`--auto`) | Off | Off | Off | Off | Off | Off |
 
-There is no read-only *code* grant: the project root is read-write under every preset (a read-only root with one writable notes directory was considered and not built — it needs a new mount mode and another pass over the covers logic).
+**A read-only project root** (`code = ro`, the `planner` preset, or `--code ro` on any project; built 18 Nov 2026, `docs/readonly-root-proposal.md`, decisions D1-D8): the root is bound read-only and handled like a `data_ro` grant — masks and the `.env.dev` swap still apply (read-only), there are no git or compose covers in it, it is neither backed up before the session nor part of the end-of-session scan, and grantcheck still refuses what reading alone can leak (an unmasked secret, a credential in a git remote) while live data and git-config escapes only warn. Writes go to a `data_rw` grant outside the root (a writable folder inside it is not built); the agent's instructions name it. The dev podman tier is refused with a read-only root, and clone mode falls back to checkout (there is nothing for a clone to isolate). Every built-in preset states `code`; a user preset inherits lockdown's `rw`.
 
 **Grant overlap.** A read-write grant may not overlap *another project's* grants in either direction; read-only may overlap read-only, which is what shared reference data is for. Within one project, a read-write grant may not sit inside its own read-only grant (the deeper mount wins, so that path would be writable while `ab project show` lists it as read-only), and one path may not be declared both. The other direction is allowed: a read-only grant inside a read-write one makes that subtree read-only, which is tighter than the display, not looser. The check runs at `ab project add`, `ab project set` and session start, so a hand-written entry is caught too.
 
@@ -887,11 +887,10 @@ The design above is the full target; **`docs/progress.md`'s Status table is the 
 deferred and not built, and nothing here should be read as a current guarantee. Two items are kept here
 because they are design decisions rather than status:
 
-- **A read-only project-root mount mode** (for a planner preset that may read the code but not edit it,
-  optionally with one writable notes directory): not built. The root is a read-write bind under every preset,
-  `research` and `lockdown` included; this needs a new mount mode and another pass over the gate/covers logic
-  (`docs/TODO.md` §3.1). Mitigation today: commit before the session, and the per-session snapshot as a
-  within-session undo.
+- **A writable folder inside a read-only project root, and the dev tier with one.** The read-only root itself is
+  built (18 Nov; see Presets): plans go to a `data_rw` grant outside it. A writable folder *inside* the root
+  (proposal step 3) and the dev tier with a read-only root (step 4) are not built, by decision (D1, D2): both
+  need the gate's longest-root rule and more cover logic (`docs/readonly-root-proposal.md`).
 - **Host migration** of the real stacks (the section above): not started; the first real project is the
   user's call (progress.md, Next).
 
