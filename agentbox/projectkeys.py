@@ -202,6 +202,10 @@ KEYS = (
     _key("deploy_files", kind="project", arity="list", flags=("--deploy-file",), dest="deploy_file",
          validate="rel_files", values=(), security=True, clears=False, unsettable=True, display="stored",
          inert="", inert_reason=""),
+    # The compose file, root-relative, when it is not at the root (Tim's stacks keep it in deploy/, 18 Nov).
+    _key("deploy_compose", kind="project", arity="scalar", flags=("--deploy-compose",), dest="deploy_compose",
+         validate="rel_file", values=(), security=True, clears=False, unsettable=True, display="stored",
+         inert="", inert_reason=""),
     _key("deploy_external", kind="project", arity="list", flags=("--deploy-external",), dest="deploy_external",
          validate="external_names", values=(), security=True, clears=False, unsettable=True, display="stored",
          inert="", inert_reason=""),
@@ -519,6 +523,13 @@ def _ports(name, where, value, **_kw):
     return sorted(set(value))
 
 
+def _rel_file(name, where, value, **kw):
+    """One root-relative file path, under the same rules as _rel_files."""
+    if not isinstance(value, str):
+        raise AgentboxError(f"{where}: {name} must be a file path under the project root")
+    return _rel_files(name, where, [value], **kw)[0]
+
+
 def _rel_files(name, where, value, **_kw):
     """Untracked files copied into the deploy copy: paths under the root, no '..', no absolute path."""
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
@@ -609,6 +620,7 @@ VALIDATORS = {
     "ipv4": _ipv4,
     "ports": _ports,
     "rel_files": _rel_files,
+    "rel_file": _rel_file,
     "external_names": _external_names,
 }
 

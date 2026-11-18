@@ -525,3 +525,53 @@ class AdoptVolumes(RunCase):
         self.assertEqual(code, 0, out)
         [cfg] = self.gate_cfgs
         self.assertIn("web_data", cfg["external_ok"])
+
+
+class ComposeInASubdirectory(RunCase):
+    """Tim, 18 Nov: his stacks keep the compose file in `deploy/`, with the real .env at the root. The compose
+    file's path is a project setting (`deploy_compose`); the .env check and copy stay at the root."""
+
+    def move_compose(self):
+        os.makedirs(os.path.join(self.root, "deploy"))
+        self.git("mv", "compose.yaml", "deploy/compose.yaml")
+        return self.commit("compose in deploy/")
+
+    def test_without_the_setting_a_subdirectory_compose_is_refused_naming_the_setting(self):
+        self.move_compose()
+        code, out = self.deploy("--lan", f"{LAN}:8095")
+        self.assertEqual(code, 2, out)
+        self.assertIn("--deploy-compose", out)
+        self.assertFalse(self.gate_cfgs)
+
+    def test_with_the_setting_the_runner_gets_that_file_from_the_copy(self):
+        self.move_compose()
+        code, out = self.ab("project", "set", "web", "--deploy-compose", "deploy/compose.yaml")
+        self.assertEqual(code, 0, out)
+        code, out = self.deploy("--lan", f"{LAN}:8095")
+        self.assertEqual(code, 0, out)
+        stage = deploy.records(self.settings, "web")[-1]["stage"]
+        r = self.runner()
+        self.assertEqual(r[r.index("-f") + 1], os.path.join(stage, "deploy", "compose.yaml"))
+        self.assertTrue(os.path.isfile(os.path.join(stage, ".env")), "the real .env is still copied at the root")
+
+    def test_the_review_shows_the_subdirectory_compose_in_full(self):
+        self.move_compose()
+        self.set_entry(deploy_compose="deploy/compose.yaml")
+        code, out = self.ab("deploy", "web", "--check")
+        self.assertEqual(code, 0, out)
+        self.assertIn("--- deploy/compose.yaml ---", out)
+
+    def test_the_setting_is_a_path_under_the_root(self):
+        for bad in ("/etc/compose.yaml", "../compose.yaml", "deploy/../compose.yaml", ".git/compose.yaml", ""):
+            with self.subTest(bad=bad):
+                code, out = self.ab("project", "set", "web", "--deploy-compose", bad)
+                self.assertNotEqual(code, 0, out)
+
+    def test_a_compose_file_reached_through_a_symlinked_directory_is_refused(self):
+        outside = self.mkdir("outside")
+        with open(os.path.join(outside, "compose.yaml"), "w") as f:
+            f.write("services: {}\n")
+        stage = self.mkdir("stage-link")
+        os.symlink(outside, os.path.join(stage, "deploy"))
+        with self.assertRaises(AgentboxError):
+            deploy.compose_file(stage, "deploy/compose.yaml")

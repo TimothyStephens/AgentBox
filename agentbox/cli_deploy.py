@@ -77,10 +77,12 @@ def _adopt(s, p, stdin=None):
 
 def _deploy(s, a, p, lan, host):
     root = p.root
-    c = deploy.check(s, p.name, root, ref=a.commit or "HEAD")
+    c = deploy.check(s, p.name, root, ref=a.commit or "HEAD", compose=p.deploy_compose)
     problems = []
     if not c["has_compose"]:
-        problems.append(f"commit {c['commit'][:12]} has no compose file at the root")
+        problems.append(f"commit {c['commit'][:12]} has no {p.deploy_compose}" if p.deploy_compose else
+                        f"commit {c['commit'][:12]} has no compose file at the root (one elsewhere, such as "
+                        f"deploy/compose.yaml: `ab project set {p.name} --deploy-compose deploy/compose.yaml`)")
     if c["dirty"]:
         problems.append("uncommitted changes to tracked files (a deploy is a commit; commit or stash them): "
                         + ", ".join(c["dirty"][:10]) + (" …" if len(c["dirty"]) > 10 else ""))

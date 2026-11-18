@@ -213,7 +213,7 @@ class Deploy:
             n += 1
             dst = os.path.join(base, f"{self.stamp}.{n}")
         self.stage = deploy.stage(self.p.root, self.commit, dst, extra_files=(".env", *self.p.deploy_files))
-        self.compose = deploy.compose_file(self.stage)
+        self.compose = deploy.compose_file(self.stage, self.p.deploy_compose)
         return self.stage
 
     def prune_stages(self):

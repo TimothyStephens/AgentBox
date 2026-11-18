@@ -11,7 +11,8 @@ podman service, sockguard and gate, and podman-compose in the runner. Checked:
   * `--yes` redeploys the same commit from a script;
   * each refusal bites: privileged, a bind outside the copy, a port that is not listed, host networking,
     an `external:` volume that is not listed, and a stack started by hand;
-  * `--adopt-volumes` takes a hand-run stack's volume over by name.
+  * `--adopt-volumes` takes a hand-run stack's volume over by name;
+  * a compose file in `deploy/` (the project's `deploy_compose`), building from the root, deploys.
 Everything is named abt-<run>-* / dep-<run>-* and labelled with the run, and removed at the end.
 """
 import json
@@ -34,6 +35,7 @@ PORT = None
 MAIN = f"dep-{harness.RUN}"
 BAD = f"depbad-{harness.RUN}"
 HAND = f"dephand-{harness.RUN}"
+SUB = f"depsub-{harness.RUN}"
 
 COMPOSE = """services:
   web:
@@ -143,7 +145,7 @@ def setUpModule():
 
 def tearDownModule():
     try:
-        for name in (MAIN, BAD, HAND):
+        for name in (MAIN, BAD, HAND, SUB):
             for c in stack(name):
                 harness.podman("rm", "-f", "-t", "0", c["Id"])
             for img in harness.listing("images", "--format", "{{.Repository}}:{{.Tag}}",
@@ -302,3 +304,32 @@ class C_HandRunStacks(unittest.TestCase):
         users = [c for c in stack(HAND)
                  if any(m.get("Name") == vol for m in inspect(c["Id"]).get("Mounts") or [])]
         self.assertTrue(users, "the adopted volume is the live stack's")
+
+
+class D_ComposeInASubdirectory(unittest.TestCase):
+    """Tim's stacks keep the compose file in deploy/ and build from the root (18 Nov): `deploy_compose`."""
+
+    def test_a_compose_file_in_deploy_builds_from_the_root_and_serves(self):
+        port = _free_port()
+        compose = (f"services:\n  web:\n    build:\n      context: ..\n      dockerfile: Containerfile\n"
+                   f"    command: httpd -f -p 8080 -h /www\n    ports: [\"{port}:8080\"]\n")
+        root = make_repo(SUB, compose, page="sub")
+        os.makedirs(os.path.join(root, "deploy"))
+        git(root, "mv", "compose.yaml", "deploy/compose.yaml")
+        git(root, "commit", "-qm", "compose in deploy/")
+        code, out = deploy_tty(SUB, "--lan", f"{LAN}:{port}")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("--deploy-compose", out)
+        ENV.ab("project", "set", SUB, "--deploy-compose", "deploy/compose.yaml", check=True)
+        code, out = deploy_tty(SUB, "--lan", f"{LAN}:{port}")
+        self.assertEqual(code, 0, out)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        def page():
+            try:
+                with opener.open(f"http://{LAN}:{port}/index.html", timeout=5) as r:
+                    return r.read().decode().strip()
+            except OSError:
+                return None
+        self.assertEqual(harness.wait_for(page, timeout=60), "sub")
+

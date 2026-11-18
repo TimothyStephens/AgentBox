@@ -143,6 +143,8 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["deploy_binds"] = [check_grant(d, kind="deploy_bind", **grant_kw) for d in a.deploy_bind]
     if getattr(a, "deploy_file", None):
         entry["deploy_files"] = _check(a.name, "deploy_files", list(a.deploy_file))
+    if getattr(a, "deploy_compose", None) is not None:
+        entry["deploy_compose"] = _check(a.name, "deploy_compose", a.deploy_compose)
     if getattr(a, "deploy_external", None):
         entry["deploy_external"] = _check(a.name, "deploy_external", list(a.deploy_external))
     return cleared
@@ -540,7 +542,7 @@ def _print_effective(s, name):
                 "dev_images": p.dev_images, "build_memory": f"{p.build_memory >> 20} MB",
                 "profile": p.profile, "base_branch": p.base_branch, "reviews": p.reviews,
                 "toulmin": p.toulmin, "mount": p.mount, "lan_addr": p.lan_addr, "deploy_ports": p.deploy_ports,
-                "deploy_binds": p.deploy_binds, "deploy_files": p.deploy_files,
+                "deploy_binds": p.deploy_binds, "deploy_files": p.deploy_files, "deploy_compose": p.deploy_compose,
                 "deploy_external": p.deploy_external, "deploy_adopted": p.deploy_adopted,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
@@ -874,6 +876,9 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
     x.add_argument("--deploy-file", action="append", default=[], metavar="PATH",
                    help="`ab deploy`: an untracked file (root-relative) copied into the deploy copy next to the "
                         "real .env, which is always copied (repeatable)")
+    x.add_argument("--deploy-compose", metavar="PATH",
+                   help="`ab deploy`: the compose file, root-relative, when it is not at the root (e.g. "
+                        "deploy/compose.yaml); the real .env is still the root's")
     x.add_argument("--deploy-external", action="append", default=[], metavar="NAME",
                    help="`ab deploy`: an `external:` volume or network the live stack may use (repeatable); "
                         "agentbox never creates or removes it")

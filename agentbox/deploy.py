@@ -226,13 +226,21 @@ def _extract(tar, dst):
             raise AgentboxError(f"the archive holds {name!r}, which is not a file, directory or symlink")
 
 
-def compose_file(tree):
-    """The compose file at the root of the deploy copy (the first of mounts.COMPOSE_FILES that exists)."""
-    for name in mounts.COMPOSE_FILES:
+def compose_names(rel=""):
+    """The root-relative compose file names to look for: the project's `deploy_compose`, else the root's."""
+    return (rel,) if rel else tuple(mounts.COMPOSE_FILES)
+
+
+def compose_file(tree, rel=""):
+    """The compose file in the deploy copy: `rel` (the project's deploy_compose), or the first of
+    mounts.COMPOSE_FILES at the root. A symlink, or a path through a symlinked directory, is refused: it could
+    point out of the copy."""
+    for name in compose_names(rel):
         path = os.path.join(tree, name)
-        if os.path.isfile(path) and not os.path.islink(path):
+        if (os.path.isfile(path) and not os.path.islink(path)
+                and inside(os.path.realpath(path), os.path.realpath(tree))):
             return path
-    raise AgentboxError(f"no compose file ({', '.join(mounts.COMPOSE_FILES)}) at the root of the commit")
+    raise AgentboxError(f"no compose file ({', '.join(compose_names(rel))}) in the commit")
 
 
 def parse_lan(value, host_addrs):
@@ -246,7 +254,7 @@ def parse_lan(value, host_addrs):
     return m.group(1), int(m.group(2))
 
 
-def check(settings, project, root, *, ref="HEAD"):
+def check(settings, project, root, *, ref="HEAD", compose=""):
     """Everything `ab deploy` decides before it touches podman. Returns a dict: commit, last, dirty, missing,
     extra, review, files. Refusals (no repo, no such commit) raise; the rest the caller reports."""
     commit = resolve_commit(root, ref)
@@ -254,6 +262,6 @@ def check(settings, project, root, *, ref="HEAD"):
     text, files = review(root, last, commit)
     missing, extra = env_check(root)
     has_compose = any(scan.git(root, "cat-file", "-e", f"{commit}:{n}").returncode == 0
-                      for n in mounts.COMPOSE_FILES)
+                      for n in compose_names(compose))
     return {"commit": commit, "last": last, "dirty": dirty(root) if ref == "HEAD" else [],
             "missing": missing, "extra": extra, "review": text, "files": files, "has_compose": has_compose}

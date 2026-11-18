@@ -39,6 +39,7 @@ class Project:
     deploy_ports: list = field(default_factory=list)      # host ports it may publish
     deploy_binds: list = field(default_factory=list)      # host directories it may bind (checked by `ab deploy`)
     deploy_files: list = field(default_factory=list)      # untracked files copied into the deploy copy
+    deploy_compose: str = ""      # the compose file, root-relative ("": the first of mounts.COMPOSE_FILES)
     deploy_external: list = field(default_factory=list)   # external volumes/networks it may use
     deploy_adopted: list = field(default_factory=list)    # hand-run stack volumes adopted by name
 
@@ -141,6 +142,7 @@ def load_project(settings, name):
                    reviews=_check(name, "reviews", p["reviews"]) if p.get("reviews") else "",
                    lan_addr=p.get("lan_addr", ""), deploy_ports=list(p.get("deploy_ports", [])),
                    deploy_binds=list(p.get("deploy_binds", [])), deploy_files=list(p.get("deploy_files", [])),
+                   deploy_compose=str(p.get("deploy_compose") or ""),
                    deploy_external=list(p.get("deploy_external", [])),
                    deploy_adopted=list(p.get("deploy_adopted", [])),
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the

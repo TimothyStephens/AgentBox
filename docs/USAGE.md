@@ -127,8 +127,8 @@ usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
                        [--reviews BUILDER]
                        [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
                        [--deploy-port PORT] [--deploy-bind DIR]
-                       [--deploy-file PATH] [--deploy-external NAME]
-                       [--accept-history-secrets]
+                       [--deploy-file PATH] [--deploy-compose PATH]
+                       [--deploy-external NAME] [--accept-history-secrets]
                        [--i-understand-grant-exposure] [--reattach | --fresh]
                        {pod,python} name
 
@@ -262,6 +262,10 @@ options:
   --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
                         into the deploy copy next to the real .env, which is
                         always copied (repeatable)
+  --deploy-compose PATH
+                        `ab deploy`: the compose file, root-relative, when it
+                        is not at the root (e.g. deploy/compose.yaml); the
+                        real .env is still the root's
   --deploy-external NAME
                         `ab deploy`: an `external:` volume or network the live
                         stack may use (repeatable); agentbox never creates or
@@ -302,7 +306,8 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--reviews BUILDER] [--observe-logs | --no-observe-logs]
                       [--lan-addr ADDR] [--deploy-port PORT]
                       [--deploy-bind DIR] [--deploy-file PATH]
-                      [--deploy-external NAME] [--accept-history-secrets]
+                      [--deploy-compose PATH] [--deploy-external NAME]
+                      [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
                       name [root]
 
@@ -434,6 +439,10 @@ options:
   --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
                         into the deploy copy next to the real .env, which is
                         always copied (repeatable)
+  --deploy-compose PATH
+                        `ab deploy`: the compose file, root-relative, when it
+                        is not at the root (e.g. deploy/compose.yaml); the
+                        real .env is still the root's
   --deploy-external NAME
                         `ab deploy`: an `external:` volume or network the live
                         stack may use (repeatable); agentbox never creates or
@@ -512,7 +521,8 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--reviews BUILDER] [--observe-logs | --no-observe-logs]
                       [--lan-addr ADDR] [--deploy-port PORT]
                       [--deploy-bind DIR] [--deploy-file PATH]
-                      [--deploy-external NAME] [--accept-history-secrets]
+                      [--deploy-compose PATH] [--deploy-external NAME]
+                      [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
                       [--clear-extra-domains] [--clear-dev-images]
@@ -647,6 +657,10 @@ options:
   --deploy-file PATH    `ab deploy`: an untracked file (root-relative) copied
                         into the deploy copy next to the real .env, which is
                         always copied (repeatable)
+  --deploy-compose PATH
+                        `ab deploy`: the compose file, root-relative, when it
+                        is not at the root (e.g. deploy/compose.yaml); the
+                        real .env is still the root's
   --deploy-external NAME
                         `ab deploy`: an `external:` volume or network the live
                         stack may use (repeatable); agentbox never creates or
@@ -665,7 +679,7 @@ options:
                         dev_images, mask_skip, swap, mask, toulmin, mount,
                         reviews, base_branch, build_memory, profile, lan_addr,
                         deploy_ports, deploy_binds, deploy_files,
-                        deploy_external, deploy_adopted
+                        deploy_compose, deploy_external, deploy_adopted
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains

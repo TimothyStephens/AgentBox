@@ -3305,3 +3305,17 @@ the one spec again. The step 3 choices made strict above (the separate build rec
 overlapping any project's grants, `external:` enforced in the gate) stand as built and are written into
 design.md; Tim has not separately confirmed them, and they can be loosened later if a real stack needs it.
 
+## 18 Nov 2026: `ab deploy` takes a compose file outside the root (`deploy_compose`)
+
+**What.** A new project setting, `deploy_compose` (`ab project set <p> --deploy-compose deploy/compose.yaml`):
+the compose file's root-relative path. Unset, the deploy looks at the root as before; set, the commit must
+hold that file and the runner passes it to `podman-compose -f`. The `.env` check and copy stay at the root.
+A path through a symlinked directory is refused (the copy keeps tracked symlinks).
+
+**Why.** Tim's stacks all keep the compose file in `deploy/` with the real `.env` at the root (his answer, 18
+Nov), so "a compose file at the root" (the proposal's point 9) excluded every real project. A setting rather
+than a search: which file runs live should be stated, not guessed. podman-compose resolves the file's relative
+paths from its own folder, still inside the copy, so the gate's bind rule is unchanged. Not changed: `${VAR}`
+substitution reads `.env` from the compose file's folder (podman-compose's rule), not the root's, exactly as
+when the stack is run by hand from `deploy/`; `env_file: ../.env` is unaffected.
+
