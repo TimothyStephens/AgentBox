@@ -7,14 +7,15 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 17 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
+**State as of 18 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
 `agentbox-{claude,omp}` → optional personal layer, each agent CLI installed at a Makefile pin the build
 asserts. Plugins for both agents come from `ab profile install <agent>` (the profile's `plugins.toml`,
 installed in a sandbox, mounted read-only). Which gates are green, and at which commit, is recorded in
 `docs/progress.md` (Status) and the dated run records in `docs/decisions.md`; this file keeps no counts.
 **Sections 1, 2 and 4 were emptied on 17 Nov**; the work is in "Recently closed" below and in decisions.md.
-That day's changes (backup caches, scan fingerprints, gate fixes and split, `--resolve`, `--podman none`)
-pass the unit suite; `make itest` and the other host gates have not run on them yet.
+`ab deploy` (step 6) is built and passed `make itest` on 18 Nov, with `make claude-live`; one real deploy by
+the user is still to come. Of 17 Nov's other changes, the toulmin backup size, omp-live on the config.yml
+model, `--podman none` and `--resolve` still wait on host runs.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -41,7 +42,6 @@ authoritative; this is the *why*.
 
 | Feature | Why not built |
 |---|---|
-| `ab deploy` | Step 6. Would validate a compose file, check `.env` against `.env.dev`, show the diff since the last deploy, confirm, then start the live stack through a sockguard deploy profile — never the raw socket. |
 | `ab allow` / `reload` / `resume` / `outbox` | `allow` was "loosen a *running* session", which the one-session-per-project lock and the per-session posture make the wrong shape; settings changes take effect from the next session by design. |
 | podman `exec` tier | Refused in code (`project.py` and `projectkeys.py`: "exec on the live stack is not built"). `observe` reads the live stack, `dev` runs the agent's own; exec on the live stack is the dangerous middle, with no use case yet. |
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
@@ -137,6 +137,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 18 Nov | `ab deploy` built and verified on podman (`test_deploy`, `make itest` 200/200): a reviewed commit copied out with the real `.env`, run through the gate's deploy mode; hand-run stacks refused, their volumes adoptable by name. Proposal folded into design.md |
 | 17 Nov | TODO sections 2 and 4 emptied: `ab profile install --resolve`; omp-live refuses without a model; the gate's error paths tested (escape directive, `ignoreIfExists` spellings and build-chunk buffering fixed); late project-mask names refused in binds; the `Gate` class split. Also: backups skip `CACHEDIR.TAG` caches and can prune read-only trees, the scan fingerprints executables by metadata, the mask plan 20× faster on big trees, `--podman none` clears live access, long steps print progress |
 | 16 Nov | The independent review's findings fixed (about 100 commits, one test each); modules split along their seams; host gates, both profile deploys and both selftests pass on the result |
 | 15 Nov | MAGS-CodeDev decided: it stays outside agentbox as its own container; a failed plugin install keeps the previous tree, and a `[[repo]]` without a `package.json` is refused before linking |
