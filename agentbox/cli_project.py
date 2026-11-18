@@ -541,7 +541,7 @@ def _print_effective(s, name):
                 "profile": p.profile, "base_branch": p.base_branch, "reviews": p.reviews,
                 "toulmin": p.toulmin, "mount": p.mount, "lan_addr": p.lan_addr, "deploy_ports": p.deploy_ports,
                 "deploy_binds": p.deploy_binds, "deploy_files": p.deploy_files,
-                "deploy_external": p.deploy_external,
+                "deploy_external": p.deploy_external, "deploy_adopted": p.deploy_adopted,
                 "history_secrets_accepted": p.history_secrets_accepted,
                 "grant_exposure_accepted": p.grant_exposure_accepted}
     print(f"project {p.name}")
@@ -551,7 +551,10 @@ def _print_effective(s, name):
         if key.kind == "preset":
             value, source = p.eff[key.name]
         else:
-            value, source = resolved.get(key.name), "project" if key.name in stored else "default"
+            # A key missing from `resolved` falls back to the Project field of the same name (a stored
+            # deploy_adopted once printed "(none)" because it was left out of the map above).
+            value = resolved[key.name] if key.name in resolved else getattr(p, key.name)
+            source = "project" if key.name in stored else "default"
         notes = []
         reason = projectkeys.inert_reason(key.name, ctx)
         if reason:

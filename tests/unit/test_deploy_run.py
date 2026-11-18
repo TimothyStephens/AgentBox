@@ -499,6 +499,14 @@ class AdoptVolumes(RunCase):
         self.assertEqual(p.deploy_adopted, ["web_data"], "only this stack's prefix")
         self.assertEqual(deployrun.foreign_objects(self.settings, Podman(self.settings.podman), p), [])
 
+    def test_project_show_lists_the_adopted_volumes(self):
+        """itest 17 Nov: show printed `deploy_adopted (none)` for a stored list (missing from its resolved map)."""
+        self.assertEqual(self.adopt("y\n"), 0)
+        code, out = self.ab("project", "show", "web")
+        self.assertEqual(code, 0, out)
+        [line] = [l for l in out.splitlines() if l.strip().startswith("deploy_adopted")]
+        self.assertIn("web_data", line)
+
     def test_the_refusal_names_the_adoption_command(self):
         code, out = self.deploy("--lan", f"{LAN}:8095")
         self.assertEqual(code, 2)
