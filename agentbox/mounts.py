@@ -307,7 +307,7 @@ def git_config_targets(g):
     return out
 
 
-def git_overlays(git_dirs, grants):
+def git_overlays(git_dirs, grants, ro_git_dirs=()):
     """Read-only hooks/, config and config.worktree for every git dir that sits inside a writable grant,
     plus whatever those configs point at inside a grant: a `core.hooksPath` (husky's `.husky`, a repo's
     `.githooks`) is where the OWNER's git runs hooks from, and an `include.path` is config the owner's git
@@ -315,20 +315,35 @@ def git_overlays(git_dirs, grants):
     (review 16 Nov, item 15). A missing target is created empty and covered: it would otherwise be the
     agent's to create. A target outside every grant, or a symlink, is not covered here; `grantcheck` reports
     it, so the session refuses until it is accepted or the config is changed. A git dir outside every grant
-    is not mounted, so the agent cannot reach it at all."""
+    is not mounted, so the agent cannot reach it at all.
+
+    `ro_git_dirs` are git dirs in READ-ONLY grants: they get no covers of their own (nothing there is
+    writable), but their configs are read the same way, and a target they name inside a writable grant is
+    covered (read-only root proposal, section 3). A config there that cannot be read does not refuse the plan;
+    grantcheck reports it."""
     mounts, create_dirs, create_files = [], [], []
-    for g in sorted(git_dirs):
-        if not any(inside(g, gr) for gr in grants):
-            continue
-        hooks = os.path.join(g, "hooks")
-        if not os.path.isdir(hooks):
-            create_dirs.append(hooks)
-        mounts.append(Mount("bind", hooks, hooks, ro=True))
-        for name in ("config", "config.worktree"):
-            cfg = os.path.join(g, name)
-            if os.path.isfile(cfg) and not os.path.islink(cfg):
-                mounts.append(Mount("bind", cfg, cfg, ro=True))
-        for _cfg, key, target in git_config_targets(g):
+    todo = [(g, False) for g in sorted(git_dirs)] + [(g, True) for g in sorted(ro_git_dirs)]
+    for g, in_ro in todo:
+        if in_ro:
+            if any(inside(g, gr) for gr in grants):
+                continue                     # inside a writable grant too: covered as one of those
+            try:
+                targets = git_config_targets(g)
+            except AgentboxError:
+                continue
+        else:
+            if not any(inside(g, gr) for gr in grants):
+                continue
+            hooks = os.path.join(g, "hooks")
+            if not os.path.isdir(hooks):
+                create_dirs.append(hooks)
+            mounts.append(Mount("bind", hooks, hooks, ro=True))
+            for name in ("config", "config.worktree"):
+                cfg = os.path.join(g, name)
+                if os.path.isfile(cfg) and not os.path.islink(cfg):
+                    mounts.append(Mount("bind", cfg, cfg, ro=True))
+            targets = git_config_targets(g)
+        for _cfg, key, target in targets:
             if not any(inside(target, gr) for gr in grants) or target in grants or os.path.islink(target):
                 continue                     # grantcheck's to report, not ours to cover
             if not os.path.lexists(target):
@@ -365,7 +380,13 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
             if not any(inside(target, gr) for gr in rw_grants):
                 notes.append(f"{checkout}: .git points to {target}, which is not mounted (git will not work "
                              "there, and its hooks are out of the agent's reach)")
-    m, d, f = git_overlays(git_dirs, rw_grants)
+    ro_git_dirs = set()
+    for g in data_ro:                            # their configs may name a path in a writable grant
+        try:
+            ro_git_dirs |= find_git_dirs(g, _rel_skips(root, g, mask_skip))[0]
+        except AgentboxError as e:               # read-only: it did not refuse the plan before either
+            notes.append(f"{e}; a hooks path its repository names in a writable grant is not covered")
+    m, d, f = git_overlays(git_dirs, rw_grants, ro_git_dirs)
     mounts += m
     dirs += d
     files += f

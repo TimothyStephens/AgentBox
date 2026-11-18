@@ -486,6 +486,43 @@ class GitConfigEscapes(TempCase):
         findings, _ = grantcheck.scan(self.root, [self.root, other])
         self.assertIn("points at a grant's root", "\n".join(texts(findings)))
 
+    def test_a_read_only_repo_naming_a_writable_grant_root_is_a_finding(self):
+        """Read-only root proposal, section 3: a repo in a read-only grant was scanned only for warnings, so
+        a hooks path it names at a WRITABLE grant's root (which no cover can pin) did not refuse."""
+        ref = self.mkdir("ref")
+        subprocess.run(["git", "init", "-q", ref], check=True)
+        subprocess.run(["git", "-C", ref, "config", "core.hooksPath", self.root], check=True)
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ref])
+        self.assertIn(f"points at a grant's root", "\n".join(texts(findings)))
+        self.assertIn(ref, "\n".join(texts(findings)), "names the read-only repo it comes from")
+        self.assertFalse(any("points at a grant's root" in w for w in warnings), warnings)
+
+    def test_a_read_only_repo_naming_a_writable_symlink_is_a_finding(self):
+        ref = self.mkdir("ref")
+        subprocess.run(["git", "init", "-q", ref], check=True)
+        os.symlink("/etc/hostname", os.path.join(self.root, "link.inc"))
+        subprocess.run(["git", "-C", ref, "config", "include.path", os.path.join(self.root, "link.inc")],
+                       check=True)
+        findings, _ = grantcheck.scan(self.root, [self.root], warn_grants=[ref])
+        self.assertIn("is a symlink", "\n".join(texts(findings)))
+
+    def test_a_read_only_repo_naming_a_coverable_writable_path_is_not_a_finding(self):
+        """The plan covers it read-only (mounts.git_overlays), like a writable repo's own hooks path."""
+        ref = self.mkdir("ref")
+        subprocess.run(["git", "init", "-q", ref], check=True)
+        subprocess.run(["git", "-C", ref, "config", "core.hooksPath", os.path.join(self.root, ".githooks")],
+                       check=True)
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ref])
+        self.assertEqual((findings, [w for w in warnings if "git config" in w]), ([], []))
+
+    def test_a_read_only_repo_naming_a_path_outside_every_grant_stays_a_warning(self):
+        ref, outside = self.mkdir("ref"), self.mkdir("elsewhere")
+        subprocess.run(["git", "init", "-q", ref], check=True)
+        subprocess.run(["git", "-C", ref, "config", "core.hooksPath", outside], check=True)
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ref])
+        self.assertEqual(findings, [])
+        self.assertTrue(any("points outside the grant" in w for w in warnings), warnings)
+
     def test_an_unparseable_config_is_a_finding(self):
         with open(os.path.join(self.root, ".git", "config"), "a") as f:
             f.write("[core\n")
