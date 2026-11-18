@@ -1,4 +1,4 @@
-"""Deploy step 2: the gate's deploy mode (docs/deploy-proposal.md, section 6). One allowed and one refused case per
+"""Deploy step 2: the gate's deploy mode (design.md, deploy mode). One allowed and one refused case per
 row of the table, and a check that the dev tier decides the same with `mode` absent and `mode="dev"`.
 Upstream lookups are faked (test_review_step5.Fake's object store)."""
 import json

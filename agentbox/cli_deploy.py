@@ -1,4 +1,4 @@
-"""`ab deploy <project>`: the live stack from a reviewed commit (deploy.py, deployrun.py; docs/deploy-proposal.md).
+"""`ab deploy <project>`: the live stack from a reviewed commit (deploy.py, deployrun.py; design.md).
 
 Order: host only; one deploy per project (flock); every check (the commit, the clean tree, the `.env` names, the
 LAN address, the deploy binds, objects of the compose project no deploy made); the review; the confirmation;

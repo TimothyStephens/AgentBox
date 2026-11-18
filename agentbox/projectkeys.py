@@ -188,7 +188,7 @@ KEYS = (
          values=("off", "on"), security=False, clears=False, unsettable=True, display="always", inert="",
          inert_reason=""),
 
-    # --- `ab deploy` (deployrun.py; docs/deploy-proposal.md section 8): properties of the LIVE service the user
+    # --- `ab deploy` (deployrun.py; design.md, deploy settings): properties of the LIVE service the user
     # deploys, not of a session's posture, so a preset change does not clear them. Security-relevant: they
     # decide what the live stack may publish and bind. Nothing in a session reads them.
     _key("lan_addr", kind="project", arity="scalar", flags=("--lan-addr",), dest="lan_addr", validate="ipv4",

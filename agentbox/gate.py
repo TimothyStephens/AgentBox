@@ -64,7 +64,7 @@ built-image record) from `gate_images.ImagesMixin`; schema tables, Containerfile
 in `gate_schema`, `gate_dockerfile` and `gate_http`. Every module-level name of those is re-exported here.
 
 Deploy mode (`cfg["mode"] == "deploy"`; absent or "dev" is everything above, unchanged): the same gate in front
-of a per-deploy podman service, for `podman-compose up` of the LIVE stack (docs/deploy-proposal.md section 6).
+of a per-deploy podman service, for `podman-compose up` of the LIVE stack (design.md, deploy mode).
 The decision points branch on `self.deploy` and nowhere else: what is owned is what carries
 agentbox.role=deploy and agentbox.deploy=<project> (labels alone: a fresh gate must reach the previous deploy's
 objects for `--remove-orphans` and recreation; a dev gate always forces role=dev, so it can never make one);
@@ -194,7 +194,7 @@ INFRA_ROOTFS = "/libpod/tmp/infra-container"
 VOLUME_OPTS = ("ro", "rw", "z", "Z", "idmap", "noexec", "exec", "nosuid", "suid", "nodev", "dev")
 NS_REFUSED = ("host", "path", "container", "ns")
 
-# ---- deploy mode (docs/deploy-proposal.md, section 6) ----
+# ---- deploy mode (design.md, deploy mode) ----
 DEPLOY_LABEL = "agentbox.deploy"     # =<project>: what a deploy-mode gate may reach (with agentbox.role=deploy)
 ROLE_DEPLOY = "deploy"
 COMPOSE_LABELS = ("io.podman.compose.project", "com.docker.compose.project")

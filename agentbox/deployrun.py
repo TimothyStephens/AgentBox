@@ -1,4 +1,4 @@
-"""`ab deploy`, the run (step 3; docs/deploy-proposal.md section 5): the live stack from the deploy copy.
+"""`ab deploy`, the run (step 3; docs/design.md "Deploy: the run"): the live stack from the deploy copy.
 
 A deploy is built like a session's dev tier, out of the same parts, with the deploy-mode policy:
 

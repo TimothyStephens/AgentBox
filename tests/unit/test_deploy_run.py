@@ -1,5 +1,5 @@
 """`ab deploy`, step 3: the settings, the pre-run refusals, the confirmation, and the run against the fake podman
-(deployrun.py, cli_deploy.py; docs/deploy-proposal.md "Step 3 (built)"). The podman service, sockguard's socket
+(deployrun.py, cli_deploy.py; docs/design.md "Deploy: the run"). The podman service, sockguard's socket
 and the gate process are mocked: they need a real podman; their argv and the gate's config are what is checked."""
 import io
 import json

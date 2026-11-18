@@ -1217,7 +1217,7 @@ examples:
 
 ### `ab deploy`
 
-Start a project's live stack from a reviewed commit, on the host: checks the commit, the .env names and the LAN address, shows the diff since the last deploy, asks, then runs podman-compose from a copy of the commit in a runner whose only podman access is the deploy-mode gate. `--check` stops after the review. Not yet verified against real podman (docs/deploy-proposal.md).
+Start a project's live stack from a reviewed commit, on the host: checks the commit, the .env names and the LAN address, shows the diff since the last deploy, asks, then runs podman-compose from a copy of the commit in a runner whose only podman access is the deploy-mode gate. `--check` stops after the review; `--adopt-volumes` takes over a hand-run stack's volumes by name.
 
 ```text
 usage: ab deploy [-h] [--lan ADDR:PORT] [--commit REF] [--yes]

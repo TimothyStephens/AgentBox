@@ -1,4 +1,4 @@
-"""`ab deploy` against real podman (step 4; docs/deploy-proposal.md, decisions.md 17 Nov).
+"""`ab deploy` against real podman (step 4; docs/design.md "Preview and deploy", decisions.md 17 Nov).
 
 A two-service stack (a web server built from a Containerfile, a worker from a public image, one named volume)
 is deployed from a test repo through the whole path: the review, the confirmation on a pty, the per-deploy

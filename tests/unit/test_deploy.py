@@ -1,4 +1,4 @@
-"""`ab deploy`, step 1: what is decided before podman (deploy.py, cli_deploy.py; docs/deploy-proposal.md)."""
+"""`ab deploy`, step 1: what is decided before podman (deploy.py, cli_deploy.py; design.md)."""
 import os
 import subprocess
 from unittest import mock

@@ -3291,3 +3291,17 @@ or refusing and migrating by hand.
 **Also fixed in step 3 (17 Nov).** The deploy copy kept owner-only modes (0600/0700), so a container whose app
 runs as a non-root user could not read files it was built from. The copy now keeps git's modes (0644/0755)
 under a 0700 top directory. `.env` stays 0600.
+
+## 18 Nov 2026: `ab deploy` verified on podman; the proposal folded into design.md
+
+**What.** `make itest` ran `tests/integration/test_deploy.py` against real podman for the first time (Tim, 17-18
+Nov). One failure, not in the deploy itself: `ab project show` printed `deploy_adopted (none)` for a stored
+value, because show's resolved map left the key out (fixed in 8efea8a; a key missing from that map now falls
+back to the Project field). The rerun passed 10/10, and `make itest` 200/200. `docs/deploy-proposal.md` is
+deleted; design.md "Preview and deploy" now describes `ab deploy` as built.
+
+**Why.** The proposal was a working document for the build; with every step built and verified, design.md is
+the one spec again. The step 3 choices made strict above (the separate build record, `deploy_binds` not
+overlapping any project's grants, `external:` enforced in the gate) stand as built and are written into
+design.md; Tim has not separately confirmed them, and they can be loosened later if a real stack needs it.
+

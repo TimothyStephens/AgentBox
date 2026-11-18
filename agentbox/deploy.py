@@ -1,4 +1,4 @@
-"""`ab deploy`: start a project's live stack from a reviewed commit (docs/deploy-proposal.md; decisions.md,
+"""`ab deploy`: start a project's live stack from a reviewed commit (docs/design.md "Preview and deploy"; decisions.md,
 17 Nov 2026).
 
 This module is the part that needs no podman: what would be deployed and whether it may be. A deploy is a

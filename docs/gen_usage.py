@@ -82,7 +82,7 @@ INTENT = {
     "ab deploy": "Start a project's live stack from a reviewed commit, on the host: checks the commit, the .env "
                  "names and the LAN address, shows the diff since the last deploy, asks, then runs podman-compose "
                  "from a copy of the commit in a runner whose only podman access is the deploy-mode gate. "
-                 "`--check` stops after the review. Not yet verified against real podman (docs/deploy-proposal.md).",
+                 "`--check` stops after the review; `--adopt-volumes` takes over a hand-run stack's volumes by name.",
     "ab session attach": "Re-attach a terminal to the session already running for a project (or a session id).",
     "ab screen": "tmux workspaces, one per project: agent panes (each an `ab session start`) and host shells in a "
                  "layout from ~/.config/agentbox/screen.toml. The verbs mirror `ab session`.",

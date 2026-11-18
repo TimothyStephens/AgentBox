@@ -272,7 +272,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 - Masked by default, in every subdirectory of every grant: files `.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks` (`mounts.MASK_FILES`) get a read-only empty file bound over them (not `/dev/null`: a device node in the tree breaks rootless builds), `secrets/` directories an empty tmpfs. `.env.example`, `.env.sample`, `.env.template` and `.env.dev` are exempt. The walk skips `.git`, `node_modules`, `.venv`, `venv`, `__pycache__` and the project's `mask_skip` folders, and does not follow symlinks. `mask_skip` is a speed knob for large trees, not a way to exempt a secret: `grantcheck` still scans those folders and refuses a session if a secret-named file is found there (it would be unmasked), so do not use `mask_skip` to get past the check.
 - **The project's own masks** (`mask`, set with `--mask PATH`, repeatable; decisions.md 10 Nov 2026) add to the secret masks for anything else that must not be in the agent's reach but cannot leave the grant — a live data directory a compose file binds, a state file. A bare name (`data`) masks every file or directory of that name anywhere in the grants, as `.env` is; `./data` or `deploy/state` masks that one path under the root. A masked directory is an empty **read-only** tmpfs, a masked file the empty mask file; a path that does not exist yet is created empty and masked. They are applied after the secret masks and the swap, so a masked path is never substituted. A masked path counts as hidden for `grantcheck` (so a compose data bind to it, or a database under it, stops being a finding), as covered for the gate (a container the agent starts cannot bind it; and a file or directory with a masked bare name that appears during the session is refused in a bind, as a late `.env` is, 17 Nov 2026), is left out of the pre-session backup — **agentbox does not back up what it masks; a masked data directory is yours to back up** — and out of the end-of-session scan, since a host service may write into it during the session. A preset change does not clear it. Git history is not covered: the setting masks working-tree paths, and the history check still keys on the secret names only.
 - Masks are computed at session start: a secret file created during a session is not masked.
-- **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; it is for the host only (and for `ab deploy` once that is built). Where a read-write grant has `.env.dev` and no `.env`, the launcher creates an empty 0600 `.env` on the host as the mount point and leaves it; in a `data_ro` grant, or where `.env` exists but is not a regular file, the swap for that directory is skipped with a note.
+- **The dev swap.** Inside the sandbox, the launcher mounts `.env.dev` at the path `.env`, so compose variable substitution, `env_file:` and dotenv-style loaders all read dev values with no code changes. The real `.env` is never mounted; it is for the host only (and for `ab deploy`). Where a read-write grant has `.env.dev` and no `.env`, the launcher creates an empty 0600 `.env` on the host as the mount point and leaves it; in a `data_ro` grant, or where `.env` exists but is not a regular file, the swap for that directory is skipped with a note.
 - Other file names use a per-project mapping, set with `--swap TARGET=STANDIN` (repeatable) or stored as `swap = { ".env.local" = ".env.dev" }`. A project's mapping is **merged with** the default `.env` → `.env.dev`, not a replacement for it (it replaced it until 28 Oct, so adding one mapping silently stopped `.env.dev` standing in for `.env`); a mapping for the same target wins. A masked file with no mapped dev file stays empty. Two rules keep a swap from becoming a way to *read* a secret: the **destination** must be a masked name (the list under Project secrets), so a swap only ever stands in for a file that is hidden anyway, and the **stand-in may not be** one, so `swap = { "notes.txt" = ".env" }` — which would mount the real `.env` at an unmasked path while the mask covered the original — is refused.
 - The dev file is mounted read-write so the agent can add variables. `ab deploy` compares variable names (never values) between the dev and real files and refuses to deploy while the real file is missing any, listing them.
 - Commit a `.env.example` with names and dummy values; git-ignore both `.env` and `.env.dev`.
@@ -348,7 +348,47 @@ Without the gate, a container created with no network, or a `podman build`, runs
 ### Preview and deploy
 
 - `ab session preview <session> <service>:<port>` (**built**, 2 Oct) starts a forwarder container on the session's internal network that publishes `127.0.0.1:<port>` only (never 0.0.0.0 or the LAN, default a free port unless `--port` is given) and relays to that one service of the session; you view it from your desktop with `ssh -N -L <port>:127.0.0.1:<port> <host>`. It carries the session's labels, so it ends with the session (`ab session kill`, teardown, gc); `ab session preview <session> --stop` removes it earlier.
-- `ab deploy <project> --lan 10.0.0.103:<port>` (**being built** — build step 6; shape decided 17 Nov 2026 in `docs/deploy-proposal.md`: a clean commit copied out with `git archive` plus the real `.env`, run by podman-compose in a runner container whose only podman access is the gate in a deploy mode. Built 17 Nov, unit-tested, **not yet run on podman**: `--check`, the confirmation, the per-deploy service, sockguard and deploy-mode gate, the runner, `--adopt-volumes`, the settings `lan_addr`, `deploy_ports`, `deploy_binds`, `deploy_files`, `deploy_external` and `deploy_adopted`; `tests/integration/test_deploy.py` is the host check): it would validate the compose file (binds inside the project, no privileged or host networking, ports only on the address named), check the real .env has every variable name in .env.dev, show the diff since the last deploy, ask for confirmation, then start the live `<project>` stack through a sockguard deploy profile, never the raw socket.
+- `ab deploy <project> [--lan ADDR:PORT] [--commit REF] [--yes] [--check] [--adopt-volumes]` (**built**, build step 6; decided 17 Nov 2026, decisions.md D1-D5 and the step 2/3 entries; verified against real podman by `tests/integration/test_deploy.py` in `make itest`, 18 Nov). Code: `deploy.py` (checks, review, copy), `deployrun.py` (the run), `cli_deploy.py`, the gate's deploy mode (`gate.py`, `gate_mounts.py`, `gate_images.py`). It is not a YAML check plus `podman-compose up`: the compose file, Containerfile and code are agent-written, and a static check misses podman-compose extras (`x-podman`, `podman_args`, extends, profiles, substitution with the real `.env`), build steps (`FROM`, `RUN --mount`) and a file changed between the review and the `up`. So every API call podman-compose makes goes through the gate, in a second policy on the dev tier's machinery.
+
+#### Deploy: before anything starts
+
+- **Host only**: refused inside a session (`AGENTBOX_SESSION`). One deploy per project at a time (flock on `<project dir>/deploy.lock`).
+- **A commit, not the working tree** (D2). The root must be a git repo whose tracked tree is clean (untracked files do not count); `--commit REF` names another commit and needs no clean tree. The commit must have a compose file at the root.
+- **The `.env` names.** Every variable name in `.env.dev` must be in the real `.env`, or the deploy is refused listing the missing names; names only in `.env` are listed as a note. Values are never read into output or logs.
+- **The LAN address**: `--lan ADDR:PORT` (an IPv4 address of this host, not 0.0.0.0 or loopback), or the stored `lan_addr`, re-checked as still this host's. Stored, and the port added to `deploy_ports`, only after a successful deploy.
+- **Objects no deploy made.** A container of the compose project without the deploy labels (a stack brought up by hand) is refused, printing `podman-compose -p <compose_project> down` for the user to run; agentbox never removes what it did not create. A `<compose_project>_*` volume without the deploy labels is refused, pointing at `ab deploy <p> --adopt-volumes`: that lists the volumes, asks on a terminal, and stores their names in `deploy_adopted` (podman cannot add labels to an existing volume). Adopted volumes are used by name from the next deploy on; nothing is copied, moved or removed.
+- **The deploy binds** are re-checked (below).
+- **The review.** First deploy: the file list, with `compose.yaml` and every `Containerfile` in full. Later: `git diff <last successful deploy>..<commit>`, the key files (compose, `Containerfile*`, lockfiles, `.env.dev`) first. Git runs with no external diff or textconv from the repo's config (it is agent-written). A last deploy no longer in history reads as a first deploy. `--check` stops here, starting and recording nothing.
+- **The prompt** `Deploy <commit> of <project> to <lan>? [y/N]` on a terminal. `--yes` only with stdin not a terminal and the commit the last successful deploy's (a scripted redeploy); refused otherwise, including on a first deploy.
+
+#### Deploy: the run
+
+- **The copy.** `git archive <commit>` extracted into `<data>/projects/<p>/deploys/<stamp>` (symlinks kept as links and never written through; dirs 0755, files 0644/0755, the top 0700) plus the real `.env` (0600, refused if a symlink) and any `deploy_files`. Everything builds and starts from the copy, so nothing the agent does after the review changes what runs. Kept: the newest two copies and the last successful deploy's (the stack's binds and build contexts point into it).
+- **The parts** are a session's: a per-deploy podman service (`sockguard.start_service`, no slice), a sockguard with `sockguard.deploy_config` (owner isolation on `agentbox.deploy=<project>`), a build holder on a per-deploy bridge network with normal egress, the gate in deploy mode, then a runner (`localhost/agentbox-base:latest`, the fixed hardening with no cgroup parent, `--network=none`, the copy read-only at its own path, the gate socket at `/run/agentbox/podman.sock`) running `podman-compose -p <compose_project> -f <copy>/compose.yaml up -d --build --remove-orphans`. The infrastructure is named `<prefix>deploy-<project>` with session labels and a `session.json`, so `ab session gc` leaves a running deploy alone and reaps a crashed one; teardown runs on every path with signals ignored.
+- **The record.** `deploys.jsonl` gets `{time, commit, compose_project, lan, ports, result, error, stage, images}` on success and failure. A failed deploy leaves what podman-compose left running and says so; there is no automatic rollback (`--commit <sha>` is the manual one). After a deploy: the running containers, and warnings if lingering is off or `podman-restart.service` is not enabled (read-only checks; agentbox changes neither).
+
+#### Deploy: the gate's deploy mode
+
+Selected by the gate config (`"mode": "deploy"`); every decision point branches on `Gate.deploy` (tests in `tests/unit/test_gate_deploy.py`).
+
+| | dev tier | deploy mode |
+|---|---|---|
+| Ownership | the session's owner label and this gate's record | labels only: `agentbox.role=deploy`, `agentbox.deploy=<project>` (stamped; client `agentbox.*` labels dropped), so a fresh gate reaches the last deploy's objects for `--remove-orphans`. A dev gate always forces `role=dev`, so a session can never make an object a deploy owns. Starting an earlier deploy's container re-runs the post-create check |
+| Compose project | `<project>-dev` | `compose_project` only; a create without the label is refused |
+| Networks | pinned to the session's internal network | the stack's own bridge networks, normal egress (D3), no options, subnets, IPAM, static IPs or MACs; never host, `ns:`, `container:` or podman's default; pods with an infra container refused |
+| Published ports | refused | on `lan_addr` only (empty or 0.0.0.0 rewritten to it), host port in `deploy_ports`; no ranges, random ports or publish-all |
+| Binds | inside the grants, covers enforced | inside the copy, a `deploy_binds` path (D4) or the timezone files (`/etc/localtime`, `/etc/timezone`, `/usr/share/zoneinfo`, read-only), by real path; never `/proc`, `/sys`, `/dev`, `/run`, a socket or a directory holding one; the same at start against mountinfo. Covers, masks and the secret scan do not apply (the copy holds the real `.env` by design) |
+| Named volumes | only the session's | `<compose_project>_*`, created labelled or reused if labelled; plus `deploy_adopted` and `deploy_external` names, used, never changed |
+| External volumes and networks | refused | only names in `deploy_external` (refused at the create, naming the setting) |
+| Restart policy | stripped | forced to `unless-stopped` and required by the post-create check |
+| cgroup, OOM score | agentbox.slice, 1000 | the host default (D5), 0 (a live service is not the first OOM victim); memory and pids caps and swap off kept |
+| Images | built ones and the dev allowlist | only images this deploy path built (`deploy-built-images.json`, never the sessions' record: a `localhost/` image an agent built in a session cannot run live) and pulls from the registries; the same build-path checks |
+| Proxy variables | injected | none |
+| Privileged, caps, devices, host namespaces, security opts | refused | refused |
+
+- **Settings** (`ab project add/set/init`, shown by `ab project show`; security-relevant, not cleared by a preset change): `lan_addr` (`--lan-addr`), `deploy_ports` (`--deploy-port`), `deploy_binds` (`--deploy-bind`: absolute paths through `check_grant`, never system directories, the project's own root or another project's grant; re-checked at every deploy), `deploy_files` (`--deploy-file`: untracked files under the root copied into the copy), `deploy_external` (`--deploy-external`), and `deploy_adopted` (written only by `--adopt-volumes`).
+- **Who may deploy:** any project with a compose file at the root, any preset; deploy is the user's own act.
+- **Observe tier:** a deployed stack's containers have their working dir in the copy under the data dir; the live-stack ownership check accepts that dir only for containers with the deploy labels.
 
 ### Workspace UI (`ab screen`)
 
@@ -364,7 +404,7 @@ The canonical names are `build` and `script`; **`pods` and `python` are kept as 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Inspecting a live stack | Sensitive data, offline analysis |
 | Code | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up — `research` is **not** a read-only grant; the agent can write anywhere in the project root, as under every preset | Read-write, backed up | Read-write, backed up |
-| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` (planned) | Read-write | Read-only | Read-only | Read-only | Read-only |
+| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` | Read-write | Read-only | Read-only | Read-only | Read-only |
 | Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | Read-only only | Read-only only |
 | `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
 | Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `locked` |
@@ -431,7 +471,7 @@ A power loss or reboot ends every running session, but everything written to the
 **Bringing live stacks back**
 
 - Rootless containers do not restart on boot by themselves. They need a restart policy (`restart: unless-stopped`), podman's `podman-restart.service` enabled for your user, and lingering enabled so your user's services start without a login.
-- `ab deploy` (once built) will set the restart policy and check the other two, warning if either is missing; until then, set them by hand.
+- `ab deploy` sets the restart policy (`unless-stopped`) and checks the other two, warning if either is missing; it changes neither.
 - Check today: `loginctl show-user vmuser -p Linger` and `systemctl --user is-enabled podman-restart.service`.
 
 ## Selftest
@@ -573,6 +613,7 @@ Day to day you register a project once, then start sessions by agent and project
 | `ab session attach <name>` | Re-attach a terminal to the session already running for a project (`podman attach` on its agent container) |
 | `ab session ls` | Sessions with their project, start time, age and idle time; a running session idle past a threshold is flagged |
 | `ab session preview <session> <service>:<port> [--port N] [--stop]` | Publish one dev-stack service on `127.0.0.1` (a free port unless `--port`); view it via `ssh -L` |
+| `ab deploy <name> [--lan ADDR:PORT] [--commit REF] [--check] [--adopt-volumes]` | Review and confirm a commit, then start the live stack from a copy of it, every podman call through the gate's deploy mode (host only; "Preview and deploy" above) |
 | `ab session kill <session>` | Tear down everything the session created |
 | `ab session gc` | Remove what dead sessions left (containers, networks, sockets) and storage nothing can use: session-built images, superseded personal image layers, unused profile snapshots (runs automatically after boot) |
 | `ab project selftest <a> <name>` | Run the boundary checks |
@@ -696,12 +737,11 @@ inbox items would be lost.
 | Command | What it would do |
 | --- | --- |
 | `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
-| `ab deploy <name> --lan 10.0.0.103:<port>` | Validated, diffed, confirmed deploy of the live stack (step 6) |
 | `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
 | `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
 | `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
 
-The examples below and the worked example that follows show the **full intended workflow**, including one command not built yet (`ab deploy`). Today, deploy by hand; `ab session preview` takes a **session** name, not a project.
+`ab session preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
 
@@ -710,7 +750,7 @@ ab project add helper ~/repos/helper --preset build
 ab screen start helper                           # the tmux workspace; or plain: ab session start claude helper
 # agent: edits, podman-compose up -d --build, curl http://web:8080, reads logs, repeats
 ab session preview <session> web:8080   # then: ssh -L <port>:127.0.0.1:<port> ubuntu-dev
-ab deploy helper --lan 10.0.0.103:8090           # planned (step 6)
+ab deploy helper --lan 10.0.0.103:8090           # review the diff, confirm
 ```
 
 **A data-processing script (`python`)**
@@ -797,7 +837,7 @@ nano ~/repos/filelab/.env                # real config, never visible to the age
 ab deploy filelab --lan 10.0.0.103:8095
 ```
 
-- `ab deploy` validates the compose file, checks the real .env has every variable name in .env.dev, shows the diff since the last deploy, asks for confirmation, and starts the live `filelab` stack with a restart policy.
+- `ab deploy` checks the commit and the real .env's variable names, shows the diff since the last deploy, asks for confirmation, and starts the live `filelab` stack from a copy of that commit, every podman call through the gate's deploy mode, with a restart policy.
 - Uploads land in the live stack's own volume, which no agent session is ever granted (the gate refuses any named volume the session did not create).
 - Add a login, or basic auth through caddy, before deploying: an unauthenticated upload page is open to every device on the LAN.
 
@@ -821,7 +861,7 @@ because they are design decisions rather than status:
 - **Host migration** of the real stacks (the section above): not started; the first real project is the
   user's call (progress.md, Next).
 
-The commands the usage sections name but which do not exist (`ab allow`, `ab deploy`, `ab outbox`,
+The commands the usage sections name but which do not exist (`ab allow`, `ab outbox`,
 `ab reload`, `ab resume`), the podman `exec` tier, the caps/devices opt-in, the key gateway, the Pi and Codex
 adapters, `--data-bind` and the `dev/data` overlay are each a Status row there, with the reason in
 `docs/TODO.md` §3.
