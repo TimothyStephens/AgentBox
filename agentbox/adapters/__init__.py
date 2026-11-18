@@ -98,12 +98,12 @@ class SessionSetup:
 # --agent choices, `ab profile ls`, `ab session gc`'s sweep of personal image layers -- and an agent
 # missing from one of those lists is a silent no-op rather than an error (a sweep that skips an agent's
 # images, say). tests/unit/test_gc_layers.py pins the list against the adapters and against the CLI.
-NAMES = ("claude", "omp")
+NAMES = ("claude", "omp", "pi")
 
 
 def get(name):
-    from . import claude, omp
-    adapters = {"claude": claude.ADAPTER, "omp": omp.ADAPTER}
+    from . import claude, omp, pi
+    adapters = {"claude": claude.ADAPTER, "omp": omp.ADAPTER, "pi": pi.ADAPTER}
     if name not in adapters:
         from ..errors import AgentboxError
         raise AgentboxError(f"unknown agent {name!r} (known: {', '.join(sorted(adapters))})")

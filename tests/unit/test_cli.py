@@ -190,7 +190,7 @@ class RunGuardTest(SettingsCase):
         self.assertIn("project", out)
 
     def test_the_agent_is_a_choice(self):
-        rc, out = self.ab("session", "start", "pi", "p1")
+        rc, out = self.ab("session", "start", "codex", "p1")
         self.assertEqual(rc, 2, out)
         self.assertIn("invalid choice", out)
 

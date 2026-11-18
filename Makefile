@@ -1,5 +1,5 @@
 # The loop: make check (unit tests + guard, no podman) -> make itest (real podman, self-cleaning) -> make clean
-.PHONY: test check itest clean guard host-only install-slice claude-live itest-oom base-image omp-image claude-image omp-live probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
+.PHONY: test check itest clean guard host-only install-slice claude-live itest-oom base-image omp-image claude-image pi-image omp-live pi-live probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
 
 # bash with pipefail: `cmd | tee log` fails when cmd fails, instead of reporting tee's success.
 SHELL := bash
@@ -7,7 +7,7 @@ SHELL := bash
 
 # Targets that need the host (real podman, the LAN, ~/.config, systemd). Inside an agentbox session
 # (AGENTBOX_SESSION is set) each of them stops before its recipe with exit 2.
-HOST_ONLY := itest clean install-slice claude-live itest-oom base-image omp-image claude-image omp-live \
+HOST_ONLY := itest clean install-slice claude-live itest-oom base-image omp-image claude-image pi-image omp-live pi-live \
 	probe-project omp-plugin-probe omp-env-probe verify-sockguard install trial-snapshot trial-check egress-soak
 ifdef AGENTBOX_SESSION
 host-only:
@@ -64,6 +64,10 @@ trial-check:
 # AB_LIVE_EGRESS=locked|packages|open (default packages); AB_LIVE_MODEL=<provider/model> picks the model.
 omp-live:
 	python3 -m tests.live.omp_live
+
+# Run by Tim, not by the builder: Pi with the real keys (read in place) and the OMP model seed.
+pi-live:
+	python3 -m tests.live.pi_live
 
 # Run by Tim, not by the builder: learns OMP's plugin/marketplace CLI and WHERE an installed plugin lands,
 # which is what `ab profile install` has to drive and mount. It runs inside a throwaway session -- `~/.omp`
@@ -151,6 +155,7 @@ BUN_SHA256 := bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
 # does not meet; the version also goes on the agentbox.cli-version label that `ab project selftest` reports.
 CLAUDE_VERSION := 2.1.318
 OMP_VERSION := 18.13.3
+PI_VERSION := 1.5.2
 
 BASE_WARN_DAYS ?= 14
 
@@ -205,10 +210,15 @@ endef
 OMP_BUILD_ARGS := --build-arg OMP_VERSION=$(OMP_VERSION) --build-arg BUN_VERSION=$(BUN_VERSION) \
 	--build-arg BUN_SHA256=$(BUN_SHA256) --build-arg AB_HOME=$(HOME)
 CLAUDE_BUILD_ARGS := --build-arg CLAUDE_VERSION=$(CLAUDE_VERSION)
+PI_BUILD_ARGS := --build-arg PI_VERSION=$(PI_VERSION)
 
 # The OMP session image (images/omp/Containerfile explains every departure from omp-env).
 omp-image:
 	$(call build_agent_image,omp,omp --version,$(OMP_BUILD_ARGS))
+
+# The Pi session image (images/pi/Containerfile; docs/pi-proposal.md).
+pi-image:
+	$(call build_agent_image,pi,pi --version,$(PI_BUILD_ARGS))
 
 # The Claude session image (images/claude/Containerfile).
 claude-image:

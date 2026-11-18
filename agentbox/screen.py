@@ -54,7 +54,7 @@ DEFAULT_CONFIG = r'''# ab screen layouts.  Save as ~/.config/agentbox/screen.tom
 #                           reviewer for reviewer panes)
 #
 #   Reviewer panes are left out when you start ab screen without a reviewer project.
-#     agent   "claude" | "omp"  which agent an agent pane starts (default: --agent, then "claude")
+#     agent   "claude" | "omp" | "pi"  which agent an agent pane starts (default: --agent, then "claude")
 #
 # CHOOSING A LAYOUT
 #   default = "auto" picks the layout with the largest min_cols that fits your

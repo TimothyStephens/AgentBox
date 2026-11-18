@@ -571,6 +571,20 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.om
 | `AGENTS.md` | Generated per session, read-only |
 | Old `--workspace--` and `-tmp*` buckets | Never mounted (the host's `agent/sessions` is not mounted at all) |
 
+**Pi** (`@earendil-works/pi-coding-agent`, built 18 Nov 2026; decisions P1-P6 in `docs/pi-proposal.md`)
+
+| Piece | Setting |
+| --- | --- |
+| Security flags | Fixed hardening only; `pi --no-approve` always (the repo's `.pi`, its packages and `.agents/skills` are never trusted); `PI_OFFLINE=1` (no package auto-install, update check or tool download) and `PI_TELEMETRY=0` |
+| Image | `localhost/agentbox-pi` (`make pi-image`, `images/pi/Containerfile`): `agentbox-base` plus Pi at the `PI_VERSION` pin, installed with `--ignore-scripts` and asserted by `pi --version`; node only (no Bun, no Chromium: Pi has no browser tool) |
+| `~/.pi` in the session | A tmpfs owned by the agent, with the pieces below mounted on it |
+| Per project, read-write | `~/.local/share/agentbox/projects/<project>/pi/agent` at `~/.pi/agent` (sessions, Pi's databases); `extensions`, `git`, `npm`, `bin`, `tools`, `tmp` in it covered empty and read-only; files Pi loads from it at start (SYSTEM.md, AGENTS.override.md, trust.json, ...) moved to the inbox before every session |
+| Generated per session, read-only | `models.json` (the OMP seed through the same checks, keys as `${AB_KEY_<NAME>}`), `AGENTS.md`, `auth.json` = `{}` (no `/login` key), `mcp.json` (empty, or Toulmin's server with `exposure: direct`) |
+| Settings | `~/.config/agentbox/pi/settings.json` if Tim creates it, copied in fresh each start (Pi writes it in place); code-running keys refused; project trust and install telemetry forced off |
+| Profile | Skills at `agent/skills`, prompt templates at `agent/prompts`, read-only; the inbox at `agent/inbox` |
+| Approval prompts | None in Pi: refused under a preset with approvals on (P1) |
+| Plugins | Pi packages through `ab profile install pi`: step 2, not built yet |
+
 **Claude Code**
 
 | Piece | Setting |
@@ -617,7 +631,7 @@ Build against a dummy compose project (two nginx containers) first; real stacks 
 5. **Host-side gate and dev tier:** network pinning, build network, port rejection, proxy injection. Gate: the gate and build cases pass on a dummy two-container compose project.
 6. **`ab session preview` and `ab deploy`.**
 7. **Workspace UI:** tmux layout on top of the launcher.
-8. **Pi adapter:** proves swapping harnesses works.
+8. **Pi adapter:** proves swapping harnesses works. Built 18 Nov 2026 (core; packages next).
 9. **Host migration**, one stack per snapshot.
 
 ## Usage

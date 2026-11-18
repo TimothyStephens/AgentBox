@@ -818,17 +818,17 @@ examples:
 Spin up a throwaway session and prove the sandbox boundaries hold (posture, egress, mounts, podman scoping).
 
 ```text
-usage: ab project selftest [-h] [--json] {claude,omp} name
+usage: ab project selftest [-h] [--json] {claude,omp,pi} name
 
 prove the sandbox boundaries hold for a project (posture, egress, mounts, podman scoping), in a throwaway session
 
 positional arguments:
-  {claude,omp}  agent to run the checks as
-  name          the registered project to test
+  {claude,omp,pi}  agent to run the checks as
+  name             the registered project to test
 
 options:
-  -h, --help    show this help message and exit
-  --json        print results as JSON instead of a table
+  -h, --help       show this help message and exit
+  --json           print results as JSON instead of a table
 
 examples:
   ab project selftest claude web
@@ -959,12 +959,12 @@ Start an agent session against a project in the foreground — build the sandbox
 ```text
 usage: ab session start [-h] [--shell] [--no-tty] [--no-profile]
                         [--timeout SECONDS]
-                        {claude,omp} project
+                        {claude,omp,pi} project
 
 start an agent session in the foreground (one per project)
 
 positional arguments:
-  {claude,omp}       the agent to run
+  {claude,omp,pi}    the agent to run
   project            the registered project to run against; anything after a
                      `--` is passed through to the agent or shell
 
@@ -1130,7 +1130,7 @@ examples:
 Open a project's workspace from a layout and attach to it; both projects must be registered.
 
 ```text
-usage: ab screen start [-h] [--agent {claude,omp}] [--layout LAYOUT]
+usage: ab screen start [-h] [--agent {claude,omp,pi}] [--layout LAYOUT]
                        [--config FILE] [--dry-run]
                        builder [reviewer]
 
@@ -1143,7 +1143,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --agent {claude,omp}  the agent the agent panes start (default: claude; a
+  --agent {claude,omp,pi}
+                        the agent the agent panes start (default: claude; a
                         pane's own `agent` key wins)
   --layout LAYOUT       layout name (default: the config's `default`, usually
                         auto)
@@ -1329,13 +1330,14 @@ examples:
 ### `ab profile harvest`
 
 ```text
-usage: ab profile harvest [-h] [--agent {claude,omp}] [--all]
+usage: ab profile harvest [-h] [--agent {claude,omp,pi}] [--all]
 
 list what sessions have put in their inboxes, unreviewed first (read-only)
 
 options:
   -h, --help            show this help message and exit
-  --agent {claude,omp}  only this agent's profile (default: both)
+  --agent {claude,omp,pi}
+                        only this agent's profile (default: every agent)
   --all                 include items already reviewed
 
 examples:
@@ -1346,7 +1348,7 @@ examples:
 ### `ab profile promote`
 
 ```text
-usage: ab profile promote [-h] [--agent {claude,omp}] [--as PATH] item
+usage: ab profile promote [-h] [--agent {claude,omp,pi}] [--as PATH] item
 
 copy an inbox item into the profile and commit it, with its provenance in the commit message
 
@@ -1356,7 +1358,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --agent {claude,omp}  whose profile (default: claude)
+  --agent {claude,omp,pi}
+                        whose profile (default: claude)
   --as PATH             where it goes inside the profile, e.g. skills/deploy
                         (required unless the item is plainly a skill
                         directory)
@@ -1370,21 +1373,22 @@ examples:
 Install the plugins a profile declares, in a sandbox, into the tree sessions mount read-only.
 
 ```text
-usage: ab profile install [-h] [--dry-run] [--resolve] {claude,omp}
+usage: ab profile install [-h] [--dry-run] [--resolve] {claude,omp,pi}
 
 install the plugins the profile declares, in a sandbox, into a tree sessions mount read-only
 
 positional arguments:
-  {claude,omp}  whose plugins.toml to install
+  {claude,omp,pi}  whose plugins.toml to install
 
 options:
-  -h, --help    show this help message and exit
-  --dry-run     print what would be installed and the script that would run;
-                change nothing
-  --resolve     print each entry's pin beside what its source has today (a git
-                source's default branch HEAD, an npm package's `latest`),
-                checked in the same sandboxed container; install nothing and
-                change nothing. Exit 1 if an entry could not be checked
+  -h, --help       show this help message and exit
+  --dry-run        print what would be installed and the script that would
+                   run; change nothing
+  --resolve        print each entry's pin beside what its source has today (a
+                   git source's default branch HEAD, an npm package's
+                   `latest`), checked in the same sandboxed container; install
+                   nothing and change nothing. Exit 1 if an entry could not be
+                   checked
 
 examples:
   ab profile install omp
@@ -1396,7 +1400,7 @@ examples:
 ### `ab profile dismiss`
 
 ```text
-usage: ab profile dismiss [-h] [--agent {claude,omp}] item
+usage: ab profile dismiss [-h] [--agent {claude,omp,pi}] item
 
 mark an inbox item reviewed and leave it where it is (deletes nothing)
 
@@ -1406,7 +1410,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --agent {claude,omp}  whose profile (default: claude)
+  --agent {claude,omp,pi}
+                        whose profile (default: claude)
 
 examples:
   ab profile dismiss web/notes.md
@@ -1441,17 +1446,17 @@ examples:
 ### `ab image build`
 
 ```text
-usage: ab image build [-h] [--force] {claude,omp}
+usage: ab image build [-h] [--force] {claude,omp,pi}
 
 build your profile's Containerfile on top of the agent's harness image
 
 positional arguments:
-  {claude,omp}  whose harness image to build on
+  {claude,omp,pi}  whose harness image to build on
 
 options:
-  -h, --help    show this help message and exit
-  --force       rebuild even when an image for this harness and Containerfile
-                already exists
+  -h, --help       show this help message and exit
+  --force          rebuild even when an image for this harness and
+                   Containerfile already exists
 
 examples:
   ab image build claude
@@ -1493,16 +1498,16 @@ examples:
 Replace the Claude subscription token.
 
 ```text
-usage: ab keys rotate [-h] {claude,omp}
+usage: ab keys rotate [-h] {claude,omp,pi}
 
 replace the Claude subscription token (from `claude setup-token`)
 
 positional arguments:
-  {claude,omp}  the agent whose subscription token to replace (currently:
-                claude)
+  {claude,omp,pi}  the agent whose subscription token to replace (currently:
+                   claude)
 
 options:
-  -h, --help    show this help message and exit
+  -h, --help       show this help message and exit
 
 examples:
   ab keys rotate claude

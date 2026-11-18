@@ -3432,3 +3432,25 @@ into the root or a `data_rw` grant got no cover there, and the owner's host git 
 session wrote. Rare today; the main case once a read-only root has a writable hole. Grantcheck does not report
 a target the plan now covers (the proposal's wording, "a target inside some grant is not reported", reads as
 asking for that; reporting a covered target would refuse sessions for something already handled).
+
+## 18 Nov 2026: the Pi adapter (core), and `$` refused in the shared model seed
+
+**What.** A third adapter, `pi` (`@earendil-works/pi-coding-agent@1.5.2`), treated like OMP and Claude: per-project
+`~/.pi/agent`, the profile's skills and prompts, the inbox, keys through `ab keys`, Toulmin through Pi's built-in
+MCP. Decisions P1-P6 in docs/pi-proposal.md. P5 tightens OMP too: `$` anywhere in `~/.config/agentbox/omp/models.yml`
+is refused.
+
+**Why.** Tim asked for Pi as "basically the same as OMP". Research showed the shape is shared but most details
+differ (file names and formats, no approvals, project trust, built-in MCP, `${VAR}` key references), and that the
+package first researched (`@mariozechner/pi-coding-agent@0.73.1`) is deprecated; everything was re-checked at 1.5.2.
+P1: Pi has no tool approvals and `--approve` means "trust the repository", so approvals-on presets refuse Pi. P5:
+since Pi 0.77 a `$NAME` in a models-file value expands an environment variable, so a seed header could carry
+another provider's key to another host.
+
+**Disagreement recorded (P6).** I recommended a fresh Pi agent dir per session, keeping only the conversation
+history, because a session can leave files Pi loads at the next start (SYSTEM.md replaces the system prompt,
+AGENTS.override.md replaces agentbox's notes, trust.json trusts a repo) and each Pi release can add another such
+name. Tim chose per-project state like OMP; the known files are moved to the inbox at every start
+(`pi.LOADED_AT_START`). The risk: a Pi upgrade that adds a loaded file name opens a way for one session to steer the
+next until that list is updated, so checking Pi's changelog for new agent-dir files is part of every PI_VERSION bump.
+

@@ -255,7 +255,7 @@ def add_verbs(prof_p, add, ex):
     """The `ab profile` subparsers, built with the CLI's own `add` and `ex` helpers (as screen.add_verbs is)."""
     x = add(prof_p, "harvest", "list what sessions have put in their inboxes, unreviewed first (read-only)",
             ex("ab profile harvest", "ab profile harvest --agent claude --all"))
-    x.add_argument("--agent", choices=adapters.NAMES, help="only this agent's profile (default: both)")
+    x.add_argument("--agent", choices=adapters.NAMES, help="only this agent's profile (default: every agent)")
     x.add_argument("--all", action="store_true", help="include items already reviewed")
     x.set_defaults(fn=cmd_profile_harvest)
     x = add(prof_p, "promote", "copy an inbox item into the profile and commit it, with its provenance in "

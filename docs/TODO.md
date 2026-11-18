@@ -51,7 +51,7 @@ authoritative; this is the *why*.
 | The masked-paths spec's in-session errno probe (`docs/agentbox-masked-paths.md` §5.1) as an itest | The `mask` setting itself is built (10 Nov); the probe stays manual until a change touches the covers tests. |
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
-| Pi / Codex adapters | Step 8. The adapter interface is the only per-agent code and has carried two agents through a restructure, so a third is mostly configuration. |
+| Codex adapter (and Pi packages) | Step 8. The Pi adapter is built (18 Nov; `ab profile install pi` for Pi packages is the next step, docs/pi-proposal.md). Codex waits for a need. |
 | Caps / devices opt-in | The gate refuses `cap_add`, `devices` and security options under every preset; the `caps = opt-in` preset value is inert and `ab project show` says so. |
 | A profile curator | `ab profile harvest` lists, groups and marks; promoting is a human reading a skill. A curator would need the profile **read-write** (which no normal session gets), a prompt that is itself security-reviewed, and a record of what it rejected and why. **Deliberately not started until `harvest` has been lived with** — right now we would be guessing at the hard part. |
 

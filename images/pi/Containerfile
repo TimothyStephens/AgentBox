@@ -1,0 +1,31 @@
+# agentbox Pi image: agentbox-base plus the Pi coding agent (`@earendil-works/pi-coding-agent`) at a pin.
+#
+# Build with `make pi-image` (tags localhost/agentbox-pi:latest and :<date>). Pi runs on node alone
+# (`engines.node >= 22.19`; node comes from agentbox-base), so unlike the OMP image there is no Bun and no
+# Chromium: Pi has no browser tool (docs/pi-proposal.md). rg and fd are in agentbox-base, which matters
+# because sessions run Pi with PI_OFFLINE=1 and it then never downloads its own copies.
+ARG BASE=localhost/agentbox-base:latest
+FROM ${BASE}
+ARG PI_VERSION=1.5.2
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false \
+    PI_OFFLINE=1 \
+    PI_TELEMETRY=0
+RUN set -eux; \
+    npm install -g --no-audit --no-fund --fetch-retries 5 --ignore-scripts \
+        "@earendil-works/pi-coding-agent@${PI_VERSION}"; \
+    npm cache clean --force; \
+    command -v pi; \
+    pi --version; \
+    pi --version | grep -F "${PI_VERSION}"
+RUN found=$(find /root -maxdepth 4 \( -name .npmrc -o -name .git-credentials -o -name .netrc \
+        -o -name .pypirc -o -name credentials -o -name '*.pem' -o -name 'id_*' -o -name auth.json \
+        -o -path '/root/.ssh/*' -o -path '/root/.config/gh/*' -o -path '/root/.aws/*' \
+        -o -path '/root/.pi/*' \) -print); \
+    if [ -n "$found" ]; then echo "credential-like files in /root: $found" >&2; exit 1; fi
+LABEL agentbox=1 \
+      agentbox.cli-version="${PI_VERSION}" \
+      org.opencontainers.image.title="agentbox-pi" \
+      org.opencontainers.image.description="Pi coding agent ${PI_VERSION} on agentbox-base"
+WORKDIR /
+ENTRYPOINT []
+CMD ["pi"]

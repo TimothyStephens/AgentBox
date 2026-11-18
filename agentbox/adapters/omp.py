@@ -180,7 +180,7 @@ def _ip(host):
         return None
 
 
-def build_models(seed, *, keys, model_host, model_port, warn):
+def build_models(seed, *, keys, model_host, model_port, warn, label="OMP"):
     """The session's models.yml from the keyless seed.
 
     Returns (doc, domains, used_keys): providers are kept only when their key file exists, except the local
@@ -189,12 +189,12 @@ def build_models(seed, *, keys, model_host, model_port, warn):
     """
     seed = seed or {}
     if not isinstance(seed, dict) or not isinstance(seed.get("providers", {}), dict):
-        raise AgentboxError("OMP model seed: expected a top-level `providers:` mapping")
+        raise AgentboxError(f"{label} model seed: expected a top-level `providers:` mapping")
     doc = {k: v for k, v in seed.items() if k != "providers"}
     providers, domains, used = {}, set(), {}
     have_local = False
     for name, conf in (seed.get("providers") or {}).items():
-        where = f"OMP model seed, provider {name!r}"
+        where = f"{label} model seed, provider {name!r}"
         keysmod.check_provider(name)
         conf = dict(conf or {})
         if "apiKey" in conf:
@@ -205,6 +205,12 @@ def build_models(seed, *, keys, model_host, model_port, warn):
                 raise AgentboxError(f"{where}: header {h!r} looks like a credential; use `ab keys set {name}`")
         if any(s.startswith("!") for s in _walk_strings(conf)):
             raise AgentboxError(f"{where}: `!command` values are not allowed in the seed")
+        # `$NAME`/`${NAME}` is expanded from the agent's environment (Pi since 0.77, the OMP lineage): a header
+        # `${AB_KEY_OPENAI}` on another provider's baseUrl would send that key there. agentbox writes the only
+        # references itself (Tim, 18 Nov 2026).
+        if any("$" in s for s in _walk_strings(conf)) or any("$" in str(h) for h in (conf.get("headers") or {})):
+            raise AgentboxError(f"{where}: `$` is not allowed in the seed (it would expand an environment "
+                                "variable, such as another provider's key); agentbox adds the key references")
         host = port = None
         if conf.get("baseUrl"):
             host, port = _host_of(conf["baseUrl"], where)
@@ -217,22 +223,22 @@ def build_models(seed, *, keys, model_host, model_port, warn):
                 used[name] = keys[name]
             else:
                 conf["apiKey"] = "none"
-                warn(f"agentbox: OMP local model provider {name!r} has no key; if the server needs one, "
+                warn(f"agentbox: {label} local model provider {name!r} has no key; if the server needs one, "
                      f"`ab keys set {name}`")
             providers[name] = conf
             continue
         if name not in keys:
-            warn(f"agentbox: OMP provider {name!r} left out: no key (`ab keys set {name}`)")
+            warn(f"agentbox: {label} provider {name!r} left out: no key (`ab keys set {name}`)")
             continue
         want = set(keysmod.PROVIDER_DOMAINS.get(name, []))
         if host and ip is None:
             want.add(host.lower())
         elif ip is not None and not ip.is_loopback:
-            warn(f"agentbox: OMP provider {name!r} left out: {host} is not reachable from a session "
+            warn(f"agentbox: {label} provider {name!r} left out: {host} is not reachable from a session "
                  "(only public names and the local model server are)")
             continue
         if not want and not (ip is not None and ip.is_loopback):
-            warn(f"agentbox: OMP provider {name!r} left out: no known API domain and no baseUrl")
+            warn(f"agentbox: {label} provider {name!r} left out: no known API domain and no baseUrl")
             continue
         conf["apiKey"] = keysmod.env_name(name)
         providers[name] = conf
@@ -247,7 +253,7 @@ def build_models(seed, *, keys, model_host, model_port, warn):
             conf["apiKey"] = "none"
         providers = {LOCAL_PROVIDER: conf, **providers}
     for name in sorted(set(keys) - set(used)):
-        warn(f"agentbox: key for {name!r} not used: no such provider in the OMP model seed")
+        warn(f"agentbox: key for {name!r} not used: no such provider in the {label} model seed")
     doc["providers"] = providers
     return doc, sorted(domains), used
 
