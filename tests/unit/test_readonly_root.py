@@ -157,3 +157,21 @@ class TheShow(SettingsCase):
         [line] = [l for l in out.splitlines() if l.strip().startswith("code ")]
         self.assertIn("ro", line)
         self.assertIn("read-only", line)
+
+
+class HooksIntoTheWritableGrant(SettingsCase):
+    """The case the proposal's step 2 exists for: a read-only root's own .git/config pointing core.hooksPath into
+    the writable plans grant. The owner's host git would run what the agent wrote there, so the plan must
+    cover the target read-only (merged with wt-gitgap, 18 Nov)."""
+
+    def test_the_hooks_path_target_in_the_plans_grant_is_covered_read_only(self):
+        import subprocess
+        root = self.mkdir("proj")
+        subprocess.run(["git", "init", "-q", root], check=True)
+        plans = self.mkdir("plans")
+        hooks = os.path.join(plans, "hooks")
+        subprocess.run(["git", "-C", root, "config", "core.hooksPath", hooks], check=True)
+        p = mounts.plan(root=root, data_rw=[plans], code="ro")
+        covers = {m.dst: m for m in p.mounts}
+        self.assertIn(hooks, covers)
+        self.assertTrue(covers[hooks].ro)

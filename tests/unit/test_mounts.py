@@ -341,6 +341,58 @@ class GitConfigThatCannotBeParsed(TempCase):
         self.assertIn("cannot read this git config", str(cm.exception))
 
 
+class GitConfigInReadOnlyGrant(TempCase):
+    """Read-only root proposal, section 3: a git dir in a READ-ONLY grant gets no covers of its own (nothing
+    there is writable), but its config can name a hooks path or include inside a WRITABLE grant. The owner's
+    host git, run in the read-only repo, would then run or read what the session wrote there."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.mkdir("proj")
+        self.ref = self.mkdir("ref")
+        self.rw = self.mkdir("work")
+        subprocess.run(["git", "init", "-q", self.ref], check=True)
+
+    def cfg(self, key, value):
+        subprocess.run(["git", "-C", self.ref, "config", key, value], check=True)
+
+    def dsts(self, p):
+        return {m.dst: m for m in p.mounts}
+
+    def test_a_hooks_path_into_the_root_is_covered_read_only(self):
+        hooks = self.mkdir("proj", ".githooks")
+        self.cfg("core.hooksPath", hooks)
+        m = self.dsts(mounts.plan(root=self.root, data_ro=[self.ref]))
+        self.assertEqual((m[hooks].kind, m[hooks].ro, m[hooks].src), ("bind", True, hooks))
+
+    def test_a_hooks_path_into_a_data_rw_grant_is_created_and_covered(self):
+        hooks = os.path.join(self.rw, "hooks")
+        self.cfg("core.hooksPath", hooks)
+        p = mounts.plan(root=self.root, data_ro=[self.ref], data_rw=[self.rw])
+        self.assertIn(hooks, p.create_dirs)
+        self.assertTrue(self.dsts(p)[hooks].ro)
+
+    def test_an_include_into_the_root_is_covered(self):
+        inc = os.path.join(self.root, "local.inc")
+        self.cfg("include.path", inc)
+        p = mounts.plan(root=self.root, data_ro=[self.ref])
+        self.assertIn(inc, p.create_files)
+        self.assertTrue(self.dsts(p)[inc].ro)
+
+    def test_no_cover_inside_the_read_only_grant_itself(self):
+        self.cfg("core.hooksPath", ".husky")                       # inside ref: read-only already
+        self.mkdir("ref", ".husky")
+        p = mounts.plan(root=self.root, data_ro=[self.ref])
+        self.assertEqual([m.dst for m in p.mounts if mounts.inside(m.dst, self.ref)], [self.ref])
+        self.assertEqual((p.create_dirs, p.create_files), ([], []))
+
+    def test_an_unreadable_config_there_is_left_to_grantcheck(self):
+        """A read-only grant's broken config did not refuse the plan before; grantcheck reports it."""
+        with open(os.path.join(self.ref, ".git", "config"), "a") as f:
+            f.write("[core\n")
+        mounts.plan(root=self.root, data_ro=[self.ref])
+
+
 class DevSwapMountPoint(TempCase):
     """Item 37: the empty `.env` mount point is created only where we may write, and only as a file."""
 

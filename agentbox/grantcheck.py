@@ -139,7 +139,9 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
     `warn_grants` are the read-only data grants. They are scanned exactly the same way, but their findings
     come back as warnings (F4): a read-only grant holding live data is the declared purpose of the
     `analysis-offline` and `operate` presets, so it is reported, never refused. Before this they were not
-    scanned at all, so what was in them was invisible."""
+    scanned at all, so what was in them was invisible. One exception: a repo in a read-only grant whose config
+    names a hooks path or include in a WRITABLE grant that the covers cannot pin (a symlink, a grant root) is a
+    finding, since the owner's git in that repo would run what the session wrote."""
     covered = {os.path.realpath(c) for c in covered}
     uid = os.getuid()
     limit = LIVE_DATA_MB << 20
@@ -149,6 +151,9 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
 
     found, ro_found, warn = {}, {}, set()
     all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants) + list(readable_grants)]
+    rw_grants = [os.path.realpath(g) for g in grants]
+    blocking = found
+    readable = {}           # findings in a read-only project root (code = ro), sorted out after the walk
 
     def onerror(e):
         warn.add(f"{getattr(e, 'filename', '?')}: unreadable ({getattr(e, 'strerror', e)}); a container's data "
@@ -177,7 +182,14 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
                 for c in _git_credential_urls(gd):
                     found[f"git credentials in a remote URL: {c}"] = f"gitcred:{c}"
                 for text, sig in _git_config_escapes(gd, all_grants):
-                    found[text] = sig
+                    if (found is ro_found or found is readable) and any(inside(sig_path(sig), g)
+                                                                         for g in rw_grants):
+                        # a read-only repo naming an uncoverable path in a WRITABLE grant: the owner's git
+                        # in that repo runs what the session writes there, so this refuses like any escape
+                        # (read-only root proposal, section 3)
+                        blocking[f"{text} (a repository in a read-only grant: {gd})"] = sig
+                    else:
+                        found[text] = sig
             in_secrets = any(part in mounts.MASK_DIRS for part in rel.split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
@@ -213,7 +225,6 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
         walk(grant, ro_found)
     for text in ro_found:
         warn.add(f"in a read-only data grant (allowed, since read-only, but worth knowing): {text}")
-    readable = {}
     for grant in readable_grants:
         walk(grant, readable)
     for text, sig in readable.items():

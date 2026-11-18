@@ -3418,3 +3418,17 @@ grant outside the root (no in-root hole), D2 refuse the dev tier, D3 `packages` 
 `research` unchanged (description corrected). Proposal steps 3-4 are therefore not built; step 2 (git hooks
 paths in read-only grants) is built separately.
 
+## 18 Nov 2026: git configs in read-only grants are read for paths in writable grants
+
+**What.** `mounts.plan` now finds the git dirs of `data_ro` grants and passes them to `git_overlays`, which
+reads their configs (`core.hooksPath`, `include.path`, `includeIf.*.path`) and covers read-only any target in a
+read-write grant, exactly as for a read-write repo. No cover is added inside the read-only grant itself. In
+`grantcheck.scan`, an escape from such a repo whose target lies in a read-write grant (a symlink, a grant root)
+is a finding, not a read-only-grant warning. A config or `.git` file in a read-only grant that cannot be read
+still does not refuse the plan (a note, and a grantcheck warning, as before).
+
+**Why.** Read-only root proposal, section 3 / step 2. Before, a `data_ro` repo whose config pointed its hooks
+into the root or a `data_rw` grant got no cover there, and the owner's host git in that repo would run what the
+session wrote. Rare today; the main case once a read-only root has a writable hole. Grantcheck does not report
+a target the plan now covers (the proposal's wording, "a target inside some grant is not reported", reads as
+asking for that; reporting a covered target would refuse sessions for something already handled).
