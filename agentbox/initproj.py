@@ -120,6 +120,7 @@ _APP_POD = '''\
 """Minimal web app skeleton. Replace with the real app; config comes from the environment (.env.dev)."""
 import http.server
 import os
+import signal
 
 PORT = int(os.environ.get("PORT", "8000"))
 
@@ -132,8 +133,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"ok\\n")
 
 
+def _stop(signum, frame):
+    # PID 1 in a container gets no default SIGTERM action: without this, `podman stop` waits 10 s and SIGKILLs.
+    raise SystemExit(0)
+
+
 if __name__ == "__main__":
-    http.server.HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    with http.server.HTTPServer(("0.0.0.0", PORT), Handler) as server:
+        server.serve_forever()
 '''
 
 _TEST_POD = '''\

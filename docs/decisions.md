@@ -3381,3 +3381,12 @@ the repo is pushed to GitHub. Values that only make sense on one host belong in 
 defaults. Unset defaults fail loudly where they matter (selftest, itest) instead of quietly probing someone
 else's network.
 
+
+## 18 Nov 2026: the `pod` template's app stops on SIGTERM
+
+**What.** The scaffolded `app/main.py` installs a SIGTERM/SIGINT handler that exits 0 (closing the server). A
+unit test starts a fresh scaffold's app, sends SIGTERM and requires exit 0 within 3 s. The `python` template is
+not a server and is unchanged.
+
+**Why.** The app runs as the container's PID 1, which gets no default signal action, so `podman stop`, `rm -f`
+and every redeploy of a fresh scaffold waited the full 10 s and then SIGKILLed it.
