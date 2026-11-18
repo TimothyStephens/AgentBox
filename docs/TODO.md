@@ -15,7 +15,8 @@ installed in a sandbox, mounted read-only). Which gates are green, and at which 
 **Sections 1, 2 and 4 were emptied on 17 Nov**; the work is in "Recently closed" below and in decisions.md.
 `ab deploy` (step 6) is built and passed `make itest` on 18 Nov, with `make claude-live`; one real deploy by
 the user is still to come. Of 17 Nov's other changes, the toulmin backup size, omp-live on the config.yml
-model, `--podman none` and `--resolve` still wait on host runs.
+model, `--podman none` and `--resolve` passed on the host on 18 Nov; the toulmin backup size waits on a
+toulmin-build restart.
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -93,14 +94,16 @@ three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (
 - **`make omp-live`'s local model is slow** — about 257 s for one turn, which is why that check used to fail
   intermittently. **Accepted** (4 Nov). The recorded passes since 13 Nov use
   `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash` (about 50 s). Without it omp-live needs a default model in
-  `~/.config/agentbox/omp/config.yml`, and refuses at once if neither is set (17 Nov). A run on the
-  config.yml model hung on 17 Nov with the memory pool full; not yet explained.
+  `~/.config/agentbox/omp/config.yml`, and refuses at once if neither is set (17 Nov). On the config.yml
+  model it hung on 17 Nov with agentbox.slice at 4392/4400 MB and passed on 18 Nov (99 s) at about 3.5 GB, so
+  memory pressure is the likely cause; act if it hangs again with memory free.
 - **OMP's Anthropic provider cannot reach api.anthropic.com from a session** (`getaddrinfo ENOTFOUND`, 11 Nov,
   again 16 Nov): OMP's Anthropic client resolves the name itself instead of going through `HTTPS_PROXY`; its
   OpenAI-compatible client is fine. Upstream OMP behaviour; not tested through a third-party route by choice
   (12 Nov). Act if Anthropic models are wanted in OMP sessions.
 - **Session start time.** Profiled 16-17 Nov (decisions.md). What remains is podman's own: about one start in
-  four has one sidecar `run -d` taking 1.7-3.2 s (journald was the bigger spread, gone since the k8s-file
+  four has one sidecar `run -d` taking 1.7-3.2 s (one omp-live start on 18 Nov took 17 s, with 4 sessions
+  running and the pool at 3.5 GB; the next start in the same run took 3.1 s) (journald was the bigger spread, gone since the k8s-file
   switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches); left is
   grantcheck's per-file lstat (11.6 s on 98k files inside a session, likely well under 1 s on the host warm).
   **Decide after a toulmin start on the host**: limit it to files whose name or suffix matters, at the cost
