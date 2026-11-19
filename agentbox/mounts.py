@@ -28,6 +28,13 @@ WALK_SKIP = (".git", "node_modules", ".venv", "venv", "__pycache__")
 COMPOSE_FILES = ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml",
                  "podman-compose.yml", "podman-compose.yaml")
 DEFAULT_SWAP = {".env": ".env.dev"}
+# The env-file names among MASK_FILES: what the `data_env` project setting unmasks, in the project root grant
+# only, for an agent the user trusts with real secrets (decisions.md, 19 Nov 2026). `.netrc`, `.pgpass`, the
+# key files and `secrets/` stay masked under it, as does every env file in a data grant.
+ENV_FILES = (".env", ".env.*", "*.env")
+_ENV_RE = re.compile("|".join(f"(?:{fnmatch.translate(p)})" for p in ENV_FILES))
+# The live-data directory the `data_bind` project setting leaves visible and writable: `<root>/data`.
+DATA_DIR = "data"
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,16 @@ def _masked(name):
     return _MASK_RE.match(name) is not None
 
 
+def env_file(name):
+    """Is this one of the env-file names `data_env` unmasks (`.env`, `.env.*`, `*.env`, less MASK_EXEMPT)?"""
+    return name not in MASK_EXEMPT and _ENV_RE.match(name) is not None
+
+
+def data_dir(root):
+    """`<root>/data`: what `data_bind` leaves visible and writable, out of the backup and the live-data checks."""
+    return os.path.join(root, DATA_DIR)
+
+
 def _walk(grant, skip_rel):
     skip_abs = {os.path.normpath(os.path.join(grant, s)) for s in skip_rel}
     for dirpath, dirnames, filenames in os.walk(grant, topdown=True, followlinks=False):
@@ -93,8 +110,11 @@ def _walk(grant, skip_rel):
         yield dirpath, dirnames, sorted(filenames)
 
 
-def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
+def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=False):
     """Masks and dev-swap mounts for one grant. Returns (mounts, files_to_create).
+
+    `real_env` (the project root under `data_env = "on"`): the env files (`env_file`) are neither masked nor
+    swapped, so the agent sees the real ones; every other masked name stays masked.
 
     A missing swap target is created empty (0600) as the mount point -- documented since 29 Sep -- but only in
     a read-write grant: a read-only grant is not ours to write into, so there the swap is skipped and noted
@@ -102,6 +122,8 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
     a regular file or symlink (a `.env/` directory, a FIFO) cannot take a file bind; it is skipped and noted
     instead of failing `podman run` (item 37)."""
     swap = effective_swap(swap)
+    if real_env:
+        swap = {t: d for t, d in swap.items() if not env_file(t)}
     notes = notes if notes is not None else []
     mounts, create = [], []
     for dirpath, dirnames, filenames in _walk(grant, skip_rel):
@@ -129,7 +151,7 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None):
             # The name test first: it is a regex, the two file-type tests are a stat each, and nearly every
             # file in a tree is not a mask candidate (two stats per file were 45% of a session's mask plan on
             # a 100k-file Rust tree, 17 Nov).
-            if fn in handled or not _masked(fn):
+            if fn in handled or not _masked(fn) or (real_env and env_file(fn)):
                 continue
             full = os.path.join(dirpath, fn)
             if os.path.islink(full) or not os.path.isfile(full):
@@ -362,10 +384,13 @@ def compose_overlays(grant, skip_rel=()):
     return out
 
 
-def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None, mask=(), code="rw"):
+def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None, mask=(), code="rw", data_env=False):
     """Build the mount plan. All paths must already be validated real paths; `mask` is the project's own
     mask list, as projectkeys stores it. `code = "ro"` mounts the root read-only: it is then handled exactly
-    like a data_ro grant (no git or compose covers in it, the swap read-only, masks over it)."""
+    like a data_ro grant (no git or compose covers in it, the swap read-only, masks over it). `data_env`
+    (the project setting is "on") leaves the env files in the ROOT grant unmasked and unswapped: the agent
+    sees the real ones. Nothing in the plan changes for `data_bind`: `<root>/data` is part of the root grant,
+    and a mask over it is refused when the setting is stored (project.check_trust)."""
     mounts, dirs, files, notes = [], [], [], []
     ro_root = code == "ro"
     rw_grants = ([] if ro_root else [root]) + list(data_rw)
@@ -397,8 +422,9 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     files += f
     if compose == "ro" and not ro_root:          # a read-only cover in a read-only root adds nothing
         mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
-    for g in rw_grants + list(data_ro):          # secret masks always apply; there is no way to turn them off
-        m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap, notes=notes)
+    for g in rw_grants + list(data_ro):          # secret masks apply; only data_env lifts the root's env files
+        m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap, notes=notes,
+                             real_env=data_env and g == root)
         mounts += m
         files += c
     # The project's own masks come AFTER the secret masks and the swap: one mount per destination and the

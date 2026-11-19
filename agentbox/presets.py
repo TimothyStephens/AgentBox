@@ -201,8 +201,10 @@ def effective(project_name, project, presets):
             # reported as "the preset's own value", which no preset sets.
             why = (f"the preset's own value is {limit!r}" if from_preset
                    else f"a ceiling allows only the tightest value for it, {limit!r}")
+            trust = (f". {key} is for an agent you trust with real secrets or live data; a ceiling preset such "
+                     "as lockdown is for a repository you do not trust" if key in ("data_env", "data_bind") else "")
             raise AgentboxError(f"project {project_name}: preset {preset_name} is a ceiling; {key} = "
-                                f"{value!r} would loosen it ({why}); switch to another preset to loosen")
+                                f"{value!r} would loosen it ({why}); switch to another preset to loosen{trust}")
 
         for key, value in overrides.items():
             limit = preset.get(key, projectkeys.BY_NAME[key].tightest)

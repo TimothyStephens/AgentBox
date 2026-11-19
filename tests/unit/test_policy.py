@@ -689,7 +689,7 @@ class ShowDisplayTest(SettingsCase):
         self.project("p1", preset="build")
         out = self.show("p1")
         self.assertIn("caps opt-in is not built", out)
-        self.assertIn("masks always apply and cannot be turned off", out)
+        self.assertIn("masks always apply; only the data_env setting unmasks", out)
 
     def test_an_explicit_compose_project_shows_the_waived_check(self):
         """F4: an explicit compose_project skips the check that the live stack's containers come from

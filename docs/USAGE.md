@@ -124,7 +124,8 @@ usage: ab project init [-h] [--upstream URL] [--preset PRESET] [--data-ro DIR]
                        [--mask-skip DIR] [--mask PATH] [--podman TIER]
                        [--compose-project NAME] [--dev-image PATTERN]
                        [--swap TARGET=STANDIN] [--toulmin | --no-toulmin]
-                       [--mount MODE] [--reviews BUILDER]
+                       [--data-env on|off] [--data-bind on|off] [--mount MODE]
+                       [--reviews BUILDER]
                        [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
                        [--deploy-port PORT] [--deploy-bind DIR]
                        [--deploy-file PATH] [--deploy-compose PATH]
@@ -238,6 +239,29 @@ options:
                         agent an MCP entry for the tool server, and report the
                         session's clone, base and head back
                         (docs/agentbox_toulmin_integration.md). Default: off
+  --data-env on|off     `on`: sessions see the REAL env files (`.env`,
+                        `.env.*`, `*.env`) anywhere in the project root, read-
+                        write, instead of the masks and the dev swap
+                        (`.env.dev` shown at `.env`). `.netrc`, `.pgpass`,
+                        `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
+                        `secrets/` and every env file in a --data-ro/--data-rw
+                        grant stay masked. WARNING: only for an agent you
+                        trust: the agent can read/print/send these secrets;
+                        masks are the safety net you are turning off. Refused
+                        under a ceiling preset (lockdown) and in clone mode.
+                        Default: off
+  --data-bind on|off    `on`: the live data in the project's `./data` is
+                        visible and WRITABLE to the agent; the grant check
+                        does not refuse live data or compose data binds under
+                        it, and the pre-session snapshot leaves it out (it is
+                        not a data backup: `./data` is yours to back up).
+                        Secret files in it stay masked. WARNING: only for an
+                        agent you trust: the agent can read/print/send these
+                        secrets; masks are the safety net you are turning off.
+                        Refused under a ceiling preset (lockdown), in clone
+                        mode, with a read-only root (`--code ro`), with a
+                        read-only-data preset and with a mask over ./data.
+                        Default: off
   --mount MODE          how the root reaches a session: `checkout` binds your
                         working tree (the default); `clone` binds a fresh
                         clone on branch agentbox/<session> at the same path
@@ -308,12 +332,12 @@ usage: ab project add [-h] --preset PRESET [--data-ro DIR] [--data-rw DIR]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
-                      [--toulmin | --no-toulmin] [--mount MODE]
-                      [--reviews BUILDER] [--observe-logs | --no-observe-logs]
-                      [--lan-addr ADDR] [--deploy-port PORT]
-                      [--deploy-bind DIR] [--deploy-file PATH]
-                      [--deploy-compose PATH] [--deploy-external NAME]
-                      [--accept-history-secrets]
+                      [--toulmin | --no-toulmin] [--data-env on|off]
+                      [--data-bind on|off] [--mount MODE] [--reviews BUILDER]
+                      [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
+                      [--deploy-port PORT] [--deploy-bind DIR]
+                      [--deploy-file PATH] [--deploy-compose PATH]
+                      [--deploy-external NAME] [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--reattach | --fresh]
                       name [root]
 
@@ -421,6 +445,29 @@ options:
                         agent an MCP entry for the tool server, and report the
                         session's clone, base and head back
                         (docs/agentbox_toulmin_integration.md). Default: off
+  --data-env on|off     `on`: sessions see the REAL env files (`.env`,
+                        `.env.*`, `*.env`) anywhere in the project root, read-
+                        write, instead of the masks and the dev swap
+                        (`.env.dev` shown at `.env`). `.netrc`, `.pgpass`,
+                        `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
+                        `secrets/` and every env file in a --data-ro/--data-rw
+                        grant stay masked. WARNING: only for an agent you
+                        trust: the agent can read/print/send these secrets;
+                        masks are the safety net you are turning off. Refused
+                        under a ceiling preset (lockdown) and in clone mode.
+                        Default: off
+  --data-bind on|off    `on`: the live data in the project's `./data` is
+                        visible and WRITABLE to the agent; the grant check
+                        does not refuse live data or compose data binds under
+                        it, and the pre-session snapshot leaves it out (it is
+                        not a data backup: `./data` is yours to back up).
+                        Secret files in it stay masked. WARNING: only for an
+                        agent you trust: the agent can read/print/send these
+                        secrets; masks are the safety net you are turning off.
+                        Refused under a ceiling preset (lockdown), in clone
+                        mode, with a read-only root (`--code ro`), with a
+                        read-only-data preset and with a mask over ./data.
+                        Default: off
   --mount MODE          how the root reaches a session: `checkout` binds your
                         working tree (the default); `clone` binds a fresh
                         clone on branch agentbox/<session> at the same path
@@ -529,12 +576,12 @@ usage: ab project set [-h] [--preset PRESET] [--data-ro DIR] [--data-rw DIR]
                       [--profile on|off] [--mask-skip DIR] [--mask PATH]
                       [--podman TIER] [--compose-project NAME]
                       [--dev-image PATTERN] [--swap TARGET=STANDIN]
-                      [--toulmin | --no-toulmin] [--mount MODE]
-                      [--reviews BUILDER] [--observe-logs | --no-observe-logs]
-                      [--lan-addr ADDR] [--deploy-port PORT]
-                      [--deploy-bind DIR] [--deploy-file PATH]
-                      [--deploy-compose PATH] [--deploy-external NAME]
-                      [--accept-history-secrets]
+                      [--toulmin | --no-toulmin] [--data-env on|off]
+                      [--data-bind on|off] [--mount MODE] [--reviews BUILDER]
+                      [--observe-logs | --no-observe-logs] [--lan-addr ADDR]
+                      [--deploy-port PORT] [--deploy-bind DIR]
+                      [--deploy-file PATH] [--deploy-compose PATH]
+                      [--deploy-external NAME] [--accept-history-secrets]
                       [--i-understand-grant-exposure] [--unset KEY]
                       [--clear-data-ro] [--clear-data-rw]
                       [--clear-extra-domains] [--clear-dev-images]
@@ -646,6 +693,29 @@ options:
                         agent an MCP entry for the tool server, and report the
                         session's clone, base and head back
                         (docs/agentbox_toulmin_integration.md). Default: off
+  --data-env on|off     `on`: sessions see the REAL env files (`.env`,
+                        `.env.*`, `*.env`) anywhere in the project root, read-
+                        write, instead of the masks and the dev swap
+                        (`.env.dev` shown at `.env`). `.netrc`, `.pgpass`,
+                        `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
+                        `secrets/` and every env file in a --data-ro/--data-rw
+                        grant stay masked. WARNING: only for an agent you
+                        trust: the agent can read/print/send these secrets;
+                        masks are the safety net you are turning off. Refused
+                        under a ceiling preset (lockdown) and in clone mode.
+                        Default: off
+  --data-bind on|off    `on`: the live data in the project's `./data` is
+                        visible and WRITABLE to the agent; the grant check
+                        does not refuse live data or compose data binds under
+                        it, and the pre-session snapshot leaves it out (it is
+                        not a data backup: `./data` is yours to back up).
+                        Secret files in it stay masked. WARNING: only for an
+                        agent you trust: the agent can read/print/send these
+                        secrets; masks are the safety net you are turning off.
+                        Refused under a ceiling preset (lockdown), in clone
+                        mode, with a read-only root (`--code ro`), with a
+                        read-only-data preset and with a mask over ./data.
+                        Default: off
   --mount MODE          how the root reaches a session: `checkout` binds your
                         working tree (the default); `clone` binds a fresh
                         clone on branch agentbox/<session> at the same path
@@ -695,10 +765,11 @@ options:
                         again (repeatable); one of: compose, egress, podman,
                         caps, secrets, approvals, data, code, data_ro,
                         data_rw, extra_domains, compose_project, observe_logs,
-                        dev_images, mask_skip, swap, mask, toulmin, mount,
-                        reviews, base_branch, build_memory, profile, lan_addr,
-                        deploy_ports, deploy_binds, deploy_files,
-                        deploy_compose, deploy_external, deploy_adopted
+                        dev_images, mask_skip, swap, mask, toulmin, data_env,
+                        data_bind, mount, reviews, base_branch, build_memory,
+                        profile, lan_addr, deploy_ports, deploy_binds,
+                        deploy_files, deploy_compose, deploy_external,
+                        deploy_adopted
   --clear-data-ro       empty the data_ro list (the same as --unset data_ro)
   --clear-data-rw       empty the data_rw list (the same as --unset data_rw)
   --clear-extra-domains

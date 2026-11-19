@@ -100,7 +100,8 @@ KEYS = (
          inert="always", inert_reason="caps opt-in is not built; capabilities and devices are always refused"),
     _key("secrets", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
          values=("locked", "masked"), security=True, clears=True, unsettable=True, display="always",
-         inert="always", inert_reason="secret masks always apply and cannot be turned off"),
+         inert="always", inert_reason="secret masks always apply; only the data_env setting unmasks the "
+                                               "root's env files"),
     _key("approvals", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
          values=("on", "off"), security=True, clears=True, unsettable=True, display="always", inert="",
          inert_reason=""),
@@ -155,6 +156,17 @@ KEYS = (
     # tightest value, so a ceiling preset (lockdown) refuses it.
     _key("toulmin", kind="project", arity="bool", flags=("--toulmin",), dest="toulmin", validate="bool",
          values=(False, True), security=True, clears=True, unsettable=True, display="stored", inert="",
+         inert_reason=""),
+    # The two trusted opt-outs (decisions.md, 19 Nov 2026), for an agent the user trusts with real secrets or
+    # live data. `data_env` shows the real env files (.env, .env.*, *.env) of the project root instead of the
+    # masks and the dev swap; `data_bind` leaves `<root>/data` visible, writable, out of the backup and out of
+    # grantcheck's live-data refusals. Posture, so a preset change clears them; off is the tightest value, so a
+    # ceiling preset (lockdown) refuses them. The other refusals are project.check_trust.
+    _key("data_env", kind="project", arity="scalar", flags=("--data-env",), dest="data_env", validate="enum",
+         values=("off", "on"), security=True, clears=True, unsettable=True, display="always", inert="",
+         inert_reason=""),
+    _key("data_bind", kind="project", arity="scalar", flags=("--data-bind",), dest="data_bind", validate="enum",
+         values=("off", "on"), security=True, clears=True, unsettable=True, display="always", inert="",
          inert_reason=""),
     # How the root reaches the session: `checkout` binds the owner's working tree (the default), `clone`
     # binds a fresh clone on branch agentbox/<session> at the owner's path and never mounts the checkout

@@ -433,6 +433,16 @@ class Gate(MountsMixin, ImagesMixin):
         # one that appears later is as unmasked as a new `.env` (TODO 4.2, 17 Nov). Its PATH entries are made
         # at the start if missing, so they are always covered.
         names = set(self.cfg.get("mask_names") or [])
+        # data_env (decisions.md, 19 Nov 2026): the session shows the root's env files on purpose, so one there is
+        # not a secret the session failed to mask -- unless it is in a data grant inside the root, which stays
+        # masked (mounts.plan).
+        visible = [os.path.realpath(v) for v in self.cfg.get("env_visible") or []]
+        others = [os.path.realpath(r) for r in self.cfg.get("bind_roots") or []
+                  if os.path.realpath(r) not in visible]
+
+        def env_shown(p, fn, in_secrets):
+            return (not in_secrets and _m.env_file(fn) and any(inside(p, v) for v in visible)
+                    and not any(inside(p, o) for o in others))
         n = 0
         for dirpath, dirnames, filenames in os.walk(real, followlinks=False):
             dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
@@ -445,7 +455,8 @@ class Gate(MountsMixin, ImagesMixin):
             in_secrets = any(p in _m.MASK_DIRS for p in os.path.relpath(dirpath, real).split(os.sep))
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
-                if not (in_secrets or _m._masked(fn) or fn in names):
+                if not (in_secrets or _m._masked(fn) or fn in names) or (fn not in names
+                                                                         and env_shown(p, fn, in_secrets)):
                     continue
                 try:
                     st = os.lstat(p)

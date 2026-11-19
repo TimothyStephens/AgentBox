@@ -16,11 +16,11 @@ from .fsutil import inside, write_private
 from .podman import Podman, set_log
 from .progress import Step, stderr_line as _stderr_line
 from .project import (  # noqa: F401
-    clone_root, dev_tier, load_project, mount_mode_of, podman_access, Project, protected_extra, _check, _git_env,
-    _no_commas
+    check_trust, clone_root, dev_tier, load_project, mount_mode_of, podman_access, Project, protected_extra, _check,
+    _git_env, _no_commas, TRUST_KEYS, TRUST_WARNING, trust_warnings
 )
 from .historysecrets import (  # noqa: F401
-    history_secrets, history_secrets_changes, history_secrets_message, _history_masked
+    history_secrets, history_secrets_changes, history_secrets_message, _history_masked, without_real_env
 )
 from .notes import dev_notes, profile_notes, sandbox_notes  # noqa: F401
 from .infra import (net_create_argv, proxy_run_argv, SIDECAR_LOG_DRIVER, SIDECAR_LOG_SIZE,  # noqa: F401
@@ -225,6 +225,13 @@ class Session:
         return mount_mode_of(p.root, p.mount, p.toulmin)
 
     @property
+    def trust_warnings(self):
+        """The WARNING lines for the trusted opt-outs that are on (project.trust_warnings): printed at the
+        start, kept in session.json and the scan record, repeated by the end-of-session scan."""
+        p = self.project
+        return trust_warnings(p.name, p.root, p.data_env, p.data_bind)
+
+    @property
     def read_only_root(self):
         return self.project.value("code") == "ro"
 
@@ -250,12 +257,15 @@ class Session:
         p = self.project
         with Step(f"reading the git history under {p.root} for secret file names", self.warn):
             found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.mask_skip)
+        accepted = p.history_secrets_accepted
+        if p.data_env == "on":            # the root's env files are shown anyway: their names expose nothing more
+            found = without_real_env(found, p.root, p.data_rw + p.data_ro)
+            accepted = without_real_env(accepted, p.root, p.data_rw + p.data_ro)
         # The whole found set, not just the additions (audit F-11): a name that left the history means the
         # acknowledgement no longer describes it, and `ab project show` was still listing it to rotate.
-        new = found if grantcheck.fingerprint(found) != grantcheck.fingerprint(
-            p.history_secrets_accepted) else []
+        new = found if grantcheck.fingerprint(found) != grantcheck.fingerprint(accepted) else []
         if new:
-            raise AgentboxError(history_secrets_message(p.name, new, p.history_secrets_accepted))
+            raise AgentboxError(history_secrets_message(p.name, new, accepted))
         if found:
             self.warn(f"agentbox: {len(found)} accepted secret file name(s) in {p.name}'s git history "
                       "are readable by the agent (accepted as rotated)")
@@ -308,13 +318,16 @@ class Session:
         with Step(f"checking {p.root} for secrets and live data", self.warn):
             plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                      compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
-                                     mask=p.mask, code=p.value("code"))
+                                     mask=p.mask, code=p.value("code"), data_env=p.data_env == "on")
             exposure, warnings, exposure_fp = grantcheck.preflight(
                 self.settings, p.name, {"root": p.root, "data_ro": p.data_ro, "data_rw": p.data_rw,
-                                        "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask},
+                                        "mask_skip": p.mask_skip, "swap": p.swap, "mask": p.mask,
+                                        "data_env": p.data_env, "data_bind": p.data_bind},
                 plan=plan_check, code=p.value("code"))
         for w in warnings:
             self.warn(f"agentbox: grant warning: {w}")
+        for w in self.trust_warnings:
+            self.warn(f"agentbox: WARNING: {w}")
         if exposure and not grantcheck.matches(p.grant_exposure_accepted, exposure):
             raise AgentboxError(grantcheck.message(p.name, exposure))
         if mode == "clone":
@@ -322,7 +335,7 @@ class Session:
             with Step(f"finding the masks in the clone {self.root_src}", self.warn):
                 self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
                                              compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
-                                             mask=p.mask, code=p.value("code"))
+                                             mask=p.mask, code=p.value("code"), data_env=p.data_env == "on")
             self.plan = mounts.remap(self.plan_host, self.root_src, p.root)
         else:
             self.plan_host = self.plan = plan_check
@@ -459,8 +472,14 @@ class Session:
 
         def covers_rel(g):
             gr = os.path.realpath(g)
-            return [os.path.relpath(c, gr) for c in covered
-                    if c != gr and c.startswith(gr.rstrip("/") + "/")]
+            out = [os.path.relpath(c, gr) for c in covered if c != gr and c.startswith(gr.rstrip("/") + "/")]
+            if p.data_bind == "on" and gr == os.path.realpath(self.root_src):
+                out.append(mounts.DATA_DIR)          # live data: the snapshot is not a data backup
+            return out
+
+        if p.data_bind == "on":
+            self.warn(f"agentbox: {mounts.data_dir(p.root)} is not in the pre-session snapshot (data_bind is on; "
+                      "the snapshot is not a data backup): it is yours to back up")
         backup.snapshot(self.settings.project_backups_dir(p.name), self.name, self.writable_grants(),
                         skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
                         exclude_rel_for=covers_rel,
@@ -645,10 +664,16 @@ class Session:
                 for g in grants:
                     if inside(m.dst, g) and m.dst != g:
                         skip[g].append(os.path.relpath(m.dst, g))
+        # data_bind's live data likewise: host services write there, and hashing a database every start and end
+        # would make the scan as slow as the data is large.
+        if p.data_bind == "on" and self.root_src in skip:
+            skip[self.root_src].append(mounts.DATA_DIR)
         doc = {"grants": grants, "skip": skip, "state": scan.snapshot(grants, skip=skip),
                # Recorded at START, so `ab session kill` and `ab session gc` name the branch this session
                # was configured with even if the registry is edited while it runs.
                "base_branch": p.base_branch,
+               # The trusted opt-outs that were on: the end-of-session report repeats them (lifecycle._scan).
+               "trust": self.trust_warnings,
                "agent_state": {"dir": self.state_dir, "files": scan.state_snapshot(self.state_dir)},
                # What the inbox held at the start: teardown reports (and gives provenance to) the difference.
                "inbox": {"project": p.name, "agent": self.adapter.name, "items": profile.items(self.inbox),
@@ -670,6 +695,7 @@ class Session:
                 "pid": os.getpid(), "pid_start": _start_time(os.getpid()), "started": self.started,
                 "preset_egress": self.project.value("egress"), "root": self.project.root,
                 "mount": self.mount_mode, "clone": self.clone,
+                "data_env": self.project.data_env, "data_bind": self.project.data_bind,
                 # never the token (item 35): teardown needs tm, session and project_root, and the token's one
                 # copy on disk is the 0600 file toulmin.write_token makes for the container
                 "toulmin": ({k: v for k, v in self.toulmin.items() if k != "token"} if self.toulmin else None)}
@@ -1116,6 +1142,8 @@ class Session:
             "covered_ids": self.cover_ids(), "ro_roots": [os.path.realpath(r) for r in self.ro_roots()],
             "masked": self.masked_paths(),
             "mask_names": [m for m in self.project.mask if not mounts.mask_is_path(m)],
+            # data_env: env files under these are shown to the agent on purpose, so a late one is no finding
+            "env_visible": [os.path.realpath(self.project.root)] if self.project.data_env == "on" else [],
             "subnets": self.int_subnets,
             "cgroup_parent": s.cgroup_parent or "", "slice": s.cgroup_parent or "",
             "memory": 1 << 30, "pids": 1024, "memory_max": 4 << 30, "pids_max": 4096,

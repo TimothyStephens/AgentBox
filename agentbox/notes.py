@@ -1,5 +1,6 @@
 """What the agent is told about its sandbox (the generated CLAUDE.md / AGENTS.md text). Moved out of
 session.py (item 54); session re-exports it."""
+from .mounts import data_dir
 
 
 def dev_notes(podman_live, dev_images=()):
@@ -109,6 +110,9 @@ def deploy_notes(project):
 def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
                   inbox_kept=True, adapter=None, clone=None):
     logs = "logs, " if project.observe_logs else ""
+    data_env = getattr(project, "data_env", "off") == "on"
+    data_bind = getattr(project, "data_bind", "off") == "on"
+    trusted = data_env or data_bind
     lines = [
         "# agentbox sandbox",
         "",
@@ -127,8 +131,19 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
            "claims; check them against the code."] if project.reviews else []),
         "- The grant holds code. Secrets and live data are meant to live outside it; the session refuses to "
         "start if the grant holds an uncovered secret or live database. Masks and the gate's cover checks are "
-        "a backstop, not the main wall: do not move secrets or production data into the grant.",
+        "a backstop, not the main wall: do not move secrets or production data into the grant."
+        + (" The user has made the exceptions below for this project." if trusted else ""),
     ]
+    if data_env:
+        lines.append(f"- **data_env is on: the env files (`.env`, `.env.*`, `*.env`) under `{project.root}` are the "
+                     "REAL ones**, with real secrets: not masked, and `.env.dev` is not shown in place of `.env`. "
+                     "The user trusts you with them. Never print, log, commit or send their values anywhere (not "
+                     "in a reply, a file, a test, a URL or a request); refer to variables by name.")
+    if data_bind:
+        lines.append(f"- **data_bind is on: `{data_dir(project.root)}` is the project's LIVE data**, readable and "
+                     "writable. agentbox does not back it up (it is not in the pre-session snapshot), so a change "
+                     "or deletion there cannot be undone from here. Change it only when the user asks; work on a "
+                     "copy otherwise.")
     if project.value("code") == "ro":
         lines.append(f"- **The project root `{project.root}` is READ-ONLY in this session** (code = ro): read and "
                      "plan, do not try to edit it -- writes, `git commit` and `git stash` fail there. Write your "
@@ -148,10 +163,13 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
         "that contain a covered path cannot be renamed or moved (`Device or resource busy`), and moving a file "
         "out of one fails with a cross-device error (`git mv` too; `mv` copies instead). Read-only data stays "
         "read-only in your containers.",
-        "- Secret files (`.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, "
-        "`*.jks`, and everything under `secrets/`) are masked and read as empty; `.env.example`, `.env.sample`, "
-        "`.env.template` and `.env.dev` are not. Where a directory has `.env.dev`, that file appears at `.env`: "
-        "add dev variables there.",
+        ("- Secret files (`.env`, `.env.*`, `*.env`, `.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, "
+         "`*.jks`, and everything under `secrets/`) are masked and read as empty; `.env.example`, `.env.sample`, "
+         "`.env.template` and `.env.dev` are not. Where a directory has `.env.dev`, that file appears at `.env`: "
+         "add dev variables there." if not data_env else
+         "- Other secret files (`.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, everything "
+         "under `secrets/`, and the env files of any data directory listed above) are still masked and read as "
+         "empty."),
         "- `AGENTBOX_SESSION` is set to this session's id. A script that must only run on the host (a deploy, "
         "an installer, anything that needs the LAN or writes outside a grant) should check it and refuse.",
     ]

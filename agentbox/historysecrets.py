@@ -50,6 +50,25 @@ def history_secrets(root, grants, mask_skip=(), timeout=120):
     return sorted(found)
 
 
+def without_real_env(names, root, data_grants=()):
+    """The history names that still count under `data_env = "on"`: an env file (`mounts.env_file`) of the
+    project root is shown to the agent on purpose, so its name in git history exposes nothing more and is
+    dropped. Names are relative to the root (history_secrets), so one in a data grant outside it starts with
+    `..`; one in a data grant inside the root is kept too, as its working-tree file stays masked. Applied to
+    the found set AND the stored acknowledgement, so turning the setting on does not re-prompt for names it
+    makes moot."""
+    data = [os.path.realpath(g) for g in data_grants]
+    out = []
+    for n in names:
+        full = os.path.normpath(os.path.join(root, n))
+        trusted = (mounts.env_file(os.path.basename(n)) and inside(full, root)
+                   and not any(part in mounts.MASK_DIRS for part in n.split("/")[:-1])
+                   and not any(inside(full, g) for g in data))
+        if not trusted:
+            out.append(n)
+    return out
+
+
 def history_secrets_changes(found, accepted):
     """(new, gone) between a stored history-secrets acknowledgement and what is in the history now."""
     return ([n for n in found if n not in accepted], [n for n in accepted if n not in found])
