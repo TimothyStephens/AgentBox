@@ -752,11 +752,12 @@ def cmd_project_clean(s, a):
         print(f"{a.name} has no clones at {base}")
         return 0
     podman = Podman(s.podman)
-    live = session.live_session_of(s, podman, a.name)
+    # a session still being torn down counts: its end-of-session scan reads its clone
+    live = session.sessions_in_use(s, podman, a.name)
     gone = []
     for n in sorted(os.listdir(base)):
         path = os.path.join(base, n)
-        if n == live:
+        if n in live:
             print(f"  kept {path}: session {n} is live")
             continue
         if not a.yes:

@@ -3666,3 +3666,129 @@ number (`[1/7]` then `[3/7]` is expected), and a step that is not in the plan pr
 wrong number; tests check the plan equals the steps that ran for a plain start, no backup, an extra `data_rw`
 grant, clone mode and toulmin on. Teardown (`lifecycle.py`) and `ab deploy` (`deployrun.py`) stay unnumbered:
 teardown is being reworked separately and is numbered after that lands.
+
+## 19 Nov 2026: Toulmin's `tm` and git calls run in their own process group, every wait bounded
+
+The 18 Nov stall (a `toulmin-build` launcher sat ~22.5 hours after its end-of-session scan, before releasing the
+project lock) pointed at the window that runs `tm session end`. Suspect: `subprocess.run(timeout=)` killing only
+`tm` and then waiting without a limit for pipes a grandchild of `tm` still held. Measured here on Python 3.11: it
+does **not** hang (after the kill, POSIX `subprocess.run` waits for the child only, not for its pipes), so this is
+not the stall's cause on that interpreter. What it did do is leave the grandchild running. `toulmin._run` and
+`head_of` now go through `toulmin._bounded`: the child starts in its own session and process group with stdin
+`/dev/null` (a child outside the terminal's foreground group that read the terminal would stop on SIGTTIN), a
+timeout (or a signal) kills the whole group, and the wait after the kill is bounded by `GRACE` (5 s); a process that
+left the group is given up on and its pipes closed. Not changed: `Podman.run`, which every podman call shares --
+running podman in its own process group changes what Ctrl-C reaches, and none of the podman calls in teardown
+(`ps`, `logs`, `rm`, `network rm`) leaves a process behind. Tests: `tests/unit/test_toulmin.py` `NoUnboundedWaits`.
+
+## 19 Nov 2026: teardown frees the project as soon as nothing of the session runs
+
+Before, teardown released the project lock last: after the end-of-session scan (14.5 minutes on the 18 Nov tree),
+the scan summary on the terminal, and `tm session end`. Anything that stalled in that stretch held the project: on
+18 Nov a launcher sat there ~22.5 hours and the next `ab session start` was refused with "is running". Now
+`lifecycle.teardown` runs: (1) stop the service and gate, keep the logs, remove the containers, pods, volumes and
+networks; (2) the bookkeeping that touches what the project's next session uses; (3) mark the session `released`
+and free the lock; (4) `tm session end`, the grant scan, the run dir.
+
+**What a new session started during (4) shares with the old teardown, and why each is safe:**
+- *The agent state dir and the inbox.* The inbox report (provenance for new items, the per-session harvest), the
+  agent-state part of the scan (memory, instructions, settings, diffed against the start) and the removal of the
+  Toulmin MCP entry from the per-project `.claude.json` all run in (2), before the release. Read after it, the next
+  session's items and memory edits would be reported as this one's; removed after it, the `toulmin` MCP entry the
+  next session adds under the same name would be taken away. All three are small.
+- *The grants.* The grant scan reads the project tree in (4), so it can see the new session's first changes. That
+  is the price of not holding the project for the scan; the report leads with a note naming the session that took
+  the lock after the release, and when. In clone mode each session has its own clone, so nothing is shared.
+- *Session ids and run dir.* `Session.reserve_name` skips a number whose run dir exists (`mkdir` with
+  `FileExistsError`), and the run dir is removed last, so a new session gets `-2` while `-1` is still being torn
+  down. The kept logs are named by session and start time. The lockdown preset's ephemeral state and inbox are per
+  session.
+- *Liveness.* The launcher's pid stays alive through its own teardown, so `session.json` alone would keep calling
+  the session "running", and `take_project_lock`'s backstop (a live session with no lock) would refuse the new
+  start. The teardown writes `stopping.json` in the run dir (its own pid and start time, the step, `released`).
+  `sessions()` reads a released session as not alive by its launcher; `session_is_alive` answers `stopping` while
+  the teardown's process is alive, so `gc` never reaps a session whose end is still being written;
+  `live_session_of` (attach, kill by project name, the backstop, `ab screen`) skips a released session; and
+  `ab project clean` keeps the clone of any session still in use (`sessions_in_use`), since the scan reads it. The
+  marker is written `released` before the lock is removed, so no reader sees the lock free and the session live.
+- *Toulmin.* `tm session end` and stopping `tm session serve` run after the release. Each `tm session start` gets its
+  own session id, token and socket, so the new session's Toulmin session is a different one. Unverified against
+  real `tm`: whether two serve children of one project can overlap for the seconds between the two.
+
+`project_is_live` (the guard on registry edits) is unchanged and still counts the launcher's pid: an edit waits
+for the teardown to finish. Tests: `tests/unit/test_teardown.py` `TheProjectIsFreeBeforeTheScan`.
+
+## 19 Nov 2026: teardown's output comes last, through a thread of its own
+
+The 18 Nov launcher went quiet right after writing its scan report (12:36:53), in the stretch whose next act was
+writing the scan summary to the terminal, with SIGINT/SIGTERM/SIGHUP ignored by the shielded teardown. A terminal
+write blocks for as long as the terminal does not read: output paused (XOFF), or an SSH session whose client went to
+sleep with the connection still up -- the session then ended "minutes" after the user came back the next morning,
+with no reap message, which fits a write that finally went through. This is the likeliest reading; it cannot be
+proven from the logs. Two changes: (1) the scan's lines (its summary, the inbox count, its warnings) are collected
+and shown only after the lock release, `tm session end` and the run dir's removal; the summary is in the kept scan
+log as before. (2) Every teardown line -- the progress steps included -- is queued to a daemon writer thread
+(`lifecycle._Outbox`), so the bookkeeping never waits on the terminal; teardown's one wait for it is at the very end,
+bounded by `OUTPUT_DRAIN` (10 s). A launcher whose terminal stays blocked may still sit in its exit, but by then
+nothing of the session is held. Tests: `tests/unit/test_teardown.py` `BookkeepingBeforeOutput`.
+
+## 19 Nov 2026: a session being torn down says so ("stopping")
+
+The 19 Nov morning was "wait a minute" or "stuck" with no way to tell: `ab session start` said the project "is
+running", `ab session attach` that the agent "may be starting, or it may have exited". The teardown marker
+(`stopping.json`: the tearing-down process's pid and start time, when it began, the current step and since when,
+`released`) now answers it. `ab session ls` shows the state `stopping` and `stopping since HH:MM: <step>, N min`;
+`ab session attach` says `session X of P is shutting down since HH:MM (<step>, N min); there is nothing to attach
+to`, also for a released session (which no longer counts as the project's live one); a refused `ab session start`
+says `P is shutting down (<step>, N min; session X)` and names `ab session kill`; the registry-edit guard
+(`project_is_live`) says `session X is shutting down (...)`. A marker whose process is gone means the teardown died:
+the session reads as dead and `gc` finishes it. `ab session kill` on a stopping session SIGKILLs the process the
+marker names (pid and start time checked; teardown ignores SIGTERM, so nothing gentler reaches it) and then runs the
+teardown itself; the steps are idempotent (a log or scan report already kept is not rewritten, inbox provenance
+keeps its first record). Tests: `tests/unit/test_teardown.py` `SaysItIsShuttingDown`.
+
+## 19 Nov 2026: the work after the release has a time limit (30 min)
+
+`tm session end` and the grant scan, the two steps after the project lock is released, share one limit,
+`lifecycle.END_LIMIT` (30 minutes; `teardown(limit=)` for tests). A module constant rather than a setting: nothing
+waits on these steps any more, so the limit only decides when a launcher gives up on a report, and no one has
+needed to tune it. Each step runs in a daemon thread and teardown waits for it until the deadline; one still
+running is left behind (it ends with the process), the warning names it and the steps it skipped, and the run dir
+is removed regardless. The scan runs in-process and cannot be interrupted, so "bounded" means teardown stops waiting
+for it, not that it stops: by then the lock is free and nothing of the session runs, so a slow scan holds nothing.
+Its inputs (the scan state, the start snapshot) are read before the release, so removing the run dir under a scan
+left behind takes nothing from it; its report is written only if it finishes before the process exits (a launcher
+exiting mid-write can leave a partial report under the session's own name). The Toulmin end goes first: it is
+bounded by its own timeouts (about two minutes at worst) and Toulmin needs it, while the scan only informs. 14.5
+minutes was the longest scan seen (18 Nov), so 30 is not expected to cut a real one. Tests:
+`tests/unit/test_teardown.py` `TheWorkAfterTheReleaseIsBounded`.
+
+## 19 Nov 2026: the toulmin-build "ls dead, lock alive" inconsistency: no cause found in the code
+
+On 18 Nov evening `ab session ls` showed the stalled session `dead` (0c/0n); on 19 Nov morning the project lock's
+holder, pid 2227814 with a matching start time, counted as alive, and `ab session attach` called the session "alive
+but its agent container is not running" -- which needs `session_is_alive` true, i.e. `_alive(session.json)` true in
+that process. Read in the code, and ruled out:
+- *Different predicates.* `liveness._alive` (session.json) and `sessionlock.lock_holder_state` (the lock) do the same
+  thing: pid > 0, `/proc/<pid>/stat` field 22 equal to the recorded `pid_start`. Both records are written by the same
+  launcher with `_start_time(os.getpid())` (`Session._write_meta`, `projectlock.acquire` from `take_project_lock`),
+  and `_start_time`'s parse (`rsplit(")")`, index 19) is right for a command name holding `)` or spaces.
+- *A rewrite with another pid.* Only `Session._write_meta` and `Deploy.write_meta` write a `session.json`; a deploy's
+  run dir is `<prefix>deploy-<project>`, never a session's. `note_session` rewrites the lock keeping its pid.
+  `attach`, `ab screen`, `kill`, `gc`, `ls` write neither. `reserve_name` never reuses an existing run dir.
+- *A torn or missing session.json.* Written atomically (fresh temp, rename); removed only in the run-dir cleanup at
+  the very end of teardown, after the lock release, so it was present all through the stall. An unreadable one
+  would show `?` as the project.
+- *pid_start drift.* Field 22 is fixed for a process's life; there is no change to these functions since 16 Nov
+  (`git log -S pid_start`).
+So the code gives the same answer from both records for one process at one time. What is left is outside it, all
+Guessing: an `ab session ls` run where `/proc` does not show the launcher (another PID namespace -- a containerised
+or sandboxed terminal -- or a `/proc` mounted with `hidepid`), or the row read being another run dir of the same
+project. Not fixed, since nothing was found to fix; the `stopping` marker removes the ambiguity for this case from
+now on: a session in teardown shows `stopping since HH:MM: <step>`, by the teardown's own pid, never `dead`/`running`.
+On the host, `ls -la $XDG_RUNTIME_DIR/agentbox/sessions/` and `cat /proc/<pid>/stat` from the same shell as
+`ab session ls` would settle it if it recurs.
+
+Also recorded from the same incident: suspect A (a `tm` grandchild holding pipes) cannot stall `subprocess.run` on
+Python 3.11 (measured; see the first 19 Nov teardown entry). The stall's likeliest cause is a terminal write that
+blocked (suspect B), which the writer thread and the output-last order now take out of the bookkeeping.

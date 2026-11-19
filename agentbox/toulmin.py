@@ -69,9 +69,57 @@ def launcher_version():
     return f"agentbox {sha or 'unknown'}"
 
 
-def _run(argv, *, timeout=60):
+GRACE = 5        # seconds to wait for the pipes to close once a timed-out command's process group is killed
+
+
+def _kill_group(proc):
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _bounded(argv, *, timeout, grace=None):
+    """subprocess.run(capture_output=True, text=True, timeout=...) with no unbounded wait anywhere.
+
+    subprocess.run kills only its direct child on a timeout, then waits WITHOUT a limit for the output
+    pipes to close; a grandchild still holding them (a helper `tm` or a git hook left in the background)
+    keeps that wait going forever. Suspected in the 18 Nov stall of a teardown in `tm session end`. So the
+    child runs in its own session and process group, a timeout kills the whole group, and the wait after the
+    kill is bounded by `grace` too: something that left the group (its own setsid) is given up on, its pipes
+    closed. stdin is /dev/null: a child outside the terminal's foreground group that read the terminal would
+    be stopped by SIGTTIN, another wait with no end."""
+    grace = GRACE if grace is None else grace
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except BaseException:                       # the timeout, or a signal turned into an exception
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass                                # a process outside the group still holds a pipe: stop waiting
+        finally:
+            for f in (proc.stdout, proc.stderr):
+                try:
+                    f.close()
+                except OSError:
+                    pass
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _run(argv, *, timeout=60, grace=None):
+    try:
+        return _bounded(argv, timeout=timeout, grace=grace)
     except OSError as e:
         raise AgentboxError(f"cannot run {argv[0]}: {e}")
     except subprocess.TimeoutExpired:
@@ -301,8 +349,8 @@ def head_of(repo, ref=None):
     """A commit id, or "" when the repo or ref cannot be read (a message with head == base is still valid)."""
     for candidate in ([ref] if ref else []) + ["HEAD"]:
         try:
-            p = subprocess.run(["git", *GIT_SAFE, "-C", repo, "rev-parse", "--verify", "--quiet", candidate],
-                               capture_output=True, text=True, timeout=30)
+            p = _bounded(["git", *GIT_SAFE, "-C", repo, "rev-parse", "--verify", "--quiet", candidate],
+                         timeout=30)
         except (OSError, subprocess.SubprocessError):
             return ""
         if p.returncode == 0 and p.stdout.strip():

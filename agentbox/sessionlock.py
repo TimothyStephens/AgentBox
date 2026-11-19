@@ -5,7 +5,7 @@ import os
 from . import projectlock
 from .errors import AgentboxError
 from .lifecycle import teardown
-from .liveness import _start_time, session_is_alive, sessions
+from .liveness import _start_time, released, session_is_alive, sessions, stopping_text
 
 
 class ProjectLock:
@@ -94,6 +94,14 @@ def _take_project_lock(settings, podman, project, warn):
     gone, why = lock_holder_state(settings, podman, holder)
     if not gone:
         sid = holder.get("session") or ""
+        mark = ((sessions(settings, podman).get(sid) or {}).get("stopping")) if sid else None
+        if mark:
+            # its teardown holds the project only until its containers and networks are gone (decisions.md,
+            # 19 Nov 2026), so this is short unless a removal hangs
+            raise AgentboxError(
+                f"{project} is shutting down ({stopping_text(mark)}; session {sid}); start it again once that "
+                f"is done, or `ab session kill {project}` ends it now (its logs and end-of-session scan are "
+                f"kept). [{why}]")
         raise AgentboxError(
             f"{projectlock.holder_text(settings, project, holder)}; `ab session attach {project}` joins it"
             + (f", `ab session kill {project}` ends it (its logs and end-of-session scan are kept)"
@@ -119,12 +127,24 @@ def _take_project_lock(settings, podman, project, warn):
     return ProjectLock(settings, project, pid, _start_time(pid))
 
 
+def _of_project(info, project):
+    return (info.get("meta") or {}).get("project") == project or any(
+        c.get("project") == project for c in info.get("containers") or [])
+
+
 def live_session_of(settings, podman, project):
-    """The id of the project's live session, or None. One per project, so there is no ambiguity."""
+    """The id of the project's live session, or None. One per project, so there is no ambiguity.
+
+    A session whose teardown has already removed everything and freed the project (`released`) is not the
+    project's live session: a new one may start while the old one's end-of-session scan still runs."""
     for sid, info in sorted(sessions(settings, podman).items()):
-        if (info.get("meta") or {}).get("project") != project and not any(
-                c.get("project") == project for c in info.get("containers") or []):
-            continue
-        if session_is_alive(settings, sid, info)[0]:
+        if _of_project(info, project) and not released(info) and session_is_alive(settings, sid, info)[0]:
             return sid
     return None
+
+
+def sessions_in_use(settings, podman, project):
+    """Every session of the project that is alive, a released one still being torn down included: what a
+    caller must not remove from under it (its clone, which its end-of-session scan reads)."""
+    return {sid for sid, info in sessions(settings, podman).items()
+            if _of_project(info, project) and session_is_alive(settings, sid, info)[0]}
