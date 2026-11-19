@@ -3816,3 +3816,4 @@ WARNING lines printed at start, `ab project show` carried them, the end-of-sessi
 backup step said `./data` is not in the snapshot. `tests/integration/test_trusted_optouts.py` pins exactly that, plus
 `sub/.env` real, `secrets/` empty, no `data/` file in the snapshot, and a control project with both off (swap applies,
 no warnings). Written from the host run; the itest itself is unverified until the next `make itest`.
+`test_trusted_optouts` 3/3 OK on the host at a684a94 (both-on and control cases as pinned).
