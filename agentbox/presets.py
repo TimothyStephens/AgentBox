@@ -42,11 +42,11 @@ BUILTIN = {
     "lockdown": {"compose": "ro", "egress": "locked", "podman": {"tier": "none"}, "caps": "refused",
                  "secrets": "locked", "approvals": "on", "data": "ro-only", "code": "rw", "ceiling": True},
     "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-              "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+              "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "pods": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-             "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+             "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
-                   "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+                   "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
     "python": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
@@ -171,7 +171,7 @@ def _validate(values, where):
             continue
         if k not in SETTINGS:
             raise AgentboxError(f"{where}: unknown setting {k!r}")
-        projectkeys.validate_value(k, where, v)
+        values[k] = projectkeys.validate_value(k, where, v)     # normalised: a stored caps "opt-in" reads "refused"
 
 
 def effective(project_name, project, presets):

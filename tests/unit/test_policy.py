@@ -99,7 +99,7 @@ class PresetTest(unittest.TestCase):
     def test_lockdown_is_a_ceiling(self):
         self.assertEqual(self.eff({"preset": "lockdown"})["egress"][0], "locked")
         for loosen in ({"egress": "packages"}, {"egress": "open"}, {"approvals": "off"}, {"compose": "rw"},
-                       {"caps": "opt-in"}, {"secrets": "masked"}, {"podman": {"tier": "dev"}}):
+                       {"secrets": "masked"}, {"podman": {"tier": "dev"}}):
             with self.assertRaises(AgentboxError, msg=loosen):
                 self.eff({"preset": "lockdown", **loosen})
         with self.assertRaises(AgentboxError):
@@ -159,9 +159,9 @@ class PresetTest(unittest.TestCase):
     def test_new_preset_values(self):
         cases = {
             "build": {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-                      "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+                      "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "build-open": {"compose": "rw", "egress": "open", "podman": {"tier": "dev", "live": "observe"},
-                           "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
+                           "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "script": {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                        "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"},
             "research": {"compose": "ro", "egress": "open", "podman": {"tier": "none"}, "caps": "refused",
@@ -195,9 +195,10 @@ class PresetTest(unittest.TestCase):
         self.assertEqual(presets.canonical("research"), "research", "a non-alias is its own canonical name")
 
     # A frozen snapshot of what "pods"/"python" resolved to before this change (docs/design.md's preset
-    # table, pre-redesign). Pins that the redesign did not alter either alias's resolution.
+    # table, pre-redesign). Pins that the redesign did not alter either alias's resolution. caps was
+    # "opt-in" until 19 Nov 2026, when the never-built value was dropped (decisions.md).
     OLD_PODS = {"compose": "rw", "egress": "packages", "podman": {"tier": "dev", "live": "observe"},
-                "caps": "opt-in", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"}
+                "caps": "refused", "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"}
     OLD_PYTHON = {"compose": "ro", "egress": "packages", "podman": {"tier": "none"}, "caps": "refused",
                   "secrets": "masked", "approvals": "off", "data": "declared", "code": "rw"}
 
@@ -681,15 +682,16 @@ class ShowDisplayTest(SettingsCase):
         self.assertIn("locked egress has no extra-domain allowlist", out)
         self.assertIn("no live-stack access", out)
         self.assertIn("only the dev tier runs or builds images", out)
-        self.assertEqual(out.count("ignored:"), 7,
+        self.assertEqual(out.count("ignored:"), 6,
                          "extra_domains, compose_project, observe_logs, dev_images, build_memory "
-                         "(no dev tier), caps and secrets")
+                         "(no dev tier) and secrets")
 
     def test_the_always_inert_settings_say_so(self):
         self.project("p1", preset="build")
         out = self.show("p1")
-        self.assertIn("caps opt-in is not built", out)
         self.assertIn("masks always apply and cannot be turned off", out)
+        self.assertIn("caps                     refused", out)
+        self.assertNotIn("opt-in", out)
 
     def test_an_explicit_compose_project_shows_the_waived_check(self):
         """F4: an explicit compose_project skips the check that the live stack's containers come from
@@ -927,7 +929,7 @@ class CeilingIsAPresetAttribute(TempCase):
         ps = self.load()
         for loosen in ({"podman": {"tier": "dev"}}, {"podman": {"tier": "none", "live": "observe"}},
                        {"observe_logs": True}, {"approvals": "off"}, {"compose": "rw"},
-                       {"caps": "opt-in"}, {"data": "declared"}):
+                       {"data": "declared"}):
             with self.assertRaises(AgentboxError, msg=loosen):
                 self.eff({"preset": "team", **loosen}, ps)
 
@@ -940,3 +942,38 @@ class CeilingIsAPresetAttribute(TempCase):
         self.write("presets/lockdown.toml", 'ceiling = false\n')
         with self.assertRaises(AgentboxError):
             self.load()
+
+
+class CapsHasOneValue(SettingsCase):
+    """Decision 19 Nov 2026: `caps = "opt-in"` was never built (the gate refuses capabilities, devices and
+    security options under every preset), so "refused" is the only value. One stored from the old build
+    presets is read as "refused" with a note, so no existing project or preset file stops loading."""
+
+    def test_no_builtin_preset_says_opt_in(self):
+        self.assertEqual({v["caps"] for v in presets.BUILTIN.values()}, {"refused"})
+
+    def test_a_stored_opt_in_loads_as_refused_with_a_note(self):
+        import io
+        from contextlib import redirect_stderr
+        from agentbox import projectkeys
+        projectkeys._CAPS_NOTED.clear()              # the note is once per process and place
+        self.project("p1", preset="build", caps="opt-in")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            p = session.load_project(self.settings, "p1")
+        self.assertEqual(p.eff["caps"][0], "refused")
+        self.assertIn('caps = "opt-in" is read as "refused"', err.getvalue())
+
+    def test_a_preset_file_with_opt_in_loads_as_refused(self):
+        self.write("presets/team.toml", 'caps = "opt-in"\nceiling = false\n')
+        ps = presets.load_presets(os.path.join(self.tmp, "presets"))
+        self.assertEqual(ps["team"]["caps"], "refused")
+
+    def test_any_other_value_is_refused(self):
+        with self.assertRaises(AgentboxError) as cm:
+            presets.effective("p", {"preset": "build", "caps": "on"}, presets.BUILTIN)
+        self.assertIn('expected "refused"', str(cm.exception))
+
+    def test_a_ceiling_no_longer_sees_opt_in_as_a_loosening(self):
+        """It is read as "refused" before the ceiling compares it, so it cannot loosen anything."""
+        presets.effective("p", {"preset": "lockdown", "caps": "opt-in"}, presets.BUILTIN)

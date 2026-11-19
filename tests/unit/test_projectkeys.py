@@ -142,7 +142,7 @@ class Inertness(unittest.TestCase):
         return {"tier": tier, "live": live, "egress": egress, "live_access": "observe" in (tier, live)}
 
     def test_always_inert_keys(self):
-        for name in ("caps", "secrets"):
+        for name in ("secrets",):
             self.assertEqual(projectkeys.BY_NAME[name].inert, "always", name)
             self.assertTrue(projectkeys.inert_reason(name, self.ctx()), name)
 

@@ -3515,3 +3515,21 @@ all (`code = "ro"`, no `data_rw`), read-only configs are not read: there is noth
 writable grant, so the 18 Nov "grantcheck reports it" (in practice a non-blocking read-only-grant warning) left that
 exact hole open. The silent rc 1 was found while writing the test. An unreadable `.git` FILE in a read-only grant
 still only adds a plan note (unchanged; not asked for).
+
+## 19 Nov 2026: `caps` has one value, "refused"; a stored "opt-in" is migrated, not refused
+
+**What.** The `caps` setting accepts only `"refused"`. The built-in presets `build`, `pods` and `build-open` said
+`"opt-in"`; they now say `"refused"`. `ab project show` no longer marks `caps` as ignored ("caps opt-in is not
+built"): `refused` is what happens. Any other value is refused with a message naming `"refused"` as the only one.
+
+**Migrate, not refuse.** A stored `caps = "opt-in"` (a hand-written registry entry, or a user preset file copied
+from the old built-ins) is read as `"refused"`, with a one-line note on stderr once per place per command. A hard
+refusal would have stopped that project from loading, and a preset file saying it would have stopped
+`load_presets`, i.e. every command. `caps` has no CLI flag, so there is no "newly set via the CLI" path to refuse;
+the next `ab project add`/`set` on that project saves the normalised `"refused"`. To make the read value the one
+the ceiling compares, `presets._validate` now writes each validator's normalised value back (before it discarded
+it; every other preset-key validator returns its input or an equal copy).
+
+**Why.** Tim's decision: the gate refuses `cap_add`, devices and security options under every preset, so
+`"opt-in"` claimed a posture agentbox does not have. Stop pretending.
+

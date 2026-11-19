@@ -61,7 +61,6 @@ authoritative; this is the *why*.
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | Codex adapter | Step 8. The Pi adapter is built, Pi packages included (18 Nov; `ab profile install pi`, docs/pi-proposal.md). Codex waits for a need. |
-| Caps / devices opt-in | The gate refuses `cap_add`, `devices` and security options under every preset; the `caps = opt-in` preset value is inert and `ab project show` says so. |
 | A profile curator | `ab profile harvest` lists, groups and marks; promoting is a human reading a skill. A curator would need the profile **read-write** (which no normal session gets), a prompt that is itself security-reviewed, and a record of what it rejected and why. **Deliberately not started until `harvest` has been lived with** — right now we would be guessing at the hard part. |
 
 ### 3.1 A writable folder inside a read-only root; the dev tier with one
@@ -136,6 +135,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | `caps` has one value, `refused`: the never-built `opt-in` is gone from the build presets, a stored one reads as `refused` with a note; a git config in a read-only grant that the launcher cannot read refuses the session |
 | 19 Nov | Pi adapter (1.5.2) built and verified on the host: `test_pi_isolation`, `make pi-live` on OpenRouter; pi-live's bash check made unguessable; the gate retries a podman 500 on a lookup (`podman run --rm` race) |
 | 18 Nov | `ab deploy --down [--volumes]`; the deploy contract (`deploy-check`); read-only project root (`code = ro`, `planner` preset); host facts moved out of the repo into agentbox.toml |
 | 18 Nov | `ab deploy` built and verified on podman (`test_deploy`, `make itest` 200/200): a reviewed commit copied out with the real `.env`, run through the gate's deploy mode; hand-run stacks refused, their volumes adoptable by name. Proposal folded into design.md |

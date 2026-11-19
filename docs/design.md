@@ -308,7 +308,7 @@ One host-side gate and one sockguard per session. The sandbox gets only the gate
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
 - Never granted: touching the live `<project>` stack beyond observe/exec (including deleting its volumes, or mounting any volume the session did not create), other projects' containers, privileged mode, host networking or namespaces, host port publishing. The dev tier may delete its own volumes.
-- Extra capabilities or devices a compose file needs (e.g. `NET_ADMIN`, `/dev/net/tun`): **opt-in is not built.** The gate refuses `cap_add`, `devices` and security options in every preset; the `caps = opt-in` preset value is inert (nothing reads it).
+- Extra capabilities or devices a compose file needs (e.g. `NET_ADMIN`, `/dev/net/tun`): **not offered.** The gate refuses `cap_add`, `devices` and security options in every preset, and `caps` has one value, `refused`. The `opt-in` value the build presets once carried was never built and was dropped (19 Nov 2026); a registry entry or preset file that still says `caps = "opt-in"` is read as `refused`, with a one-line note, so it keeps loading.
 - Image pulls happen on the host, outside the proxy; the gate's and sockguard's registry allowlist (`docker.io`, `ghcr.io`, `lscr.io`, `quay.io` by default) is the control there.
 - Memory, CPU and PID limits apply to every container the agent starts.
 
@@ -443,7 +443,7 @@ The canonical names are `build` and `script`; **`pods` and `python` are kept as 
 | `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
 | Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `packages` | `locked` |
 | Podman tier | none | dev on `<project>-dev`, observe on the live stack (no logs unless `observe_logs = true`) | dev + observe, as `build` | none | none | none (dev refused with a read-only root) | observe on the live stack only | none |
-| Extra capabilities, devices | Refused | Refused (opt-in not built; `caps` value inert) | Refused | Refused | Refused | Refused | Refused | Refused |
+| Extra capabilities, devices | Refused | Refused | Refused | Refused | Refused | Refused | Refused | Refused |
 | Agent approval prompts | On | Off (`--auto`) | Off | Off | Off | Off | Off | Off |
 
 **A read-only project root** (`code = ro`, the `planner` preset, or `--code ro` on any project; built 18 Nov 2026, `docs/readonly-root-proposal.md`, decisions D1-D8): the root is bound read-only and handled like a `data_ro` grant — masks and the `.env.dev` swap still apply (read-only), there are no git or compose covers in it, it is neither backed up before the session nor part of the end-of-session scan, and grantcheck still refuses what reading alone can leak (an unmasked secret, a credential in a git remote) while live data and git-config escapes only warn. Writes go to a `data_rw` grant outside the root (a writable folder inside it is not built); the agent's instructions name it. The dev podman tier is refused with a read-only root, and clone mode falls back to checkout (there is nothing for a clone to isolate). Every built-in preset states `code`; a user preset inherits lockdown's `rw`.
@@ -459,7 +459,7 @@ The canonical names are `build` and `script`; **`pods` and `python` are kept as 
 - Open egress is written **only when an open preset is newly chosen** (`ab project init`, `ab project add`, or `ab project set --preset` where the preset actually changes). An unrelated `ab project set` never touches `egress`.
 - **A ceiling is an attribute of the preset** (`ceiling = true`), not a hard-coded name: overrides may only tighten it. True for `lockdown`, and true by default for any preset a user file defines or modifies unless that file sets `ceiling = false`. Every comparison runs through the settings table's looseness order, so it covers `podman` and `observe_logs` as well as the scalar settings. To loosen, switch the project to another preset.
 - **Podman access is a capability set, not a ladder.** `tier = "dev"` grants `dev-stack` (the project's own stack, inside the sandbox); `tier = "observe"` and `live = "observe"` both grant `live-observe` (reads of the live host stack); `exec` would grant `live-exec` (not built). An override is looser when its set is **not a subset** of the ceiling's, so a ceiling of `{ tier = "dev" }` refuses `{ tier = "observe" }` and an observe ceiling refuses the dev tier: neither capability contains the other. `ab project set --podman observe|dev` changes the tier and keeps the `live` component; `--podman none` clears both, so "none" means no podman access (17 Nov 2026).
-- **A setting that cannot act is shown, not hidden.** `ab project show` prints every stored setting with its source, marking the ones the current posture makes inert — `extra_domains` under `locked` egress, `compose_project`/`observe_logs` with no live-stack access, `dev_images`/`build_memory` off the dev tier, and `caps`/`secrets`, which are inert outright.
+- **A setting that cannot act is shown, not hidden.** `ab project show` prints every stored setting with its source, marking the ones the current posture makes inert — `extra_domains` under `locked` egress, `compose_project`/`observe_logs` with no live-stack access, `dev_images`/`build_memory` off the dev tier, and `secrets`, which is inert outright.
 - **An override that loosens its preset is marked** where it is printed: `egress open from project (loosens preset script, whose value is packages)`. Only security-relevant settings are compared (the settings table's `security` column), so `build_memory` is never marked; `ab project set` reports the same thing for the edit it just made, under "this edit grants more than the project had".
 - **`compose_project` waives the live-stack ownership check only when it names a different stack.** Storing the value the project would have had anyway (`compose_project = "shop"` on project `shop`) waives nothing, and `show` says so: the stack's containers must still come from inside the project root. Naming a *different* stack is the deliberate act the waiver is for, and is printed as such.
 - **`dev_images` may not name agentbox's own images.** A pattern is refused where it is written if it can match `localhost/agentbox-*` — which is what catches `*` and `localhost/*`, patterns broad enough to cover every other local image, including other projects' builds and live stacks. The dev-tier sandbox notes list the project's actual patterns, or say there are none.
@@ -473,7 +473,7 @@ ceiling   = false          # the default for a user preset is true: overrides ma
 compose   = "rw"
 egress    = "packages"
 podman    = { tier = "dev", live = "observe" }
-caps      = "opt-in"
+caps      = "refused"        # the only value
 secrets   = "masked"
 approvals = "off"
 ```
@@ -909,7 +909,7 @@ because they are design decisions rather than status:
   user's call (progress.md, Next).
 
 The commands the usage sections name but which do not exist (`ab allow`, `ab outbox`,
-`ab reload`, `ab resume`), the podman `exec` tier, the caps/devices opt-in, the key gateway, the Pi and Codex
+`ab reload`, `ab resume`), the podman `exec` tier, the caps/devices opt-in (not offered: `caps = "refused"` only), the key gateway, the Pi and Codex
 adapters, `--data-bind` and the `dev/data` overlay are each a Status row there, with the reason in
 `docs/TODO.md` §3.
 
