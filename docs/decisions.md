@@ -3653,3 +3653,17 @@ Every other expectation (EROFS for create/mkdir/chmod, EBUSY for rmdir/rename/un
 listings, the swap, the host sentinel) matched. `test_step6_covers` passed 3/3 on the gate's 5xx retry.
 Rerun at 32857d9: `test_mask_errno` 2/2 OK on the host, every probe as pinned. `make claude-live` PASS at 32857d9
 (AB_OK, search works / fetch refused / bash works under locked egress, token in no log or state file).
+
+## 19 Nov 2026: Toulmin's `tm` and git calls run in their own process group, every wait bounded
+
+The 18 Nov stall (a `toulmin-build` launcher sat ~22.5 hours after its end-of-session scan, before releasing the
+project lock) pointed at the window that runs `tm session end`. Suspect: `subprocess.run(timeout=)` killing only
+`tm` and then waiting without a limit for pipes a grandchild of `tm` still held. Measured here on Python 3.11: it
+does **not** hang (after the kill, POSIX `subprocess.run` waits for the child only, not for its pipes), so this is
+not the stall's cause on that interpreter. What it did do is leave the grandchild running. `toulmin._run` and
+`head_of` now go through `toulmin._bounded`: the child starts in its own session and process group with stdin
+`/dev/null` (a child outside the terminal's foreground group that read the terminal would stop on SIGTTIN), a
+timeout (or a signal) kills the whole group, and the wait after the kill is bounded by `GRACE` (5 s); a process that
+left the group is given up on and its pipes closed. Not changed: `Podman.run`, which every podman call shares --
+running podman in its own process group changes what Ctrl-C reaches, and none of the podman calls in teardown
+(`ps`, `logs`, `rm`, `network rm`) leaves a process behind. Tests: `tests/unit/test_toulmin.py` `NoUnboundedWaits`.

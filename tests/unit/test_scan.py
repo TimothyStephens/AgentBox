@@ -550,7 +550,7 @@ class GitSafeIsShared(TempCase):
         def fake_run(argv, **kw):
             seen.append(argv)
             return subprocess.CompletedProcess(argv, 0, stdout="abc123\n", stderr="")
-        with mock.patch.object(toulmin.subprocess, "run", fake_run):
+        with mock.patch.object(toulmin, "_bounded", fake_run):    # its subprocess call (bounded, 19 Nov)
             self.assertEqual(toulmin.head_of("/nowhere"), "abc123")
         self.assertEqual(seen[0][:1 + len(scan.GIT_SAFE)], ["git", *scan.GIT_SAFE], seen[0])
 

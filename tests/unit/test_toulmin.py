@@ -493,3 +493,91 @@ class MountListAndHash(SettingsCase):
                                 '{"mode":"rw","source":"/c","target":"/x/c"}]')
         import hashlib
         self.assertEqual(toulmin.mounts_hash(entries), "sha256:" + hashlib.sha256(canon.encode()).hexdigest())
+
+
+class NoUnboundedWaits(SettingsCase):
+    """18 Nov: a launcher's teardown stalled for ~22 hours after its end-of-session scan, in the window that
+    runs `tm session end`. One suspect was subprocess.run(timeout=) waiting with no limit for pipes a
+    grandchild of `tm` still held. On Python 3.11 it does not (after the kill it waits for the child only,
+    checked 19 Nov), but it did leave the grandchild running, holding whatever it held. `_run` now runs the
+    child in its own process group, kills the whole group on a timeout, bounds every wait after the kill,
+    and gives the child /dev/null as stdin.
+
+    Each call runs in a thread with its own watchdog, so a regression fails here instead of hanging the
+    suite (the fake's grandchild lives 30 s)."""
+
+    def fake_tm(self, body):
+        path = self.write("bin/tm", "#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def call_within(self, seconds, fn):
+        import threading
+        box = {}
+
+        def go():
+            try:
+                fn()
+            except BaseException as e:
+                box["error"] = e
+        t = threading.Thread(target=go, daemon=True)
+        t0 = time.monotonic()
+        t.start()
+        t.join(seconds)
+        self.assertFalse(t.is_alive(), f"still waiting after {seconds}s")
+        return box.get("error"), time.monotonic() - t0
+
+    def test_a_grandchild_holding_the_pipes_does_not_stall_a_timeout(self):
+        # the background sleep inherits stdout and stderr; the script itself then hangs
+        pidfile = os.path.join(self.tmp, "grandchild.pid")
+        tm = self.fake_tm(f"sleep 30 &\necho $! > {pidfile}\nexec sleep 30\n")
+        err, took = self.call_within(10, lambda: toulmin._run([tm, "session", "end", "x"], timeout=1))
+        self.assertIsInstance(err, toulmin.AgentboxError)
+        self.assertIn("did not answer within 1s", str(err))
+        self.assertLess(took, 8)
+        with open(pidfile) as f:
+            grandchild = int(f.read())
+        for _ in range(50):
+            if _gone(grandchild):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(grandchild, signal.SIGKILL)
+            self.fail("the grandchild holding the pipes outlived the timeout")
+
+    def test_the_child_does_not_read_the_terminal(self):
+        tm = self.fake_tm("cat\n")
+        p = toulmin._run([tm], timeout=5)
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+
+    def test_one_that_left_the_process_group_is_given_up_on_after_the_grace(self):
+        """A grandchild in its own session survives the group kill; the second wait still ends."""
+        if not shutil_which("setsid"):
+            self.skipTest("no setsid")
+        tm = self.fake_tm("setsid sleep 30 &\nexec sleep 30\n")
+        err, took = self.call_within(10, lambda: toulmin._run([tm, "session", "end", "x"], timeout=1, grace=1))
+        self.assertIsInstance(err, toulmin.AgentboxError)
+        self.assertLess(took, 8)
+
+    def test_a_normal_answer_is_unchanged(self):
+        tm = self.fake_tm('echo out; echo err >&2; exit 3\n')
+        p = toulmin._run([tm, "session", "end", "x"], timeout=5)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (3, "out\n", "err\n"))
+
+    def test_a_missing_tm_is_an_agentbox_error(self):
+        with self.assertRaises(toulmin.AgentboxError):
+            toulmin._run([os.path.join(self.tmp, "nope")], timeout=5)
+
+
+def _gone(pid):
+    """Exited: no such process, or a zombie its new parent has not reaped yet (a container's PID 1 may not)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(") ", 1)[1][:1] == "Z"
+    except OSError:
+        return True
+
+
+def shutil_which(name):
+    import shutil
+    return shutil.which(name)
