@@ -21,6 +21,9 @@
 #     prepares a session -- 111 of its tests errored on the missing binary (29 Oct);
 #   * python3, python3-pip, python3-venv: the trial (2 Oct) found agents need a venv, and the compose tool
 #     below is Python;
+#   * python-is-python3: a `python` command. Skills are written with `python -m ...` and `python script.py`
+#     (skill-creator, webapp-testing), and only the OMP layer had it until 19 Nov, so the same skill worked
+#     in one agent and not the others;
 #   * ripgrep and fd-find: what an agent actually greps and finds with. Debian installs fd as `fdfind`
 #     (the name `fd` belongs to another package), so it is linked to `fd` as well -- agents reach for `fd`;
 #   * gcc, g++, make: enough to build a native Python or Node extension, which pip and npm do unprompted;
@@ -28,15 +31,23 @@
 #     both agents list them in `required_tools`, so `ab selftest` fails the session without them.
 #
 # NOTHING here is downloaded without a checksum (tests/unit/test_images.py enforces that): apt verifies its
-# own packages, pip runs --require-hashes, and the one direct download uses ADD --checksum, which podman
-# checks BEFORE the file is used.
+# own packages, pip runs --require-hashes, and the direct downloads use ADD --checksum, which podman checks
+# BEFORE the file is used.
+#
+# Two stages, and `make base-image` picks one with --target:
+#   * `core`: everything above, always;
+#   * `playwright`: core plus Python Playwright and its headless Chromium, only when the user opted in
+#     (`image_playwright = true` in agentbox.toml, or `make base-image PLAYWRIGHT=1`). It is a stage rather
+#     than an `if` in a RUN step because its browser is an ADD --checksum, and an ADD cannot be conditional:
+#     with --target core the builder never reaches the stage, so an opted-out build downloads nothing.
+# Either way the image is tagged agentbox-base, and its `agentbox.playwright` label says which it is.
 
 # An ARG used in the FROM line itself must be declared before it -- this is the only place that is right.
 # Every other ARG goes after the FROM, because FROM ends the pre-build stage and resets what came before it:
 # an ARG declared above and referenced in a RUN below is silently empty. (That is exactly how omp-env's
 # pinned OMP version never applied: it asks for 18.1.3 and gets whatever npm had.)
 ARG OS_BASE=docker.io/library/node:26-bookworm-slim
-FROM ${OS_BASE}
+FROM ${OS_BASE} AS core
 # Declared again, because the one above is out of scope here: the LABEL at the end records what this was
 # built from, and without this line it would record an empty string. `make base-image` always passes
 # --build-arg OS_BASE, so the value is the same one FROM used; a hand-build that omits it gets an empty
@@ -51,7 +62,7 @@ ARG NODE_MAJOR
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates unzip jq rsync \
-        python3 python3-pip python3-venv \
+        python3 python3-pip python3-venv python-is-python3 \
         ripgrep fd-find \
         gcc g++ make \
     && ln -sfn "$(command -v fdfind)" /usr/local/bin/fd \
@@ -76,10 +87,10 @@ RUN pip install --no-cache-dir --break-system-packages --require-hashes \
 
 # Every tool the agent images are entitled to assume, proved present at build time rather than discovered
 # missing by `ab image build`'s check or by a session (`required_tools`).
-RUN set -eu; for t in git curl jq rsync python3 pip3 rg fd gcc g++ make node npm podman podman-compose; do \
+RUN set -eu; for t in git curl jq rsync python3 python pip3 rg fd gcc g++ make node npm podman podman-compose; do \
       command -v "$t" >/dev/null || { echo "missing from agentbox-base: $t" >&2; exit 1; }; \
     done; \
-    node --version; podman --version; \
+    node --version; podman --version; python --version; \
     test -n "${NODE_MAJOR}" || { echo "NODE_MAJOR was not passed; build with \`make base-image\`" >&2; exit 1; }; \
     node --version | grep -Eq "^v${NODE_MAJOR}\\." || { \
       echo "node is $(node --version), not v${NODE_MAJOR}.x: OS_BASE=${OS_BASE} resolved to a different" >&2; \
@@ -92,6 +103,61 @@ ENV PIP_CACHE_DIR=/tmp/pip-cache
 LABEL agentbox=1 \
       agentbox.base="${OS_BASE}" \
       agentbox.node-major="${NODE_MAJOR}" \
+      agentbox.playwright="none" \
       org.opencontainers.image.title="agentbox-base" \
       org.opencontainers.image.description="shared toolchain for agentbox agent images"
 WORKDIR /
+
+# ---- optional: Playwright (make base-image PLAYWRIGHT=1, or image_playwright = true) -------------------------
+# For the webapp-testing skill and anything like it: `from playwright.sync_api import sync_playwright`, then
+# `p.chromium.launch()` (headless). Python only -- the skill and the agents' own scripts use the Python API, and
+# the Node package would be a second copy of the same driver for no caller we have (decisions.md, 19 Nov).
+#
+# The browser is Playwright's "chromium-headless-shell" alone: a headless launch with no `channel` uses it and
+# nothing else, and there is no display to run headed Chromium on. The full Chromium (`channel="chromium"`, the
+# "new headless" mode) would roughly double the browser's size for a mode nothing here asks for.
+#
+# Not `playwright install`: it downloads from Playwright's CDN and verifies nothing (no checksum anywhere in
+# its download path, checked in 1.65.2's registry code), which is the one thing this file does not allow. So
+# the zip it WOULD fetch -- same URL, from the Makefile's pins -- comes in through ADD --checksum and is
+# unpacked where Playwright looks for it; `playwright install-deps` then installs the shared libraries and
+# fonts through apt, which verifies its own packages. The check script proves the result: the Python package
+# is the pinned version, its browsers.json names the browser build pinned here (so the two cannot drift
+# apart), and a headless page actually renders.
+#
+# The browsers live in /opt/ms-playwright, not ~/.cache: a session's $HOME is an empty tmpfs, and the image
+# is read-only at runtime, so nothing can be installed there later either (the session notes say so).
+FROM core AS playwright
+ARG PLAYWRIGHT_VERSION
+ARG PLAYWRIGHT_CHROMIUM_VERSION
+ARG PLAYWRIGHT_CHROMIUM_REVISION
+ARG PLAYWRIGHT_SHELL_SHA256
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+COPY requirements-playwright.txt /tmp/agentbox-playwright-requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --require-hashes \
+        -r /tmp/agentbox-playwright-requirements.txt \
+    && rm -f /tmp/agentbox-playwright-requirements.txt
+
+ADD --checksum=sha256:${PLAYWRIGHT_SHELL_SHA256} \
+    https://cdn.playwright.dev/builds/cft/${PLAYWRIGHT_CHROMIUM_VERSION}/linux64/chrome-headless-shell-linux64.zip \
+    /tmp/chrome-headless-shell.zip
+COPY playwright-check.py /tmp/agentbox-playwright-check.py
+RUN set -eu; \
+    test -n "${PLAYWRIGHT_VERSION}" && test -n "${PLAYWRIGHT_CHROMIUM_REVISION}" || { \
+      echo "the Playwright pins were not passed; build with: make base-image PLAYWRIGHT=1" >&2; exit 1; }; \
+    dir="${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-${PLAYWRIGHT_CHROMIUM_REVISION}"; \
+    mkdir -p "$dir"; \
+    unzip -q /tmp/chrome-headless-shell.zip -d "$dir"; \
+    rm -f /tmp/chrome-headless-shell.zip; \
+    test -x "$dir/chrome-headless-shell-linux64/chrome-headless-shell" || { \
+      echo "the zip did not unpack to $dir/chrome-headless-shell-linux64/chrome-headless-shell" >&2; exit 1; }; \
+    touch "$dir/INSTALLATION_COMPLETE"; \
+    playwright install-deps chromium; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*; \
+    python3 /tmp/agentbox-playwright-check.py \
+      "${PLAYWRIGHT_VERSION}" "${PLAYWRIGHT_CHROMIUM_REVISION}" "${PLAYWRIGHT_CHROMIUM_VERSION}"; \
+    rm -f /tmp/agentbox-playwright-check.py; \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+
+LABEL agentbox.playwright="${PLAYWRIGHT_VERSION}"

@@ -157,9 +157,40 @@ CLAUDE_VERSION := 2.1.318
 OMP_VERSION := 18.13.3
 PI_VERSION := 1.5.2
 
+# Python Playwright and its headless Chromium in agentbox-base (so in every agent image), opt-in: a few hundred
+# MB that only someone testing web UIs needs (decisions.md, 19 Nov). PLAYWRIGHT is 1 or 0. Its default is
+# `image_playwright` in ~/.config/agentbox/agentbox.toml, read by agentbox/imageopts.py, so the choice survives
+# the next rebuild; `make base-image PLAYWRIGHT=1` (or =0) on the command line overrides it for one build.
+# Lazy and memoised: nothing runs the helper until a recipe reads PLAYWRIGHT, and then it runs once (the
+# first read replaces the variable with its answer), so an error in agentbox.toml is printed once, not per use.
+PLAYWRIGHT ?= $(eval PLAYWRIGHT := $(shell python3 -m agentbox.imageopts playwright))$(PLAYWRIGHT)
+# The Python package (images/base/requirements-playwright.txt holds it with hashes, at this same version), and
+# the one browser build it drives headless: chromium-headless-shell, revision and version as the package's own
+# browsers.json names them (the build asserts that). The zip is fetched by ADD --checksum from the URL
+# `playwright install` would use, because Playwright itself checks no checksum. There is no published sha256
+# for it, so the pin is taken once on the host, from the same URL, and every later build is held to it:
+#   curl -sSfL https://cdn.playwright.dev/builds/cft/$(PLAYWRIGHT_CHROMIUM_VERSION)/linux64/chrome-headless-shell-linux64.zip | sha256sum
+# Moving PLAYWRIGHT_VERSION means re-reading browsers.json for the two browser values, and a new sha256.
+PLAYWRIGHT_VERSION := 1.65.2
+PLAYWRIGHT_CHROMIUM_REVISION := 1255
+PLAYWRIGHT_CHROMIUM_VERSION := 159.0.8154.6
+PLAYWRIGHT_SHELL_SHA256 :=
+PLAYWRIGHT_URL := https://cdn.playwright.dev/builds/cft/$(PLAYWRIGHT_CHROMIUM_VERSION)/linux64/chrome-headless-shell-linux64.zip
+PLAYWRIGHT_ARGS := --build-arg PLAYWRIGHT_VERSION=$(PLAYWRIGHT_VERSION) \
+	--build-arg PLAYWRIGHT_CHROMIUM_REVISION=$(PLAYWRIGHT_CHROMIUM_REVISION) \
+	--build-arg PLAYWRIGHT_CHROMIUM_VERSION=$(PLAYWRIGHT_CHROMIUM_VERSION) \
+	--build-arg PLAYWRIGHT_SHELL_SHA256=$(PLAYWRIGHT_SHELL_SHA256)
+
 BASE_WARN_DAYS ?= 14
 
 base-image:
+	@case "$(PLAYWRIGHT)" in 0|1) ;; *) \
+	  echo "FATAL: PLAYWRIGHT is '$(PLAYWRIGHT)', not 0 or 1. It comes from image_playwright in agentbox.toml" >&2; \
+	  echo "(true/false, unquoted) unless given here: make base-image PLAYWRIGHT=1" >&2; exit 2;; esac
+	@if [ "$(PLAYWRIGHT)" = 1 ] && [ -z "$(PLAYWRIGHT_SHELL_SHA256)" ]; then \
+	  echo "FATAL: PLAYWRIGHT=1 needs PLAYWRIGHT_SHELL_SHA256, the checksum of the browser zip. Take it once with" >&2; \
+	  echo "  curl -sSfL $(PLAYWRIGHT_URL) | sha256sum" >&2; \
+	  echo "and put it in the Makefile (or rerun with PLAYWRIGHT_SHELL_SHA256=<it>)." >&2; exit 2; fi
 	@if [ -z "$(OS_BASE_DIGEST)" ]; then \
 	  echo ">> WARNING: the OS base is not pinned by digest. To pin it, run these two and rerun with" >&2; \
 	  echo ">>   OS_BASE_DIGEST=<the sha256:... they print>:" >&2; \
@@ -167,9 +198,12 @@ base-image:
 	  echo ">>   podman image inspect $(OS_BASE_TAG) --format '{{index .RepoDigests 0}}'" >&2; \
 	fi
 	podman build --build-arg OS_BASE=$(OS_BASE) --build-arg NODE_MAJOR=$(NODE_MAJOR) $(PODMAN_REMOTE_ARGS) \
+	  $(if $(filter 1,$(PLAYWRIGHT)),--target playwright $(PLAYWRIGHT_ARGS),--target core) \
 	  -t localhost/agentbox-base:latest -t localhost/agentbox-base:$$(date +%Y%m%d) images/base
 	@podman image inspect localhost/agentbox-base:latest \
 	  --format '>> agentbox-base {{.Id}} built from {{index .Config.Labels "agentbox.base"}}'
+	@podman image inspect localhost/agentbox-base:latest \
+	  --format '>> playwright: {{index .Config.Labels "agentbox.playwright"}} (PLAYWRIGHT=$(PLAYWRIGHT)); rebuild the agent images to carry it'
 	@echo ">> node $$(podman run --rm --entrypoint "" localhost/agentbox-base:latest node --version) (NODE_MAJOR=$(NODE_MAJOR), asserted in the build)"
 
 # $(1) agent name  $(2) the command that prints its CLI version  $(3) extra build args
@@ -187,7 +221,9 @@ define build_agent_image
 	echo ">> agentbox-base: $$age day(s) old (created $$created)"; \
 	if [ "$$age" -gt "$(BASE_WARN_DAYS)" ]; then \
 	  echo ">> WARNING: agentbox-base is $$age days old (> $(BASE_WARN_DAYS)); \`make base-image\` for current packages." >&2; \
-	fi
+	fi; \
+	echo ">> agentbox-base: playwright $$(podman image inspect localhost/agentbox-base:latest \
+	  --format '{{index .Config.Labels "agentbox.playwright"}}')"
 	podman build --pull=never $(3) \
 	  -t localhost/agentbox-$(1):latest -t localhost/agentbox-$(1):$$(date +%Y%m%d) images/$(1)
 	@ver=$$(podman run --rm --entrypoint "" localhost/agentbox-$(1):latest $(2) 2>/dev/null | head -1 | tr -d '\r'); \

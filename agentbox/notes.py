@@ -107,8 +107,24 @@ def deploy_notes(project):
     ]
 
 
+def playwright_notes(version):
+    """Only for an image that has Playwright (its `agentbox.playwright` label): most images do not, and a line
+    about a tool that is not there would send the agent looking for it."""
+    if not version:
+        return []
+    return [
+        f"- **Playwright {version} (Python) is installed**, with Chromium only (no Firefox or WebKit): "
+        "`from playwright.sync_api import sync_playwright`, then `p.chromium.launch()`. Headless only -- there is "
+        "no display. The browser is already in `/opt/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`), which is "
+        "read-only: do not run `playwright install`, and do not `pip install playwright` over it. Chromium runs "
+        "without its own sandbox (Playwright's default), inside this one. Pages on `localhost`/`127.0.0.1` (a "
+        "server you start here) load directly; anything else goes through the proxy, so only as far as the "
+        "egress mode allows.",
+    ]
+
+
 def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=None, inbox="",
-                  inbox_kept=True, adapter=None, clone=None):
+                  inbox_kept=True, adapter=None, clone=None, playwright=None):
     logs = "logs, " if project.observe_logs else ""
     data_env = getattr(project, "data_env", "off") == "on"
     data_bind = getattr(project, "data_bind", "off") == "on"
@@ -193,6 +209,7 @@ def sandbox_notes(project, egress, podman_live=None, podman_dev=False, profile=N
          "other projects' containers).")
     else:
         lines.append("- No podman or docker socket is available in this session.")
+    lines += playwright_notes(playwright)
     lines += profile_notes(profile, inbox, inbox_kept, adapter)
     lines += [
         "- Do not try to escape, remount, or change the sandbox; ask the user when you are blocked.",

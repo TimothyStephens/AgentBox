@@ -57,6 +57,25 @@ const bodies = {priv: {image: img, privileged: true}, port: {image: img, portmap
 if (method === "POST" || method === "PUT") req.write(JSON.stringify(bodies[mode] || {Cmd: ["true"], image: img}));
 req.end();'
 
+# playwright -> "ok <title>" when Python Playwright launches its headless Chromium and renders a page under this
+# session's exact spec (read-only root, no capabilities, the session's /dev/shm and /tmp), else "error:<why>".
+# Only asked when the image's agentbox.playwright label says it is there.
+PWPY='
+import sys
+try:
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        b = p.chromium.launch()
+        try:
+            pg = b.new_page()
+            pg.set_content("<title>abt-selftest</title>")
+            print("ok " + pg.title())
+        finally:
+            b.close()
+except Exception as e:
+    print("error:" + type(e).__name__ + ": " + " ".join(str(e).split())[:160])
+'
+
 # direct HOST PORT -> connected | refused | unreachable | timeout | noresolve | error:<msg>
 direct() {
   local out rc
@@ -96,6 +115,7 @@ while read -r id op a b c d; do
     connect)  t0=$(date +%s%N); r=$(proxy_req CONNECT "$a" "$a"); r="$r $(( ($(date +%s%N) - t0) / 1000000 ))ms" ;;
     direct)   r=$(direct "$a" "$b") ;;
     api)      r=$(timeout 40 node -e "$SOCKJS" "$a" "$b" "$c" "$d" 2>&1 | tail -1) ;;
+    playwright) r=$(timeout 120 python3 -c "$PWPY" 2>/dev/null | tail -1); r="${r:-error:no output (timed out?)}" ;;
     *)        r="unknown-op" ;;
   esac
   printf '%s %s\n' "$id" "$r"

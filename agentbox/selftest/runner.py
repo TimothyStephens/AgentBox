@@ -142,6 +142,20 @@ def filesystem_cases(b, *, project, plan, other_roots, other_state_dirs, secret_
         b.add("which", [t], f"tool {t} present", expect_not("missing"))
 
 
+def playwright_cases(b, version, configured):
+    """With Playwright in the image: a real headless launch inside the probe. Without it: a SKIP, never a FAIL --
+    leaving it out is the default and a choice, not a broken sandbox. The SKIP says which of the two ways it is
+    absent, because "set to true but not rebuilt" is the one the user can act on."""
+    label = "Playwright launches headless Chromium"
+    if version:
+        b.add("playwright", [], f"{label} ({version})",
+              lambda obs: ("PASS" if obs.startswith("ok ") else "FAIL", obs))
+        return
+    why = ("not in this image, though image_playwright = true in agentbox.toml: `make base-image`, then rebuild "
+           "the agent images" if configured else "not installed (image_playwright = false)")
+    b.cases.append(Case(f"s{len(b.cases):03d}", "skip", [], label, lambda obs: ("SKIP", why)))
+
+
 def _cleanup(path):
     try:
         os.unlink(path)

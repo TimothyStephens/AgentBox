@@ -3930,3 +3930,45 @@ against `plugins.load` and the Claude install-time catalog check. In Claude the 
 Playwright (in no image), supply-chain-risk-auditor's registry lookups are outside `packages` egress, skill-creator's
 eval scripts call `claude -p`, insecure-defaults is the last skill version upstream before it became a command, and
 differential-review's method checks out the baseline commit in the working tree (do not let it).
+
+## 19 Nov 2026: Playwright in agentbox-base, opt-in; `python` in every image
+
+- **What:** `images/base/Containerfile` has two stages. `core` is the base as it was, plus `python-is-python3`
+  (so `python` exists in every agent image, not only OMP's, which dropped its own copy). `playwright` builds on
+  it: the Python `playwright` package 1.65.2 (`images/base/requirements-playwright.txt`, `--require-hashes`, with
+  `greenlet` 3.5.6), Playwright's `chromium-headless-shell` 159.0.8154.6 (revision 1255) unpacked into
+  `/opt/ms-playwright` (`ENV PLAYWRIGHT_BROWSERS_PATH`), its libraries and fonts by `playwright install-deps
+  chromium` (apt). `make base-image` targets `playwright` when `PLAYWRIGHT=1`, else `core`; `PLAYWRIGHT`
+  defaults to the new agentbox.toml key `image_playwright` (boolean, default false), read by
+  `python3 -m agentbox.imageopts playwright`, and the make command line overrides it. Label
+  `agentbox.playwright` = the version, or `none`. The session notes describe Playwright only when the image's
+  label has a version; `ab project selftest` launches headless Chromium in the probe (PASS/FAIL), or SKIPs with
+  "not installed (image_playwright = false)" (or, if the key is true but the image lacks it, how to rebuild).
+- **Why opt-in:** the user builds web apps and the shared `webapp-testing` skill needs the Python API and a
+  Chromium; not every agentbox user does, and it costs every agent image roughly **500-600 MB** (estimate: the
+  installed package measured 165 MB, mostly its bundled node; the headless shell and the apt libraries/fonts
+  are guesses from typical sizes, a few hundred MB together -- the host build gives the real number). The
+  key lives in agentbox.toml so the choice survives the next `make base-image`; a one-off `PLAYWRIGHT=1`
+  would be silently dropped by the next rebuild.
+- **Why not `playwright install --with-deps chromium`:** Playwright verifies no checksum on what it downloads
+  (none in 1.65.2's registry/download code), and the base's rule is that nothing is downloaded without one.
+  The zip it would fetch (`https://cdn.playwright.dev/builds/cft/<version>/linux64/chrome-headless-shell-linux64.zip`,
+  confirmed with `playwright install --dry-run --only-shell chromium`) comes in by `ADD --checksum`, which can
+  only be unconditional, hence a stage that `--target core` never reaches. No checksum is published and the
+  CDN is outside the session's egress, so `PLAYWRIGHT_SHELL_SHA256` is empty in the Makefile until the host
+  takes it once (`make base-image` refuses `PLAYWRIGHT=1` without it and prints the command). This is
+  trust-on-first-use for the first pin; every later build is held to it.
+- **Why the headless shell only:** a headless launch without `channel` uses `chromium-headless-shell` and
+  nothing else (`getExecutableName` in 1.65.2), sessions have no display, and the full Chromium would roughly
+  double the browser's size for `channel="chromium"` alone. Not installed either: Firefox, WebKit and
+  Playwright's ffmpeg (so `record_video` does not work).
+- **Why Python only, no Node `playwright` package:** the skill and agents' scripts use the Python API; the
+  Python package already carries the Node driver, and a second install would be a second copy to keep pinned
+  for no caller. Add it in a personal layer if a project needs `@playwright/test`.
+- **Runtime, checked in 1.65.2's source, nothing weakened:** Playwright passes `--no-sandbox` unless
+  `chromiumSandbox: true` (the default is off), so Chromium needs no user namespaces or capabilities under
+  `--cap-drop=ALL` and no-new-privileges; it always passes `--disable-dev-shm-usage`, so the small `/dev/shm`
+  does not matter (it uses /tmp, a tmpfs); `--init` (already set) reaps its children. With no `proxy` option
+  it adds no proxy flag, so Chromium follows the session's proxy variables, and loopback is never proxied. Its
+  `DEPENDENCIES_VALIDATED` marker is written at build time; a failed write at runtime is ignored by
+  Playwright. Unverified until the host runs the build and `tests.integration.test_playwright`.

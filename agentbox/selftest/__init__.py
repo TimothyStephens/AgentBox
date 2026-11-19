@@ -2,6 +2,7 @@
 import os
 import stat
 
+from .. import imageopts
 from .. import session as sessionmod
 from .. import sockguard
 from ..config import HOME
@@ -67,6 +68,8 @@ def build_cases(sess, settings):
                             host_protected=host_protected, uid=os.getuid(),
                             required_tools=sess.adapter.required_tools)
     sess.add_network_cases(b)
+    runner.playwright_cases(b, imageopts.playwright_version(sess.image_labels()),
+                            configured=settings.values.get("image_playwright") is True)
     dev = sess.podman_dev
     runner.podman_cases(b, socket_path=sessionmod.LIVE_SOCKET if dev else sockguard.AGENT_SOCKET,
                         compose_project=sess.podman_live, own=getattr(sess, "live_containers", []),

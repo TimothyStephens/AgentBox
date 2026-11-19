@@ -36,6 +36,16 @@ def containerfiles():
                 yield name, f.read()
 
 
+def stages(lines):
+    """Logical lines split at each FROM: [pre-FROM lines, [FROM line, ...], [FROM line, ...], ...]."""
+    out = [[]]
+    for line in lines:
+        if line.upper().startswith("FROM "):
+            out.append([])
+        out[-1].append(line)
+    return out
+
+
 def logical_lines(text):
     """Containerfile lines with backslash continuations joined and comments dropped."""
     out, buf = [], ""
@@ -88,35 +98,53 @@ class EveryDownloadIsVerified(unittest.TestCase):
                         self.assertIn("--require-hashes", line)
 
     def test_every_requirements_file_pins_every_entry_with_a_hash(self):
+        """Every requirements*.txt, not just requirements.txt: the base's Playwright stage has its own."""
+        found = 0
         for name in sorted(os.listdir(IMAGES)):
-            path = os.path.join(IMAGES, name, "requirements.txt")
-            if not os.path.isfile(path):
+            d = os.path.join(IMAGES, name)
+            if not os.path.isdir(d):
                 continue
-            with open(path) as f:
-                text = f.read()
-            for line in logical_lines(text):
-                with self.subTest(image=name, line=line[:40]):
-                    self.assertIn("--hash=sha256:", line, "pinned with hashes, including dependencies")
-                    self.assertRegex(line, r"^[A-Za-z0-9._-]+==", "and to an exact version")
+            for fn in sorted(os.listdir(d)):
+                if not re.fullmatch(r"requirements.*\.txt", fn):
+                    continue
+                found += 1
+                with open(os.path.join(d, fn)) as f:
+                    text = f.read()
+                for line in logical_lines(text):
+                    with self.subTest(image=name, file=fn, line=line[:40]):
+                        self.assertIn("--hash=sha256:", line, "pinned with hashes, including dependencies")
+                        self.assertRegex(line, r"^[A-Za-z0-9._-]+==", "and to an exact version")
+        self.assertGreaterEqual(found, 2, "the base's two requirements files were not found")
 
 
 class ArgsAreInScopeWhereTheyAreUsed(unittest.TestCase):
     def test_an_arg_used_after_from_is_declared_after_from(self):
-        """The omp-env bug: declared above FROM, referenced below it, silently empty."""
+        """The omp-env bug: declared above FROM, referenced below it, silently empty. Per stage: every FROM
+        resets the ARGs in scope, so in a multi-stage file (the base's core + playwright) an ARG declared in
+        one stage is just as empty in the next."""
         for name, text in containerfiles():
             lines = logical_lines(text)
-            from_at = [i for i, l in enumerate(lines) if l.upper().startswith("FROM ")]
-            self.assertTrue(from_at, f"{name}: no FROM")
-            last_from = from_at[-1]
-            before = {m.group(1) for i, l in enumerate(lines) if i < last_from for m in [ARG_DECL.match(l)] if m}
-            after = {m.group(1) for i, l in enumerate(lines) if i > last_from for m in [ARG_DECL.match(l)] if m}
-            for i, line in enumerate(lines):
-                if i <= last_from or ARG_DECL.match(line):
-                    continue
-                for used in ARG_USE.findall(line):
-                    if used in before and used not in after:
-                        self.fail(f"{name}: ${used} is used after FROM but only declared before it, so it "
-                                  f"reads as empty: {line[:70]}")
+            self.assertTrue(stages(lines)[1:], f"{name}: no FROM")
+            declared_anywhere = {m.group(1) for l in lines for m in [ARG_DECL.match(l)] if m}
+            for stage in stages(lines)[1:]:
+                in_scope = set()
+                for line in stage[1:]:
+                    m = ARG_DECL.match(line)
+                    if m:
+                        in_scope.add(m.group(1))
+                        continue
+                    for used in ARG_USE.findall(line):
+                        if used in declared_anywhere and used not in in_scope:
+                            self.fail(f"{name}: ${used} is used in the stage `{stage[0]}` without being declared "
+                                      f"in it, so it reads as empty: {line[:70]}")
+
+    def test_the_stage_checker_catches_an_arg_from_the_previous_stage(self):
+        """The test above, held to the one mistake a second stage invites (found by mutation, 19 Nov)."""
+        lines = logical_lines("ARG A\nFROM x AS one\nARG B\nRUN echo $B\nFROM one AS two\nRUN echo ${B}\n")
+        two = stages(lines)[2]
+        self.assertEqual(two[0], "FROM one AS two")
+        self.assertIn("B", {u for l in two[1:] for u in ARG_USE.findall(l)})
+        self.assertNotIn("B", {m.group(1) for l in two[1:] for m in [ARG_DECL.match(l)] if m})
 
     def test_an_arg_used_in_the_from_line_is_declared_before_it(self):
         for name, text in containerfiles():
@@ -137,7 +165,8 @@ class TheBaseImage(unittest.TestCase):
     """What the agent layers are entitled to assume is already there."""
 
     TOOLS = ("git", "curl", "ca-certificates", "unzip", "jq", "rsync",
-             "python3", "python3-pip", "python3-venv", "ripgrep", "fd-find", "gcc", "g++", "make")
+             "python3", "python3-pip", "python3-venv", "python-is-python3", "ripgrep", "fd-find", "gcc", "g++",
+             "make")
 
     def setUp(self):
         with open(os.path.join(IMAGES, "base", "Containerfile")) as f:
@@ -228,6 +257,96 @@ class TheBaseImage(unittest.TestCase):
         self.assertIn('agentbox.node-major="${NODE_MAJOR}"', body,
                       "the major is not recorded on the image, so a stale image cannot be told apart")
         self.assertNotIn(f"v{major}", body, "the major belongs in the Makefile, not written out here")
+
+
+class ThePlaywrightStage(unittest.TestCase):
+    """Opt-in Python Playwright in agentbox-base (decisions.md, 19 Nov): a second stage `make base-image` targets
+    only when PLAYWRIGHT=1, so an opted-out build never reaches its download, and the image says which it is."""
+
+    def setUp(self):
+        with open(os.path.join(IMAGES, "base", "Containerfile")) as f:
+            self.text = f.read()
+        self.st = stages(logical_lines(self.text))
+        self.by_name = {st[0].split()[-1]: st for st in self.st[1:]}
+
+    def stage(self, name):
+        self.assertIn(name, self.by_name, f"no `FROM ... AS {name}` stage")
+        return self.by_name[name]
+
+    def test_core_comes_first_and_playwright_builds_on_it(self):
+        """--target core stops before the playwright stage; were it first, every build would pay for it."""
+        self.assertEqual([st[0] for st in self.st[1:]], ["FROM ${OS_BASE} AS core", "FROM core AS playwright"])
+
+    def test_the_label_says_which_variant_the_image_is(self):
+        """Sessions and `ab project selftest` read this label, never agentbox.toml: the image is the truth."""
+        core = " ".join(self.stage("core"))
+        pw = " ".join(self.stage("playwright"))
+        self.assertIn('agentbox.playwright="none"', core)
+        self.assertIn('LABEL agentbox.playwright="${PLAYWRIGHT_VERSION}"', pw)
+
+    def test_the_browser_comes_in_by_checksum_not_by_playwright_install(self):
+        """`playwright install` checks no checksum (1.65.2's registry code); the zip is an ADD --checksum, and
+        no RUN step may let Playwright download a browser itself. `install-deps` (apt) is allowed."""
+        pw = self.stage("playwright")
+        adds = [l for l in pw if l.upper().startswith("ADD ")]
+        self.assertTrue(any("--checksum=sha256:${PLAYWRIGHT_SHELL_SHA256}" in l and "chrome-headless-shell" in l
+                            for l in adds), adds)
+        for line in logical_lines(self.text):
+            if line.upper().startswith("RUN "):
+                with self.subTest(line=line[:60]):
+                    self.assertNotRegex(line, r"\bplaywright\s+install(?!-deps)\b")
+
+    def test_the_add_url_is_the_makefiles(self):
+        """The Makefile prints the URL to take the checksum from; it must be the URL the build fetches."""
+        url = make_vars()["PLAYWRIGHT_URL"].replace("$(PLAYWRIGHT_CHROMIUM_VERSION)", "${PLAYWRIGHT_CHROMIUM_VERSION}")
+        self.assertTrue(any(url in l for l in self.stage("playwright") if l.upper().startswith("ADD ")), url)
+
+    def test_browsers_live_where_the_session_user_can_read_them(self):
+        """$HOME is an empty tmpfs in a session; Playwright's default ~/.cache/ms-playwright would be empty."""
+        pw = " ".join(self.stage("playwright"))
+        self.assertIn("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright", pw)
+        self.assertIn('chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"', pw)
+        self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", " ".join(self.stage("core")))
+
+    def test_no_agent_layer_moves_the_browsers(self):
+        """The agent images inherit the base's ENV; a layer that set its own path would hide the browser."""
+        for agent in ("claude", "omp", "pi"):
+            with open(os.path.join(IMAGES, agent, "Containerfile")) as f:
+                envs = [l for l in logical_lines(f.read()) if l.upper().startswith("ENV ")]
+            with self.subTest(agent=agent):
+                self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", " ".join(envs))
+
+    def test_the_build_proves_the_pins_and_a_headless_launch(self):
+        pw = re.sub(r"\s+", " ", " ".join(self.stage("playwright")))
+        self.assertIn('playwright-check.py "${PLAYWRIGHT_VERSION}" "${PLAYWRIGHT_CHROMIUM_REVISION}" '
+                      '"${PLAYWRIGHT_CHROMIUM_VERSION}"', pw)
+        with open(os.path.join(IMAGES, "base", "playwright-check.py")) as f:
+            check = f.read()
+        self.assertIn("browsers.json", check)
+        self.assertIn("chromium.launch()", check)
+        self.assertIn('dist_version("playwright")', check, "playwright has no __version__ attribute")
+
+    def test_the_requirements_pin_is_the_makefiles(self):
+        with open(os.path.join(IMAGES, "base", "requirements-playwright.txt")) as f:
+            req = f.read()
+        self.assertIn(f"playwright=={make_vars()['PLAYWRIGHT_VERSION']} ", req)
+
+    def test_make_picks_the_stage_from_the_flag(self):
+        mk = makefile()
+        self.assertIn("--target playwright $(PLAYWRIGHT_ARGS),--target core", mk)
+        self.assertIn("python3 -m agentbox.imageopts playwright", mk,
+                      "the flag's default comes from agentbox.toml, so a rebuild does not drop it")
+        self.assertRegex(mk, r"(?m)^PLAYWRIGHT \?=", "and the command line can override it")
+        self.assertRegex(mk, r"(?m)^PLAYWRIGHT_VERSION := \d+\.\d+\.\d+$")
+
+    def test_python_is_a_command_in_every_image(self):
+        """Skills say `python ...`; only the OMP layer had it before 19 Nov."""
+        loop = [l for l in logical_lines(self.text) if "command -v" in l and "missing from agentbox-base" in l]
+        self.assertTrue(loop)
+        self.assertIn(" python ", loop[0])
+        with open(os.path.join(IMAGES, "omp", "Containerfile")) as f:
+            omp = [l for l in logical_lines(f.read()) if re.search(r"\bapt-get\s+install\b", l)]
+        self.assertNotIn("python-is-python3", " ".join(omp).split(), "the base has it now")
 
 
 class TheAgentLayers(unittest.TestCase):
@@ -323,9 +442,9 @@ def build_args_for(image):
     """The --build-arg names the Makefile passes when building this image, with $(VAR) expanded."""
     mv, mk = make_vars(), makefile()
     if image == "base":
-        line = [l for l in mk.splitlines() if "-t localhost/agentbox-base:latest" in l
-                or ("podman build" in l and "OS_BASE" in l)]
-        text = " ".join(line)
+        # The `podman build` of the base-image recipe, continuations joined: its build args span lines.
+        joined = re.sub(r"\\\n", " ", mk)
+        text = " ".join(l for l in joined.splitlines() if "podman build" in l and "images/base" in l)
     else:
         text = mv.get(f"{image.upper()}_BUILD_ARGS", "")
     for _ in range(5):                                  # expand $(VAR), a couple of levels is plenty
@@ -337,9 +456,10 @@ def build_args_for(image):
 
 
 def declared_args(text, after_from_only=False):
+    """{ARG name: its line}. after_from_only: only those declared inside a stage (after any FROM), which are
+    the ones a build arg reaches -- in every stage, since `--target` picks which stages run."""
     lines = logical_lines(text)
-    froms = [i for i, l in enumerate(lines) if l.upper().startswith("FROM ")]
-    pick = lines[froms[-1] + 1:] if (after_from_only and froms) else lines
+    pick = [l for st in stages(lines)[1:] for l in st] if after_from_only else lines
     return {m.group(1): l for l in pick for m in [ARG_DECL.match(l)] if m}
 
 

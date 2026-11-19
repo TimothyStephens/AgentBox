@@ -1,0 +1,8 @@
+# Only for the base image's `playwright` stage (make base-image PLAYWRIGHT=1). Pinned with hashes (pip
+# --require-hashes): the package and its one dependency, from PyPI's JSON API, 19 Nov 2026. Only the files pip
+# picks on this base (python 3.11, x86_64, glibc) are listed, so another platform fails to resolve rather than
+# fetch an unhashed file. The version must match PLAYWRIGHT_VERSION in the Makefile; the build asserts it.
+playwright==1.65.2 \
+    --hash=sha256:58932d35f56767ab7ebcdd3d4a733bfb3e62a1a5bc43c08e28b9fa9b3e61cf33
+greenlet==3.5.6 \
+    --hash=sha256:1c20ea32a73d17b9b60e3371240e17b0068120c98a5ec01a224a7dd8c89733ba
