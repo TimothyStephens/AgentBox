@@ -47,6 +47,27 @@ Nothing to write; each needs real podman, the LAN or a real key, so only the use
 
 ---
 
+## 2a. Ready to build — scoped, no decision needed
+
+- **Long steps say "step X of Y".** *What:* the start and end steps (`progress.Step`, 16 Nov) print a label,
+  elapsed time and sometimes a percentage, but not where they sit in the whole start or teardown. *Why:* on a
+  large tree (toulmin-build, 19 Nov: history read 31 s, grant check 18 s) the user cannot tell how much is left.
+  *Done:* each line reads like `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total
+  counted from the steps this start or teardown will actually run (skipped steps not counted).
+  *Start:* `agentbox/progress.py` (`Step`) and the call sites in `session.py`/`lifecycle.py`; pass a shared
+  counter rather than numbering by hand. *Gate:* unit tests on the printed lines.
+- **Say "tearing down" instead of "is running".** *What:* while a launcher is in teardown (agent exited,
+  end-of-session scan and backup bookkeeping running), `ab session start` says the project "is running" and
+  `ab session attach` says the agent "may be starting, or it may have exited" (toulmin-build, 19 Nov: the user
+  could not tell "wait a minute" from "stuck"). *Done:* teardown records its start in the session run dir, and
+  start/attach/ls say `tearing down since HH:MM (end-of-session scan)`; `ls` shows a `stopping` state.
+  *Start:* `Session._teardown_shielded`, `liveness.sessions`, `sessionlock.lock_holder_state`, `cli_session.cmd_attach`.
+  *Gate:* unit tests. **Open on the same incident:** `ab session ls` showed that session `dead` (0c/0n) hours
+  before its launcher ended; the `ab.log` timeline (`grep toulmin-build ~/.local/share/agentbox/logs/ab.log`)
+  decides whether the alive check was wrong.
+
+---
+
 ## 3. Features deferred by design
 
 Not bugs and not oversights — each was considered and left out. The Status table in `progress.md` is
