@@ -33,6 +33,11 @@ Each needs real podman, the LAN, a real key or a running service, so only the us
 - **Pi on the local model server.** `make pi-live` with `AB_LIVE_MODEL=llama-cpp/<model>` once the server answers
   (it hung on 19 Nov, outside agentbox: a plain curl from the host hung too). Confirms the launcher's
   `<baseUrl>/models` query and Pi on the local model.
+- **`ab profile install omp` fails: `Could not resolve proxy: ab-install-omp-proxy`** (twice on 19 Nov, on the first
+  git clone), while the Claude and Pi installs, which share the same network and proxy code, succeed. Until it
+  works, OMP sessions have none of the shared skills (the OMP profile no longer carries copies). Suspected:
+  a stale `ab-install-omp-*` container or network from an earlier install (Guessing). Next: `podman ps -a
+  --filter name=ab-install`, `podman network ls | grep ab-install`, and the `ab-install-omp` lines of `ab.log`.
 - **Toulmin from a Pi session.** Pi gets Toulmin through its built-in MCP (`mcp.json`, `exposure: direct`); no
   live run has used it yet.
 
@@ -119,6 +124,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | Opt-in Playwright in agentbox-base (`image_playwright = true`): Python Playwright 1.65.2 and the headless shell, checksummed; verified in a host session (`test_playwright` 2/2). `python` in every image. Shared skills moved to `agentbox-skills` (a pinned plugin in each profile); `skill-creator` is Claude-only |
 | 19 Nov | The Pi packages install and load on the host: four npm extensions (their skills and tools seen by Pi) and EGM's skills, from the read-only tree; the shared `learn-repo` skill is in all three profiles |
 | 19 Nov | The Pi profile carries every OMP-profile skill and every OMP package Pi can load (four npm packages at OMP's pins, EGM's skills as a `[[repo]]`); TODO.md rewritten around what is left |
 | 19 Nov | A linked worktree's git dir is a git dir for the covers; with `extensions.worktreeConfig` on, every `config.worktree` (the worktree's and the main one) is covered, created empty if missing |
