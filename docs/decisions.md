@@ -3488,3 +3488,13 @@ Rerun at 2283257 with the same model: PASS on every line. AB_OK in 13 s; Pi call
 and its result carried the token; three TLS tunnels, all to openrouter.ai; nothing reached npm, pi.dev or GitHub; no
 key in any log, state file or output; sessions torn down. Still unconfirmed live: Toulmin through Pi's MCP, a real
 `ab profile install pi`, and the local model server (busy at the time).
+
+## 19 Nov 2026: the gate retries a podman 5xx on a lookup before failing closed
+
+`make itest` at d1c2075: 207/208. `test_step6_covers` RODATA ran `podman run --rm` on the read-only grant and exited 0,
+but the client printed `Removing container …: agentbox gate: podman could not look up container … (status 500)`,
+which pushed the file's contents out of the 200 characters the test keeps. With `--rm`, podman removes the container
+in the service while the client sends its own DELETE; the gate's ownership lookup for that DELETE reached podman
+mid-removal. `Gate.inspect` now retries a 5xx twice (0.2 s, then 0.4 s): a lookup that settles to 404 is "no such
+container" (which podman ignores for an already-removed container), one that settles to the object is used, and one
+that stays 5xx is still an UpstreamError (502), as review L5 asked. `claude-live` PASS at d1c2075 the same day.

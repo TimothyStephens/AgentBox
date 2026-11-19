@@ -165,6 +165,10 @@ DENIED = [(m, re.compile(p), why) for m, p, why in (
 # dropped after this long, per read or write. Lifted for what is meant to be long-lived: upgraded exec/attach
 # streams, a build's reply, and a relayed reply (wait, logs -f, events).
 CLIENT_TIMEOUT = 60
+# A podman 5xx on a lookup is retried: `podman run --rm` removes the container in the service while the client sends
+# its own DELETE, and podman answers 500 mid-removal (19 Nov itest). A lookup that stays 5xx still fails closed.
+INSPECT_TRIES = 3
+INSPECT_RETRY_DELAY = 0.2
 MAX_CONNECTIONS = 128                # concurrent client connections; one more is answered 503
 MAX_EXEC_IDS = 4096                  # exec sessions remembered; the oldest are forgotten (refused) past this
 BIND_SCAN_LIMIT = 200000             # entries walked under a bind source looking for new secret files (N6)
@@ -343,7 +347,12 @@ class Gate(MountsMixin, ImagesMixin):
     def inspect(self, kind, ref):
         """What podman stored for one object, or None."""
         q = quote(ref, safe="/:@") if kind == "images" else quote(ref, safe="")
-        status, doc = self.raw_json(f"/libpod/{kind}/{q}/json")
+        for attempt in range(INSPECT_TRIES):
+            status, doc = self.raw_json(f"/libpod/{kind}/{q}/json")
+            if status < 500:
+                break
+            if attempt + 1 < INSPECT_TRIES:
+                time.sleep(INSPECT_RETRY_DELAY * (attempt + 1))
         if status >= 500:
             # podman failed: not the same as "no such object" (review of 785ee15, L5)
             raise UpstreamError(f"podman could not look up {kind[:-1]} {ref!r} (status {status})")
