@@ -3975,3 +3975,7 @@ differential-review's method checks out the baseline commit in the working tree 
 The headless shell's checksum, taken on the host on 19 Nov (Playwright publishes none and its CDN is outside the
 sandbox's egress): `PLAYWRIGHT_SHELL_SHA256 = 77a6442fd3c8acd3bef9e1067fc26f5ef464277d22f0e8cb58dc3e4077a3e458` for
 chrome-headless-shell 159.0.8154.6 linux64.
+Host build on 19 Nov with `image_playwright = true`: base and all three agent images rebuilt, `agentbox.playwright`
+= 1.65.2 on agentbox-claude, and `tests.integration.test_playwright` 2/2: headless Chromium 159.0.8154.6
+(`HeadlessChrome/159.0.8154.6`) loaded a page served by `python3 -m http.server` inside a session and read its
+title, and the selftest line is PASS. Python 3.11.2 answers as `python` in the Claude image.
