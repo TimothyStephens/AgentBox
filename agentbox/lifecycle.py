@@ -6,13 +6,14 @@ import os
 import queue
 import re
 import shutil
+import signal
 import threading
 import time
 
 from . import adapters, buildcap, builtrec, profile, projectlock, scan, sockguard, toulmin, userimage
 from .errors import AgentboxError
 from .fsutil import write_private
-from .liveness import STOPPING, _start_time, session_is_alive, sessions
+from .liveness import STOPPING, _alive, _start_time, session_is_alive, sessions, stopping_marker, stopping_text
 from .podman import label_filters
 from .progress import Step, stderr_line
 from .state import _free_name, ephemeral_state, service_tmp
@@ -311,14 +312,14 @@ def _teardown(settings, podman, session, warn, exit_reason):
     try:
         sockguard.stop_service(settings.service_dir(session))
     finally:
-        mark.step("keeping the session's logs")
+        mark.step("keeping the logs")
         try:
             with Step("keeping the session's logs", warn):
                 _keep_logs(settings, podman, session, started, warn)
         except Exception as e:
             warn(f"agentbox: could not keep the session's logs: {e!r}")
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
-        mark.step("removing the session's containers and networks")
+        mark.step("removing containers and networks")
         with Step("removing the session's containers and networks", warn):
             _remove(settings, podman, session, sel, warn)
         if settings.cgroup_parent:
@@ -330,22 +331,23 @@ def _teardown(settings, podman, session, warn, exit_reason):
                 pass
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
         meta = _session_meta(settings, session)
-        mark.step("reporting the inbox and the agent state")
+        mark.step("inbox and agent-state report")
         doc = _scan_doc(settings, session, later.append)
         state = _scan_shared(settings, doc, session, later.append) if doc is not None else None
         _mcp_remove(settings, meta, warn)
         # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` -- the
         # project's slot is free again, as soon as nothing of the session runs. Silently: a lock that works is
         # not news. The marker says so first, so no reader ever sees the lock free and the session still live.
-        mark.step("ending the Toulmin session", released=True)
+        mark.step("Toulmin session end", released=True)
         released_at = time.time()
         projectlock.release_for_session(settings, session)
         _toulmin_end(settings, meta, session, exit_reason, warn)
         if doc is not None:
-            mark.step("running the end-of-session scan")
+            mark.step("end-of-session scan")
             with Step("running the end-of-session scan", warn):
                 later += _scan_grants(settings, session, started, doc, state, later.append,
                                       note=lambda: _started_meanwhile(settings, meta, session, released_at)) or []
+        mark.step("removing the run dir")
         shutil.rmtree(ephemeral_state(settings, session), ignore_errors=True)   # a lockdown session's state
         # Last: while the run dir exists its session number is taken (Session.reserve_name), so a new session
         # of the project cannot be given this one's name while this teardown still runs.
@@ -358,6 +360,37 @@ def _teardown(settings, podman, session, warn, exit_reason):
                     shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
             os.rmdir(run_dir)
     return later
+
+
+def _exited(pid, start):
+    """Gone, or a zombie its parent has not reaped yet (it holds nothing any more)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return fields[0] == "Z" or int(fields[19]) != start
+    except (OSError, IndexError, ValueError):
+        return True
+
+
+def stop_running_teardown(settings, session, warn, wait=5.0):
+    """`ab session kill` on a session whose teardown is already running in another process (the launcher's,
+    or another kill's): SIGKILL that process -- teardown ignores SIGINT/SIGTERM/SIGHUP -- so the kill can
+    finish the job itself. Only the process the marker names, checked by its start time. Returns its pid,
+    or None when there was none."""
+    mark = stopping_marker(settings, session)
+    if not mark or not _alive(mark) or mark.get("pid") == os.getpid():
+        return None
+    pid, start = int(mark["pid"]), mark.get("pid_start")
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return None
+    deadline = time.monotonic() + wait
+    while not _exited(pid, start) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    warn(f"agentbox: stopped the teardown already running for {session} (pid {pid}, {stopping_text(mark)}); "
+         "finishing it here")
+    return pid
 
 
 def _remove(settings, podman, session, sel, warn):

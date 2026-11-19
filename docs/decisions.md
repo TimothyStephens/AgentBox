@@ -3718,3 +3718,18 @@ log as before. (2) Every teardown line -- the progress steps included -- is queu
 (`lifecycle._Outbox`), so the bookkeeping never waits on the terminal; teardown's one wait for it is at the very end,
 bounded by `OUTPUT_DRAIN` (10 s). A launcher whose terminal stays blocked may still sit in its exit, but by then
 nothing of the session is held. Tests: `tests/unit/test_teardown.py` `BookkeepingBeforeOutput`.
+
+## 19 Nov 2026: a session being torn down says so ("stopping")
+
+The 19 Nov morning was "wait a minute" or "stuck" with no way to tell: `ab session start` said the project "is
+running", `ab session attach` that the agent "may be starting, or it may have exited". The teardown marker
+(`stopping.json`: the tearing-down process's pid and start time, when it began, the current step and since when,
+`released`) now answers it. `ab session ls` shows the state `stopping` and `stopping since HH:MM: <step>, N min`;
+`ab session attach` says `session X of P is shutting down since HH:MM (<step>, N min); there is nothing to attach
+to`, also for a released session (which no longer counts as the project's live one); a refused `ab session start`
+says `P is shutting down (<step>, N min; session X)` and names `ab session kill`; the registry-edit guard
+(`project_is_live`) says `session X is shutting down (...)`. A marker whose process is gone means the teardown died:
+the session reads as dead and `gc` finishes it. `ab session kill` on a stopping session SIGKILLs the process the
+marker names (pid and start time checked; teardown ignores SIGTERM, so nothing gentler reaches it) and then runs the
+teardown itself; the steps are idempotent (a log or scan report already kept is not rewritten, inbox provenance
+keeps its first record). Tests: `tests/unit/test_teardown.py` `SaysItIsShuttingDown`.

@@ -5,7 +5,7 @@ import os
 from . import projectlock
 from .errors import AgentboxError
 from .lifecycle import teardown
-from .liveness import _start_time, released, session_is_alive, sessions
+from .liveness import _start_time, released, session_is_alive, sessions, stopping_text
 
 
 class ProjectLock:
@@ -94,6 +94,14 @@ def _take_project_lock(settings, podman, project, warn):
     gone, why = lock_holder_state(settings, podman, holder)
     if not gone:
         sid = holder.get("session") or ""
+        mark = ((sessions(settings, podman).get(sid) or {}).get("stopping")) if sid else None
+        if mark:
+            # its teardown holds the project only until its containers and networks are gone (decisions.md,
+            # 19 Nov 2026), so this is short unless a removal hangs
+            raise AgentboxError(
+                f"{project} is shutting down ({stopping_text(mark)}; session {sid}); start it again once that "
+                f"is done, or `ab session kill {project}` ends it now (its logs and end-of-session scan are "
+                f"kept). [{why}]")
         raise AgentboxError(
             f"{projectlock.holder_text(settings, project, holder)}; `ab session attach {project}` joins it"
             + (f", `ab session kill {project}` ends it (its logs and end-of-session scan are kept)"

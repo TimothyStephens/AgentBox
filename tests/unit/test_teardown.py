@@ -185,3 +185,89 @@ class BookkeepingBeforeOutput(TeardownCase):
         self.assertIsNone(projectlock.read(self.settings, "p1"))
         self.assertFalse(os.path.isdir(run))
 
+
+class SaysItIsShuttingDown(TeardownCase):
+    """While a teardown runs, ls, attach, the lock refusal and the registry guard say so -- with the step and
+    how long -- instead of "is running" or "it may be starting, or it may have exited" (18 Nov)."""
+
+    def marker(self, sid=SID, step="end-of-session scan", minutes=12, released=False, pid=None):
+        pid = os.getpid() if pid is None else pid
+        began = time.time() - minutes * 60
+        with open(os.path.join(self.settings.session_run_dir(sid), "stopping.json"), "w") as f:
+            json.dump({"pid": pid, "pid_start": session._start_time(pid), "began": began, "step": step,
+                       "step_since": began, "released": released}, f)
+        return began
+
+    def test_ls_shows_stopping_with_the_step_and_the_time(self):
+        self.old_session()
+        began = self.marker()
+        code, out = self.ab("session", "ls")
+        self.assertEqual(code, 0, out)
+        row = [ln for ln in out.splitlines() if SID in ln][0]
+        self.assertIn(" stopping ", row)
+        self.assertIn(f"stopping since {time.strftime('%H:%M', time.localtime(began))}: end-of-session scan, "
+                      "12 min", row)
+
+    def test_a_teardown_that_died_is_dead_and_gc_finishes_it(self):
+        self.old_session(pid=2 ** 21, pid_start=1)
+        self.marker(pid=2 ** 21, released=True)
+        info = session.sessions(self.settings, self.podman)[SID]
+        self.assertIsNone(info["stopping"])
+        self.assertEqual(session.session_is_alive(self.settings, SID, info), (False, ""))
+        self.assertIn(SID, session.gc(self.settings, self.podman))
+        self.assertFalse(os.path.isdir(self.settings.session_run_dir(SID)))
+
+    def test_attach_says_shutting_down(self):
+        self.old_session()
+        self.marker(released=True)
+        code, out = self.ab("session", "attach", "p1")
+        self.assertEqual(code, 2, out)
+        self.assertIn(f"session {SID} of p1 is shutting down since", out)
+        self.assertIn("end-of-session scan, 12 min", out)
+        self.assertNotIn("may be starting", out)
+        self.assertIn("ab session kill p1", out)
+
+    def test_attach_says_shutting_down_before_the_release_too(self):
+        self.old_session()
+        self.marker(step="removing containers and networks", minutes=0)
+        code, out = self.ab("session", "attach", SID)
+        self.assertEqual(code, 2, out)
+        self.assertIn("is shutting down since", out)
+        self.assertIn("removing containers and networks, under a minute", out)
+
+    def test_the_lock_refusal_says_shutting_down(self):
+        self.token()
+        self.old_session()
+        self.marker(step="removing containers and networks", minutes=3)
+        code, out = self.ab("session", "start", "claude", "p1", "--no-tty")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("p1 is shutting down (removing containers and networks, 3 min; session "
+                      f"{SID})", out)
+        self.assertNotIn("p1 is running", out)
+        self.assertIn("ab session kill p1", out)
+
+    def test_a_registry_edit_is_refused_saying_shutting_down(self):
+        self.old_session()
+        self.marker(released=True)
+        live, why = session.project_is_live(self.settings, self.podman, "p1")
+        self.assertTrue(live)
+        self.assertIn(f"session {SID} is shutting down (end-of-session scan, 12 min)", why)
+
+    def test_kill_ends_a_teardown_that_is_stuck(self):
+        """A teardown ignores SIGTERM; `ab session kill` must still be able to end it, and finish the job."""
+        import signal
+        import subprocess
+        import sys
+        child = subprocess.Popen([sys.executable, "-c", "import signal, time\n"
+                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)"])
+        self.addCleanup(lambda: (child.poll() is None and child.kill(), child.wait()))
+        threading.Thread(target=child.wait, daemon=True).start()        # reap it as its shell would
+        time.sleep(0.2)
+        run = self.old_session(pid=child.pid)
+        self.marker(released=True, pid=child.pid)
+        code, out = self.ab("session", "kill", "p1")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"stopped the teardown already running for {SID} (pid {child.pid}", out)
+        self.assertEqual(child.poll(), -signal.SIGKILL)
+        self.assertFalse(os.path.isdir(run))
+        self.assertIn(f"killed {SID}", out)

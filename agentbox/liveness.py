@@ -40,6 +40,31 @@ def stopping_marker(settings, session):
     return doc if isinstance(doc, dict) else None
 
 
+def minutes(seconds):
+    m = int(max(0, seconds) // 60)
+    if m < 1:
+        return "under a minute"
+    return f"{m} min" if m < 120 else f"{m // 60} h {m % 60} min"
+
+
+def stopping_text(mark, now=None):
+    """'end-of-session scan, 12 min': the step a teardown is on, and how long the session has been shutting
+    down."""
+    now = time.time() if now is None else now
+    try:
+        began = float(mark.get("began") or now)
+    except (TypeError, ValueError):
+        began = now
+    return f"{mark.get('step') or 'starting'}, {minutes(now - began)}"
+
+
+def stopping_since(mark):
+    try:
+        return time.strftime("%H:%M", time.localtime(float(mark.get("began"))))
+    except (TypeError, ValueError):
+        return "?"
+
+
 def released(info):
     """The session's teardown has removed everything that ran and freed its project (marker `released`)."""
     return bool((info.get("marker") or {}).get("released"))
@@ -103,9 +128,15 @@ def project_is_live(settings, podman, name):
         if meta is None:
             reasons.append(f"session {sess} has no readable session.json, so it cannot be told apart from a "
                            "session starting right now (`ab session gc` clears one left by a crash)")
-        elif meta.get("project") == name and _alive(meta):
-            reasons.append(f"session {sess} is running (launcher pid {meta.get('pid')}) -- "
-                           f"`ab session kill {sess}`")
+        elif meta.get("project") == name:
+            mark = stopping_marker(settings, sess)
+            if mark and (_alive(mark) or _alive(meta)):
+                # still being torn down: its scan reads the project, and its Toulmin end uses session.json
+                reasons.append(f"session {sess} is shutting down ({stopping_text(mark)}) -- "
+                               f"`ab session kill {sess}` ends it now")
+            elif _alive(meta):
+                reasons.append(f"session {sess} is running (launcher pid {meta.get('pid')}) -- "
+                               f"`ab session kill {sess}`")
     return (True, "; ".join(reasons)) if reasons else (False, "")
 
 

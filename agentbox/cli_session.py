@@ -3,7 +3,7 @@ stays there)."""
 import os
 import sys
 
-from . import adapters, registry, session
+from . import adapters, lifecycle, liveness, registry, session
 from .cli_common import warn
 from .errors import AgentboxError
 from .podman import Podman
@@ -84,6 +84,10 @@ def cmd_attach(s, a):
     if not sid and name in known and session.session_is_alive(s, name, known[name])[0]:
         sid = name
     if not sid:
+        # one being torn down: it no longer counts as the project's live session once it is released
+        sid = next((k for k, info in sorted(known.items()) if info.get("stopping")
+                    and (k == name or (info.get("meta") or {}).get("project") == name)), None)
+    if not sid:
         if name in known:
             raise AgentboxError(f"session {name} is not running any more; `ab session ls` shows what is")
         _require_registered(s, name)
@@ -92,6 +96,11 @@ def cmd_attach(s, a):
     info = known.get(sid) or {}
     project = (info.get("meta") or {}).get("project") or next(
         (c.get("project") for c in info.get("containers") or [] if c.get("project")), name)
+    mark = info.get("stopping")
+    if mark:
+        raise AgentboxError(f"session {sid} of {project} is shutting down since {liveness.stopping_since(mark)} "
+                            f"({liveness.stopping_text(mark)}); there is nothing to attach to. `ab session ls` "
+                            f"shows it; `ab session kill {project}` ends it now.")
     agents = [c["name"] for c in info.get("containers") or []
               if c.get("role") == "agent" and c.get("state") == "running"]
     if not agents:
@@ -111,20 +120,23 @@ def cmd_ls(s, a):
     flagged = []
     for name, info in sorted(rows.items()):
         meta = info["meta"] or {}
-        state = "running" if info["alive"] else "dead"
+        mark = info.get("stopping")
+        state = "stopping" if mark else "running" if info["alive"] else "dead"
         started = meta.get("started")
         start_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(started)) if started else "?"
         age = _dur(now - started) if started else "?"
         idle = session.idle_seconds(s, meta, now=now) if info["alive"] else None
-        mark = ""
-        if idle is not None and idle > idle_warn:
-            mark = "  <-- idle"
+        note = ""
+        if mark:
+            note = f"  stopping since {liveness.stopping_since(mark)}: {liveness.stopping_text(mark, now)}"
+        elif idle is not None and idle > idle_warn:
+            note = "  <-- idle"
             flagged.append((name, idle))
         # The PROJECT is what a user names (`ab session attach web`, `ab session kill web`); the session id is kept
         # because it is what the logs, the container labels and the inbox provenance carry.
-        print(f"{meta.get('project', '?'):<16} {state:<7} {meta.get('agent', '?'):<7} "
+        print(f"{meta.get('project', '?'):<16} {state:<8} {meta.get('agent', '?'):<7} "
               f"start {start_str}  age {age:<6} idle {_dur(idle):<6} "
-              f"{len(info['containers'])}c/{len(info['networks'])}n  id {name}{mark}")
+              f"{len(info['containers'])}c/{len(info['networks'])}n  id {name}{note}")
     for name, idle in flagged:
         project = (rows[name]["meta"] or {}).get("project") or name
         warn(f"ab: {project} has been idle {_dur(idle)} — if it is forgotten, end it with "
@@ -171,6 +183,8 @@ def _resolve_session(s, podman, name):
 def cmd_kill(s, a):
     podman = Podman(s.podman)
     sid = _resolve_session(s, podman, a.session)
+    # a teardown already running (stuck, or just slow) ignores SIGTERM: end it, then finish the job here
+    lifecycle.stop_running_teardown(s, sid, warn)
     session.teardown(s, podman, sid, warn=warn, exit_reason="kill")
     print(f"killed {sid}")
 
