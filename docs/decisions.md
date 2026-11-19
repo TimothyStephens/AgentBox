@@ -3890,3 +3890,14 @@ the common config has the extension on (or cannot be read: covering a file git i
 after the shared walk: 8.2 s on the first run, 6.5 s on the second; the same work took 17.9 s inside that morning's
 session start (not the same command, and cache state unknown, so read it as roughly 2-3x, which matches the 2x
 measured in the sandbox). Teardown printed `[2/3] removing the session's containers and networks`, as numbered.
+
+## 19 Nov 2026: the Pi profile mirrors the OMP profile; TODO.md rewritten
+
+Tim: Pi gets the same skills and plugins as OMP. `agentbox-profile-pi` (e29be29) now has every OMP-profile skill
+byte-identical (`mags-manifest-design` added), the OMP profile's four npm packages at the same pins (each a native Pi
+package: a `pi` manifest, `@earendil-works/pi-*` and `typebox` peers, which Pi supplies), and EGM as a `[[repo]]` at
+the OMP marketplace ref (its root `skills/` is the only thing Pi loads from it; its reviewer sub-agents have no Pi
+equivalent). Left out, with the reason in the file: pi-session-stats and pi-content-audit, OMP-only extensions.
+`ab profile install pi` therefore has something to install; unverified until the host runs it.
+TODO.md rewritten: sections renumbered (ready-to-build is §3, deferred §4), stale "unverified" rows updated,
+the watch list trimmed to what is live, the closed list cut to 13 Nov onward (older rows stay here).

@@ -906,7 +906,7 @@ because they are design decisions rather than status:
   user's call (progress.md, Next).
 
 The caps/devices opt-in (not offered: `caps = "refused"` only), the key gateway and the Codex adapter are each
-a Status row there, with the reason in `docs/TODO.md` §3. Not planned at all (19 Nov): `ab allow` / `outbox` /
+a Status row there, with the reason in `docs/TODO.md` §4. Not planned at all (19 Nov): `ab allow` / `outbox` /
 `reload` / `resume`, podman `exec` on the live stack, and the `dev/data` → `data` overlay.
 
 ## Spike results
