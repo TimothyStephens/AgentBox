@@ -3498,3 +3498,18 @@ in the service while the client sends its own DELETE; the gate's ownership looku
 mid-removal. `Gate.inspect` now retries a 5xx twice (0.2 s, then 0.4 s): a lookup that settles to 404 is "no such
 container" (which podman ignores for an already-removed container), one that settles to the object is used, and one
 that stays 5xx is still an UpstreamError (502), as review L5 asked. `claude-live` PASS at d1c2075 the same day.
+
+## 19 Nov 2026: the masked-paths spec's in-session errno probe is an itest (written, unverified)
+
+`tests/integration/test_mask_errno.py` ports `docs/agentbox-masked-paths.md` §5.1 to the itest harness and adds
+§5.3's host sentinel. It runs in the session (a `claude --shell` session, so the agent image must be present), not
+in a container the session starts, as §3.2 requires. A project masks `./data` (non-empty on the host), `./later`
+(absent before the session), the bare name `state.json` and `cfg/.env` (also a swap target), beside the standard
+secret masks. Expected: masked directories exist and list empty, EROFS for create, mkdir and chmod, EBUSY for rmdir
+and rename (§3.2's measured table; the directory masks are read-only tmpfs mounts); masked files read zero bytes,
+EROFS for write and chmod, EBUSY for unlink and rename (read-only bind mount points); the root `.env` still shows
+`.env.dev`, `cfg/.env` reads empty (the mask wins over the swap); `dev/data` stays writable; on the host the data
+sentinel keeps its bytes and mtime and no probe write arrives. The file-mask EBUSY/EROFS values and the
+directory-mask chmod/rename values are the kernel's answers for a read-only mount point, not measured in the spec.
+Written in a sandbox without podman: py_compile passes and the module skips cleanly; **unverified until the host
+runs it** (`python3 -m unittest tests.integration.test_mask_errno -v`).
