@@ -45,13 +45,6 @@ Nothing to write; each needs real podman, the LAN or a real key, so only the use
 
 ## 2a. Ready to build — scoped, no decision needed
 
-- **Long steps say "step X of Y".** *What:* the start and end steps (`progress.Step`, 16 Nov) print a label,
-  elapsed time and sometimes a percentage, but not where they sit in the whole start or teardown. *Why:* on a
-  large tree (toulmin-build, 19 Nov: history read 31 s, grant check 18 s) the user cannot tell how much is left.
-  *Done:* each line reads like `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total
-  counted from the steps this start or teardown will actually run (skipped steps not counted).
-  *Start:* `agentbox/progress.py` (`Step`) and the call sites in `session.py`/`lifecycle.py`; pass a shared
-  counter rather than numbering by hand. *Gate:* unit tests on the printed lines.
 - **Say "tearing down" instead of "is running".** *What:* while a launcher is in teardown (agent exited,
   end-of-session scan and backup bookkeeping running), `ab session start` says the project "is running" and
   `ab session attach` says the agent "may be starting, or it may have exited" (toulmin-build, 19 Nov: the user
@@ -151,6 +144,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is still unnumbered; it gets numbered after the teardown rework lands |
 | 19 Nov | Pi: the local model server's models asked from it at start when the seed lists none; OMP and Pi sessions get the profile's `AGENTS.md` after the sandbox notes (it reached neither before); `agentbox-profile-pi` created (skills, `build.sh`, Pi check rules, 134 tests) |
 | 19 Nov | `caps` has one value, `refused`: the never-built `opt-in` is gone from the build presets, a stored one reads as `refused` with a note; a git config in a read-only grant that the launcher cannot read refuses the session |
 | 19 Nov | The masked-paths spec's in-session errno probe (§5.1, with the §5.3 host sentinel) is an itest, `test_mask_errno`; written, unverified until the host runs it |

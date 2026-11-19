@@ -14,7 +14,7 @@ from .config import HOME
 from .errors import AgentboxError
 from .fsutil import inside, write_private
 from .podman import Podman, set_log
-from .progress import Step, stderr_line as _stderr_line
+from .progress import Step, Steps, stderr_line as _stderr_line
 from .project import (  # noqa: F401
     check_trust, clone_root, dev_tier, load_project, mount_mode_of, podman_access, Project, protected_extra, _check,
     _git_env, _no_commas, TRUST_KEYS, TRUST_WARNING, trust_warnings
@@ -250,12 +250,38 @@ class Session:
         return self.settings.token_file(self.adapter.name) if self.adapter.token_env else None
 
     # ---- host-side preparation ------------------------------------------------------
+    steps = None                         # set by prepare (progress.Steps): the numbered plan of this start
+
+    def start_plan(self, do_backup):
+        """The steps this start will run, in order, decided before the first one: `[3/7]` in the progress lines
+        is a step's place here. The conditions are the ones `_prepare_reserved` and `_backup_grants` use (the
+        mount mode, toulmin, do_backup, the writable grants); a test checks the plan against what ran."""
+        clone = self.mount_mode == "clone"
+        plan = ["history"]
+        if self.project.toulmin:
+            plan.append("toulmin")
+        if clone:
+            plan.append("clone")
+        plan.append("grant")
+        if clone:
+            plan.append("clone-masks")
+        if do_backup and not clone:
+            plan += [f"backup {g}" for g in self.writable_grants()] + ["retain"]
+        return plan + ["scan-state", "infra"]
+
+    def _step(self, key, label):
+        """A progress Step numbered from this start's plan; unnumbered when there is no plan."""
+        if self.steps is None:
+            return Step(label, self.warn)
+        return self.steps.step(key, label, self.warn)
+
     def prepare(self, *, do_backup=True):
         cgroup.check(self.settings, self.warn)
         if self.token_file:
             tokens.check_token_file(self.token_file)
         p = self.project
-        with Step(f"reading the git history under {p.root} for secret file names", self.warn):
+        self.steps = Steps(self.start_plan(do_backup))
+        with self._step("history", f"reading the git history under {p.root} for secret file names"):
             found = history_secrets(p.root, [p.root] + p.data_rw + p.data_ro, p.mask_skip)
         accepted = p.history_secrets_accepted
         if p.data_env == "on":            # the root's env files are shown anyway: their names expose nothing more
@@ -301,13 +327,13 @@ class Session:
             raise AgentboxError(f"project {p.name}: mount = clone with the dev podman tier is not built; use "
                                 "`--podman none` (or observe) with clone mode, or mount = checkout")
         if p.toulmin:
-            with Step("starting the toulmin session", self.warn):
+            with self._step("toulmin", "starting the toulmin session"):
                 self.toulmin = toulmin.start(self.settings)  # before anything else of the session's (contract 1.5)
             # recorded at once: a clone_root that fails next must still reach `tm session end` in teardown,
             # which knows only session.json (review 16 Nov, item 18)
             self._write_meta()
         if mode == "clone":
-            with Step(f"making this session's clone of {p.root}", self.warn):
+            with self._step("clone", f"making this session's clone of {p.root}"):
                 self.clone = clone_root(self.settings, p.name, self.name, p.root)
             self.root_src = self.clone["clone"]
             self.warn(f"agentbox: clone mode: {self.clone['clone']} on branch {self.clone['branch']} is what the "
@@ -315,7 +341,7 @@ class Session:
         self._write_meta()
         # The grant scan and its acknowledgement are about the OWNER's tree (what `ab project check` and `add`
         # saw), so it runs there in both modes; the clone can only hold less (nothing untracked or ignored).
-        with Step(f"checking {p.root} for secrets and live data", self.warn):
+        with self._step("grant", f"checking {p.root} for secrets and live data"):
             plan_check = mounts.plan(root=p.root, data_ro=p.data_ro, data_rw=p.data_rw,
                                      compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
                                      mask=p.mask, code=p.value("code"), data_env=p.data_env == "on")
@@ -332,7 +358,7 @@ class Session:
             raise AgentboxError(grantcheck.message(p.name, exposure))
         if mode == "clone":
             # The mounts come from the clone (host paths), and the agent sees them at the owner's path.
-            with Step(f"finding the masks in the clone {self.root_src}", self.warn):
+            with self._step("clone-masks", f"finding the masks in the clone {self.root_src}"):
                 self.plan_host = mounts.plan(root=self.root_src, data_ro=p.data_ro, data_rw=p.data_rw,
                                              compose=p.value("compose"), mask_skip=p.mask_skip, swap=p.swap,
                                              mask=p.mask, code=p.value("code"), data_env=p.data_env == "on")
@@ -386,7 +412,7 @@ class Session:
                       "the clone is kept)")
         elif do_backup:
             self._backup_grants()
-        with Step(f"recording the state of {self.root_src} for the end-of-session scan", self.warn):
+        with self._step("scan-state", f"recording the state of {self.root_src} for the end-of-session scan"):
             self._write_scan_state()         # after the agent state is seeded: its changes are the session's
 
     # ---- the Toulmin integration (toulmin.py; docs/agentbox_toulmin_integration.md) ----------------------
@@ -484,8 +510,8 @@ class Session:
                         skip_rel_for=lambda g: mounts._rel_skips(p.root, g, p.mask_skip),
                         exclude_rel_for=covers_rel,
                         warn_mb=int(self.settings.backup_warn_mb), warn=self.warn,
-                        step=lambda g: Step(f"backing up {g} (the pre-session snapshot)", self.warn))
-        with Step("removing old pre-session snapshots", self.warn):
+                        step=lambda g: self._step(f"backup {g}", f"backing up {g} (the pre-session snapshot)"))
+        with self._step("retain", "removing old pre-session snapshots"):
             backup.retain(self.settings.project_backups_dir(p.name), keep=int(self.settings.backup_keep),
                           daily_days=int(self.settings.backup_daily_days))
 
@@ -942,7 +968,7 @@ class Session:
                               self.proxy_name, conf_path=conf_path, networks=[self.egr_net, self.int_net])
 
     def start_infra(self):
-        with Step("starting the session's network, proxy and sidecars", self.warn):
+        with self._step("infra", "starting the session's network, proxy and sidecars"):
             self._start_infra()
 
     def _start_infra(self):

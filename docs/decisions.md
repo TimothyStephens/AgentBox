@@ -3653,3 +3653,16 @@ Every other expectation (EROFS for create/mkdir/chmod, EBUSY for rmdir/rename/un
 listings, the swap, the host sentinel) matched. `test_step6_covers` passed 3/3 on the gate's 5xx retry.
 Rerun at 32857d9: `test_mask_errno` 2/2 OK on the host, every probe as pinned. `make claude-live` PASS at 32857d9
 (AB_OK, search works / fetch refused / bash works under locked egress, token in no log or state file).
+
+## 19 Nov 2026: start steps are numbered from a plan fixed up front
+
+Long start steps now read `agentbox: [3/7] <label> ...`, `: 17.0s`, `: done in 17.9s`, so the user sees how many
+steps are left, not only the elapsed time. The numbers come from a plan (`Session.start_plan`, `progress.Steps`)
+built at the top of `prepare` from the conditions the start uses (mount mode, toulmin, `do_backup`, the writable
+grants; the network/sidecar step in `start_infra` is the last), and each step's number is its place in that plan
+rather than a running count. Why: a running count needs the total before it is known, and revising the total
+mid-start would print two different totals for one start. With the plan, a step too quick to print still uses its
+number (`[1/7]` then `[3/7]` is expected), and a step that is not in the plan prints unnumbered instead of with a
+wrong number; tests check the plan equals the steps that ran for a plain start, no backup, an extra `data_rw`
+grant, clone mode and toulmin on. Teardown (`lifecycle.py`) and `ab deploy` (`deployrun.py`) stay unnumbered:
+teardown is being reworked separately and is numbered after that lands.
