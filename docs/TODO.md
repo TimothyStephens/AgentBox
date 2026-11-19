@@ -31,12 +31,6 @@ None. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox as its own c
 
 ## 2. Ready to implement — scoped, no decision needed
 
-- **Pi: the local model server is left out unless the seed lists its models.** *What:* `build_models` adds the
-  local server (`model_host`) with a baseUrl and no models, which OMP fills by discovery; Pi needs a model list,
-  so `pi_models` drops it with a note (seen in `test_pi_isolation`, 19 Nov). *Why:* a user whose OMP seed does
-  not list the local models gets no local model in Pi. *Done:* the local provider reaches Pi's models.json
-  with its models, or the note says exactly what to add to the seed. *Start:* `adapters/pi.py` `pi_models`,
-  `adapters/omp.py` `build_models`. *Gate:* a unit test, then `make pi-live` on the local model.
 - **Pi profile repo.** *What:* an `agentbox-profile-pi` repo deployed to `~/.config/agentbox/pi/profile`, like
   the Claude and OMP ones (skills, prompts, `plugins.toml`). *Why:* parity; sessions now print
   `profile pi (none)`. *Done:* the repo exists with `build.sh deploy`, its tests, and `ab profile install pi`

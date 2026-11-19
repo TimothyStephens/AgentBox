@@ -11,7 +11,9 @@ profile, the inbox, keys only through `ab keys`, Toulmin through MCP -- with Pi'
     cannot steer the next (Tim chose per-project state with that over a fresh dir each session, 18 Nov;
     decisions.md). An empty cover is not an option for SYSTEM.md: an existing file, even empty, IS the prompt;
   * **generated per session, read-only:** `agent/models.json` (P4: the OMP seed
-    `~/.config/agentbox/omp/models.yml` through the same `build_models` checks, keys as `${AB_KEY_<NAME>}`),
+    `~/.config/agentbox/omp/models.yml` through the same `build_models` checks, keys as `${AB_KEY_<NAME>}`;
+    the local model server's models are asked from it at start when the seed does not list them, because Pi
+    needs a list and cannot discover them itself, `local_models`),
     `agent/AGENTS.md` (the session notes), `agent/auth.json` = `{}` (P2: `/login` cannot store a key) and
     `agent/mcp.json` (no servers, or Toulmin's, `mcp_server`);
   * **copied in fresh at each start:** `agent/settings.json`, from `~/.config/agentbox/pi/settings.json` when
@@ -28,9 +30,12 @@ Every session runs `pi --no-approve` (the repo's `.pi`, its packages and `.agent
 with PI_OFFLINE=1 (no package auto-install, update check, tool download) and PI_TELEMETRY=0. Pi has no tool
 approvals, so it is refused under a preset with approvals on (P1).
 """
+import http.client
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 
 from .. import keys as keysmod
 from .. import miniyaml
@@ -38,7 +43,7 @@ from ..config import HOME
 from ..errors import AgentboxError
 from ..fsutil import write_private
 from . import Adapter, SessionSetup
-from .omp import _prepare_file, build_models
+from .omp import _host_of, _ip, _prepare_file, build_models
 
 C_PI = os.path.join(HOME, ".pi")                       # ~/.pi inside the session
 C_AGENT = os.path.join(C_PI, "agent")
@@ -63,6 +68,10 @@ MODELS_SEED = ("omp", "models.yml")                    # P4: the OMP seed, share
 PI_PROVIDER = {"gemini": "google"}
 PI_BUILTIN = ("anthropic", "openai", "deepseek", "google", "mistral", "groq", "xai", "openrouter")
 MODEL_FIELDS = {"maxOut": "maxTokens"}                  # OMP's spelling -> Pi's
+# The local model server's /models, asked by the launcher on the host at session start (local_models).
+DISCOVERY_TIMEOUT = 3                                   # seconds; a session start waits at most this long for it
+DISCOVERY_MAX_BYTES = 1 << 20
+DISCOVERY_MAX_MODELS = 200
 
 
 def settings_doc(seed_dir):
@@ -85,10 +94,14 @@ def settings_doc(seed_dir):
     return {**doc, **FORCED_SETTINGS}
 
 
-def pi_models(doc, warn):
+def pi_models(doc, warn, discover=None, seed="~/.config/agentbox/omp/models.yml"):
     """OMP's models document (after build_models, keys named AB_KEY_<NAME>) as Pi's models.json: Pi's provider
     ids, `maxTokens`, and every key as `${AB_KEY_<NAME>}` (a bare value is sent literally since Pi 0.77). A
-    provider Pi does not know needs a baseUrl and models, or it is left out with a note."""
+    provider Pi does not know needs a baseUrl and models, or it is left out with a note.
+
+    `discover(name, conf)` fills a missing list: it returns the model ids, None when it does not apply to that
+    provider (only the local model server is asked), or raises OSError/ValueError, and then the note says what
+    to add to the seed."""
     providers = {}
     for name, conf in (doc.get("providers") or {}).items():
         pid = PI_PROVIDER.get(name, name)
@@ -99,11 +112,85 @@ def pi_models(doc, warn):
         key = str(conf.get("apiKey", ""))
         if key.startswith("AB_KEY_"):
             conf["apiKey"] = "${" + key + "}"
+        if pid not in PI_BUILTIN and conf.get("baseUrl") and not conf.get("models") and discover is not None:
+            try:
+                ids = discover(name, conf)
+                if ids is not None and not ids:
+                    raise ValueError("it lists no models")
+            except (OSError, ValueError) as e:
+                warn(f"agentbox: Pi provider {name!r} left out: Pi needs its model list, and the model server at "
+                     f"{conf['baseUrl']} did not give one ({e}). To use it in Pi, list its models in {seed}:\n"
+                     + _seed_snippet(name, conf))
+                continue
+            if ids is not None:
+                conf["models"] = [{"id": i} for i in ids]
         if pid not in PI_BUILTIN and not (conf.get("models") and conf.get("baseUrl")):
             warn(f"agentbox: Pi provider {name!r} left out: a provider Pi does not know needs a baseUrl and models")
             continue
         providers[pid] = conf
     return {"providers": providers}
+
+
+def _seed_snippet(name, conf):
+    """The seed entry that gives Pi the provider's models (a list in the seed is used as it is, by OMP too)."""
+    return (f"  providers:\n    {name}:\n      api: {conf.get('api') or 'openai-completions'}\n"
+            f"      baseUrl: {conf['baseUrl']}\n      models:\n        - id: <a model id the server serves>\n")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "a redirect, which is not followed", headers, fp)
+
+
+def fetch_models(url, key=None, timeout=DISCOVERY_TIMEOUT):
+    """The model ids an OpenAI-compatible server lists at `url` (`<baseUrl>/models`: `{"data": [{"id": ...}]}`).
+
+    Direct, never through a proxy (the local model server is on the LAN), no redirects followed, a short
+    timeout and a size cap. The key, when given, goes only into the Authorization header and is never in an
+    error. Raises OSError (network, HTTP) or ValueError (not a model list)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    if key:
+        req.add_unredirected_header("Authorization", f"Bearer {key}")
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            body = r.read(DISCOVERY_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        raise OSError(f"HTTP {e.code}") from None
+    except urllib.error.URLError as e:
+        raise OSError(str(e.reason)) from None
+    except http.client.HTTPException as e:
+        raise OSError(f"a broken HTTP answer ({type(e).__name__})") from None
+    if len(body) > DISCOVERY_MAX_BYTES:
+        raise ValueError("its answer is too large for a model list")
+    try:
+        data = json.loads(body)["data"]
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("its answer is not an OpenAI-style model list") from None
+    if not isinstance(data, list):
+        raise ValueError("its answer is not an OpenAI-style model list")
+    ids = []
+    for m in data:
+        i = m.get("id") if isinstance(m, dict) else None
+        if isinstance(i, str) and 0 < len(i) <= 200 and i.isprintable() and i not in ids:
+            ids.append(i)
+    return ids[:DISCOVERY_MAX_MODELS]
+
+
+def local_models(model_host, model_port, keys):
+    """discover() for pi_models: asks only a provider whose baseUrl is the configured local model server
+    (`model_host`:`model_port`), with that provider's key file when there is one; None for any other."""
+    def discover(name, conf):
+        host, port = _host_of(conf["baseUrl"], f"Pi provider {name!r}")
+        ip = _ip(host)
+        if not model_host or ip is None or str(ip) != str(model_host) or port != int(model_port):
+            return None
+        key = None
+        if keys.get(name):
+            with open(keys[name]) as f:
+                key = f.readline().strip() or None
+        return fetch_models(conf["baseUrl"].rstrip("/") + "/models", key)
+    return discover
 
 
 def package_setup(settings, warn, image_labels, packages=True):
@@ -210,8 +297,9 @@ class PiAdapter(Adapter):
 
         run_dir = s.session_run_dir(sess.name)
         gen = {}
-        for fn, text in (("models.json", json.dumps(pi_models(doc, sess.warn), indent=1)),
-                         ("AGENTS.md", sandbox_notes + _pi_notes(doc, pkg_paths)), ("auth.json", "{}\n"),
+        pi_doc = pi_models(doc, sess.warn, discover=local_models(s.model_host, s.model_port, used), seed=seed_path)
+        for fn, text in (("models.json", json.dumps(pi_doc, indent=1)),
+                         ("AGENTS.md", sandbox_notes + _pi_notes(pi_doc, pkg_paths)), ("auth.json", "{}\n"),
                          ("mcp.json", json.dumps({"mcpServers": {}}) + "\n")):
             path = os.path.join(run_dir, f"pi-{fn}")
             write_private(path, text)
