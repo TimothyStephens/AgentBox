@@ -5,7 +5,7 @@ import os
 from . import projectlock
 from .errors import AgentboxError
 from .lifecycle import teardown
-from .liveness import _start_time, session_is_alive, sessions
+from .liveness import _start_time, released, session_is_alive, sessions
 
 
 class ProjectLock:
@@ -119,12 +119,24 @@ def _take_project_lock(settings, podman, project, warn):
     return ProjectLock(settings, project, pid, _start_time(pid))
 
 
+def _of_project(info, project):
+    return (info.get("meta") or {}).get("project") == project or any(
+        c.get("project") == project for c in info.get("containers") or [])
+
+
 def live_session_of(settings, podman, project):
-    """The id of the project's live session, or None. One per project, so there is no ambiguity."""
+    """The id of the project's live session, or None. One per project, so there is no ambiguity.
+
+    A session whose teardown has already removed everything and freed the project (`released`) is not the
+    project's live session: a new one may start while the old one's end-of-session scan still runs."""
     for sid, info in sorted(sessions(settings, podman).items()):
-        if (info.get("meta") or {}).get("project") != project and not any(
-                c.get("project") == project for c in info.get("containers") or []):
-            continue
-        if session_is_alive(settings, sid, info)[0]:
+        if _of_project(info, project) and not released(info) and session_is_alive(settings, sid, info)[0]:
             return sid
     return None
+
+
+def sessions_in_use(settings, podman, project):
+    """Every session of the project that is alive, a released one still being torn down included: what a
+    caller must not remove from under it (its clone, which its end-of-session scan reads)."""
+    return {sid for sid, info in sessions(settings, podman).items()
+            if _of_project(info, project) and session_is_alive(settings, sid, info)[0]}

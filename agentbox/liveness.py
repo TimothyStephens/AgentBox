@@ -23,6 +23,28 @@ def _alive(meta):
     return pid > 0 and _start_time(pid) is not None and _start_time(pid) == meta.get("pid_start")
 
 
+STOPPING = "stopping.json"      # in the session run dir while a teardown runs (lifecycle.teardown writes it)
+
+
+def stopping_marker(settings, session):
+    """The teardown marker of a session: {pid, pid_start, began, step, step_since, released}, or None.
+
+    `released` is set once the session's containers, pods, volumes and networks are gone and its project lock
+    is about to be freed: from then on the session does no work in its project (a new one may start), but
+    its teardown is still running (the end-of-session scan, the Toulmin end) and must not be reaped."""
+    try:
+        with open(os.path.join(settings.session_run_dir(session), STOPPING)) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def released(info):
+    """The session's teardown has removed everything that ran and freed its project (marker `released`)."""
+    return bool((info.get("marker") or {}).get("released"))
+
+
 def session_metas(settings):
     """[(session, meta or None)] for every session run dir; None means session.json is missing or
     unparseable. Kept separate from sessions() so a podman failure cannot hide this signal, and vice
@@ -113,7 +135,13 @@ def sessions(settings, podman):
         except (OSError, ValueError):
             pass
         info["meta"] = meta
-        info["alive"] = bool(meta) and _alive(meta)
+        mark = stopping_marker(settings, s)
+        info["marker"] = mark
+        # a teardown that is still running (its process, which may not be the launcher: `ab session kill`)
+        info["stopping"] = mark if mark and _alive(mark) else None
+        # The launcher keeps running through its own teardown, so its pid alone would call a session that has
+        # removed everything and freed its project "running" for as long as the end-of-session scan takes.
+        info["alive"] = bool(meta) and _alive(meta) and not released(info)
     return out
 
 
@@ -185,10 +213,14 @@ def session_is_alive(settings, name, info):
         because project_is_live *does* count them, the husk's project would stay unmanageable for good
         (no `ab project set`/`rm` while it is live). `ab session kill <name>` stays the manual way out.
 
-    Alive: the launcher process is alive ("launcher"), an AGENT container is still running ("agent"), or the
-    session is being started this second -- its run dir exists and was touched seconds ago, before any
-    container of it exists ("starting"). Infrastructure containers on their own are a husk.
+    Alive: a teardown of it is running ("stopping": nothing may reap a session whose end is still being
+    written; `released(info)` says whether it still holds its project), the launcher process is alive
+    ("launcher"), an AGENT container is still running ("agent"), or the session is being started this
+    second -- its run dir exists and was touched seconds ago, before any container of it exists
+    ("starting"). Infrastructure containers on their own are a husk.
     """
+    if info.get("stopping"):
+        return True, "stopping"
     if info["alive"]:
         return True, "launcher"
     if [c for c in info["containers"] if c.get("state") == "running" and c.get("role") == "agent"]:

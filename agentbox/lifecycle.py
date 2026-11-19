@@ -10,7 +10,7 @@ import time
 from . import adapters, buildcap, builtrec, profile, projectlock, scan, sockguard, toulmin, userimage
 from .errors import AgentboxError
 from .fsutil import write_private
-from .liveness import session_is_alive, sessions
+from .liveness import STOPPING, _start_time, session_is_alive, sessions
 from .podman import label_filters
 from .progress import Step, stderr_line
 from .state import _free_name, ephemeral_state, service_tmp
@@ -115,96 +115,146 @@ def _inbox_report(settings, doc, session, warn, now=None):
              + ". Nothing there is loaded; `ab profile harvest` reviews it.")
 
 
-def _scan(settings, session, started, warn):
-    """The end-of-session scan, from the state recorded at start (scan.py). Never raises."""
+def _scan_doc(settings, session, warn):
+    """The scan's start state (scan.py), read once, or None (no scan for this session, or unreadable)."""
     path = os.path.join(settings.session_run_dir(session), SCAN_STATE)
     try:
         with open(path) as f:
-            doc = json.load(f)
+            return json.load(f)
     except FileNotFoundError:
-        return
+        return None
     except (OSError, ValueError) as e:
         warn(f"agentbox: end-of-session scan skipped: its start state is unreadable ({e})")
-        return
-    _inbox_report(settings, doc, session, warn)
+        return None
+
+
+def _scan_shared(settings, doc, session, warn):
+    """The part of the scan that reads what the project's NEXT session writes: the inbox (provenance for the
+    new items, the per-session harvest) and the agent state (memory, instructions, settings). It runs before
+    the project lock is released, so a session started the moment the lock is free cannot have its items
+    recorded as this one's or its memory edits reported as this one's. Both are small. Returns the agent
+    state's (summary, report lines), or None. Never raises."""
+    try:
+        _inbox_report(settings, doc, session, warn)
+    except Exception as e:
+        warn(f"agentbox: could not report the inbox: {e!r}")
+    st = doc.get("agent_state") or {}
+    if not st.get("dir"):
+        return None
+    try:
+        return scan.state_report(st.get("files") or {}, st["dir"])
+    except Exception as e:
+        warn(f"agentbox: end-of-session scan of the agent state failed: {e!r}")
+        return None
+
+
+def _scan_grants(settings, session, started, doc, state, warn, note=lambda: None):
+    """The grant scan (the long part: it walks every writable grant) and the kept report. Returns the summary
+    lines to show, or None. Never raises. `note()` may return a line the report leads with."""
     try:
         # base_branch comes from the project registry, recorded in the scan state at session start, so
         # `ab session kill` and `gc` name the same branch the launcher would have.
         summary, text = scan.report(doc["state"], doc["grants"], skip=doc.get("skip"),
                                     base_branch=doc.get("base_branch"))
-        st = doc.get("agent_state") or {}
-        if st.get("dir"):
-            s2, lines = scan.state_report(st.get("files") or {}, st["dir"])
+        if state:
+            s2, lines = state
             summary, text = summary + s2, text + "\n" + "\n".join(lines)
     except Exception as e:           # the scan informs; it must never stop the teardown (review step 5C, H3)
         warn(f"agentbox: end-of-session scan failed: {e!r}")
-        return
+        return None
     trust = [f"WARNING (recorded at the start): {w}" for w in doc.get("trust") or []]
     if trust:
         # data_env/data_bind were on: the record of this session says so, first (decisions.md, 19 Nov 2026)
         summary, text = trust + list(summary), "\n".join(trust) + "\n" + text
+    extra = note()
+    if extra:
+        summary, text = list(summary) + [extra], extra + "\n" + text
     out = log_path(settings, session, started, "scan")
     _keep(out, text.encode())
     if summary:
-        warn("agentbox: end-of-session scan (review before you run or push anything):\n"
-             + "\n".join(f"  - {line}" for line in summary) + f"\n  full report: {out}")
+        return ["agentbox: end-of-session scan (review before you run or push anything):\n"
+                + "\n".join(f"  - {line}" for line in summary) + f"\n  full report: {out}"]
+    return []
+
+
+def _scan(settings, session, started, warn):
+    """The whole end-of-session scan in one call, its summary warned. Never raises."""
+    doc = _scan_doc(settings, session, warn)
+    if doc is None:
+        return
+    for line in _scan_grants(settings, session, started, doc, _scan_shared(settings, doc, session, warn), warn) or []:
+        warn(line)
+
+
+def _session_meta(settings, session):
+    try:
+        with open(os.path.join(settings.session_run_dir(session), "session.json")) as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _session_started(settings, session):
     try:
-        with open(os.path.join(settings.session_run_dir(session), "session.json")) as f:
-            return float(json.load(f).get("started") or time.time())
-    except (OSError, ValueError, TypeError, AttributeError):
+        return float(_session_meta(settings, session).get("started") or time.time())
+    except (TypeError, ValueError):
         return time.time()
 
 
+class _Marker:
+    """`stopping.json` in the session run dir for as long as a teardown runs: who runs it (pid and start
+    time, so liveness can tell a teardown still running from one that died), when it began, the step it is
+    on and since when, and whether the project is `released` yet (liveness.stopping_marker reads it). Written
+    only while the run dir exists -- a husk with no run dir gets none -- and removed with the run dir."""
+
+    def __init__(self, settings, session):
+        self.path = os.path.join(settings.session_run_dir(session), STOPPING)
+        now = time.time()
+        self.doc = {"pid": os.getpid(), "pid_start": _start_time(os.getpid()), "began": now, "step": "",
+                    "step_since": now, "released": False}
+
+    def step(self, name, **extra):
+        self.doc.update(step=name, step_since=time.time(), **extra)
+        if not os.path.isdir(os.path.dirname(self.path)):
+            return
+        try:
+            write_private(self.path, json.dumps(self.doc))
+        except OSError:
+            pass                     # the marker informs; it must never stop the teardown
+
+
 def teardown(settings, podman, session, warn=None, exit_reason="error"):
-    """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all come here, so
-    each keeps the logs and runs the end-of-session scan. The service and gate stop first (nothing new can be
-    created), the scan runs last, and no failure of either skips the removal. `exit_reason` is what the
-    Toulmin end message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS)."""
+    """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all
+    come here, so each keeps the logs and runs the end-of-session scan. `exit_reason` is what the Toulmin end
+    message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS).
+
+    The order is the point (19 Nov 2026, after a launcher held its project for 22 hours past its scan):
+      1. stop the service and gate (nothing new can be created), keep the logs, remove the containers, pods,
+         volumes and networks -- no failure here skips the rest;
+      2. the bookkeeping that touches what the project's next session uses: the inbox and agent-state part of
+         the scan, the Toulmin MCP entry in the project's agent state;
+      3. mark the session released and free the project lock: a new session of the project may start now;
+      4. what only concerns this session: `tm session end`, the grant scan (the long part), its run dir.
+    """
     warn = warn or stderr_line
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)
+    mark = _Marker(settings, session)
+    mark.step("stopping the podman service")
     try:
         sockguard.stop_service(settings.service_dir(session))
     finally:
+        mark.step("keeping the session's logs")
         try:
             with Step("keeping the session's logs", warn):
                 _keep_logs(settings, podman, session, started, warn)
         except Exception as e:
             warn(f"agentbox: could not keep the session's logs: {e!r}")
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
-        # A listing that cannot be read must not look like "nothing to remove": warn per kind, keep going
-        # with the others, and never let a failed listing pass for a clean teardown (audit F-2/F-10).
+        mark.step("removing the session's containers and networks")
         with Step("removing the session's containers and networks", warn):
-            quick = {f"{session}-{k}" for k in SIDECARS}
-            for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
-                               ("pod", ["pod", "rm", "-f"]),
-                               ("volume", ["volume", "rm", "-f"]),
-                               ("network", ["network", "rm", "-f"])):
-                try:
-                    found = podman.ids(kind, sel)
-                except AgentboxError as e:
-                    warn(f"agentbox: could not list this session's {kind}s, so some may be left behind: {e}. "
-                         f"Check with `podman {kind if kind != 'container' else 'ps -a'} --filter "
-                         f"label=agentbox.session={session}`.")
-                    continue
-                for target in found:
-                    # a removal that fails leaves a container or network behind under a name the next session
-                    # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
-                    if kind == "container" and target in quick:
-                        argv = ["rm", "-f", "-v", "-t", "0"]
-                    elif kind == "container":
-                        argv = ["rm", "-f", "-v", "-t", "5"]
-                    try:
-                        r = podman.run(argv + [target], check=False)
-                        why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
-                    except AgentboxError as e:
-                        why = str(e)
-                    if why:
-                        warn(f"agentbox: could not remove {kind} {target} of session {session} ({why}); remove it "
-                             f"with `podman {' '.join(argv)} {target}`")
+            _remove(settings, podman, session, sel, warn)
         if settings.cgroup_parent:
             # the per-session build cgroup the gate names; empty once the builds are gone
             build_cg = "/sys/fs/cgroup" + buildcap.slice_cgroup_path(settings.cgroup_parent) + f"/{session}-build"
@@ -213,13 +263,27 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
             except OSError:
                 pass
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
-        with Step("running the end-of-session scan", warn):
-            _scan(settings, session, started, warn)
-        _toulmin_end(settings, session, exit_reason, warn)
-        # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` --
-        # the project's slot is free again. Silently: a lock that works is not news.
+        meta = _session_meta(settings, session)
+        mark.step("reporting the inbox and the agent state")
+        doc = _scan_doc(settings, session, warn)
+        state = _scan_shared(settings, doc, session, warn) if doc is not None else None
+        _mcp_remove(settings, meta, warn)
+        # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` -- the
+        # project's slot is free again, as soon as nothing of the session runs. Silently: a lock that works is
+        # not news. The marker says so first, so no reader ever sees the lock free and the session still live.
+        mark.step("ending the Toulmin session", released=True)
+        released_at = time.time()
         projectlock.release_for_session(settings, session)
+        _toulmin_end(settings, meta, session, exit_reason, warn)
+        if doc is not None:
+            mark.step("running the end-of-session scan")
+            with Step("running the end-of-session scan", warn):
+                for line in _scan_grants(settings, session, started, doc, state, warn,
+                                         note=lambda: _started_meanwhile(settings, meta, session, released_at)) or []:
+                    warn(line)
         shutil.rmtree(ephemeral_state(settings, session), ignore_errors=True)   # a lockdown session's state
+        # Last: while the run dir exists its session number is taken (Session.reserve_name), so a new session
+        # of the project cannot be given this one's name while this teardown still runs.
         run_dir = settings.session_run_dir(session)
         if os.path.isdir(run_dir):
             for fn in os.listdir(run_dir):
@@ -230,21 +294,75 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
             os.rmdir(run_dir)
 
 
-def _toulmin_end(settings, session, exit_reason, warn):
-    """`tm session end` from every teardown path, with only session.json to go on; then the MCP entry the
-    session put in the per-project state is taken out again. Never raises."""
+def _remove(settings, podman, session, sel, warn):
+    """Every container, pod, volume and network labelled with the session.
+
+    A listing that cannot be read must not look like "nothing to remove": warn per kind, keep going with the
+    others, and never let a failed listing pass for a clean teardown (audit F-2/F-10)."""
+    quick = {f"{session}-{k}" for k in SIDECARS}
+    for kind, argv in (("container", ["rm", "-f", "-v", "-t", "5"]),   # -v: its anonymous volumes too
+                       ("pod", ["pod", "rm", "-f"]),
+                       ("volume", ["volume", "rm", "-f"]),
+                       ("network", ["network", "rm", "-f"])):
+        try:
+            found = podman.ids(kind, sel)
+        except AgentboxError as e:
+            warn(f"agentbox: could not list this session's {kind}s, so some may be left behind: {e}. "
+                 f"Check with `podman {kind if kind != 'container' else 'ps -a'} --filter "
+                 f"label=agentbox.session={session}`.")
+            continue
+        for target in found:
+            # a removal that fails leaves a container or network behind under a name the next session
+            # may reuse; say so with the command, instead of a teardown that looks clean (item 17)
+            if kind == "container" and target in quick:
+                argv = ["rm", "-f", "-v", "-t", "0"]
+            elif kind == "container":
+                argv = ["rm", "-f", "-v", "-t", "5"]
+            try:
+                r = podman.run(argv + [target], check=False)
+                why = "" if r.returncode == 0 else f"exit {r.returncode}: {(r.stderr or '').strip()[-200:]}"
+            except AgentboxError as e:
+                why = str(e)
+            if why:
+                warn(f"agentbox: could not remove {kind} {target} of session {session} ({why}); remove it "
+                     f"with `podman {' '.join(argv)} {target}`")
+
+
+def _started_meanwhile(settings, meta, session, released_at):
+    """A line for the scan report when another session of the project took the lock after this one freed
+    it: the grant scan runs after that, so it may see that session's first changes as well."""
+    project = meta.get("project")
+    holder = projectlock.read(settings, project) if project else None
+    if not holder or holder.get("unreadable") or holder.get("session") == session:
+        return None
     try:
-        with open(os.path.join(settings.session_run_dir(session), "session.json")) as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
+        taken = float(holder.get("taken") or 0)
+    except (TypeError, ValueError):
+        return None
+    if taken < released_at:
+        return None
+    other = holder.get("session") or "a new session"
+    return (f"note: {other} of {project} started at {time.strftime('%H:%M:%S', time.localtime(taken))}, while "
+            f"this scan ran; a change made after that may be that session's")
+
+
+def _mcp_remove(settings, meta, warn):
+    """Take the MCP entry the session put in the per-project agent state out again. Before the project lock
+    is released: the next session of the project adds its own entry under the same name, and removing it
+    after that would take that session's away."""
+    if not meta.get("toulmin"):
         return
-    if not (meta or {}).get("toulmin"):
-        return
-    toulmin.end(meta, settings.session_run_dir(session), exit_reason, warn)
     try:
         adapters.get(meta["agent"]).mcp_remove(settings, meta["project"], toulmin.MCP_NAME)
     except Exception as e:
         warn(f"agentbox: could not remove the {toulmin.MCP_NAME} MCP entry from {meta.get('project')}'s state: {e!r}")
+
+
+def _toulmin_end(settings, meta, session, exit_reason, warn):
+    """`tm session end` from every teardown path, with only session.json to go on. Never raises."""
+    if not meta.get("toulmin"):
+        return
+    toulmin.end(meta, settings.session_run_dir(session), exit_reason, warn)
 
 
 def gc_images(settings, podman, now=None, warn=lambda m: None):

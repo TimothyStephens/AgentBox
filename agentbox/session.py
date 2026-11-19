@@ -36,7 +36,7 @@ from .lifecycle import (  # noqa: F401
     _toulmin_end
 )
 from .sessionlock import (  # noqa: F401
-    live_session_of, lock_holder_state, ProjectLock, take_project_lock, _take_project_lock
+    live_session_of, lock_holder_state, ProjectLock, sessions_in_use, take_project_lock, _take_project_lock
 )
 
 TOKEN_PATH = "/run/agentbox/token"

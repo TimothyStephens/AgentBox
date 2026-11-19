@@ -3667,3 +3667,40 @@ timeout (or a signal) kills the whole group, and the wait after the kill is boun
 left the group is given up on and its pipes closed. Not changed: `Podman.run`, which every podman call shares --
 running podman in its own process group changes what Ctrl-C reaches, and none of the podman calls in teardown
 (`ps`, `logs`, `rm`, `network rm`) leaves a process behind. Tests: `tests/unit/test_toulmin.py` `NoUnboundedWaits`.
+
+## 19 Nov 2026: teardown frees the project as soon as nothing of the session runs
+
+Before, teardown released the project lock last: after the end-of-session scan (14.5 minutes on the 18 Nov tree),
+the scan summary on the terminal, and `tm session end`. Anything that stalled in that stretch held the project: on
+18 Nov a launcher sat there ~22.5 hours and the next `ab session start` was refused with "is running". Now
+`lifecycle.teardown` runs: (1) stop the service and gate, keep the logs, remove the containers, pods, volumes and
+networks; (2) the bookkeeping that touches what the project's next session uses; (3) mark the session `released`
+and free the lock; (4) `tm session end`, the grant scan, the run dir.
+
+**What a new session started during (4) shares with the old teardown, and why each is safe:**
+- *The agent state dir and the inbox.* The inbox report (provenance for new items, the per-session harvest), the
+  agent-state part of the scan (memory, instructions, settings, diffed against the start) and the removal of the
+  Toulmin MCP entry from the per-project `.claude.json` all run in (2), before the release. Read after it, the next
+  session's items and memory edits would be reported as this one's; removed after it, the `toulmin` MCP entry the
+  next session adds under the same name would be taken away. All three are small.
+- *The grants.* The grant scan reads the project tree in (4), so it can see the new session's first changes. That
+  is the price of not holding the project for the scan; the report leads with a note naming the session that took
+  the lock after the release, and when. In clone mode each session has its own clone, so nothing is shared.
+- *Session ids and run dir.* `Session.reserve_name` skips a number whose run dir exists (`mkdir` with
+  `FileExistsError`), and the run dir is removed last, so a new session gets `-2` while `-1` is still being torn
+  down. The kept logs are named by session and start time. The lockdown preset's ephemeral state and inbox are per
+  session.
+- *Liveness.* The launcher's pid stays alive through its own teardown, so `session.json` alone would keep calling
+  the session "running", and `take_project_lock`'s backstop (a live session with no lock) would refuse the new
+  start. The teardown writes `stopping.json` in the run dir (its own pid and start time, the step, `released`).
+  `sessions()` reads a released session as not alive by its launcher; `session_is_alive` answers `stopping` while
+  the teardown's process is alive, so `gc` never reaps a session whose end is still being written;
+  `live_session_of` (attach, kill by project name, the backstop, `ab screen`) skips a released session; and
+  `ab project clean` keeps the clone of any session still in use (`sessions_in_use`), since the scan reads it. The
+  marker is written `released` before the lock is removed, so no reader sees the lock free and the session live.
+- *Toulmin.* `tm session end` and stopping `tm session serve` run after the release. Each `tm session start` gets its
+  own session id, token and socket, so the new session's Toulmin session is a different one. Unverified against
+  real `tm`: whether two serve children of one project can overlap for the seconds between the two.
+
+`project_is_live` (the guard on registry edits) is unchanged and still counts the launcher's pid: an edit waits
+for the teardown to finish. Tests: `tests/unit/test_teardown.py` `TheProjectIsFreeBeforeTheScan`.
