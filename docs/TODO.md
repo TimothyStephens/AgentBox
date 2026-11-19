@@ -7,16 +7,13 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 19 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
-`agentbox-{claude,omp,pi}` → optional personal layer, each agent CLI installed at a Makefile pin the build
-asserts. Plugins for both agents come from `ab profile install <agent>` (the profile's `plugins.toml`,
-installed in a sandbox, mounted read-only). Which gates are green, and at which commit, is recorded in
-`docs/progress.md` (Status) and the dated run records in `docs/decisions.md`; this file keeps no counts.
-**Sections 1, 2 and 4 were emptied on 17 Nov**; the work is in "Recently closed" below and in decisions.md.
-`ab deploy` (step 6, with `--down`) is built and verified on the host, including one real deploy (18 Nov). The
-read-only root (`planner`) and the Pi adapter are built and verified on the host (18-19 Nov). Of 17 Nov's other changes, the toulmin backup size, omp-live on the config.yml
-model, `--podman none` and `--resolve` passed on the host on 18 Nov; the toulmin backup size waits on a
-toulmin-build restart.
+**State as of 19 November 2026: feature-complete for Claude, OMP and Pi.** The image chain is
+`node:26-bookworm-slim` → `agentbox-base` → `agentbox-{claude,omp,pi}` → optional personal layer, each agent CLI
+installed at a Makefile pin the build asserts. Each agent has a profile repo (`agentbox-profile-{claude,omp,pi}`)
+and plugins from `ab profile install <agent>`. Which gates are green, and at which commit, is recorded in
+`docs/progress.md` (Status) and the dated run records in `docs/decisions.md`; this file keeps no counts. What is
+left is: host runs of work that is unit-tested only (section 2), features deferred by design (section 3), and
+watch items (section 5).
 
 **How each open item is written:** *what it is* → *why it matters* → *done looks like* → *where to start* →
 *the gate*. That is deliberate: these sit for weeks, and "where to start" is what a cold reader needs.
@@ -29,13 +26,24 @@ None. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox as its own c
 
 ---
 
-## 2. Ready to implement — scoped, no decision needed
+## 2. Built, waiting on a host run
 
-- **Pi profile repo.** *What:* an `agentbox-profile-pi` repo deployed to `~/.config/agentbox/pi/profile`, like
-  the Claude and OMP ones (skills, prompts, `plugins.toml`). *Why:* parity; sessions now print
-  `profile pi (none)`. *Done:* the repo exists with `build.sh deploy`, its tests, and `ab profile install pi`
-  run on the host. *Start:* mirror `agentbox-profile-omp`. *Gate:* the repo's `tests/run.sh`, then a real
-  `ab profile install pi` and a Pi session that lists a profile skill. Needs the GitHub repo created by Tim.
+Nothing to write; each needs real podman, the LAN or a real key, so only the user can close it. Until then each is
+**unverified** (decisions.md, 19 Nov, names what each run must show).
+
+- **`data_env` / `data_bind`** — the real `.env` readable in a session while `.netrc`/key files read empty; a dev-tier
+  container binding the root with `data_env` on (the gate's `env_visible` path); `./data` absent from a real
+  snapshot; the WARNING lines in the terminal and the scan log. No itest yet: write one when the host run shows
+  what to pin.
+- **`test_mask_errno`** (the masked-paths probe): its EBUSY/EROFS expectations for unlink, rename and chmod are
+  kernel reasoning, not measured; `python3 -m unittest tests.integration.test_mask_errno -v`.
+- **The gate's podman-500 retry**: `test_step6_covers` three times in a row.
+- **Pi on the local model server**: `make pi-live` with a local model once the server answers (it hung on 19 Nov,
+  outside agentbox); confirms the launcher's `<baseUrl>/models` query.
+- **Pi profile**: `git push` and `./build.sh deploy` in `agentbox-profile-pi`; a Pi session then reports a profile
+  hash and shows `/skill:show-me`. `ab profile install pi` needs one package declared in its `plugins.toml`
+  (an empty declaration is refused by design).
+- **Unreadable git config refusal and `caps = refused`**: covered by `make itest` (no new itest needed).
 
 ---
 
@@ -83,7 +91,8 @@ three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (
   `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash` (about 50 s). Without it omp-live needs a default model in
   `~/.config/agentbox/omp/config.yml`, and refuses at once if neither is set (17 Nov). On the config.yml
   model it hung on 17 Nov with agentbox.slice at 4392/4400 MB and passed on 18 Nov (99 s) at about 3.5 GB, so
-  memory pressure is the likely cause; act if it hangs again with memory free.
+  memory pressure is the likely cause; act if it hangs again with memory free. On 19 Nov the local server
+  itself hung (a plain curl from the host too), so pi-live used OpenRouter.
 - **OMP's Anthropic provider cannot reach api.anthropic.com from a session** (`getaddrinfo ENOTFOUND`, 11 Nov,
   again 16 Nov): OMP's Anthropic client resolves the name itself instead of going through `HTTPS_PROXY`; its
   OpenAI-compatible client is fine. Upstream OMP behaviour; not tested through a third-party route by choice
@@ -93,12 +102,13 @@ three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (
   running and the pool at 3.5 GB; the next start in the same run took 3.1 s) (journald was the bigger spread, gone since the k8s-file
   switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches); left is
   grantcheck's per-file lstat (11.6 s on 98k files inside a session, likely well under 1 s on the host warm).
-  **Decide after a toulmin start on the host**: limit it to files whose name or suffix matters, at the cost
-  of the foreign-owner warning for ordinary files. `tests/perf/run.sh` re-measures.
+  **Decided 19 Nov:** time a large-project start on the host first, and limit the lstat to files whose name or
+  suffix matters only if it costs more than about 2 s there (the foreign-owner warning is a mistake-catcher). `tests/perf/run.sh` re-measures.
 - **A pod start inspects the pod four times** (`require_dev`, `start_targets`, `check_start`'s infra lookup,
   `decide`'s second `require_dev`), and the gate serves requests on threads, so the pod can change in between.
   Not a known bug: each inspect is checked on its own. Reading it once would make the checks agree on one
-  state; that is a behaviour change in the gate, so it waits for a decision.
+  state. **Decided 19 Nov: leave it** — exploiting the gap needs deliberate timing, an attack the threat model
+  excludes, and the change would touch the gate for no gain within it.
 - **Plugin tree vs image drift.** The tree's lockfile names the image it was built against and a session warns
   when that differs; after `make omp-image` or `make claude-image`, rerun `ab profile install <agent>`.
 
@@ -127,6 +137,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | Pi: the local model server's models asked from it at start when the seed lists none; OMP and Pi sessions get the profile's `AGENTS.md` after the sandbox notes (it reached neither before); `agentbox-profile-pi` created (skills, `build.sh`, Pi check rules, 134 tests) |
 | 19 Nov | `caps` has one value, `refused`: the never-built `opt-in` is gone from the build presets, a stored one reads as `refused` with a note; a git config in a read-only grant that the launcher cannot read refuses the session |
 | 19 Nov | The masked-paths spec's in-session errno probe (§5.1, with the §5.3 host sentinel) is an itest, `test_mask_errno`; written, unverified until the host runs it |
 | 19 Nov | The trusted opt-outs, project settings `data_env` and `data_bind` (`--data-env`, `--data-bind`; on or off): the real root env files, and live data in `./data` visible, writable and left out of the backup, for an agent the user trusts; refused under lockdown, in clone mode, and (`data_bind`) with a read-only root, a read-only-data preset or a mask over `./data`. Replaces 6 Oct's deferred `--data-bind` contract |
