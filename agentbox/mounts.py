@@ -261,18 +261,26 @@ def git_config_paths(cfg, work):
     git parses its own format (quoting, continuation lines, subsections); a hand parser would disagree with
     it exactly where an agent would want it to. Raises when the file cannot be read or parsed (git exits 128):
     a config the launcher cannot read is one whose hooks path it cannot cover (audit F-10's class)."""
+    fix = "make it readable or move the repo out of the grant"
+    try:
+        with open(cfg, "rb"):
+            pass                         # git exits 1 on a file it cannot open, the same as "no such key"
+    except OSError as e:
+        raise AgentboxError(f"{cfg}: cannot read this git config ({e.strerror}), so a hooks path or include it "
+                            f"names cannot be checked or covered read-only; {fix}")
     env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
     try:
         p = subprocess.run(["git", "config", "--file", cfg, "-z", "--get-regexp", CONFIG_PATH_KEYS],
                            capture_output=True, text=True, timeout=30, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise AgentboxError(f"{cfg}: cannot read this git config ({e}), so a hooks path or include it names "
-                            "cannot be covered read-only")
+                            f"cannot be checked or covered read-only; {fix}")
     if p.returncode == 1:
         return []
     if p.returncode != 0:
         raise AgentboxError(f"{cfg}: cannot read this git config ({p.stderr.strip()[-200:]}), so a hooks path or "
-                            "include it names cannot be covered read-only; fix it or move the repo out of the grant")
+                            "include it names cannot be checked or covered read-only; fix it or move the repo out of "
+                            "the grant")
     out = []
     for entry in p.stdout.split("\0"):
         if not entry:
@@ -319,18 +327,16 @@ def git_overlays(git_dirs, grants, ro_git_dirs=()):
 
     `ro_git_dirs` are git dirs in READ-ONLY grants: they get no covers of their own (nothing there is
     writable), but their configs are read the same way, and a target they name inside a writable grant is
-    covered (read-only root proposal, section 3). A config there that cannot be read does not refuse the plan;
-    grantcheck reports it."""
+    covered (read-only root proposal, section 3). A config there that cannot be read refuses the plan, as it
+    does in a writable grant: the launcher cannot tell whether it names a path in a writable grant (decision
+    19 Nov 2026). With no writable grant at all there is nothing it could name, so it is not read."""
     mounts, create_dirs, create_files = [], [], []
     todo = [(g, False) for g in sorted(git_dirs)] + [(g, True) for g in sorted(ro_git_dirs)]
     for g, in_ro in todo:
         if in_ro:
-            if any(inside(g, gr) for gr in grants):
-                continue                     # inside a writable grant too: covered as one of those
-            try:
-                targets = git_config_targets(g)
-            except AgentboxError:
-                continue
+            if not grants or any(inside(g, gr) for gr in grants):
+                continue                     # nothing writable to name, or covered as one of the writable ones
+            targets = git_config_targets(g)  # raises on an unreadable config: refused, as in a writable grant
         else:
             if not any(inside(g, gr) for gr in grants):
                 continue

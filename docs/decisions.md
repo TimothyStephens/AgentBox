@@ -3425,7 +3425,8 @@ reads their configs (`core.hooksPath`, `include.path`, `includeIf.*.path`) and c
 read-write grant, exactly as for a read-write repo. No cover is added inside the read-only grant itself. In
 `grantcheck.scan`, an escape from such a repo whose target lies in a read-write grant (a symlink, a grant root)
 is a finding, not a read-only-grant warning. A config or `.git` file in a read-only grant that cannot be read
-still does not refuse the plan (a note, and a grantcheck warning, as before).
+still does not refuse the plan (a note, and a grantcheck warning, as before). (Changed for an unreadable config
+19 Nov 2026: it now refuses; see that entry. An unreadable `.git` file still only gets a note.)
 
 **Why.** Read-only root proposal, section 3 / step 2. Before, a `data_ro` repo whose config pointed its hooks
 into the root or a `data_rw` grant got no cover there, and the owner's host git in that repo would run what the
@@ -3520,3 +3521,37 @@ the models itself. Cost: a session start waits up to 3 s when the server does no
 (AGENTS.md) now name the providers Pi actually got, not the ones before translation. Unit tests fake the query
 (SettingsCase replaces `pi.fetch_models`), so none reaches a network. Not yet confirmed against the real server:
 `make pi-live` on the local model.
+
+## 19 Nov 2026: an unreadable git config in a read-only grant refuses the session
+
+**What.** `mounts.git_overlays` no longer skips a git dir in a read-only grant whose config cannot be read: the
+`AgentboxError` from `git_config_targets` refuses the plan, as it already did for a read-write grant, and names the
+file with the fix ("make it readable or move the repo out of the grant"). `git_config_paths` now opens the file
+itself first: `git config --file` exits 1 on a file it cannot open, the same code as "no such key", so a mode-000
+config (or include) read as a clean one in EVERY grant, read-write included, and neither the plan nor grantcheck
+said anything. `grantcheck.scan` makes the matching finding blocking for a read-only repo when there is a
+read-write grant (it is reached only by a direct scan, since the plan refuses first). With no read-write grant at
+all (`code = "ro"`, no `data_rw`), read-only configs are not read: there is nothing writable they could name.
+
+**Why.** Tim's decision: the launcher cannot check an unreadable config for a hooks path or include pointing into a
+writable grant, so the 18 Nov "grantcheck reports it" (in practice a non-blocking read-only-grant warning) left that
+exact hole open. The silent rc 1 was found while writing the test. An unreadable `.git` FILE in a read-only grant
+still only adds a plan note (unchanged; not asked for).
+
+## 19 Nov 2026: `caps` has one value, "refused"; a stored "opt-in" is migrated, not refused
+
+**What.** The `caps` setting accepts only `"refused"`. The built-in presets `build`, `pods` and `build-open` said
+`"opt-in"`; they now say `"refused"`. `ab project show` no longer marks `caps` as ignored ("caps opt-in is not
+built"): `refused` is what happens. Any other value is refused with a message naming `"refused"` as the only one.
+
+**Migrate, not refuse.** A stored `caps = "opt-in"` (a hand-written registry entry, or a user preset file copied
+from the old built-ins) is read as `"refused"`, with a one-line note on stderr once per place per command. A hard
+refusal would have stopped that project from loading, and a preset file saying it would have stopped
+`load_presets`, i.e. every command. `caps` has no CLI flag, so there is no "newly set via the CLI" path to refuse;
+the next `ab project add`/`set` on that project saves the normalised `"refused"`. To make the read value the one
+the ceiling compares, `presets._validate` now writes each validator's normalised value back (before it discarded
+it; every other preset-key validator returns its input or an equal copy).
+
+**Why.** Tim's decision: the gate refuses `cap_add`, devices and security options under every preset, so
+`"opt-in"` claimed a posture agentbox does not have. Stop pretending.
+

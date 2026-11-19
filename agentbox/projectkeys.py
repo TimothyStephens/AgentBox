@@ -24,6 +24,7 @@ fields, so a new key is a TypeError until every column is answered:
 """
 import fnmatch
 import re
+import sys
 from dataclasses import dataclass
 
 from . import cgroup, mounts
@@ -95,9 +96,11 @@ KEYS = (
     _key("podman", kind="preset", arity="map", flags=("--podman",), dest="podman", validate="podman",
          values=(), security=True, clears=True, unsettable=True, display="always", inert="",
          inert_reason=""),
-    _key("caps", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
-         values=("refused", "opt-in"), security=True, clears=True, unsettable=True, display="always",
-         inert="always", inert_reason="caps opt-in is not built; capabilities and devices are always refused"),
+    # One value: the gate refuses cap_add, devices and security options under every preset. "opt-in" was
+    # never built; a stored one is read as "refused" with a note (decision 19 Nov 2026, see _caps).
+    _key("caps", kind="preset", arity="scalar", flags=(), dest="", validate="caps",
+         values=("refused",), security=True, clears=True, unsettable=True, display="always",
+         inert="", inert_reason=""),
     _key("secrets", kind="preset", arity="scalar", flags=(), dest="", validate="enum",
          values=("locked", "masked"), security=True, clears=True, unsettable=True, display="always",
          inert="always", inert_reason="secret masks always apply and cannot be turned off"),
@@ -374,6 +377,26 @@ def _enum(name, where, value, **_kw):
     return value
 
 
+_CAPS_NOTED = set()
+
+
+def _caps(name, where, value, **_kw):
+    """`caps` has one value, "refused". The old presets build, pods and build-open said "opt-in", which was
+    never built (the gate refused capabilities, devices and security options under every preset), so a
+    registry entry or preset file may still hold it: read it as "refused", with a one-line note, rather than
+    stop that project or every preset from loading. There is no CLI flag for caps, so no new one is written."""
+    if value == "refused":
+        return value
+    if value == "opt-in":
+        if where not in _CAPS_NOTED:
+            _CAPS_NOTED.add(where)
+            print(f'note: {where}: caps = "opt-in" is read as "refused" (it was never built: capabilities, '
+                  'devices and security options are always refused); delete the line', file=sys.stderr)
+        return "refused"
+    raise AgentboxError(f'{where}: caps = {value!r}, expected "refused" (capabilities, devices and security '
+                        'options are always refused; there is no opt-in)')
+
+
 def _podman(name, where, value, **_kw):
     tier = value.get("tier") if isinstance(value, dict) else None
     if tier not in PODMAN_TIERS:
@@ -604,6 +627,7 @@ def _grant(_name, _where, value, **_kw):
 
 VALIDATORS = {
     "enum": _enum,
+    "caps": _caps,
     "podman": _podman,
     "bool": _bool,
     "domains": _domains,

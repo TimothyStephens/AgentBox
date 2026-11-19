@@ -65,6 +65,9 @@ root bind, read-only swap binds, no git covers for the root's `.git`, masks laye
   The gap exists today for a `data_ro` repo whose hooks path points into a `data_rw` grant (rare). It
   becomes the main case once a hole exists.
 
+  Done 18 Nov 2026. A config in a read-only grant that the launcher cannot read refuses the session, as in a
+  rw grant, since it may name a path in a rw grant (decision 19 Nov 2026).
+
 `podman` stacks a deeper mount over a shallower one, so masks over a read-only root bind are the same
 mechanism as masks over a read-write one. Every mask target already exists, so podman never needs to create
 a mount point inside the read-only bind **[inf; itest]**. The hole's mount point must exist before start:

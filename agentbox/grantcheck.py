@@ -182,11 +182,12 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
                 for c in _git_credential_urls(gd):
                     found[f"git credentials in a remote URL: {c}"] = f"gitcred:{c}"
                 for text, sig in _git_config_escapes(gd, all_grants):
-                    if (found is ro_found or found is readable) and any(inside(sig_path(sig), g)
-                                                                         for g in rw_grants):
+                    if (found is ro_found or found is readable) and rw_grants and (
+                            sig == f"gitcfg:{gd}" or any(inside(sig_path(sig), g) for g in rw_grants)):
                         # a read-only repo naming an uncoverable path in a WRITABLE grant: the owner's git
                         # in that repo runs what the session writes there, so this refuses like any escape
-                        # (read-only root proposal, section 3)
+                        # (read-only root proposal, section 3). A config it cannot read may name one, so it
+                        # refuses too (decision 19 Nov 2026; mounts.plan refuses it first).
                         blocking[f"{text} (a repository in a read-only grant: {gd})"] = sig
                     else:
                         found[text] = sig
