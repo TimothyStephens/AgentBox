@@ -3972,3 +3972,6 @@ differential-review's method checks out the baseline commit in the working tree 
   it adds no proxy flag, so Chromium follows the session's proxy variables, and loopback is never proxied. Its
   `DEPENDENCIES_VALIDATED` marker is written at build time; a failed write at runtime is ignored by
   Playwright. Unverified until the host runs the build and `tests.integration.test_playwright`.
+The headless shell's checksum, taken on the host on 19 Nov (Playwright publishes none and its CDN is outside the
+sandbox's egress): `PLAYWRIGHT_SHELL_SHA256 = 77a6442fd3c8acd3bef9e1067fc26f5ef464277d22f0e8cb58dc3e4077a3e458` for
+chrome-headless-shell 159.0.8154.6 linux64.
