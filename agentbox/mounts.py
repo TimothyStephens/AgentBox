@@ -9,7 +9,7 @@ import os
 import re
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .errors import AgentboxError
 from .fsutil import inside, write_private
@@ -64,6 +64,75 @@ class Plan:
     create_dirs: list      # host dirs to create before start (mount points)
     create_files: list     # host files to create (mode 0600) before start
     notes: list
+    # The directory listings plan() read, for grantcheck.preflight to walk the same snapshot (see Tree). Not
+    # part of the plan's value: never compared, never shown, dropped once the scan has used it.
+    tree: object = field(default=None, compare=False, repr=False)
+
+
+class Tree:
+    """One `os.scandir` listing per directory, shared by every walk of one session start's tree work.
+
+    The plan's walks (find_git_dirs, the secret, user and hard-link masks, the compose covers) and grantcheck's
+    scan each walked the whole grant on their own: four walks of every directory, plus an `islink` per
+    subdirectory in each, and the first walk paid the cold dentry cache (19 Nov, toulmin-build). Each now asks
+    this object for a directory's listing; the first ask reads it, every later one gets the same answer, so
+    two consumers cannot see two different trees. The skip rules stay with each consumer: `walk` prunes
+    nothing but what `os.walk(top, followlinks=False)` prunes (symlinks), and the listing reads lazily, so a
+    directory no consumer enters (`node_modules`) is never read.
+
+    A listing is os.walk's split of the entries: `dirs` are entries whose `is_dir()` (following a symlink) is
+    true, `files` the rest, in scandir order; `links` the names that are symlinks, from the entry's d_type
+    (`is_symlink()`), so no consumer needs a separate `islink`. A directory that cannot be listed (or whose
+    listing fails part way, as os.walk treats it) is recorded with its error and yields nothing, exactly as
+    os.walk skips it. Nothing is stat'ed here beyond what is_dir/is_symlink need: the consumers that need an
+    lstat (grantcheck per file, hardlink_masks when a covered file has other links) still make it."""
+
+    def __init__(self):
+        self._listings = {}
+
+    def listing(self, top):
+        """(dirs, files, links, error) for one directory; read once, then served from the cache."""
+        got = self._listings.get(top)
+        if got is None:
+            got = self._listings[top] = self._read(top)
+        return got
+
+    @staticmethod
+    def _read(top):
+        dirs, files, links = [], [], set()
+        try:
+            with os.scandir(top) as it:
+                for entry in it:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False                     # os.walk's answer too
+                    (dirs if is_dir else files).append(entry.name)
+                    try:
+                        if entry.is_symlink():
+                            links.add(entry.name)
+                    except OSError:
+                        pass                               # os.path.islink says False on an error
+        except OSError as e:
+            return (), (), frozenset(), e
+        return tuple(dirs), tuple(files), frozenset(links), None
+
+    def walk(self, top, onerror=None):
+        """`os.walk(top, topdown=True, followlinks=False, onerror=onerror)` over the cached listings: the same
+        triples in the same order, and pruning `dirnames` in place works the same way."""
+        stack = [top]
+        while stack:
+            top = stack.pop()
+            dirs, files, links, err = self.listing(top)
+            if err is not None:
+                if onerror is not None:
+                    onerror(err)
+                continue
+            dirnames = list(dirs)
+            yield top, dirnames, list(files)
+            for d in reversed(dirnames):
+                if d not in links:
+                    stack.append(os.path.join(top, d))
 
 
 def effective_swap(stored=None):
@@ -97,20 +166,20 @@ def data_dir(root):
     return os.path.join(root, DATA_DIR)
 
 
-def _walk(grant, skip_rel):
+def _walk(grant, skip_rel, tree):
     skip_abs = {os.path.normpath(os.path.join(grant, s)) for s in skip_rel}
-    for dirpath, dirnames, filenames in os.walk(grant, topdown=True, followlinks=False):
+    for dirpath, dirnames, filenames in tree.walk(grant):
+        links = tree.listing(dirpath)[2]
         keep = []
         for d in dirnames:
-            full = os.path.join(dirpath, d)
-            if d in WALK_SKIP or full in skip_abs or os.path.islink(full):
+            if d in WALK_SKIP or d in links or os.path.join(dirpath, d) in skip_abs:
                 continue
             keep.append(d)
         dirnames[:] = sorted(keep)
         yield dirpath, dirnames, sorted(filenames)
 
 
-def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=False):
+def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=False, tree=None):
     """Masks and dev-swap mounts for one grant. Returns (mounts, files_to_create).
 
     `real_env` (the project root under `data_env = "on"`): the env files (`env_file`) are neither masked nor
@@ -120,13 +189,15 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=Fal
     a read-write grant: a read-only grant is not ours to write into, so there the swap is skipped and noted
     (nothing is hidden by skipping it: there is no real file). A target that exists as something other than
     a regular file or symlink (a `.env/` directory, a FIFO) cannot take a file bind; it is skipped and noted
-    instead of failing `podman run` (item 37)."""
+    instead of failing `podman run` (item 37). `tree`: the start's shared listings (Tree), or a fresh one."""
+    tree = tree if tree is not None else Tree()
     swap = effective_swap(swap)
     if real_env:
         swap = {t: d for t, d in swap.items() if not env_file(t)}
     notes = notes if notes is not None else []
     mounts, create = [], []
-    for dirpath, dirnames, filenames in _walk(grant, skip_rel):
+    for dirpath, dirnames, filenames in _walk(grant, skip_rel, tree):
+        links = tree.listing(dirpath)[2]
         for d in list(dirnames):
             if d in MASK_DIRS:
                 mounts.append(Mount("tmpfs", os.path.join(dirpath, d)))
@@ -134,7 +205,7 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=Fal
         present = set(filenames)
         handled = set()
         for target, dev in swap.items():
-            if dev in present and not os.path.islink(os.path.join(dirpath, dev)):
+            if dev in present and dev not in links:
                 dst = os.path.join(dirpath, target)
                 if os.path.lexists(dst) and not (os.path.islink(dst) or os.path.isfile(dst)):
                     notes.append(f"{dst} is not a regular file, so {dev} is not shown in its place")
@@ -154,7 +225,7 @@ def secret_mounts(grant, *, ro, skip_rel=(), swap=None, notes=None, real_env=Fal
             if fn in handled or not _masked(fn) or (real_env and env_file(fn)):
                 continue
             full = os.path.join(dirpath, fn)
-            if os.path.islink(full) or not os.path.isfile(full):
+            if fn in links or not os.path.isfile(full):
                 continue
             mounts.append(Mount("mask", full))
     return mounts, create
@@ -165,7 +236,7 @@ def mask_is_path(entry):
     return entry.startswith("./") or "/" in entry
 
 
-def user_masks(grant, *, root, mask, skip_rel=(), notes=None):
+def user_masks(grant, *, root, mask, skip_rel=(), notes=None, tree=None):
     """The project's own masks (the `mask` setting) in one grant. Returns (mounts, dirs_to_create).
 
     A NAME covers every file or directory of that name the walk finds -- the secret masks' own walk, so
@@ -193,7 +264,7 @@ def user_masks(grant, *, root, mask, skip_rel=(), notes=None):
             out.append(Mount("tmpfs", full, ro=True))
             notes.append(f"{full} does not exist yet; created empty and masked")
     if names:
-        for dirpath, dirnames, filenames in _walk(grant, skip_rel):
+        for dirpath, dirnames, filenames in _walk(grant, skip_rel, tree if tree is not None else Tree()):
             for d in list(dirnames):
                 if d in names:
                     out.append(Mount("tmpfs", os.path.join(dirpath, d), ro=True))
@@ -226,10 +297,12 @@ def _gitfile_target(path):
     return os.path.realpath(os.path.join(os.path.dirname(path), target))
 
 
-def find_git_dirs(grant, skip_rel=()):
+def find_git_dirs(grant, skip_rel=(), tree=None):
     """Every git directory reachable from the grant: .git dirs of nested repos, the targets of .git files
     (worktrees, submodule checkouts, --separate-git-dir), bare repos, and submodule git dirs under modules/,
-    plus each one's commondir. Returns (set of real paths, [(checkout, target outside this grant)])."""
+    plus each one's commondir. Returns (set of real paths, [(checkout, target outside this grant)]).
+    `tree`: the start's shared listings (Tree), or a fresh one."""
+    tree = tree if tree is not None else Tree()
     found, outside = set(), []
     skip_abs = {os.path.normpath(os.path.join(grant, s)) for s in skip_rel}
 
@@ -244,26 +317,27 @@ def find_git_dirs(grant, skip_rel=()):
                 add(os.path.join(g, f.read().strip()))
         modules = os.path.join(g, "modules")
         if os.path.isdir(modules):
-            for dirpath, _dirnames, _filenames in os.walk(modules, followlinks=False):
-                if dirpath != modules and _is_git_dir(dirpath):
+            for dirpath, _dirnames, filenames in tree.walk(modules):
+                # "HEAD" in the listing first: _is_git_dir's isfile(HEAD) can only be true for a listed non-dir
+                if dirpath != modules and "HEAD" in filenames and _is_git_dir(dirpath):
                     add(dirpath)
 
-    for dirpath, dirnames, filenames in os.walk(grant, topdown=True, followlinks=False):
+    for dirpath, dirnames, filenames in tree.walk(grant):
+        links = tree.listing(dirpath)[2]
         dot = os.path.join(dirpath, ".git")
-        if ".git" in dirnames and not os.path.islink(dot):
+        if ".git" in dirnames and ".git" not in links:
             add(dot)
-        elif ".git" in filenames and not os.path.islink(dot):
+        elif ".git" in filenames and ".git" not in links:
             target = _gitfile_target(dot)
             if target:
                 add(target)
                 if not inside(target, grant):
                     outside.append((dirpath, target))
-        if dirpath != grant and _is_git_dir(dirpath):
+        if dirpath != grant and "HEAD" in filenames and _is_git_dir(dirpath):
             add(dirpath)                                    # a bare repo or separate git dir
         keep = []
         for d in dirnames:
-            full = os.path.join(dirpath, d)
-            if d in WALK_SKIP or full in skip_abs or os.path.islink(full):
+            if d in WALK_SKIP or d in links or os.path.join(dirpath, d) in skip_abs:
                 continue
             keep.append(d)
         dirnames[:] = keep
@@ -380,12 +454,14 @@ def git_overlays(git_dirs, grants, ro_git_dirs=()):
     return mounts, create_dirs, create_files
 
 
-def compose_overlays(grant, skip_rel=()):
+def compose_overlays(grant, skip_rel=(), tree=None):
+    tree = tree if tree is not None else Tree()
     out = []
-    for dirpath, _dirnames, filenames in _walk(grant, skip_rel):
+    for dirpath, _dirnames, filenames in _walk(grant, skip_rel, tree):
+        links = tree.listing(dirpath)[2]
         for fn in filenames:
             full = os.path.join(dirpath, fn)
-            if fn in COMPOSE_FILES and os.path.isfile(full) and not os.path.islink(full):
+            if fn in COMPOSE_FILES and fn not in links and os.path.isfile(full):
                 out.append(Mount("bind", full, full, ro=True))
     return out
 
@@ -396,7 +472,11 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     like a data_ro grant (no git or compose covers in it, the swap read-only, masks over it). `data_env`
     (the project setting is "on") leaves the env files in the ROOT grant unmasked and unswapped: the agent
     sees the real ones. Nothing in the plan changes for `data_bind`: `<root>/data` is part of the root grant,
-    and a mask over it is refused when the setting is stored (project.check_trust)."""
+    and a mask over it is refused when the setting is stored (project.check_trust).
+
+    Every walk here reads one shared Tree, and the plan carries it (`Plan.tree`) so grantcheck.preflight's
+    scan walks the same listings instead of reading the grant again (19 Nov 2026)."""
+    tree = Tree()
     mounts, dirs, files, notes = [], [], [], []
     ro_root = code == "ro"
     rw_grants = ([] if ro_root else [root]) + list(data_rw)
@@ -409,7 +489,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
         mounts.append(Mount("bind", g, g, ro=True))
     git_dirs = set()
     for g in rw_grants:
-        found, outside = find_git_dirs(g, _rel_skips(root, g, mask_skip))
+        found, outside = find_git_dirs(g, _rel_skips(root, g, mask_skip), tree)
         git_dirs |= found
         # a .git file in one grant may point into another grant: protected there; otherwise not mounted
         for checkout, target in outside:
@@ -419,7 +499,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     ro_git_dirs = set()
     for g in data_ro:                            # their configs may name a path in a writable grant
         try:
-            ro_git_dirs |= find_git_dirs(g, _rel_skips(root, g, mask_skip))[0]
+            ro_git_dirs |= find_git_dirs(g, _rel_skips(root, g, mask_skip), tree)[0]
         except AgentboxError as e:               # read-only: it did not refuse the plan before either
             notes.append(f"{e}; a hooks path its repository names in a writable grant is not covered")
     m, d, f = git_overlays(git_dirs, rw_grants, ro_git_dirs)
@@ -427,20 +507,20 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     dirs += d
     files += f
     if compose == "ro" and not ro_root:          # a read-only cover in a read-only root adds nothing
-        mounts += compose_overlays(root, _rel_skips(root, root, mask_skip))
+        mounts += compose_overlays(root, _rel_skips(root, root, mask_skip), tree)
     for g in rw_grants + list(data_ro):          # secret masks apply; only data_env lifts the root's env files
         m, c = secret_mounts(g, ro=g in data_ro, skip_rel=_rel_skips(root, g, mask_skip), swap=swap, notes=notes,
-                             real_env=data_env and g == root)
+                             real_env=data_env and g == root, tree=tree)
         mounts += m
         files += c
     # The project's own masks come AFTER the secret masks and the swap: one mount per destination and the
     # later entry wins, so a masked path that is also a swap target ends up masked, never substituted.
     for g in rw_grants + list(data_ro):
-        m, d = user_masks(g, root=root, mask=mask, skip_rel=_rel_skips(root, g, mask_skip), notes=notes)
+        m, d = user_masks(g, root=root, mask=mask, skip_rel=_rel_skips(root, g, mask_skip), notes=notes, tree=tree)
         mounts += m
         dirs += d
 
-    mounts += hardlink_masks(mounts, rw_grants + list(data_ro), root, mask_skip, notes)
+    mounts += hardlink_masks(mounts, rw_grants + list(data_ro), root, mask_skip, notes, tree)
     # One mount per destination; later (more specific) entries win.
     by_dst = {}
     for m in mounts:
@@ -451,7 +531,7 @@ def plan(*, root, data_ro=(), data_rw=(), compose="rw", mask_skip=(), swap=None,
     kept = [m for d, m in by_dst.items() if not any(inside(d, c) and d != c for c in covers)]
     dirs = [d for d in dirs if not any(inside(d, c) and d != c for c in covers)]
     files = [f for f in files if not any(inside(f, c) for c in covers)]
-    return Plan(kept, dirs, files, notes)
+    return Plan(kept, dirs, files, notes, tree)
 
 
 def remap(p, src_root, dst_root):
@@ -498,10 +578,11 @@ def covered(plan, roots):
     return sorted(out)
 
 
-def hardlink_masks(mounts, grants, root, mask_skip, notes):
+def hardlink_masks(mounts, grants, root, mask_skip, notes, tree=None):
     """A cover hides a path, not an inode (audit 6 Oct, N4; spec 4.4): every other name of a covered regular
     file (a mask, a file under a mask dir, the real file behind the .env swap, a read-only cover such as
-    .git/config) is masked too."""
+    .git/config) is masked too. `tree`: the start's shared listings (Tree), or a fresh one."""
+    tree = tree if tree is not None else Tree()
     covered_files, cover_dirs = set(), []
     for m in mounts:
         if m.kind == "tmpfs":
@@ -509,7 +590,7 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
         elif m.kind == "mask" or (m.kind == "bind" and (m.ro or m.src != m.dst) and m.dst not in grants):
             covered_files.add(m.dst)
     for d in cover_dirs:
-        for dirpath, _dirnames, filenames in os.walk(d, followlinks=False):
+        for dirpath, _dirnames, filenames in tree.walk(d):
             covered_files.update(os.path.join(dirpath, f) for f in filenames)
     inodes = {}
     for f in covered_files:
@@ -526,7 +607,7 @@ def hardlink_masks(mounts, grants, root, mask_skip, notes):
         return []
     out = []
     for g in grants:
-        for dirpath, _dirnames, filenames in _walk(g, _rel_skips(root, g, mask_skip)):
+        for dirpath, _dirnames, filenames in _walk(g, _rel_skips(root, g, mask_skip), tree):
             for fn in filenames:
                 p = os.path.join(dirpath, fn)
                 if p in covered_files or any(inside(p, d) for d in cover_dirs):
