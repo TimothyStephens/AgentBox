@@ -3990,3 +3990,9 @@ name resolution; no cause was found by reading. Every install script (and `--res
 `Install.proxy_wait`: up to 30 s for `getent hosts <proxy>`, then exit 97 with resolv.conf and /etc/hosts; it also
 prints the proxy's address and `HTTPS_PROXY`, which the failure output carries. Either a late name is ridden out
 (and said), or the next failure says what the container saw. `tests/unit/test_install_proxy_wait.py`.
+Host run with the wait (19 Nov): the name did not resolve for 30 s; the container's resolver was the install
+network's DNS (its gateway) and its own entry was in /etc/hosts. So the proxy is not registered on that network by
+the time the install container runs, though `_wait_proxy` had seen squid ready. A failed install now also reports,
+read on the host before teardown (`Install.diagnose`): the proxy's state, exit code and OOM flag, its last 15 log
+lines, and the containers on the install network. (Noted in passing: podman copies the host's /etc/hosts into
+containers, so LAN host names are visible in a session though their addresses are refused.)

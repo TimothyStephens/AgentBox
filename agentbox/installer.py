@@ -485,6 +485,25 @@ class Install:
             time.sleep(0.5)
         raise AgentboxError(f"the install proxy was not ready after {self.settings.ready_timeout}s")
 
+    def diagnose(self):
+        """What the host sees of a failed install before teardown: the proxy's state, its last log lines, and the
+        containers on the install network (19 Nov: the OMP install's proxy name did not resolve in the container
+        after the proxy had reported ready). Never raises."""
+        out = []
+        try:
+            st = self.podman.run(["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} "
+                                  "OOMKilled={{.State.OOMKilled}}", self.proxy_name], check=False)
+            out.append(f"proxy {self.proxy_name}: {(st.stdout or st.stderr or '').strip() or 'not found'}")
+            lg = self.podman.run(["logs", "--tail", "15", self.proxy_name], check=False)
+            tail = ((lg.stdout or "") + (lg.stderr or "")).strip().splitlines()[-15:]
+            out += ["proxy log: " + line for line in tail]
+            net = self.podman.run(["network", "inspect", self.int_net, "--format",
+                                   "{{range .Containers}}{{.Name}} {{end}}"], check=False)
+            out.append(f"on {self.int_net}: {(net.stdout or net.stderr or '').strip() or 'nothing'}")
+        except Exception as e:                       # diagnosis must not hide the install's own error
+            out.append(f"(could not read the install's state: {e!r})")
+        return out
+
     def teardown(self):
         """Always, on every path. An install leaves nothing running: not the container, not the proxy, not
         the networks."""
@@ -526,7 +545,7 @@ def install(settings, agent, *, podman=None, warn=lambda m: None, dry_run=False)
                 p = job.podman.run(job.container_args(script), check=False, timeout=RUN_TIMEOUT)
                 if p.returncode != 0:
                     tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()[-8:]
-                    raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail))
+                    raise AgentboxError("the plugin install failed:\n  " + "\n  ".join(tail + job.diagnose()))
             finally:
                 job.teardown()
             _check_links(job.staging)
