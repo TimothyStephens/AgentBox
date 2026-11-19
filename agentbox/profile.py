@@ -307,6 +307,11 @@ class Loaded:
                    if self.commit else " (not committed)" if self.hash else ""))
 
 
+# The agents that had a seed before the host-owned profile existed (Claude, OMP). Pi came after, and its
+# ~/.config/agentbox/pi/settings.json is Pi's settings seed, read every session (adapters/pi.py).
+LEGACY_SEED_AGENTS = ("claude", "omp")
+
+
 def migrate_legacy_seed(settings, agent, out=None):
     """Move a pre-profile seed (`~/.config/agentbox/<agent>/settings.json`, `CLAUDE.md`, `commands/`) down
     into `profile/`, once, and say so.
@@ -315,6 +320,8 @@ def migrate_legacy_seed(settings, agent, out=None):
     skill or an instruction file could live and no way to tell which one a session used. Moved, not copied,
     so there is exactly one. Nothing is overwritten -- an item already in the profile wins and the old one
     is left for the user to resolve."""
+    if agent not in LEGACY_SEED_AGENTS:
+        return []                    # Pi's seed dir holds its live settings.json, never a pre-profile seed
     base = os.path.join(settings.config_dir, agent)
     profile_dir = settings.profile_src(agent)
     if not os.path.isdir(base):

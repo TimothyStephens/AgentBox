@@ -138,3 +138,19 @@ class SeedDollar(OmpSessionBase):
                 omp.build_models(seed, keys={"openai": "/k"}, model_host="", model_port=8080,
                                  warn=lambda m: None, label=label)
             self.assertIn("$", str(cm.exception))
+
+
+class SettingsSeedStays(SettingsCase):
+    """Found while building Pi packages (19 Nov): profile.migrate_legacy_seed moved ~/.config/agentbox/pi/settings.json
+    into pi/profile/ like a pre-profile Claude seed, so the Pi settings seed vanished at the first session and its
+    refusals never saw the file. Pi never had a pre-profile layout: nothing of its seed dir is migrated."""
+
+    def test_pis_settings_seed_is_not_migrated_into_the_profile(self):
+        from agentbox import profile
+        d = self.settings.seed_dir("pi")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "settings.json"), "w") as f:
+            f.write('{"defaultModel": "x"}\n')
+        self.assertEqual(profile.migrate_legacy_seed(self.settings, "pi"), [])
+        self.assertTrue(os.path.isfile(os.path.join(d, "settings.json")))
+        self.assertEqual(pi.settings_doc(d)["defaultModel"], "x")

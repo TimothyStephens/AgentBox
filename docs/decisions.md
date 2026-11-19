@@ -3454,3 +3454,7 @@ name. Tim chose per-project state like OMP; the known files are moved to the inb
 (`pi.LOADED_AT_START`). The risk: a Pi upgrade that adds a loaded file name opens a way for one session to steer the
 next until that list is updated, so checking Pi's changelog for new agent-dir files is part of every PI_VERSION bump.
 
+**Fix (19 Nov):** `profile.migrate_legacy_seed` moved `~/.config/agentbox/pi/settings.json` into `pi/profile/` like a
+pre-profile Claude seed, so Pi's settings seed vanished at the first session (found while building Pi packages). The
+migration is now for the agents that had a pre-profile seed only (`profile.LEGACY_SEED_AGENTS`: claude, omp).
+
