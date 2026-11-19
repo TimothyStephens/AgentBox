@@ -7,14 +7,14 @@ decision, and what is worth doing when a change next touches the area.
 - **Why something is the way it is** → `docs/decisions.md` (dated entries; every closed item here has one).
 - **The spec** → `docs/design.md`.
 
-**State as of 18 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
-`agentbox-{claude,omp}` → optional personal layer, each agent CLI installed at a Makefile pin the build
+**State as of 19 November 2026.** The image chain is `node:26-bookworm-slim` → `agentbox-base` →
+`agentbox-{claude,omp,pi}` → optional personal layer, each agent CLI installed at a Makefile pin the build
 asserts. Plugins for both agents come from `ab profile install <agent>` (the profile's `plugins.toml`,
 installed in a sandbox, mounted read-only). Which gates are green, and at which commit, is recorded in
 `docs/progress.md` (Status) and the dated run records in `docs/decisions.md`; this file keeps no counts.
 **Sections 1, 2 and 4 were emptied on 17 Nov**; the work is in "Recently closed" below and in decisions.md.
-`ab deploy` (step 6) is built and passed `make itest` on 18 Nov, with `make claude-live`; one real deploy by
-the user is still to come. Of 17 Nov's other changes, the toulmin backup size, omp-live on the config.yml
+`ab deploy` (step 6, with `--down`) is built and verified on the host, including one real deploy (18 Nov). The
+read-only root (`planner`) and the Pi adapter are built and verified on the host (18-19 Nov). Of 17 Nov's other changes, the toulmin backup size, omp-live on the config.yml
 model, `--podman none` and `--resolve` passed on the host on 18 Nov; the toulmin backup size waits on a
 toulmin-build restart.
 
@@ -31,8 +31,17 @@ None. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox as its own c
 
 ## 2. Ready to implement — scoped, no decision needed
 
-None. The candidates for the next round are the features in section 3, which each need a decision first,
-and the two "decide later" items in section 5.
+- **Pi: the local model server is left out unless the seed lists its models.** *What:* `build_models` adds the
+  local server (`model_host`) with a baseUrl and no models, which OMP fills by discovery; Pi needs a model list,
+  so `pi_models` drops it with a note (seen in `test_pi_isolation`, 19 Nov). *Why:* a user whose OMP seed does
+  not list the local models gets no local model in Pi. *Done:* the local provider reaches Pi's models.json
+  with its models, or the note says exactly what to add to the seed. *Start:* `adapters/pi.py` `pi_models`,
+  `adapters/omp.py` `build_models`. *Gate:* a unit test, then `make pi-live` on the local model.
+- **Pi profile repo.** *What:* an `agentbox-profile-pi` repo deployed to `~/.config/agentbox/pi/profile`, like
+  the Claude and OMP ones (skills, prompts, `plugins.toml`). *Why:* parity; sessions now print
+  `profile pi (none)`. *Done:* the repo exists with `build.sh deploy`, its tests, and `ab profile install pi`
+  run on the host. *Start:* mirror `agentbox-profile-omp`. *Gate:* the repo's `tests/run.sh`, then a real
+  `ab profile install pi` and a Pi session that lists a profile skill. Needs the GitHub repo created by Tim.
 
 ---
 
@@ -127,6 +136,8 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | Pi adapter (1.5.2) built and verified on the host: `test_pi_isolation`, `make pi-live` on OpenRouter; pi-live's bash check made unguessable; the gate retries a podman 500 on a lookup (`podman run --rm` race) |
+| 18 Nov | `ab deploy --down [--volumes]`; the deploy contract (`deploy-check`); read-only project root (`code = ro`, `planner` preset); host facts moved out of the repo into agentbox.toml |
 | 18 Nov | `ab deploy` built and verified on podman (`test_deploy`, `make itest` 200/200): a reviewed commit copied out with the real `.env`, run through the gate's deploy mode; hand-run stacks refused, their volumes adoptable by name. Proposal folded into design.md |
 | 17 Nov | TODO sections 2 and 4 emptied: `ab profile install --resolve`; omp-live refuses without a model; the gate's error paths tested (escape directive, `ignoreIfExists` spellings and build-chunk buffering fixed); late project-mask names refused in binds; the `Gate` class split. Also: backups skip `CACHEDIR.TAG` caches and can prune read-only trees, the scan fingerprints executables by metadata, the mask plan 20× faster on big trees, `--podman none` clears live access, long steps print progress |
 | 16 Nov | The independent review's findings fixed (about 100 commits, one test each); modules split along their seams; host gates, both profile deploys and both selftests pass on the result |
