@@ -3651,3 +3651,5 @@ masked file fails with EACCES, not the EROFS the test reasoned: the shared empty
 before the read-only bind is consulted. The write is refused either way; the test now pins the measured EACCES.
 Every other expectation (EROFS for create/mkdir/chmod, EBUSY for rmdir/rename/unlink of a mount point, empty
 listings, the swap, the host sentinel) matched. `test_step6_covers` passed 3/3 on the gate's 5xx retry.
+Rerun at 32857d9: `test_mask_errno` 2/2 OK on the host, every probe as pinned. `make claude-live` PASS at 32857d9
+(AB_OK, search works / fetch refused / bash works under locked egress, token in no log or state file).
