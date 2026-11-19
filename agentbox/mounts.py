@@ -281,6 +281,35 @@ def _is_git_dir(path):
         all(os.path.isdir(os.path.join(path, d)) for d in ("objects", "refs"))
 
 
+def _is_worktree_git_dir(path):
+    """A linked worktree's own git dir (`<repo>/.git/worktrees/<name>`): HEAD, commondir and gitdir, no objects of
+    its own. Its hooks are the common dir's; its `config.worktree` is its own (19 Nov 2026)."""
+    return all(os.path.isfile(os.path.join(path, f)) for f in ("HEAD", "commondir", "gitdir"))
+
+
+def _common_dir(g):
+    """The git dir whose config and hooks `g` shares: itself, or what its `commondir` names."""
+    try:
+        with open(os.path.join(g, "commondir")) as f:
+            return os.path.realpath(os.path.join(g, f.read().strip()))
+    except OSError:
+        return g
+
+
+def _worktree_config_on(common):
+    """Does git read `config.worktree` files for this repository (`extensions.worktreeConfig`)? Unreadable or
+    unparseable counts as yes: covering a file git ignores costs nothing, missing one it reads is the gap."""
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
+    try:
+        p = subprocess.run(["git", "config", "--file", os.path.join(common, "config"), "--type=bool", "--get",
+                            "extensions.worktreeConfig"], capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if p.returncode == 1 and not p.stdout.strip():
+        return False                          # not set
+    return p.returncode != 0 or p.stdout.strip() == "true"
+
+
 def _gitfile_target(path):
     """The git dir a `.git` file points to (`gitdir: <path>`), resolved, or None when it is not a gitdir
     pointer. Refuses when the file cannot be READ: that would leave the repository it names uncovered, so
@@ -308,7 +337,7 @@ def find_git_dirs(grant, skip_rel=(), tree=None):
 
     def add(g):
         g = os.path.realpath(g)
-        if g in found or not _is_git_dir(g):
+        if g in found or not (_is_git_dir(g) or _is_worktree_git_dir(g)):
             return
         found.add(g)
         common = os.path.join(g, "commondir")
@@ -436,13 +465,18 @@ def git_overlays(git_dirs, grants, ro_git_dirs=()):
         else:
             if not any(inside(g, gr) for gr in grants):
                 continue
-            hooks = os.path.join(g, "hooks")
-            if not os.path.isdir(hooks):
-                create_dirs.append(hooks)
-            mounts.append(Mount("bind", hooks, hooks, ro=True))
+            if not _is_worktree_git_dir(g) or _is_git_dir(g):   # a linked worktree uses the common hooks
+                hooks = os.path.join(g, "hooks")
+                if not os.path.isdir(hooks):
+                    create_dirs.append(hooks)
+                mounts.append(Mount("bind", hooks, hooks, ro=True))
             for name in ("config", "config.worktree"):
                 cfg = os.path.join(g, name)
                 if os.path.isfile(cfg) and not os.path.islink(cfg):
+                    mounts.append(Mount("bind", cfg, cfg, ro=True))
+                elif name == "config.worktree" and not os.path.lexists(cfg) and _worktree_config_on(_common_dir(g)):
+                    # git reads it once it exists: made empty and covered, or the session could create it
+                    create_files.append(cfg)
                     mounts.append(Mount("bind", cfg, cfg, ro=True))
             targets = git_config_targets(g)
         for _cfg, key, target in targets:

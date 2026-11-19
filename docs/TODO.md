@@ -41,16 +41,7 @@ Nothing to write; each needs real podman, the LAN or a real key, so only the use
 
 ## 2a. Ready to build — scoped, no decision needed
 
-- **Linked worktrees' own git dirs are not recognised as git dirs.** *What:* `mounts._is_git_dir` wants HEAD,
-  config, objects/ and refs/; a linked worktree's dir (`<repo>/.git/worktrees/<name>`, the target of the
-  checkout's `.git` file) has HEAD, commondir and gitdir but no objects/refs, so `find_git_dirs` skips it and its
-  `config.worktree` is not covered read-only (found while making the walk shared, 19 Nov; not changed then, as that
-  change had to keep behaviour). *Why it matters, and how much:* git reads `config.worktree` only when the main
-  config enables `extensions.worktreeConfig`, and the main config is covered; so only a repo whose owner already
-  enabled it is exposed (a `core.hooksPath` planted there runs on the owner's next git command in that worktree).
-  *Done:* a worktree git dir (HEAD + commondir) is recognised, its `config.worktree` covered; the common dir is
-  still followed. *Start:* `mounts._is_git_dir`, `find_git_dirs.add`, `git_overlays`. *Gate:* a unit test with a
-  real `git worktree add` and `extensions.worktreeConfig=true`, failing first.
+None.
 
 ---
 
@@ -144,6 +135,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | A linked worktree's git dir is a git dir for the covers; with `extensions.worktreeConfig` on, every `config.worktree` (the worktree's and the main one) is covered, created empty if missing |
 | 19 Nov | The start's tree work reads each directory once: `mounts.plan`'s walks and `grantcheck.scan` share one `mounts.Tree`, and `is_covered` is a set lookup; results pinned identical to the old code by `test_walk_equivalence`. Host re-measure of toulmin-build pending |
 | 19 Nov | `data_env` / `data_bind` verified by hand on the host and pinned by an itest, `test_trusted_optouts` (written from that run; 3/3 on the host) |
 | 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is numbered the same way (`[n/3]`). |

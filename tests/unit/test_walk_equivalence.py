@@ -24,7 +24,7 @@ from agentbox.fsutil import inside
 from agentbox.grantcheck import (DATA_SUFFIXES, LIVE_DATA_MB, READABLE_REFUSED, WALK_SKIP, _compose_data_binds,
                                  _git_config_escapes, _git_credential_urls, _is_secret_name, _sig,
                                  _under_mask_skip, fingerprint, sig_path)
-from agentbox.mounts import (COMPOSE_FILES, MASK_DIRS, Mount, Plan, _gitfile_target, _is_git_dir, _masked, _rel_skips,
+from agentbox.mounts import (COMPOSE_FILES, MASK_DIRS, Mount, Plan, _gitfile_target, _is_git_dir, _is_worktree_git_dir, _masked, _rel_skips,
                              effective_swap, env_file, git_overlays, mask_is_path)
 
 from .helpers import SettingsCase, TempCase
@@ -147,7 +147,9 @@ def old_find_git_dirs(grant, skip_rel=()):
 
     def add(g):
         g = os.path.realpath(g)
-        if g in found or not _is_git_dir(g):
+        # the one deliberate change since this copy was taken: a linked worktree's git dir counts (19 Nov 2026,
+        # tests/unit/test_worktree_covers.py); the reference follows it so the walk itself is still compared
+        if g in found or not (_is_git_dir(g) or _is_worktree_git_dir(g)):
             return
         found.add(g)
         common = os.path.join(g, "commondir")

@@ -3870,3 +3870,16 @@ on the host (run it twice; the first pays the cold cache):
     cd ~/repos/agentbox-dev/agentbox && PYTHONPATH=$PWD python3 -c "import time; from agentbox import cli; t=time.time(); rc=cli.main(['project','check','toulmin-build']); print(f'rc={rc} elapsed {time.time()-t:.1f}s')"
 
 No change to the spec's behaviour; design.md's Filesystem policy now says the plan and the scan share the listings.
+
+## 19 Nov 2026: linked worktrees' git dirs and config.worktree are covered
+
+Found while making the start's walk shared (that change kept behaviour, so it was not fixed there). `_is_git_dir`
+wants objects/ and refs/, which a linked worktree's own git dir (`.git/worktrees/<name>`) does not have, so
+`find_git_dirs` skipped it and its `config.worktree` stayed writable. And for every repo, a `config.worktree` that did
+not exist yet was not covered, so a session could create one. Git reads those files only with
+`extensions.worktreeConfig` on (set in the main config, which is covered), where a `core.hooksPath` in them runs on
+the owner's next git command. Now `_is_worktree_git_dir` (HEAD, commondir, gitdir) counts for the covers, such a dir
+gets no hooks/ of its own (git uses the common one; nothing is created in the owner's `.git/worktrees/`), and when
+the common config has the extension on (or cannot be read: covering a file git ignores costs nothing) a missing
+`config.worktree` is created empty and covered. `tests/unit/test_worktree_covers.py` (four failing before, real
+`git worktree add`); `test_walk_equivalence`'s reference copy of the old `find_git_dirs` takes the same one change.
