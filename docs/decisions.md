@@ -3643,3 +3643,11 @@ own), and the `dev/data` -> `data` overlay (`.env.dev` covers dev config and `da
 a folder bound over a masked folder would be a second owner of `./data`). The code still refuses `exec`, now
 saying "not offered". Also not building yet (Tim, 19 Nov): the `data_env`/`data_bind` itest and the Codex adapter
 (`@openai/codex`, a CLI, 0.170.0 on 19 Nov) stay in TODO.
+
+## 19 Nov 2026: test_mask_errno measured on the host; masked-file writes are EACCES
+
+`make itest` at 7f19638: 205/210, the five failures all `test_mask_errno`'s `<file>_WRITE` expectation. Writing a
+masked file fails with EACCES, not the EROFS the test reasoned: the shared empty mask file's mode refuses the open
+before the read-only bind is consulted. The write is refused either way; the test now pins the measured EACCES.
+Every other expectation (EROFS for create/mkdir/chmod, EBUSY for rmdir/rename/unlink of a mount point, empty
+listings, the swap, the host sentinel) matched. `test_step6_covers` passed 3/3 on the gate's 5xx retry.

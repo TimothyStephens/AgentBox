@@ -11,7 +11,8 @@ standard secret masks from `make_project` (`.env` swapped for `.env.dev`, `sub/.
   * a masked directory exists, lists empty (dotfiles included), hides the real file and any `..` route to it;
     creating, mkdir and chmod in or on it fail with EROFS (read-only tmpfs), rmdir and rename of it with EBUSY
     (it is a mount point; §3.2's measured table);
-  * a masked file reads zero bytes; opening it for writing and chmod fail with EROFS (read-only bind of the
+  * a masked file reads zero bytes; opening it for writing fails with EACCES (the mask file's mode, checked
+    first; measured 19 Nov) and chmod with EROFS (read-only bind of the
     empty mask file), unlink and rename with EBUSY (a mount point);
   * a sibling (`dev/data`) is untouched and writable (§4.6);
   * the root `.env` shows `.env.dev` (the swap, §3.1), while the masked `cfg/.env` reads empty (§4: a path
@@ -151,7 +152,9 @@ class MaskErrnoInSession(unittest.TestCase):
         # Masked files -- the project's own (bare name, both places; a path that is also a swap target) and
         # the secret masks: present, zero bytes, read-only (EROFS), and a mount point (EBUSY).
         for k in ("STATE", "APPSTATE", "CFGENV", "SUBENV", "KEY"):
-            want.update({f"{k}_EXISTS": "True", f"{k}_BYTES": "0", f"{k}_WRITE": "EROFS",
+            # Write is EACCES, not EROFS (measured on the host, 19 Nov): the shared empty mask file is not
+            # writable by its mode, and the open checks permissions before the read-only mount.
+            want.update({f"{k}_EXISTS": "True", f"{k}_BYTES": "0", f"{k}_WRITE": "EACCES",
                          f"{k}_CHMOD": "EROFS", f"{k}_UNLINK": "EBUSY", f"{k}_RENAME": "EBUSY"})
         # The root .env, with no project mask on it, is still the .env.dev swap (§3.1); secrets/ lists empty.
         want.update({"ROOTENV": "GREETING=dev-value", "SECRETS_LS": ""})

@@ -35,15 +35,11 @@ Nothing to write; each needs real podman, the LAN or a real key, so only the use
   container binding the root with `data_env` on (the gate's `env_visible` path); `./data` absent from a real
   snapshot; the WARNING lines in the terminal and the scan log. No itest yet: write one when the host run shows
   what to pin.
-- **`test_mask_errno`** (the masked-paths probe): its EBUSY/EROFS expectations for unlink, rename and chmod are
-  kernel reasoning, not measured; `python3 -m unittest tests.integration.test_mask_errno -v`.
-- **The gate's podman-500 retry**: `test_step6_covers` three times in a row.
 - **Pi on the local model server**: `make pi-live` with a local model once the server answers (it hung on 19 Nov,
   outside agentbox); confirms the launcher's `<baseUrl>/models` query.
-- **Pi profile**: `git push` and `./build.sh deploy` in `agentbox-profile-pi`; a Pi session then reports a profile
+- **Pi profile** (pushed and deployed 19 Nov): a Pi session should report a profile
   hash and shows `/skill:show-me`. `ab profile install pi` needs one package declared in its `plugins.toml`
   (an empty declaration is refused by design).
-- **Unreadable git config refusal and `caps = refused`**: covered by `make itest` (no new itest needed).
 
 ---
 
