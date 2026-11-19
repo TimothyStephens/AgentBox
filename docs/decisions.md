@@ -3907,3 +3907,11 @@ the watch list trimmed to what is live, the closed list cut to 13 Nov onward (ol
 `ab profile install pi` against localhost/agentbox-pi:latest (1.5.2): 4 npm packages at the OMP pins and the EGM
 checkout at 464db031e7dd, lockfile written. All three profile repos pushed and deployed with the shared `learn-repo`
 skill. Still to see: a Pi session loading the packages from the read-only tree without warnings.
+Pi session check on the host (scratch project, profile 9550188): `profile pi b497e0d801a69a0d` loaded; the read-only
+tree held the four npm packages and `git/egm`, settings.json listed their five paths, `pi list` showed all five with
+no errors, and `~/.pi/agent/skills` held the five profile skills. Asked through OpenRouter, Pi listed pi-lens's and
+pi-rules's skills and pi-lens's five tools (ast_grep_search/replace/outline, lsp_navigation, lens_diagnostic_mark),
+so the extensions load from the read-only mount. The `egm-*` skills and four of the profile skills were not in its
+list because each sets `disable-model-invocation: true` (checked in all 7 EGM SKILL.md files): they are reachable as
+`/skill:<name>`, by design. The session also noted the Pi profile's Containerfile has no built layer (`ab image build
+pi`, optional).

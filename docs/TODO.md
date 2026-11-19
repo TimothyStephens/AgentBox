@@ -33,9 +33,6 @@ Each needs real podman, the LAN, a real key or a running service, so only the us
 - **Pi on the local model server.** `make pi-live` with `AB_LIVE_MODEL=llama-cpp/<model>` once the server answers
   (it hung on 19 Nov, outside agentbox: a plain curl from the host hung too). Confirms the launcher's
   `<baseUrl>/models` query and Pi on the local model.
-- **The Pi profile's packages in a session.** Deployed and installed on 19 Nov (4 npm, EGM). A Pi session should
-  report a profile hash, load the packages from the read-only tree without warnings, and offer the profile
-  skills and the `egm-*` skills.
 - **Toulmin from a Pi session.** Pi gets Toulmin through its built-in MCP (`mcp.json`, `exposure: direct`); no
   live run has used it yet.
 
@@ -122,6 +119,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | The Pi packages install and load on the host: four npm extensions (their skills and tools seen by Pi) and EGM's skills, from the read-only tree; the shared `learn-repo` skill is in all three profiles |
 | 19 Nov | The Pi profile carries every OMP-profile skill and every OMP package Pi can load (four npm packages at OMP's pins, EGM's skills as a `[[repo]]`); TODO.md rewritten around what is left |
 | 19 Nov | A linked worktree's git dir is a git dir for the covers; with `extensions.worktreeConfig` on, every `config.worktree` (the worktree's and the main one) is covered, created empty if missing |
 | 19 Nov | The start's tree work reads each directory once: `mounts.plan`'s walks and `grantcheck.scan` share one `mounts.Tree`, and `is_covered` is a set lookup; results pinned identical to the old code by `test_walk_equivalence`; toulmin-build's check 17.9 s → 6.5-8.2 s on the host |
