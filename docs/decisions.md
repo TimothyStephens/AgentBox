@@ -3555,3 +3555,12 @@ it; every other preset-key validator returns its input or an equal copy).
 **Why.** Tim's decision: the gate refuses `cap_add`, devices and security options under every preset, so
 `"opt-in"` claimed a posture agentbox does not have. Stop pretending.
 
+
+## 19 Nov 2026: OMP and Pi sessions get the profile's AGENTS.md
+
+Found while building `agentbox-profile-pi`: `adapters/omp.py` and `adapters/pi.py` generated `AGENTS.md` from the
+sandbox notes alone, so the profile's own `AGENTS.md` (the shared working rules) reached no OMP or Pi session, though
+the OMP profile's README said it was "folded into the session instructions". Claude's adapter has always appended
+the profile's CLAUDE.md after the notes. Both now do the same (`omp.profile_instructions`): the notes first, then
+the profile's `AGENTS.md`, read from `settings.profile_src(agent)` as Claude's is; nothing when the profile is off;
+a symlink is not followed. `tests/unit/test_profile_instructions.py`.

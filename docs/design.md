@@ -568,7 +568,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.om
 | Sessions, OMP's databases, logs | Per project, read-write: `~/.local/share/agentbox/projects/<project>/omp/{agent,logs}` at `~/.omp/agent` and `~/.omp/logs`; sessions are named after the project's real path. The places OMP loads code from (`agent/extensions`, `hooks`, `tools`, `.mcp.json`, `mcp.json`, `settings.json`) are covered read-only and empty, so a session cannot plant code for later ones |
 | Browser | The image's Chromium through `PUPPETEER_EXECUTABLE_PATH`, proxied with `PUPPETEER_PROXY`; its shared daemon runs in the session's `run` tmpfs |
 | Approval prompts | OMP's own `--approval-mode`: `yolo` when the preset turns approvals off, `always-ask` when on (OMP's default is `yolo`) |
-| `AGENTS.md` | Generated per session, read-only |
+| `AGENTS.md` | Generated per session, read-only: the sandbox notes, then the profile's own `AGENTS.md` (unless the profile is off), as Claude's CLAUDE.md is |
 | Old `--workspace--` and `-tmp*` buckets | Never mounted (the host's `agent/sessions` is not mounted at all) |
 
 **Pi** (`@earendil-works/pi-coding-agent`, built 18 Nov 2026; decisions P1-P6 in `docs/pi-proposal.md`)

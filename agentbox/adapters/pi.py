@@ -43,7 +43,7 @@ from ..config import HOME
 from ..errors import AgentboxError
 from ..fsutil import write_private
 from . import Adapter, SessionSetup
-from .omp import _host_of, _ip, _prepare_file, build_models
+from .omp import _host_of, _ip, _prepare_file, build_models, profile_instructions
 
 C_PI = os.path.join(HOME, ".pi")                       # ~/.pi inside the session
 C_AGENT = os.path.join(C_PI, "agent")
@@ -299,7 +299,8 @@ class PiAdapter(Adapter):
         gen = {}
         pi_doc = pi_models(doc, sess.warn, discover=local_models(s.model_host, s.model_port, used), seed=seed_path)
         for fn, text in (("models.json", json.dumps(pi_doc, indent=1)),
-                         ("AGENTS.md", sandbox_notes + _pi_notes(pi_doc, pkg_paths)), ("auth.json", "{}\n"),
+                         ("AGENTS.md", sandbox_notes + _pi_notes(pi_doc, pkg_paths)
+                          + profile_instructions(s, self.name, not sess.profile_off[0])), ("auth.json", "{}\n"),
                          ("mcp.json", json.dumps({"mcpServers": {}}) + "\n")):
             path = os.path.join(run_dir, f"pi-{fn}")
             write_private(path, text)

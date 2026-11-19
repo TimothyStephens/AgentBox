@@ -180,6 +180,20 @@ def _ip(host):
         return None
 
 
+def profile_instructions(settings, agent, profile_on):
+    """The profile's own AGENTS.md, to follow the sandbox notes in the generated AGENTS.md ("" when the profile is
+    off, or has none), as Claude's CLAUDE.md is the notes and then the profile's CLAUDE.md (19 Nov: OMP and Pi
+    wrote the notes alone, so the profile's shared rules reached neither). A symlink is not followed."""
+    if not profile_on:
+        return ""
+    path = os.path.join(settings.profile_src(agent), "AGENTS.md")
+    if os.path.islink(path) or not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    return "\n" + text.lstrip() if text.strip() else ""
+
+
 def build_models(seed, *, keys, model_host, model_port, warn, label="OMP"):
     """The session's models.yml from the keyless seed.
 
@@ -326,7 +340,8 @@ class OmpAdapter(Adapter):
                                           model_port=s.model_port, warn=sess.warn)
         run_dir = s.session_run_dir(sess.name)
         gen = {}
-        for fn, text in (("models.yml", miniyaml.dumps(doc)), ("AGENTS.md", sandbox_notes + _omp_notes(doc))):
+        for fn, text in (("models.yml", miniyaml.dumps(doc)), ("AGENTS.md", sandbox_notes + _omp_notes(doc)
+                                                                    + profile_instructions(s, self.name, not sess.profile_off[0]))):
             path = os.path.join(run_dir, f"omp-{fn}")
             write_private(path, text)
             gen[fn] = path
