@@ -3799,3 +3799,11 @@ After the teardown rework merged, `lifecycle._teardown` numbers its three long s
 (keeping the logs, removing the containers and networks, the end-of-session scan): `[n/3]`, or `[n/2]` when the
 session recorded no scan state. `LongStepsSayWhatTheyDo` pins it. `ab deploy`'s one step stays unnumbered (`[1/1]`
 says nothing).
+
+## 19 Nov 2026: host run at cfdee1f (teardown rework, step numbering)
+
+`make itest` 210/210 OK, including `test_mask_errno`, `test_step6_covers`, `test_lock` (SIGHUP/SIGKILL cases on the
+reworked teardown) and `test_toulmin`; the start lines printed `[6/6]`/`[7/7]` as planned. `make claude-live` PASS at
+cfdee1f. Seen in passing: agentbox.slice at 4270-4291 MB of its 4400 MB cap during the run (two long-lived user
+sessions plus the itest's), which the launcher warned about. Still unconfirmed on the host: a real stopping state
+in `ab session ls`, the 30-minute limit against a real large scan, a paused terminal during teardown.
