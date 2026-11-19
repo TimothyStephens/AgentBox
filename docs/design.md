@@ -26,7 +26,7 @@ Fuller detail, with the review item numbers, is in `docs/decisions.md` (6 Oct).
 
 ## Summary
 
-One launcher, `agentbox` (`ab`), runs a coding agent (Claude Code and OMP today; Pi and Codex planned) in a hardened rootless podman container on a single Linux host, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it. This document is the full design; several commands and tiers described below are not built yet — `docs/progress.md`'s Status table is the authoritative built / deferred / not-built list, and the "Planned / not built" section near the end collects what is still to come.
+One launcher, `agentbox` (`ab`), runs a coding agent (Claude Code, OMP and Pi today; Codex planned) in a hardened rootless podman container on a single Linux host, scoped to one project, with explicit grants for directories, pods and network destinations. The hardening lives in the launcher and on the host side, so swapping the agent never weakens it. This document is the full design; several commands and tiers described below are not built yet — `docs/progress.md`'s Status table is the authoritative built / deferred / not-built list, and the "Planned / not built" section near the end collects what is still to come.
 
 **Goals**
 
@@ -579,7 +579,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.om
 | Image | `localhost/agentbox-pi` (`make pi-image`, `images/pi/Containerfile`): `agentbox-base` plus Pi at the `PI_VERSION` pin, installed with `--ignore-scripts` and asserted by `pi --version`; node only (no Bun, no Chromium: Pi has no browser tool) |
 | `~/.pi` in the session | A tmpfs owned by the agent, with the pieces below mounted on it |
 | Per project, read-write | `~/.local/share/agentbox/projects/<project>/pi/agent` at `~/.pi/agent` (sessions, Pi's databases); `extensions`, `git`, `npm`, `bin`, `tools`, `tmp` in it covered empty and read-only; files Pi loads from it at start (SYSTEM.md, AGENTS.override.md, trust.json, ...) moved to the inbox before every session |
-| Generated per session, read-only | `models.json` (the OMP seed through the same checks, keys as `${AB_KEY_<NAME>}`), `AGENTS.md`, `auth.json` = `{}` (no `/login` key), `mcp.json` (empty, or Toulmin's server with `exposure: direct`) |
+| Generated per session, read-only | `models.json` (the OMP seed through the same checks, keys as `${AB_KEY_<NAME>}`; when the seed lists no models for the local model server, the launcher asks that one `model_host:model_port` for `<baseUrl>/models` at start, directly, 3 s timeout, its key if set, and lists what it answers, because Pi needs a list and cannot discover one itself; if that fails the provider is left out with a note giving the seed entry to add), `AGENTS.md`, `auth.json` = `{}` (no `/login` key), `mcp.json` (empty, or Toulmin's server with `exposure: direct`) |
 | Settings | `~/.config/agentbox/pi/settings.json` if Tim creates it, copied in fresh each start (Pi writes it in place); code-running keys refused; project trust and install telemetry forced off |
 | Profile | Skills at `agent/skills`, prompt templates at `agent/prompts`, read-only; the inbox at `agent/inbox` |
 | Approval prompts | None in Pi: refused under a preset with approvals on (P1) |

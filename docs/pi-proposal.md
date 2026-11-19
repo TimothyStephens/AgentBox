@@ -39,7 +39,7 @@ through `ab keys`, Toulmin through MCP, the same CLI and sweeps.
 | P1 | Pi has no tool approvals (`--approve` is project trust, and would LOWER safety): Pi is **refused** under a preset with approvals on; every session runs `--no-approve` |
 | P2 | Keys only via `ab keys`, written into `models.json` as `${AB_KEY_<NAME>}` (a bare value is sent literally since 0.77); `auth.json` is `{}` and read-only, so `/login` cannot store one |
 | P3 | Version 1 = core adapter + Pi packages (`ab profile install pi`, a read-only tree loaded in place) + Toulmin through Pi's built-in MCP (`mcp.json`, `exposure: direct`) |
-| P4 | Models come from the OMP seed `~/.config/agentbox/omp/models.yml`, through the same `build_models` checks, translated (`gemini` -> `google`, `maxOut` -> `maxTokens`; a custom provider without a baseUrl and models is left out) |
+| P4 | Models come from the OMP seed `~/.config/agentbox/omp/models.yml`, through the same `build_models` checks, translated (`gemini` -> `google`, `maxOut` -> `maxTokens`; a custom provider without a baseUrl and models is left out; the local model server's models are asked from it at start when the seed lists none, decisions.md 19 Nov) |
 | P5 | `$` is refused anywhere in the shared model seed, for OMP and Pi: `$NAME` would pull another provider's key into a header or URL |
 | P6 | Pi's agent dir is **per project** (like OMP), and the files Pi would load from it at start (SYSTEM.md, APPEND_SYSTEM.md, AGENTS.override.md, AGENTS.MD, CLAUDE.md, CLAUDE.MD, trust.json, themes) are moved to the inbox at every start. Recommended instead: a fresh agent dir per session keeping only sessions, because each Pi release can add a file name that steers the next session; Tim chose per-project (decisions.md) |
 

@@ -3498,3 +3498,25 @@ in the service while the client sends its own DELETE; the gate's ownership looku
 mid-removal. `Gate.inspect` now retries a 5xx twice (0.2 s, then 0.4 s): a lookup that settles to 404 is "no such
 container" (which podman ignores for an already-removed container), one that settles to the object is used, and one
 that stays 5xx is still an UpstreamError (502), as review L5 asked. `claude-live` PASS at d1c2075 the same day.
+
+## 19 Nov 2026: Pi gets the local model server's models from the launcher
+
+`build_models` adds the local model server (`model_host`) with a baseUrl and no `models`, which OMP fills by its
+own discovery; Pi 1.5.2 needs a `models` list for any provider it does not have built in, so `pi_models` left the
+server out and a user whose OMP seed does not list the local models had no local model in Pi. Pi's own discovery
+does not fit (read in the 1.5.2 package, not run): its built-in `llama.cpp` provider discovers only a llama.cpp
+*router* (`GET /models` with per-model status; a plain llama-server, Ollama or vLLM is refused), refreshes only for a
+credential stored by `/login` (auth.json is `{}` and read-only here), and not at all under `PI_OFFLINE=1`
+(`allowNetwork` is false), and an extension provider with `refreshModels` would be code we load into every session.
+
+So the launcher, on the host, asks the server at session start (`adapters/pi.local_models`, `fetch_models`):
+only a provider whose baseUrl is the configured `model_host:model_port`, `GET <baseUrl>/models`, directly (no
+proxy; the server is on the LAN), no redirects followed, a 3 s timeout, at most 1 MiB and 200 ids, with that
+provider's key file in the Authorization header when there is one (never in a message). The ids become
+`models: [{id}]` in Pi's models.json. When the query fails or lists nothing, the provider is left out as before,
+and the note now gives the reason and the exact seed entry to add to `~/.config/agentbox/omp/models.yml`. A seed
+that lists the local models is used as it is and the server is not asked. OMP is unchanged: it still discovers
+the models itself. Cost: a session start waits up to 3 s when the server does not answer. Pi's session notes
+(AGENTS.md) now name the providers Pi actually got, not the ones before translation. Unit tests fake the query
+(SettingsCase replaces `pi.fetch_models`), so none reaches a network. Not yet confirmed against the real server:
+`make pi-live` on the local model.

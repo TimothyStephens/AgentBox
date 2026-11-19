@@ -7,8 +7,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from agentbox import config
+from agentbox.adapters import pi as pi_adapter
 
 FAKE_PODMAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakepodman.py")
 
@@ -101,6 +103,11 @@ class SettingsCase(TempCase):
                     'model_host = "192.0.2.2"\nhost_addrs = ["192.0.2.10"]\n'
                     'lan_targets = ["192.0.2.10:8080"]\n')
         self.settings = config.load()
+        # A Pi session asks the local model server for its models (pi.fetch_models); unit tests never reach a
+        # network: it fails here unless a test fakes an answer on top.
+        fetch = mock.patch.object(pi_adapter, "fetch_models", side_effect=OSError("no network in unit tests"))
+        self.fetch_models = fetch.start()
+        self.addCleanup(fetch.stop)
 
     def token(self, value="fake-token-UNIT-0123456789", mode=0o600):
         p = self.settings.token_file("claude")

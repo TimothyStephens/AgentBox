@@ -1,6 +1,10 @@
 """The Pi adapter (agentbox/adapters/pi.py; docs/pi-proposal.md, decisions P1-P4, 18 Nov 2026)."""
 import json
 import os
+import textwrap
+import urllib.error
+import urllib.request
+from unittest import mock
 
 from agentbox import session
 from agentbox.adapters import pi
@@ -8,6 +12,8 @@ from agentbox.errors import AgentboxError
 
 from .helpers import SettingsCase, read_file
 from .test_omp import OmpSessionBase
+
+_REAL_FETCH = pi.fetch_models      # before SettingsCase replaces it with a fake for every test
 
 
 class Models(SettingsCase):
@@ -29,6 +35,124 @@ class Models(SettingsCase):
         self.assertEqual(out["llama-cpp"]["models"][0]["maxTokens"], 16000)
         self.assertNotIn("custom", out, "Pi would reject the whole file over it")
         self.assertTrue([n for n in notes if "custom" in n])
+
+
+class LocalModels(SettingsCase):
+    """TODO 19 Nov: build_models adds the local model server with no `models` (OMP discovers them), and Pi 1.5.2
+    needs a list for a provider it does not know, so a seed that does not list the local models gave Pi no local
+    model. Pi's own llama.cpp discovery does not apply (router mode only, a stored /login, network off under
+    PI_OFFLINE), so the launcher asks the server and fills the list, or says what to add to the seed."""
+
+    LOCAL = {"api": "openai-completions", "baseUrl": "http://192.0.2.2:8080/v1", "apiKey": "none"}
+
+    def test_discovered_models_fill_the_local_provider(self):
+        notes = []
+        out = pi.pi_models({"providers": {"llama-cpp": dict(self.LOCAL)}}, notes.append,
+                           discover=lambda name, conf: ["model-a", "model-b"])["providers"]
+        self.assertEqual(out["llama-cpp"]["models"], [{"id": "model-a"}, {"id": "model-b"}])
+        self.assertEqual(out["llama-cpp"]["baseUrl"], "http://192.0.2.2:8080/v1")
+        self.assertEqual(notes, [])
+
+    def test_a_failed_query_says_what_to_add_to_the_seed(self):
+        def down(name, conf):
+            raise OSError("timed out")
+        for discover, reason in ((down, "timed out"), (lambda name, conf: [], "lists no models")):
+            with self.subTest(reason=reason):
+                notes = []
+                out = pi.pi_models({"providers": {"llama-cpp": dict(self.LOCAL)}}, notes.append,
+                                   discover=discover, seed="/tmp/seed/models.yml")["providers"]
+                self.assertNotIn("llama-cpp", out)
+                [note] = notes
+                self.assertIn(reason, note)
+                self.assertIn("/tmp/seed/models.yml", note)
+                snippet = note[note.index("  providers:"):]
+                from agentbox import miniyaml
+                parsed = miniyaml.loads(textwrap.dedent(snippet).replace("<a model id the server serves>", "model-a"))
+                self.assertEqual(parsed["providers"]["llama-cpp"],
+                                 {"api": "openai-completions", "baseUrl": "http://192.0.2.2:8080/v1",
+                                  "models": [{"id": "model-a"}]})
+
+    def test_a_provider_discovery_does_not_apply_to_keeps_the_old_note(self):
+        notes = []
+        doc = {"providers": {"custom": {"api": "openai-completions", "baseUrl": "https://llm.example/v1"}}}
+        out = pi.pi_models(doc, notes.append, discover=lambda name, conf: None)["providers"]
+        self.assertNotIn("custom", out)
+        self.assertIn("needs a baseUrl and models", notes[0])
+
+    def test_only_the_configured_model_server_is_asked_with_its_key(self):
+        key = os.path.join(self.tmp, "llama-cpp")
+        with open(key, "w") as f:
+            f.write("fake-local-key-0123\n")
+        discover = pi.local_models("192.0.2.2", 8080, {"llama-cpp": key})
+        self.fetch_models.side_effect = None
+        self.fetch_models.return_value = ["model-a"]
+        self.assertEqual(discover("llama-cpp", self.LOCAL), ["model-a"])
+        self.fetch_models.assert_called_once_with("http://192.0.2.2:8080/v1/models", "fake-local-key-0123")
+        self.fetch_models.reset_mock()
+        for url in ("http://192.0.2.3:8080/v1", "http://192.0.2.2:8081/v1", "https://llm.example/v1"):
+            with self.subTest(url=url):
+                self.assertIsNone(discover("other", {"baseUrl": url}))
+        self.assertIsNone(pi.local_models("", 8080, {})("llama-cpp", self.LOCAL))
+        self.fetch_models.assert_not_called()
+        pi.local_models("192.0.2.2", 8080, {})("llama-cpp", self.LOCAL)
+        self.fetch_models.assert_called_once_with("http://192.0.2.2:8080/v1/models", None)
+
+
+class FetchModels(SettingsCase):
+    """pi.fetch_models with urllib's opener faked: nothing here opens a socket."""
+
+    def run_fetch(self, answer, key=None):
+        seen = {}
+
+        class Opener:
+            def open(self, req, timeout=None):
+                seen["req"], seen["timeout"] = req, timeout
+                if isinstance(answer, Exception):
+                    raise answer
+                body = answer
+
+                class R:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *a):
+                        return False
+
+                    def read(self, n=-1):
+                        return body[:n] if n >= 0 else body
+                return R()
+
+        def build_opener(*handlers):
+            seen["handlers"] = handlers
+            return Opener()
+
+        # SettingsCase fakes pi.fetch_models; _REAL_FETCH is the function itself, taken at import.
+        with mock.patch.object(urllib.request, "build_opener", build_opener):
+            ids = _REAL_FETCH("http://192.0.2.2:8080/v1/models", key)
+        return ids, seen
+
+    def test_reads_ids_directly_with_a_short_timeout_and_the_key_in_the_header(self):
+        body = json.dumps({"object": "list", "data": [{"id": "model-a"}, {"id": "model-b"}, {"id": "model-a"},
+                                                       {"id": ""}, {"nope": 1}, "x"]}).encode()
+        ids, seen = self.run_fetch(body, key="fake-local-key-0123")
+        self.assertEqual(ids, ["model-a", "model-b"])
+        self.assertEqual(seen["timeout"], pi.DISCOVERY_TIMEOUT)
+        self.assertEqual(seen["req"].get_header("Authorization"), "Bearer fake-local-key-0123")
+        [proxy] = [h for h in seen["handlers"] if isinstance(h, urllib.request.ProxyHandler)]
+        self.assertEqual(proxy.proxies, {}, "the LAN model server is never asked through a proxy")
+        self.assertTrue([h for h in seen["handlers"] if h is pi._NoRedirect])
+
+    def test_failures_are_oserror_or_valueerror_without_the_key(self):
+        cases = ((urllib.error.URLError("refused"), OSError),
+                 (urllib.error.HTTPError("http://192.0.2.2:8080/v1/models", 401, "no", {}, None), OSError),
+                 (b"not json", ValueError), (b'{"data": {"id": "x"}}', ValueError),
+                 (b"x" * (pi.DISCOVERY_MAX_BYTES + 1), ValueError))
+        for answer, exc in cases:
+            with self.subTest(answer=str(answer)[:40]), self.assertRaises(exc) as cm:
+                self.run_fetch(answer, key="fake-local-key-0123")
+            self.assertNotIn("fake-local-key-0123", str(cm.exception))
+
+
 
 
 class Settings(SettingsCase):
@@ -94,6 +218,40 @@ class PiSession(OmpSessionBase):
         self.assertEqual(models["providers"]["openai"]["apiKey"], "${AB_KEY_OPENAI}")
         settings = json.loads(read_file(os.path.join(s.state_dir, "agent", "settings.json")))
         self.assertEqual(settings["defaultProjectTrust"], "never")
+
+    def seed_without_local_models(self):
+        with open(os.path.join(self.cfg, "omp", "models.yml"), "w") as f:
+            f.write("providers:\n  openai:\n    api: openai-completions\n")
+
+    def pi_models_json(self, s):
+        return json.loads(read_file(os.path.join(s.settings.session_run_dir(s.name), "pi-models.json")))
+
+    def test_the_local_server_is_asked_for_its_models_when_the_seed_lists_none(self):
+        self.seed_without_local_models()
+        self.fetch_models.side_effect = None
+        self.fetch_models.return_value = ["model-a"]
+        s = self.make_pi()
+        self.fetch_models.assert_called_once_with("http://192.0.2.2:8080/v1/models", None)
+        local = self.pi_models_json(s)["providers"]["llama-cpp"]
+        self.assertEqual(local["models"], [{"id": "model-a"}])
+        self.assertEqual(local["baseUrl"], "http://192.0.2.2:8080/v1")
+        self.assertFalse([w for w in self.warned if "llama-cpp" in w and "left out" in w])
+
+    def test_an_unreachable_local_server_leaves_a_note_with_the_seed_entry(self):
+        self.seed_without_local_models()
+        s = self.make_pi()             # SettingsCase's fake fetch fails, as an unreachable server does
+        self.assertNotIn("llama-cpp", self.pi_models_json(s)["providers"])
+        [note] = [w for w in self.warned if "llama-cpp" in w and "left out" in w]
+        self.assertIn(os.path.join(self.cfg, "omp", "models.yml"), note)
+        self.assertIn("models:", note)
+        self.assertNotIn(self.KEY, note)
+        agents = read_file(os.path.join(s.settings.session_run_dir(s.name), "pi-AGENTS.md"))
+        self.assertIn("configured for this session: openai.", agents, "the notes name only what Pi got")
+
+    def test_a_seed_that_lists_the_local_models_is_used_as_it_is(self):
+        s = self.make_pi()
+        self.fetch_models.assert_not_called()
+        self.assertTrue(self.pi_models_json(s)["providers"]["llama-cpp"]["models"])
 
     def test_refused_under_approvals_on(self):
         with self.assertRaises(AgentboxError) as cm:
