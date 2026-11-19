@@ -200,7 +200,7 @@ extra_domains = ["huggingface.co"] # added to the egress allowlist
 - Projects mount at their real absolute path, so agent sessions and compose relative paths line up.
 - Validator: `realpath` every grant; refuse `/`, `$HOME`, its ancestors, the system directories (`/etc`, `/var`, `/usr`, `/boot`, `/dev`, `/run`, ... -- `paths.SYSTEM`), `/tmp` and `/var/tmp` themselves (every user's scratch; a private directory below them is an ordinary grant), and the protected home paths (`~/.ssh`, `~/.gnupg`, podman storage, the deferred-execution denylist -- `paths.HOME_PROTECTED`), each compared both as written and at its `realpath`, so a protected path that is a symlink protects its target too.
 - **Grant overlap:** a read-write grant (`root` or `data_rw`) may not overlap **any** grant of another project, in either direction; `data_ro` may overlap another project's `data_ro`, which is what shared reference data is for. Checked at `ab project add`, `ab project set` and session start, so a hand-written overlap is caught where it is used.
-- Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only with an outbox otherwise. The live stack only changes through `ab deploy`.
+- Compose files: read-write when the agent owns the dev stack (the `pods` preset), read-only otherwise. The live stack only changes through `ab deploy`.
 - `.env` files are masked (a read-only empty file bound over them); masks always apply, except that `data_env` (a trusted opt-out, see Project secrets) shows the project root's env files (see Project secrets for the full mask list).
 - `hooks/`, `config` and `config.worktree` are overlaid read-only for every git directory that exists inside a read-write grant when the session starts: the root's `.git`, nested repositories anywhere in the tree, the targets of `.git` files (worktrees, submodule checkouts, `--separate-git-dir`), bare repositories, and submodule git dirs under `modules/`. A `.git` file pointing outside every grant is not mounted, so git does not work there and its hooks are out of reach. A `core.hooksPath` or `include.path`/`includeIf.*.path` in a covered config that names a path inside a read-write grant is covered read-only too (a hooks directory as a read-only bind, a file as a read-only bind), so the cover cannot be redirected to a writable path; one that names a path outside every grant, a grant's own root (it cannot be covered without covering the grant), or that cannot be read, is a `grantcheck` finding (the session refuses until it is accepted or removed) (16 Nov 2026). The configs of git directories in read-only grants are read too: they get no covers of their own (nothing there is writable), but a hooks path or include they name inside a read-write grant is covered the same way, and one there that cannot be covered (a symlink, a grant root) is a `grantcheck` finding rather than a read-only-grant warning, since the owner's git in that repo would run what the session wrote (18 Nov 2026). Folders in `mask_skip` are not searched. A repo the agent creates during a session has writable hooks and config: the end-of-session report names it (NEW GIT REPO) and never runs git in it; check its `.git/config` and hooks before you use git there.
 - Other files that run later are only documented, not overlaid: `Makefile`, package scripts, `.pre-commit-config.yaml`, editor tasks, Python build scripts, `.envrc`, a project `.venv` (its `.pth` files run on every interpreter start). They are code you choose to run; review the diff first. The end-of-session report (step 5) lists which of them changed, by content hash, ignored files included (a gitignored `.envrc`, `.venv` `.pth` files), and those changed in commits on any branch. `.envrc` is not auto-run by direnv until it is allowed again after any change, and direnv, mise and asdf are not installed on the host (30 Sep).
@@ -283,7 +283,7 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 - Commit a `.env.example` with names and dummy values; git-ignore both `.env` and `.env.dev`.
 - `.env.dev` holds low-value dev credentials (separate keys with spending limits, throwaway passwords). The agent sees them and the dev stack uses them.
 - Podman secrets do not hide values from the agent: it can exec into its own containers and read `/run/secrets/`.
-- The live stack stays opaque at the `observe` tier, since sockguard redacts container environment in `inspect` by default. The `exec` tier exposes it.
+- The live stack stays opaque at the `observe` tier, since sockguard redacts container environment in `inspect` by default.
 - Masking does not cover git history: a `.env` ever committed is visible through `git log -p`. `ab project add` refuses a project whose history (in any repo inside its grants) holds masked file names, naming them and saying to rotate them, until `--accept-history-secrets` is passed; the accepted names are stored on the project. A session refuses any such name that was not accepted (`ab project accept-history-secrets <project>` accepts the current set).
 
 **Model credentials**
@@ -297,9 +297,9 @@ A secret the agent's dev stack uses is a secret the agent can read, so the agent
 | How a piece arrives | Edit on the host |
 | --- | --- |
 | Directory bind mount (install dirs, session history) | Visible immediately |
-| Single-file bind mount (OMP's `config.yml` overlay, `mcp.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. (`ab reload` is planned; today, restart the session.) |
+| Single-file bind mount (OMP's `config.yml` overlay, `mcp.json`) | Only if rewritten in place; most editors save by write-and-rename, which the container does not see. Restart the session to pick it up. |
 | Copied at session start (Claude's `settings.json`, from the profile) | Next session |
-| Generated at session start (`models.yml`, `AGENTS.md`, squid rules) | Next session, or `ab reload <session>` |
+| Generated at session start (`models.yml`, `AGENTS.md`, squid rules) | Next session |
 | Key files | Next session (they are read at start) |
 
 ### Podman access via sockguard
@@ -310,7 +310,7 @@ One host-side gate and one sockguard per session. The sandbox gets only the gate
 | --- | --- | --- |
 | none (default) | Nothing | No socket mounted |
 | observe | container list, inspect through the Docker API (environment redacted), per-container stats, on the live compose project; logs only with the project's `observe_logs = true` (off by default: logs can hold secrets, and what the agent reads goes to its model provider). No libpod inspect (its create command holds `-e` values), no `top`, no pods (not label-scoped) | Visibility scoped by `io.podman.compose.project` label; everything else denied. Unless `compose_project` names a *different* stack, the stack's containers must come from inside the project root |
-| exec | **Not built (planned).** The code refuses it (`project.py`, `podman_access`: "exec on the live stack is not built"). Intended: observe + exec and restart in those containers | Exec command allowlist; exec exposes everything that container mounts |
+| exec | **Not offered** (removed from plans, 19 Nov). The code refuses it (`project.py`, `podman_access`: "exec on the live stack is not offered"); `observe` reads the live stack and `dev` runs a stack of the agent's own | — |
 | dev | Build images (including `RUN`), create, start, stop and remove its own `<project>-dev` stack, exec into it, read its logs | Gate + sockguard: owner label, binds inside the project root, no host ports, project network only |
 
 - Never granted: touching the live `<project>` stack beyond observe/exec (including deleting its volumes, or mounting any volume the session did not create), other projects' containers, privileged mode, host networking or namespaces, host port publishing. The dev tier may delete its own volumes.
@@ -444,7 +444,7 @@ The canonical names are `build` and `script`; **`pods` and `python` are kept as 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | For | Sensitive projects, review and careful edits | Building, fixing and testing compose stacks | The same, when it needs arbitrary websites | Scripts and data processing | Review, planning and open web research | Read and plan, never edit | Inspecting a live stack | Sensitive data, offline analysis |
 | Code (`code`) | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up | Read-write, backed up — `research` is **not** read-only; `planner` is | **Read-only** (`code = ro`): not backed up or scanned; plans go to a `data_rw` grant outside the root | Read-write, backed up | Read-write, backed up |
-| Compose files | Read-only (changes via outbox, planned) | Read-write; live stack changes only via `ab deploy` | Read-write | Read-only | Read-only | Read-only (the whole root) | Read-only | Read-only |
+| Compose files | Read-only | Read-write; live stack changes only via `ab deploy` | Read-write | Read-only | Read-only | Read-only (the whole root) | Read-only | Read-only |
 | Data grants | Read-only only | As declared (`data_ro`, `data_rw`) | As declared | As declared | As declared | As declared; a `data_rw` may not lie inside the root | Read-only only | Read-only only |
 | `.env` files | Masked | Masked | Masked | Masked | Masked | Masked | Masked | Masked |
 | Egress | `locked` | `packages` | `open` (written onto the project; see below) | `packages` | `open` (written onto the project) | `packages` | `packages` | `locked` |
@@ -492,7 +492,7 @@ A power loss or reboot ends every running session, but everything written to the
 
 | After a reboot | State |
 | --- | --- |
-| Code edits, data outputs, outbox, pre-session backups | Kept (host disk) |
+| Code edits, data outputs, pre-session backups | Kept (host disk) |
 | Agent conversation history | Kept; resumable with the agent's continue flag |
 | Project `.venv` and other files inside the project | Kept |
 | Packages installed into the container itself | Lost; the container filesystem is discarded |
@@ -505,7 +505,6 @@ A power loss or reboot ends every running session, but everything written to the
 **Bringing sessions back**
 
 - `ab session gc` removes everything carrying a dead session's owner label: containers, networks, sockets. A session whose launcher is gone but whose agent container still runs is left alone with a warning (`ab session kill` removes it); an orphaned proxy or network is removed. Sessions tear down on exit, Ctrl-C, SIGTERM and SIGHUP. The launcher runs it automatically on its first use after boot; if that sweep cannot finish (a `podman images` slower than the podman timeout on a large store), the command it rode on warns, names `ab session gc`, and goes ahead without it, and the boot still counts as done. It then sweeps storage nothing can use any more, all within one keep window (`image_keep_days`, 7 days): session-built images (the newest per tag stays), **superseded personal image layers** (`agentbox.user-layer`; the key a session would run right now is never removed however old it is, and the window is also the `podman tag` rollback window) and **unused profile snapshots** (`<data>/profiles/<agent>/<hash>`, only hash-shaped directories, and none at all while any session is alive -- a snapshot is a live session's mount source and `session.json` does not record which hash it took). Nothing is swept on an unknown state: no current key for an agent, or an unreadable podman, means that sweep removes nothing. `rmi` is never forced.
-- `ab resume <session>` (**planned, not built**) would recreate the session with the same project, preset and agent, and start the agent with its continue flag. Today, start a fresh session with `ab session start`; the agent's saved history is kept per project.
 - Power loss mid-write can leave a truncated file; ext4's journal protects the filesystem, not the file. Git plus the pre-session backup cover this.
 
 **Bringing live stacks back**
@@ -786,15 +785,6 @@ copy under `backups/`; `ab project purge <name> --yes` is the only command that 
 project directory whole — state, inbox, backups and built-image record — after printing how many unreviewed
 inbox items would be lost.
 
-**Planned / not built** (see the Planned section and progress.md's Status table)
-
-| Command | What it would do |
-| --- | --- |
-| `ab allow <name> --egress open` / `--cap …` / `--device …` | Loosen a **running** session from the CLI. Changing a project's settings is built (`ab project set`), but it applies to the next session, not the live one; `--cap`/`--device` remain not built at all |
-| `ab outbox <session>` | Proposed changes as diffs, for projects whose compose files are read-only |
-| `ab reload <session>` | Re-apply edited config files and regenerated rules to a running session |
-| `ab resume <session>` | Recreate a session lost to a reboot and continue the agent's conversation |
-
 `ab session preview` takes a **session** name, not a project.
 
 **A web helper visible on your LAN (`pods`)**
@@ -914,10 +904,9 @@ because they are design decisions rather than status:
 - **Host migration** of the real stacks (the section above): not started; the first real project is the
   user's call (progress.md, Next).
 
-The commands the usage sections name but which do not exist (`ab allow`, `ab outbox`,
-`ab reload`, `ab resume`), the podman `exec` tier, the caps/devices opt-in (not offered: `caps = "refused"` only), the key gateway, the Codex
-adapter and the `dev/data` overlay are each a Status row there, with the reason in
-`docs/TODO.md` §3.
+The caps/devices opt-in (not offered: `caps = "refused"` only), the key gateway and the Codex adapter are each
+a Status row there, with the reason in `docs/TODO.md` §3. Not planned at all (19 Nov): `ab allow` / `outbox` /
+`reload` / `resume`, podman `exec` on the live stack, and the `dev/data` → `data` overlay.
 
 ## Spike results
 

@@ -229,7 +229,7 @@ class PresetTest(unittest.TestCase):
         for value in ({"tier": "exec"}, {"tier": "none", "live": "exec"}, {"tier": "dev", "live": "exec"}):
             with self.assertRaises(AgentboxError, msg=value) as cm:
                 self.eff({"preset": "python", "podman": value})
-            self.assertIn("exec on the live stack is not built", str(cm.exception))
+            self.assertIn("exec on the live stack is not offered", str(cm.exception))
 
     def test_operate_resolves_as_observe_only_no_dev_tier(self):
         e = self.eff({"preset": "operate"})

@@ -417,7 +417,7 @@ def _podman(name, where, value, **_kw):
     if live not in (None, "observe", "exec"):
         raise AgentboxError(f"{where}: podman live must be observe, exec, or unset")
     if "exec" in (tier, live):
-        raise AgentboxError(f"{where}: exec on the live stack is not built; use observe for the "
+        raise AgentboxError(f"{where}: exec on the live stack is not offered; use observe for the "
                             "live stack, and the dev tier for a stack of the agent's own")
     return dict(value)
 

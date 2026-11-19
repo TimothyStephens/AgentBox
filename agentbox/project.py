@@ -232,7 +232,7 @@ def podman_access(project):
     podman = project.value("podman") or {}
     tier, live = podman.get("tier", "none"), podman.get("live")
     if "exec" in (tier, live):
-        raise AgentboxError(f"project {project.name}: exec on the live stack is not built; use observe for the "
+        raise AgentboxError(f"project {project.name}: exec on the live stack is not offered; use observe for the "
                             "live stack, and the dev tier for a stack of the agent's own")
     if "observe" in (tier, live):
         return project.compose_project

@@ -3633,3 +3633,13 @@ refuse `data_rw`.
 **Not verified.** Unit tests only (`tests/unit/test_trusted_optouts.py`); no podman here. Only a host run can
 show the real `.env` inside a container, a dev-tier container binding the root under `data_env`, and the
 session-start and end-of-session lines in a real terminal.
+
+## 19 Nov 2026: removed from plans: session-loosening commands, live-stack exec, the dev/data overlay (Tim)
+
+Taken out of TODO, progress and design rather than kept as deferred: `ab allow` / `outbox` / `reload` / `resume`
+(a session's posture is fixed and checked at start; settings change from the next session), the podman `exec`
+tier on the live stack (the live stack is what containment protects; `observe` reads it, `dev` runs the agent's
+own), and the `dev/data` -> `data` overlay (`.env.dev` covers dev config and `data_bind` covers trusted live data;
+a folder bound over a masked folder would be a second owner of `./data`). The code still refuses `exec`, now
+saying "not offered". Also not building yet (Tim, 19 Nov): the `data_env`/`data_bind` itest and the Codex adapter
+(`@openai/codex`, a CLI, 0.170.0 on 19 Nov) stay in TODO.

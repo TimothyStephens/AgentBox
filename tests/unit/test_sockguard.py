@@ -108,7 +108,7 @@ class Tiers(SettingsCase):
         self.project("p1", podman={"tier": "exec"})
         with self.assertRaises(AgentboxError) as cm:
             session.load_project(self.settings, "p1")
-        self.assertIn("exec on the live stack is not built", str(cm.exception))
+        self.assertIn("exec on the live stack is not offered", str(cm.exception))
 
     def test_pods_preset_gets_the_dev_tier_and_observe_on_live(self):
         s, _warnings = self.make(preset="pods")
