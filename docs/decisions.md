@@ -3817,3 +3817,56 @@ backup step said `./data` is not in the snapshot. `tests/integration/test_truste
 `sub/.env` real, `secrets/` empty, no `data/` file in the snapshot, and a control project with both off (swap applies,
 no warnings). Written from the host run; the itest itself is unverified until the next `make itest`.
 `test_trusted_optouts` 3/3 OK on the host at a684a94 (both-on and control cases as pinned).
+
+
+## 19 Nov 2026: the start's tree work reads each directory once (mounts.Tree)
+
+Measured on the host the same day: `ab project check toulmin-build` (about 22k directories, 200k+ files) under
+cProfile took 63.8 s (17.9 s for the same step in a real start, without the profiler). `grantcheck.preflight` was
+all of it: `mounts.plan` 44.8 s (`find_git_dirs` 32.8 s, most of it the first walk paying the cold dentry cache;
+`hardlink_masks` 8.8 s; `secret_mounts` 3.0 s) and `grantcheck.scan` 18.8 s (`posix.lstat` 10.0 s over 820k calls,
+`is_covered` 5.4 s: a `realpath` per directory and 3M `inside` calls). os.walk resumed 874,655 times over 88,328
+directory visits: the same tree walked about four times (`find_git_dirs`, `secret_mounts`' and `hardlink_masks'`
+`_walk`, the scan), each adding an `islink` per subdirectory (and os.walk its own), the scan a `realpath` and one or
+two lstats per directory. Narrowing the scan's per-file lstat (the earlier TODO idea) would have saved about 15% and
+dropped the foreign-owner warning, which stays (the user's decision: it catches container-written data in the grant).
+
+What changed, with no result changed:
+- `mounts.Tree` holds one `os.scandir` listing per directory, read on first request: os.walk's split of the entries
+  (`is_dir()` following links, in scandir order) plus the symlink names from d_type. `Tree.walk` is
+  `os.walk(top, topdown=True, followlinks=False, onerror=...)` over those listings: same triples, same order, same
+  in-place pruning, an unlistable directory skipped (and passed to `onerror`) the same way. `mounts.plan` makes one
+  and every walk in it uses it (`find_git_dirs` and its `modules/` walk, `_walk` for the secret, project and hard-link
+  masks and the compose covers, `hardlink_masks`' walk of cover dirs); the plan carries it (`Plan.tree`, not part of
+  the plan's value) and `grantcheck.preflight` hands it to `scan`, then drops it from the plan so a session does not
+  keep it and nothing later walks a stale snapshot. A per-directory cache rather than one up-front index: each
+  consumer keeps its own skip rules unchanged (the scan enters `.git`, covered dirs excepted, and ignores `mask_skip`;
+  the plan's walks do the reverse), nothing is read that no consumer enters (`node_modules`), and a directory two
+  consumers visit is one listing, so they cannot see different trees. Callers without a tree (`historysecrets`, tests)
+  get a fresh one.
+- Gone per directory: the repeated scandirs, every `islink` (consumers' and os.walk's), the scan's `realpath` (it
+  realpaths the grant once; a directory the walk reaches has no symlink below the grant, so when the grant is already
+  real its path is its realpath; otherwise it falls back to the old `realpath`), the scan's second lstat for a
+  foreign-owned directory, the scan's `isdir(.git)` where the listing has no `.git`, and `_is_git_dir`'s first stat
+  where the listing has no `HEAD` (`isfile(HEAD)` can only be true for a listed non-directory). Kept: the scan's one
+  lstat per file (uid, size, mode), including symlinks (a directory that can be listed but not entered must still warn
+  per file), and `hardlink_masks`' per-file lstat when a covered file has other links (it runs `os.lstat`, so its
+  fail-closed test still injects there).
+- `grantcheck.is_covered` is `any(inside(p, c) for c in covered)` answered with set lookups: `p` itself, then `p` cut
+  before each `/`, against the covers less a trailing `/` (so a `/` cover still covers everything).
+- `tests/unit/test_walk_equivalence.py` keeps the old functions verbatim (`old_` names) and asserts identical
+  results on a tree built to hit every skip rule (listed in its docstring) for `find_git_dirs`, `secret_mounts`,
+  `user_masks`, `compose_overlays`, `hardlink_masks`, eight `mounts.plan` configurations, `scan` (with the plan's tree
+  and a fresh one, with `env_ok`/`data_ok`, with every directory foreign-owned, from a grant named through a symlink or
+  with a trailing slash, odd cover lists), `preflight` with and without a plan, and identical refusals (an unreadable
+  `.git` file, a listable-but-not-enterable directory). Five deliberate mutations of the new code each fail it.
+
+Timing in an agentbox session (a slow overlay filesystem: about 90 us per lstat), plan + scan as `preflight` runs
+them, on a generated repo of 21,489 files in 1,725 directories, warm cache, median of 7 runs after one warm-up, two
+rounds: before 5.27 s / 5.33 s, after 2.72 s / 2.69 s. Syscalls per run (cProfile counts): lstat 43,896 -> 23,312,
+stat 3,193 -> 16, scandir 4,636 -> 1,723. What is left is mostly the scan's per-file lstat. Re-measure toulmin-build
+on the host (run it twice; the first pays the cold cache):
+
+    cd ~/repos/agentbox-dev/agentbox && PYTHONPATH=$PWD python3 -c "import time; from agentbox import cli; t=time.time(); rc=cli.main(['project','check','toulmin-build']); print(f'rc={rc} elapsed {time.time()-t:.1f}s')"
+
+No change to the spec's behaviour; design.md's Filesystem policy now says the plan and the scan share the listings.

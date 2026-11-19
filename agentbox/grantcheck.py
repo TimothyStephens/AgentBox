@@ -129,7 +129,7 @@ def _under_mask_skip(root, path, mask_skip):
 READABLE_REFUSED = ("unmasked secret file", "git credentials")
 
 
-def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants=(), env_ok=(), data_ok=()):
+def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants=(), env_ok=(), data_ok=(), tree=None):
     """Return (findings, warnings). Each finding is {"text": <shown>, "sig": <for the fingerprint>}; a grant
     with any finding refuses to start until acknowledged. Warnings are shown but do not block (audit 6 Oct,
     the cheap half of H1: entries the scanner can't read or that another user owns). `mask_skip` is NOT
@@ -146,7 +146,11 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
     The two trusted opt-outs (decisions.md, 19 Nov 2026): an env file (`mounts.env_file`) under a path in
     `env_ok` (the root, when `data_env` is on) is shown to the agent on purpose, so it is not an "unmasked
     secret"; live data and compose data binds under a path in `data_ok` (`<root>/data`, when `data_bind` is
-    on) are the agent's on purpose, so they are not findings. Data grants are never in either list."""
+    on) are the agent's on purpose, so they are not findings. Data grants are never in either list.
+
+    `tree` is the mount plan's `mounts.Tree` (preflight passes it), so the scan walks the listings the plan
+    read rather than reading every directory again; without one, a fresh Tree reads them here."""
+    tree = tree if tree is not None else mounts.Tree()
     covered = {os.path.realpath(c) for c in covered}
     env_ok = [os.path.realpath(e) for e in env_ok]
     data_ok = [os.path.realpath(d) for d in data_ok]
@@ -165,8 +169,21 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
     uid = os.getuid()
     limit = LIVE_DATA_MB << 20
 
+    # is_covered(p) is `any(inside(p, c) for c in covered)`, answered with set lookups instead of a pass over
+    # the cover list per call (a pass per directory and per secret-named file was 3M `inside` calls on a
+    # 22k-directory grant, 19 Nov): `inside(p, c)` is `p == c` or `p` starting with `c.rstrip("/") + "/"`,
+    # i.e. c (less a trailing "/") is p cut just before one of its "/" characters.
+    cover_prefixes = {c.rstrip("/") for c in covered}
+
     def is_covered(p):
-        return any(inside(p, c) for c in covered)
+        if p in covered:
+            return True
+        i = p.find("/")
+        while i != -1:
+            if p[:i] in cover_prefixes:
+                return True
+            i = p.find("/", i + 1)
+        return False
 
     found, ro_found, warn = {}, {}, set()
     all_grants = [os.path.realpath(g) for g in list(grants) + list(warn_grants) + list(readable_grants)]
@@ -179,25 +196,34 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
                  "dir? move it out of the grant")
 
     def walk(grant, found):
-        for dirpath, dirnames, filenames in os.walk(grant, followlinks=False, onerror=onerror):
+        # A subdirectory the walk reaches is not a symlink and has none below the grant, so its realpath is
+        # the grant's realpath plus the rest; when the grant is already real (plan's paths are), that is the
+        # path itself, and the realpath (an lstat per component) the cover test used to make is not needed.
+        real = (lambda p: p) if os.path.realpath(grant) == grant else os.path.realpath
+        for dirpath, dirnames, filenames in tree.walk(grant, onerror=onerror):
             rel = os.path.relpath(dirpath, grant)
+            links = tree.listing(dirpath)[2]
+            has_git = ".git" in dirnames             # os.path.isdir(.git) can only be true for a listed dir
             kept = []
             for d in dirnames:
+                if d in WALK_SKIP or d in links:
+                    continue
                 full = os.path.join(dirpath, d)
-                if d in WALK_SKIP or os.path.islink(full) or is_covered(os.path.realpath(full)):
+                if is_covered(real(full)):
                     continue
                 try:
-                    if os.lstat(full).st_uid != uid:
-                        warn.add(f"{full}: owned by uid {os.lstat(full).st_uid}, not you; a container's data "
-                                 "dir? move it out of the grant")
-                        continue                         # not descended: the scanner can't see inside it anyway
+                    st = os.lstat(full)
                 except OSError as e:
                     onerror(e)
                     continue
+                if st.st_uid != uid:
+                    warn.add(f"{full}: owned by uid {st.st_uid}, not you; a container's data "
+                             "dir? move it out of the grant")
+                    continue                             # not descended: the scanner can't see inside it anyway
                 kept.append(d)
             dirnames[:] = kept
             gd = os.path.join(dirpath, ".git")
-            if os.path.isdir(gd):
+            if has_git and os.path.isdir(gd):
                 for c in _git_credential_urls(gd):
                     found[f"git credentials in a remote URL: {c}"] = f"gitcred:{c}"
                 for text, sig in _git_config_escapes(gd, all_grants):
@@ -231,7 +257,7 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
                         and not data_trusted(p)):
                     found[f"live data ({st.st_size >> 20} MB): {p}"] = _sig(p, st)
             for fn in filenames:
-                if fn in mounts.COMPOSE_FILES and not os.path.islink(os.path.join(dirpath, fn)):
+                if fn in mounts.COMPOSE_FILES and fn not in links:
                     cf = os.path.join(dirpath, fn)
                     for b in _compose_data_binds(cf, grant):
                         if not is_covered(b) and not data_trusted(b):
@@ -282,12 +308,16 @@ def preflight(settings, name, entry, *, plan=None, code=None):
     # unmasked secret, a credential in a git remote) still refuses; what could only be damaged by a write
     # (live data, compose data binds, git config escapes) is reported as a warning.
     ro_root = code == "ro"
+    # The scan walks the listings the plan read (mounts.Tree): one read of each directory per start. Taken off
+    # the plan here, so a session that keeps its plan does not keep the listings, and nothing later walks a
+    # stale snapshot.
+    tree, plan.tree = plan.tree, None
     findings, warnings = scan(entry["root"], ([] if ro_root else [entry["root"]]) + list(entry.get("data_rw", [])),
                               entry.get("mask_skip", []), covered=mounts.hidden(plan),
                               warn_grants=entry.get("data_ro", []),
                               readable_grants=[entry["root"]] if ro_root else [],
                               env_ok=[entry["root"]] if data_env else [],
-                              data_ok=[mounts.data_dir(entry["root"])] if data_bind else [])
+                              data_ok=[mounts.data_dir(entry["root"])] if data_bind else [], tree=tree)
     return findings, warnings, (fingerprint(findings) if findings else "")
 
 

@@ -41,7 +41,16 @@ Nothing to write; each needs real podman, the LAN or a real key, so only the use
 
 ## 2a. Ready to build — scoped, no decision needed
 
-None.
+- **Linked worktrees' own git dirs are not recognised as git dirs.** *What:* `mounts._is_git_dir` wants HEAD,
+  config, objects/ and refs/; a linked worktree's dir (`<repo>/.git/worktrees/<name>`, the target of the
+  checkout's `.git` file) has HEAD, commondir and gitdir but no objects/refs, so `find_git_dirs` skips it and its
+  `config.worktree` is not covered read-only (found while making the walk shared, 19 Nov; not changed then, as that
+  change had to keep behaviour). *Why it matters, and how much:* git reads `config.worktree` only when the main
+  config enables `extensions.worktreeConfig`, and the main config is covered; so only a repo whose owner already
+  enabled it is exposed (a `core.hooksPath` planted there runs on the owner's next git command in that worktree).
+  *Done:* a worktree git dir (HEAD + commondir) is recognised, its `config.worktree` covered; the common dir is
+  still followed. *Start:* `mounts._is_git_dir`, `find_git_dirs.add`, `git_overlays`. *Gate:* a unit test with a
+  real `git worktree add` and `extensions.worktreeConfig=true`, failing first.
 
 ---
 
@@ -95,10 +104,13 @@ three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (
 - **Session start time.** Profiled 16-17 Nov (decisions.md). What remains is podman's own: about one start in
   four has one sidecar `run -d` taking 1.7-3.2 s (one omp-live start on 18 Nov took 17 s, with 4 sessions
   running and the pool at 3.5 GB; the next start in the same run took 3.1 s) (journald was the bigger spread, gone since the k8s-file
-  switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches); left is
-  grantcheck's per-file lstat (11.6 s on 98k files inside a session, likely well under 1 s on the host warm).
-  **Decided 19 Nov:** time a large-project start on the host first, and limit the lstat to files whose name or
-  suffix matters only if it costs more than about 2 s there (the foreign-owner warning is a mistake-catcher). `tests/perf/run.sh` re-measures.
+  switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches). **Measured 19
+  Nov** on the host: the grant step of a toulmin-build start took 17.9 s, and the cost was not the scan's per-file
+  lstat (narrowing it would have saved about 15%) but the same tree walked four times with redundant per-directory
+  syscalls. **Done 19 Nov:** the plan and the scan share one listing per directory (`mounts.Tree`); about half the
+  time on a generated 21k-file tree in a session. The per-file lstat stays (the foreign-owner warning is a
+  mistake-catcher, user's decision). Re-measure toulmin-build with the command in decisions.md (19 Nov); act again
+  only if the grant step is still over a few seconds there. `tests/perf/run.sh` re-measures the rest.
 - **A pod start inspects the pod four times** (`require_dev`, `start_targets`, `check_start`'s infra lookup,
   `decide`'s second `require_dev`), and the gate serves requests on threads, so the pod can change in between.
   Not a known bug: each inspect is checked on its own. Reading it once would make the checks agree on one
@@ -132,6 +144,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | The start's tree work reads each directory once: `mounts.plan`'s walks and `grantcheck.scan` share one `mounts.Tree`, and `is_covered` is a set lookup; results pinned identical to the old code by `test_walk_equivalence`. Host re-measure of toulmin-build pending |
 | 19 Nov | `data_env` / `data_bind` verified by hand on the host and pinned by an itest, `test_trusted_optouts` (written from that run; 3/3 on the host) |
 | 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is numbered the same way (`[n/3]`). |
 | 19 Nov | A session being torn down says so: `stopping.json` in its run dir (step, since when); `ab session ls` shows `stopping since HH:MM: <step>, N min`, attach, the lock refusal and registry edits say "is shutting down"; `ab session kill` ends a stuck teardown. Teardown frees the project once nothing of the session runs (before the scan and the Toulmin end), prints last through a writer thread, bounds the post-release work, and `tm` runs in its own process group (the toulmin-build stall of 18 Nov) |
