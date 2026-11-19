@@ -3484,3 +3484,7 @@ step 1 passed (AB_OK in 11 s, one TLS tunnel), and step 2 failed correctly but f
 answered `AB_BASH_OK` straight from the prompt without calling bash, and the old check counted the prompt's own
 echo in the events as "output". Step 2 now asks Pi to `cat` a file holding a random token and passes only when a
 bash `tool_execution_end` (field names checked in Pi 1.5.2's dist) carries it.
+Rerun at 2283257 with the same model: PASS on every line. AB_OK in 13 s; Pi called bash (`cat ab-bash-token.txt`)
+and its result carried the token; three TLS tunnels, all to openrouter.ai; nothing reached npm, pi.dev or GitHub; no
+key in any log, state file or output; sessions torn down. Still unconfirmed live: Toulmin through Pi's MCP, a real
+`ab profile install pi`, and the local model server (busy at the time).
