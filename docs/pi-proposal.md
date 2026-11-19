@@ -1,6 +1,6 @@
 # Pi adapter: research and decisions (18 Nov 2026)
 
-Status: **decided** (Tim, 18 Nov); core built, packages next. Folded into design.md ("Adapters") and deleted once
+Status: **decided** (Tim, 18 Nov); core and packages built. Folded into design.md ("Adapters") and deleted once
 fully built, as docs/deploy-proposal.md was. Pi = `@earendil-works/pi-coding-agent` (CLI `pi`), researched at
 **1.5.2** from its published package (docs and dist read as text, nothing run). The first research targeted
 `@mariozechner/pi-coding-agent@0.73.1`, which turned out to be deprecated; every row below was re-checked at 1.5.2.
@@ -51,14 +51,22 @@ through `ab keys`, Toulmin through MCP, the same CLI and sweeps.
 `defaultProjectTrust = never` and `enableInstallTelemetry = false` forced); the repo's `.pi` covered; PI_OFFLINE=1,
 PI_TELEMETRY=0; profile skills and prompts read-only; Toulmin via `mcp_server`.
 
-## Next (step 2): packages
+## Built (step 2): packages
 
-`ab profile install pi` builds the profile's declared Pi packages into a tree agentbox owns (npm packages under a
-prefix, git packages checked out), mounted read-only; the generated settings.json names them by local path, which
-Pi loads in place and never modifies.
+`ab profile install pi` reads `~/.config/agentbox/pi/profile/plugins.toml` (`[[npm]]` name + exact version,
+`[[repo]]` https url + 40-character sha + optional `extension_dir`; no marketplaces) and builds
+`~/.config/agentbox/pi/plugins` in OMP's one-container install: `npm install --prefix <tree>/npm --no-audit --no-fund
+--ignore-scripts --legacy-peer-deps <name>@<version>` (Pi's own npm flags plus `--ignore-scripts`), git packages cloned
+to `<tree>/git/<name>`, checked out and verified at the sha, with `npm install --omit=dev` (same flags) when they have
+a package.json. Driven directly, not through `pi install`, which writes settings.json, needs PI_OFFLINE off and runs
+install scripts. A session mounts the tree read-only at `~/.pi/packages` and lists each package's local path in the
+generated settings.json (`npm/node_modules/<name>`, `git/<name>[/<extension_dir>]`); staleness and missing-tree notes
+as OMP's.
 
 ## Only a live run can confirm
 
 Read-only binds of auth.json/models.json/mcp.json with Pi's lock files; `${AB_KEY_X}` keys authenticating; the bash
 event in `--mode json`; all provider traffic (incl. OpenAI's websocket transport) through squid; nothing reaching
-pi.dev or a package registry; a Toulmin server with direct exposure appearing as tools.
+pi.dev or a package registry; a Toulmin server with direct exposure appearing as tools. For packages: `ab profile install
+pi` with real podman (npm and git through the install proxy, the `~/.pi` tmpfs as mount parent), and Pi loading
+the listed local paths from a read-only mount without warnings or writes.

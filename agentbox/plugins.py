@@ -77,7 +77,10 @@ SECTIONS = ("plugin", "npm", "repo")
 # Code has one: a marketplace catalog, loaded from a directory a session can see (the probe of 9 Nov,
 # decisions.md). An `[[npm]]` or `[[repo]]` entry in a Claude profile is a declaration nothing could honour,
 # so it is refused by name rather than installed as nothing.
-AGENT_SECTIONS = {"omp": SECTIONS, "claude": ("plugin",)}
+# Pi (18 Nov) takes an npm package or a git checkout, the two shapes OMP already has: Pi installs both kinds
+# itself from `npm:` and `git:` sources, and loads a local directory in place. It has no marketplaces. For Pi,
+# a `[[repo]]`'s `extension_dir` is the Pi package's directory inside the repo (`.` when the repo is one).
+AGENT_SECTIONS = {"omp": SECTIONS, "claude": ("plugin",), "pi": ("npm", "repo")}
 # A `[[repo]]` entry is cloned to `<tree>/.agentbox/sources/<name>`, and a `[[plugin]]` entry's catalog to
 # `<tree>/.agentbox/sources/<marketplace>`: one directory of names, shared by the two kinds, which is what
 # `_check_unique` checks across them. (npm entries land in `node_modules/` at the tree root, nowhere near

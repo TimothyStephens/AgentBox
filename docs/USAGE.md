@@ -1378,7 +1378,8 @@ usage: ab profile install [-h] [--dry-run] [--resolve] {claude,omp,pi}
 install the plugins the profile declares, in a sandbox, into a tree sessions mount read-only
 
 positional arguments:
-  {claude,omp,pi}  whose plugins.toml to install
+  {claude,omp,pi}  whose plugins.toml to install (for pi: Pi packages, npm and
+                   git)
 
 options:
   -h, --help       show this help message and exit
@@ -1393,6 +1394,7 @@ options:
 examples:
   ab profile install omp
   ab profile install claude
+  ab profile install pi
   ab profile install omp --dry-run
   ab profile install omp --resolve
 ```

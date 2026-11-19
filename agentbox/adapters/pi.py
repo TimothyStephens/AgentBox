@@ -17,7 +17,12 @@ profile, the inbox, keys only through `ab keys`, Toulmin through MCP -- with Pi'
   * **copied in fresh at each start:** `agent/settings.json`, from `~/.config/agentbox/pi/settings.json` when
     there is one, else `{}`, with the code-running keys refused and project trust and install telemetry forced
     off. Pi writes it in place, so it cannot be a read-only mount;
-  * **the host-owned profile:** skills at `agent/skills`, prompt templates at `agent/prompts`, read-only.
+  * **the host-owned profile:** skills at `agent/skills`, prompt templates at `agent/prompts`, read-only;
+  * **Pi packages** (step 2): the tree `ab profile install pi` builds from the Pi profile's `plugins.toml`
+    (installer.py), mounted read-only at `~/.pi/packages`; the generated settings.json lists each declared
+    package the tree holds by its path there (`packages`), which Pi loads in place and never modifies. The
+    tree's lockfile names the image it was built against, and the session says so when that or the
+    declaration has changed since (`package_setup`).
 
 Every session runs `pi --no-approve` (the repo's `.pi`, its packages and `.agents/skills` are never trusted),
 with PI_OFFLINE=1 (no package auto-install, update check, tool download) and PI_TELEMETRY=0. Pi has no tool
@@ -50,6 +55,8 @@ CODE_SETTINGS = ("packages", "extensions", "shellPath", "shellCommandPrefix", "n
 FORCED_SETTINGS = {"defaultProjectTrust": "never", "enableInstallTelemetry": False}
 REPO_CODE = (".pi",)                                   # a second layer behind --no-approve
 SETTINGS_SEED = "settings.json"
+# The installed package tree (installer.C_PI_TREE, the same path: the installer mounts it here too).
+TREE_DST = os.path.join(C_PI, "packages")
 MODELS_SEED = ("omp", "models.yml")                    # P4: the OMP seed, shared
 # Pi's ids for agentbox's provider names (OMP's seed spells Gemini `gemini`), and the providers Pi has built in:
 # those may appear with only a key (their models are Pi's own); any other provider needs a baseUrl and models.
@@ -97,6 +104,51 @@ def pi_models(doc, warn):
             continue
         providers[pid] = conf
     return {"providers": providers}
+
+
+def package_setup(settings, warn, image_labels, packages=True):
+    """([(host src, container dst)], [package paths]) for the installed Pi package tree. ([], []) when there is
+    nothing to load, which is a normal state and not an error.
+
+    Both come from the same declaration, read fresh, as Claude's plugins do: the tree is mounted whole, and a
+    package is listed only when the profile declares it AND the tree holds it. One the tree lacks is named with
+    the command that fixes it and left out (Pi would warn about a missing path inside the sandbox, to nobody).
+
+    `packages=False` (`ab session start --no-profile`, or `profile = "off"`) returns nothing and reads nothing."""
+    from .. import installer, plugins as plugindecl   # local: installer imports session, which imports this package
+    if not packages:
+        return [], []
+    try:
+        declared = plugindecl.load(os.path.join(settings.profile_src("pi"), "plugins.toml"),
+                                   plugindecl.sections_for("pi"))
+    except AgentboxError as e:
+        warn(f"agentbox: {e}; no Pi packages are loaded this session")   # a broken file must not stop a session
+        return [], []
+    if not declared:
+        return [], []
+    tree = installer.tree_dir(settings, "pi")
+    if os.path.islink(tree):
+        raise AgentboxError(f"{tree} is a symlink; refusing to mount it")
+    if not os.path.isdir(tree):
+        warn(f"agentbox: no Pi packages installed ({tree} does not exist); Pi runs without "
+             f"{', '.join(e.label for e in declared)}. `ab profile install pi` installs what the profile's "
+             "plugins.toml declares")
+        return [], []
+    for line in installer.staleness(settings, "pi", image_labels, declared=declared):
+        warn(f"agentbox: {line}")
+    paths, missing = [], []
+    for e in declared:
+        host = installer.pi_package_path(e, tree=tree)
+        if os.path.islink(host) or not os.path.isdir(host):
+            missing.append(e.label)
+            continue
+        paths.append(installer.pi_package_path(e, tree=TREE_DST))
+    if missing:
+        warn(f"agentbox: the installed tree has no {', '.join(missing)}; not loaded this session. "
+             "`ab profile install pi` rebuilds the tree from plugins.toml")
+    if not paths:
+        return [], []
+    return [(tree, TREE_DST)], paths
 
 
 def _move_loaded_files(agent_dir, inbox, warn):
@@ -150,11 +202,16 @@ class PiAdapter(Adapter):
         doc, domains, used = build_models(seed, keys=keysmod.present(s), model_host=s.model_host,
                                           model_port=s.model_port, warn=sess.warn, label="Pi")
         settings = settings_doc(s.seed_dir(self.name))
+        pkg_mounts, pkg_paths = package_setup(s, sess.warn, sess.image_labels(), packages=not sess.profile_off[0])
+        if pkg_paths:
+            # Added after settings_doc, which refuses `packages` in the user's seed: this list is agentbox's,
+            # made from plugins.toml and the tree, and holds local paths only (nothing Pi would fetch).
+            settings["packages"] = pkg_paths
 
         run_dir = s.session_run_dir(sess.name)
         gen = {}
         for fn, text in (("models.json", json.dumps(pi_models(doc, sess.warn), indent=1)),
-                         ("AGENTS.md", sandbox_notes + _pi_notes(doc)), ("auth.json", "{}\n"),
+                         ("AGENTS.md", sandbox_notes + _pi_notes(doc, pkg_paths)), ("auth.json", "{}\n"),
                          ("mcp.json", json.dumps({"mcpServers": {}}) + "\n")):
             path = os.path.join(run_dir, f"pi-{fn}")
             write_private(path, text)
@@ -167,6 +224,7 @@ class PiAdapter(Adapter):
         setup = SessionSetup(mount_root=C_PI, tmpfs=[C_PI], model_domains=domains, keys=used)
         setup.env.update({"PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PIP_CACHE_DIR": "/tmp/pip-cache"})
         setup.mounts.append((agent_dir, C_AGENT, False))
+        setup.mounts += [(src, dst, True) for src, dst in pkg_mounts]
         for rel in CODE_DIRS:
             setup.ro_empty_dirs.append(os.path.join(C_PI, rel))
         for fn, path in gen.items():
@@ -178,8 +236,13 @@ class PiAdapter(Adapter):
         return setup
 
 
-def _pi_notes(doc):
+def _pi_notes(doc, packages=()):
     names = ", ".join(sorted(doc.get("providers", {}))) or "none"
+    pkgs = ""
+    if packages:
+        pkgs = (f"- Pi packages loaded this session: {', '.join(packages)}. They live in `{TREE_DST}`, read-only, "
+                "installed on the host by `ab profile install pi` from the profile's plugins.toml (with npm install "
+                "scripts never run); nothing in a session can add or change one.\n")
     return ("\n## Pi in this sandbox\n\n"
             f"- Model providers configured for this session: {names}. Other providers have no key here; keys go "
             "through `ab keys` on the host, and `/login` cannot store one (`~/.pi/agent/auth.json` is read-only).\n"
@@ -190,7 +253,7 @@ def _pi_notes(doc):
             "- Pi runs offline (`PI_OFFLINE=1`) and does not trust this repository (`--no-approve`): it installs no "
             "packages, checks no updates, and loads nothing from the repository's `.pi` directory. Its extension, "
             "package and bin directories are read-only and empty.\n"
-            "- Pi has no permission prompts: every tool call runs. There is no browser tool.\n")
+            "- Pi has no permission prompts: every tool call runs. There is no browser tool.\n" + pkgs)
 
 
 ADAPTER = PiAdapter(

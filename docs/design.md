@@ -583,7 +583,7 @@ The OMP adapter needs nothing beyond the fixed hardening; its work is the `~/.om
 | Settings | `~/.config/agentbox/pi/settings.json` if Tim creates it, copied in fresh each start (Pi writes it in place); code-running keys refused; project trust and install telemetry forced off |
 | Profile | Skills at `agent/skills`, prompt templates at `agent/prompts`, read-only; the inbox at `agent/inbox` |
 | Approval prompts | None in Pi: refused under a preset with approvals on (P1) |
-| Plugins | Pi packages through `ab profile install pi`: step 2, not built yet |
+| Plugins | Pi packages (built 18 Nov 2026, step 2): the Pi profile's `plugins.toml` declares `[[npm]]` (exact version) and `[[repo]]` (https URL, 40-character sha, optional `extension_dir`) entries, validated as OMP's are, no marketplaces. `ab profile install pi` builds `~/.config/agentbox/pi/plugins/` in the same one hardened container as OMP's install (packages egress, the install proxy, no model host), with the Pi image's npm and git driven directly rather than `pi install`: npm packages into a prefix at `npm/` (`--ignore-scripts --legacy-peer-deps`: **no package install script ever runs**, so a package that needs one to build does not work here), git packages cloned to `git/<name>`, checked out at the sha, verified, and given their runtime dependencies (`npm install --omit=dev --ignore-scripts`) when they have a package.json; the installed npm version is checked against the declared one. A session mounts the tree read-only at `~/.pi/packages` and the generated settings.json lists each declared package the tree holds by its local path there (`packages`), which Pi loads in place and never modifies (`adapters/pi.package_setup`); the user's settings seed still cannot set `packages`. A missing tree or package is one note naming `ab profile install pi`; a tree built against another Pi or node major, or an edited plugins.toml, is said at start. `--no-profile` and `profile = "off"` load none |
 
 **Claude Code**
 
@@ -631,7 +631,7 @@ Build against a dummy compose project (two nginx containers) first; real stacks 
 5. **Host-side gate and dev tier:** network pinning, build network, port rejection, proxy injection. Gate: the gate and build cases pass on a dummy two-container compose project.
 6. **`ab session preview` and `ab deploy`.**
 7. **Workspace UI:** tmux layout on top of the launcher.
-8. **Pi adapter:** proves swapping harnesses works. Built 18 Nov 2026 (core; packages next).
+8. **Pi adapter:** proves swapping harnesses works. Built 18 Nov 2026 (core, and Pi packages through `ab profile install pi`).
 9. **Host migration**, one stack per snapshot.
 
 ## Usage

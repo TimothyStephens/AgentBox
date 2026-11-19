@@ -152,7 +152,7 @@ class TheScript(unittest.TestCase):
 
     def test_an_unknown_agent_has_no_installer(self):
         with self.assertRaises(AgentboxError):
-            installer.script_for("pi", [])
+            installer.script_for("someone-else", [])
 
 
 class TheContainer(SettingsCase):

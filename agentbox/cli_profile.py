@@ -195,7 +195,7 @@ def cmd_profile_install(s, a):
     print(f"installed into {tree}")
     print(f"  against {doc['image']['ref']} ({doc['image'].get('cli_version') or 'version unknown'}, "
           f"node {doc['image'].get('node_major') or '?'})")
-    for kind in ("npm", "marketplace"):
+    for kind in ("npm", "marketplace", "repo"):
         for item in doc["state"].get(kind, []) or []:
             detail = item.get("version") or (item.get("commit") or "")[:12]
             if item.get("plugins"):
@@ -269,9 +269,10 @@ def add_verbs(prof_p, add, ex):
     x.set_defaults(fn=cmd_profile_promote)
     x = add(prof_p, "install", "install the plugins the profile declares, in a sandbox, into a tree "
                                "sessions mount read-only",
-            ex("ab profile install omp", "ab profile install claude", "ab profile install omp --dry-run",
-               "ab profile install omp --resolve"))
-    x.add_argument("agent", choices=adapters.NAMES, help="whose plugins.toml to install")
+            ex("ab profile install omp", "ab profile install claude", "ab profile install pi",
+               "ab profile install omp --dry-run", "ab profile install omp --resolve"))
+    x.add_argument("agent", choices=adapters.NAMES,
+                   help="whose plugins.toml to install (for pi: Pi packages, npm and git)")
     x.add_argument("--dry-run", action="store_true",
                    help="print what would be installed and the script that would run; change nothing")
     x.add_argument("--resolve", action="store_true",
