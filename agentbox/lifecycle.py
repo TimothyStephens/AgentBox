@@ -3,8 +3,10 @@ end-of-session scan, removal; and gc's sweeps of what nothing can use any more. 
 (item 54); session re-exports it."""
 import json
 import os
+import queue
 import re
 import shutil
+import threading
 import time
 
 from . import adapters, buildcap, builtrec, profile, projectlock, scan, sockguard, toulmin, userimage
@@ -224,7 +226,69 @@ class _Marker:
             pass                     # the marker informs; it must never stop the teardown
 
 
+OUTPUT_DRAIN = 10.0      # seconds teardown waits, at its very end, for its queued lines to reach the terminal
+
+
+class _Outbox:
+    """Teardown's output, written by a thread of its own, in order.
+
+    A write to a terminal blocks when the terminal stops reading -- output paused (XOFF), or an SSH session
+    whose client went to sleep with the connection still open -- and teardown runs with SIGINT, SIGTERM and
+    SIGHUP ignored, so nothing would get it going again. That is the likeliest reading of the 18 Nov stall:
+    the launcher went quiet right after writing its scan report, in the stretch whose next act was printing
+    the scan summary. So teardown only queues lines; the bookkeeping never waits on the terminal, and the
+    one wait it does -- `drain`, after everything else -- is bounded."""
+
+    def __init__(self, out):
+        self.out = out
+        self.q = queue.Queue()
+        self.thread = None
+
+    def __call__(self, line):
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._run, name="ab-teardown-output", daemon=True)
+            self.thread.start()
+        self.q.put(line)
+
+    def _run(self):
+        while True:
+            line = self.q.get()
+            try:
+                if line is None:
+                    return
+                self.out(line)
+            except Exception:
+                pass                     # a line that cannot be written is not worth a traceback here
+            finally:
+                self.q.task_done()
+
+    def drain(self, timeout=None):
+        """Wait up to `timeout` for every queued line to be written; True when they were."""
+        if self.thread is None:
+            return True
+        self.q.put(None)
+        deadline = time.monotonic() + (OUTPUT_DRAIN if timeout is None else timeout)
+        with self.q.all_tasks_done:
+            while self.q.unfinished_tasks:
+                left = deadline - time.monotonic()
+                if left <= 0 or not self.q.all_tasks_done.wait(left):
+                    return not self.q.unfinished_tasks
+        return True
+
+
 def teardown(settings, podman, session, warn=None, exit_reason="error"):
+    """Remove everything of a session (`_teardown` says what, in which order); its output goes through a
+    thread of its own (`_Outbox`), and the scan's summary comes last, after all the bookkeeping."""
+    out = _Outbox(warn or stderr_line)
+    try:
+        later = _teardown(settings, podman, session, out, exit_reason)
+        for line in later:
+            out(line)
+    finally:
+        out.drain()
+
+
+def _teardown(settings, podman, session, warn, exit_reason):
     """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all
     come here, so each keeps the logs and runs the end-of-session scan. `exit_reason` is what the Toulmin end
     message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS).
@@ -236,8 +300,10 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
          the scan, the Toulmin MCP entry in the project's agent state;
       3. mark the session released and free the project lock: a new session of the project may start now;
       4. what only concerns this session: `tm session end`, the grant scan (the long part), its run dir.
+    Returns the lines of the scan (its summary, the inbox count, its own warnings), for the caller to show
+    after all of that: output is the one thing here that can block (19 Nov 2026).
     """
-    warn = warn or stderr_line
+    later = []
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)
     mark = _Marker(settings, session)
@@ -265,8 +331,8 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
         shutil.rmtree(service_tmp(settings, session), ignore_errors=True)
         meta = _session_meta(settings, session)
         mark.step("reporting the inbox and the agent state")
-        doc = _scan_doc(settings, session, warn)
-        state = _scan_shared(settings, doc, session, warn) if doc is not None else None
+        doc = _scan_doc(settings, session, later.append)
+        state = _scan_shared(settings, doc, session, later.append) if doc is not None else None
         _mcp_remove(settings, meta, warn)
         # Whatever ended this session -- its own exit, an exception, a signal, `ab session kill`, `gc` -- the
         # project's slot is free again, as soon as nothing of the session runs. Silently: a lock that works is
@@ -278,9 +344,8 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
         if doc is not None:
             mark.step("running the end-of-session scan")
             with Step("running the end-of-session scan", warn):
-                for line in _scan_grants(settings, session, started, doc, state, warn,
-                                         note=lambda: _started_meanwhile(settings, meta, session, released_at)) or []:
-                    warn(line)
+                later += _scan_grants(settings, session, started, doc, state, later.append,
+                                      note=lambda: _started_meanwhile(settings, meta, session, released_at)) or []
         shutil.rmtree(ephemeral_state(settings, session), ignore_errors=True)   # a lockdown session's state
         # Last: while the run dir exists its session number is taken (Session.reserve_name), so a new session
         # of the project cannot be given this one's name while this teardown still runs.
@@ -292,6 +357,7 @@ def teardown(settings, podman, session, warn=None, exit_reason="error"):
                 except IsADirectoryError:
                     shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
             os.rmdir(run_dir)
+    return later
 
 
 def _remove(settings, podman, session, sel, warn):

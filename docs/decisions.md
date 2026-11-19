@@ -3704,3 +3704,17 @@ and free the lock; (4) `tm session end`, the grant scan, the run dir.
 
 `project_is_live` (the guard on registry edits) is unchanged and still counts the launcher's pid: an edit waits
 for the teardown to finish. Tests: `tests/unit/test_teardown.py` `TheProjectIsFreeBeforeTheScan`.
+
+## 19 Nov 2026: teardown's output comes last, through a thread of its own
+
+The 18 Nov launcher went quiet right after writing its scan report (12:36:53), in the stretch whose next act was
+writing the scan summary to the terminal, with SIGINT/SIGTERM/SIGHUP ignored by the shielded teardown. A terminal
+write blocks for as long as the terminal does not read: output paused (XOFF), or an SSH session whose client went to
+sleep with the connection still up -- the session then ended "minutes" after the user came back the next morning,
+with no reap message, which fits a write that finally went through. This is the likeliest reading; it cannot be
+proven from the logs. Two changes: (1) the scan's lines (its summary, the inbox count, its warnings) are collected
+and shown only after the lock release, `tm session end` and the run dir's removal; the summary is in the kept scan
+log as before. (2) Every teardown line -- the progress steps included -- is queued to a daemon writer thread
+(`lifecycle._Outbox`), so the bookkeeping never waits on the terminal; teardown's one wait for it is at the very end,
+bounded by `OUTPUT_DRAIN` (10 s). A launcher whose terminal stays blocked may still sit in its exit, but by then
+nothing of the session is held. Tests: `tests/unit/test_teardown.py` `BookkeepingBeforeOutput`.

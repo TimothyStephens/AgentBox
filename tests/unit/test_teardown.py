@@ -133,3 +133,55 @@ class TheProjectIsFreeBeforeTheScan(TeardownCase):
         self.assertEqual([k for k, _ in seen], ["mcp", "end"])
         self.assertIsNotNone(seen[0][1], "the MCP entry was removed after the lock was free")
         self.assertIsNone(seen[1][1], "`tm session end` ran before the lock was free")
+
+
+class BookkeepingBeforeOutput(TeardownCase):
+    """The launcher went quiet right after writing its scan report, in the stretch whose next act was writing
+    the scan summary to the terminal -- with every signal ignored. A terminal that stops reading (output
+    paused, an SSH client asleep) blocks that write for as long as it stays that way."""
+
+    def test_the_scan_summary_comes_after_the_release_the_toulmin_end_and_the_run_dir(self):
+        run = self.old_session()
+        events = []
+        real_end = lifecycle._toulmin_end
+
+        def warn(msg):
+            events.append(("warn", msg, projectlock.read(self.settings, "p1") is None, os.path.isdir(run),
+                           "end" in [e[0] for e in events]))
+
+        def end(*a):
+            events.append(("end",))
+            return real_end(*a)
+        with mock.patch.object(lifecycle.scan, "report", lambda *a, **k: (["Makefile changed"], "the report")), \
+                mock.patch.object(lifecycle, "_toulmin_end", end), \
+                mock.patch.object(lifecycle, "_inbox_report", lambda s, d, sess, w: w("agentbox: 1 new item(s)")):
+            lifecycle.teardown(self.settings, self.podman, SID, warn=warn)
+        said = [e for e in events if e[0] == "warn"]
+        summary = [e for e in said if "end-of-session scan (review" in e[1]]
+        inbox = [e for e in said if "new item" in e[1]]
+        self.assertEqual(len(summary), 1, events)
+        self.assertEqual(len(inbox), 1, events)
+        for e in summary + inbox:
+            _w, msg, lock_free, run_dir_there, ended = e
+            self.assertTrue(lock_free, f"printed before the lock was released: {msg}")
+            self.assertTrue(ended, f"printed before `tm session end`: {msg}")
+            self.assertFalse(run_dir_there, f"printed before the run dir was removed: {msg}")
+        self.assertIn("full report:", summary[0][1], "and the summary still names the kept report")
+
+    def test_a_terminal_that_stops_reading_does_not_hold_the_teardown(self):
+        run = self.old_session()
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+
+        def warn(_msg):
+            stuck.wait(30)                       # the first write blocks, as on a paused terminal
+        with mock.patch.object(lifecycle.scan, "report", lambda *a, **k: (["x"], "the report")), \
+                mock.patch.object(lifecycle, "OUTPUT_DRAIN", 0.5, create=True), \
+                mock.patch("agentbox.progress.DELAY", 0.0):       # so every step writes a line at once
+            t, box = self.in_thread(lambda: lifecycle.teardown(self.settings, self.podman, SID, warn=warn))
+            t.join(15)
+        self.assertFalse(t.is_alive(), "teardown waited on the terminal")
+        self.assertNotIn("error", box)
+        self.assertIsNone(projectlock.read(self.settings, "p1"))
+        self.assertFalse(os.path.isdir(run))
+
