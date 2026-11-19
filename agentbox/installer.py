@@ -404,6 +404,22 @@ class Install:
         return egress.squid_conf("packages", model_domains=[], model_host="", model_port=s.model_port,
                                  host_addrs=addrs, dns=dns)
 
+    PROXY_WAIT = 30         # seconds an install waits for its proxy's name to resolve inside the container
+
+    def proxy_wait(self):
+        """The lines every install script starts with: wait until the proxy's name resolves in the container, and
+        fail with what the container saw when it never does. `ab profile install omp` failed 4 of 4 with
+        `Could not resolve proxy` on its first clone (19 Nov) while the same proxy answered `--resolve`; this
+        either rides out a late name or reports the resolver state instead of a bare curl error."""
+        p = shlex.quote(self.proxy_name)
+        n = int(self.PROXY_WAIT)
+        return (f"i=0; while ! getent hosts {p} >/dev/null 2>&1; do i=$((i+1)); "
+                f"if [ $i -ge {n} ]; then echo \"agentbox: the install proxy {self.proxy_name} does not resolve in "
+                f"the install container after {n}s; resolv.conf: $(tr '\\n' ' ' </etc/resolv.conf 2>/dev/null); "
+                f"hosts: $(tr '\\n' ' ' </etc/hosts 2>/dev/null)\" >&2; exit 97; fi; sleep 1; done; "
+                f"if [ $i -gt 0 ]; then echo \"agentbox: the install proxy {self.proxy_name} resolved after ${{i}}s\" "
+                f">&2; fi; echo \"agentbox: install proxy: $(getent hosts {p} | head -1); HTTPS_PROXY=$HTTPS_PROXY\" >&2\n")
+
     def container_args(self, script, *, mount_tree=True):
         """`mount_tree=False` is `--resolve`: it only reads the network and writes nothing, so nothing of the
         host is mounted at all."""
@@ -441,7 +457,7 @@ class Install:
         opts.append("--entrypoint=/bin/sh")
         hardening.audit(opts + [self.adapter.image], allowed_mount_srcs=srcs,
                         allowed_mount_dsts=dsts, networks=[self.int_net], tmpfs_dirs=tuple(tmpfs_dirs))
-        return args + opts + [self.adapter.image, "-c", script]
+        return args + opts + [self.adapter.image, "-c", self.proxy_wait() + script]
 
     def start_infra(self):
         pm, s = self.podman, self.settings

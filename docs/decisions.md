@@ -3979,3 +3979,14 @@ Host build on 19 Nov with `image_playwright = true`: base and all three agent im
 = 1.65.2 on agentbox-claude, and `tests.integration.test_playwright` 2/2: headless Chromium 159.0.8154.6
 (`HeadlessChrome/159.0.8154.6`) loaded a page served by `python3 -m http.server` inside a session and read its
 title, and the selftest line is PASS. Python 3.11.2 answers as `python` in the Claude image.
+
+## 19 Nov 2026: install scripts wait for their proxy's name, and say what they saw
+
+`ab profile install omp` failed 4 of 4 on 19 Nov with `Could not resolve proxy: ab-install-omp-proxy` on its first
+git clone, while the Claude and Pi installs (same network and proxy code) succeeded, the OMP image resolved a
+container name like the others in a bare test, and `ab profile install omp --resolve` reached GitHub through the
+same proxy. The two runs differ only in the tree mount and the working directory, neither of which touches
+name resolution; no cause was found by reading. Every install script (and `--resolve`) now starts with
+`Install.proxy_wait`: up to 30 s for `getent hosts <proxy>`, then exit 97 with resolv.conf and /etc/hosts; it also
+prints the proxy's address and `HTTPS_PROXY`, which the failure output carries. Either a late name is ridden out
+(and said), or the next failure says what the container saw. `tests/unit/test_install_proxy_wait.py`.
