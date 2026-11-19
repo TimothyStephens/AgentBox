@@ -3579,3 +3579,57 @@ sentinel keeps its bytes and mtime and no probe write arrives. The file-mask EBU
 directory-mask chmod/rename values are the kernel's answers for a read-only mount point, not measured in the spec.
 Written in a sandbox without podman: py_compile passes and the module skips cleanly; **unverified until the host
 runs it** (`python3 -m unittest tests.integration.test_mask_errno -v`).
+
+## 19 Nov 2026: the trusted opt-outs, `data_env` and `data_bind` (Tim)
+
+**What.** Two project settings for the rare project whose agent the user trusts with real secrets or live data,
+both `off` by default and set with `ab project add|set|init --data-env on|off` / `--data-bind on|off`:
+
+- `data_env = on`: the env files (`.env`, `.env.*`, `*.env`; `mounts.ENV_FILES`, less the exempt `.env.dev`,
+  `.env.example`, `.env.sample`, `.env.template`) anywhere in the **project root grant** are neither masked nor
+  swapped, so the session sees the real ones instead of `.env.dev` at `.env`. `.netrc`, `.pgpass`, `*.pem`,
+  `*.key`, `*.p12`, `*.pfx`, `*.jks`, `secrets/` and every file in a `data_ro`/`data_rw` grant (one inside the
+  root included) stay masked. `grantcheck` does not report those files; the git-history check drops their names
+  from both the found set and the stored acknowledgement; the gate gets `env_visible` so a bind reaching one is
+  not refused as a late secret, and its cover list (from the same plan) no longer holds them.
+- `data_bind = on`: `<root>/data` is visible and writable (it always was part of the root grant; what changes is
+  the checks). `grantcheck`'s live-data findings and compose data binds under it do not block (secret-named files
+  in it still do, and are still masked). The pre-session snapshot and the end-of-session scan leave it out, and
+  the session start says `./data` is the user's to back up.
+
+Refusals (`project.check_trust`, run by `add`/`set`/`init` before saving and by every session load): both under a
+ceiling preset (lockdown and fail-closed user presets; the keys are ordered `off < on`, so the existing ceiling
+rule refuses them, with a sentence saying why); both when the session would be in clone mode (a stored
+`mount = clone`, or Toulmin on a git root) since a clone holds neither an untracked `.env` nor `./data`, while
+`code = ro` (which forces checkout) is fine for `data_env`; `data_bind` with `code = ro` (it must be writable),
+with a `data = ro-only` preset (`operate`, `analysis-offline`: data read-only by design), and with a `mask` entry
+covering `./data` (`data`, `./data`), which would contradict it. Both are cleared by a preset change, as other
+posture overrides are.
+
+Each session start with either on prints `agentbox: WARNING: data_env is on for <p>: ...` / `data_bind is on ...`,
+records the settings in `session.json` and the lines in the scan state, and the end-of-session report (and its
+kept log) repeats them first. The session notes say which files are real and that `./data` is live and not
+backed up. `ab project show` prints both, with the warning when on; the `--help` of both flags carries "only for
+an agent you trust: the agent can read/print/send these secrets; masks are the safety net you are turning off".
+
+**Why.** The user decided it (19 Nov): some projects need the agent to work against the real configuration or
+the real data, and the only routes were moving them out of the grant or accepting a grant exposure, neither of
+which shows the agent a masked file. This **partly reverses** 16 Oct ("`--with-secrets` dropped; masks can no
+longer be turned off by any route"): that flag turned every mask off for one run and was refused by grantcheck
+in every case where it acted. These are narrower (env files of the root only, never key files or data grants),
+stored per project where `ab project show` shows them, refused where they cannot mean what they say, and
+grantcheck agrees with them rather than refusing them. It **replaces** 6 Oct's deferred `--data-bind` contract
+(mask `./data`, the user names `--data-backup <target>`): that kept the agent away from the data, which is not
+what the user wants it for; `--data-backup` is not built. The 6 Oct rule that the per-session snapshot is not a
+data backup stands, and is why `./data` is left out of it.
+
+**Decided here (the brief left them open).** Env files in subdirectories of the root are unmasked too (a compose
+`env_file:` in `deploy/` is the common case), not only the root's own `.env`; a data grant inside the root keeps
+its masks. A swap whose target is an env file is dropped, others stay. `./data` is also skipped by the
+end-of-session scan (a live service writes there, and hashing a database at every start and end is slow). The
+`data = ro-only` refusal for `data_bind` was not asked for; it follows the existing rule that those presets
+refuse `data_rw`.
+
+**Not verified.** Unit tests only (`tests/unit/test_trusted_optouts.py`); no podman here. Only a host run can
+show the real `.env` inside a container, a dev-tier container binding the root under `data_env`, and the
+session-start and end-of-session lines in a real terminal.

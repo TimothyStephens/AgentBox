@@ -139,6 +139,10 @@ def _scan(settings, session, started, warn):
     except Exception as e:           # the scan informs; it must never stop the teardown (review step 5C, H3)
         warn(f"agentbox: end-of-session scan failed: {e!r}")
         return
+    trust = [f"WARNING (recorded at the start): {w}" for w in doc.get("trust") or []]
+    if trust:
+        # data_env/data_bind were on: the record of this session says so, first (decisions.md, 19 Nov 2026)
+        summary, text = trust + list(summary), "\n".join(trust) + "\n" + text
     out = log_path(settings, session, started, "scan")
     _keep(out, text.encode())
     if summary:

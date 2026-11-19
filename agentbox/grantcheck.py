@@ -129,7 +129,7 @@ def _under_mask_skip(root, path, mask_skip):
 READABLE_REFUSED = ("unmasked secret file", "git credentials")
 
 
-def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants=()):
+def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants=(), env_ok=(), data_ok=()):
     """Return (findings, warnings). Each finding is {"text": <shown>, "sig": <for the fingerprint>}; a grant
     with any finding refuses to start until acknowledged. Warnings are shown but do not block (audit 6 Oct,
     the cheap half of H1: entries the scanner can't read or that another user owns). `mask_skip` is NOT
@@ -141,8 +141,27 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
     `analysis-offline` and `operate` presets, so it is reported, never refused. Before this they were not
     scanned at all, so what was in them was invisible. One exception: a repo in a read-only grant whose config
     names a hooks path or include in a WRITABLE grant that the covers cannot pin (a symlink, a grant root) is a
-    finding, since the owner's git in that repo would run what the session wrote."""
+    finding, since the owner's git in that repo would run what the session wrote.
+
+    The two trusted opt-outs (decisions.md, 19 Nov 2026): an env file (`mounts.env_file`) under a path in
+    `env_ok` (the root, when `data_env` is on) is shown to the agent on purpose, so it is not an "unmasked
+    secret"; live data and compose data binds under a path in `data_ok` (`<root>/data`, when `data_bind` is
+    on) are the agent's on purpose, so they are not findings. Data grants are never in either list."""
     covered = {os.path.realpath(c) for c in covered}
+    env_ok = [os.path.realpath(e) for e in env_ok]
+    data_ok = [os.path.realpath(d) for d in data_ok]
+    # The data grants: their env files stay masked under data_env (mounts.plan), so they stay findings, even
+    # in a data grant that lies inside the root.
+    excluded = {os.path.realpath(g) for g in list(grants) + list(warn_grants) + list(readable_grants)
+                if os.path.realpath(g) != os.path.realpath(root)}
+
+    def env_trusted(p, fn, in_secrets):
+        return (not in_secrets and mounts.env_file(fn) and any(inside(p, e) for e in env_ok)
+                and not any(inside(p, x) for x in excluded))
+
+    def data_trusted(p):
+        return any(inside(os.path.realpath(p), d) for d in data_ok)
+
     uid = os.getuid()
     limit = LIVE_DATA_MB << 20
 
@@ -204,16 +223,18 @@ def scan(root, grants, mask_skip=(), covered=(), warn_grants=(), readable_grants
                 if st.st_uid != uid and not os.access(p, os.R_OK):
                     warn.add(f"{p}: owned by uid {st.st_uid}, not you (unreadable); a container's data file?")
                     continue
-                if _is_secret_name(fn, in_secrets) and st.st_size and not is_covered(p):
+                if (_is_secret_name(fn, in_secrets) and st.st_size and not is_covered(p)
+                        and not env_trusted(p, fn, in_secrets)):
                     tag = " (under mask_skip: unmasked)" if _under_mask_skip(root, p, mask_skip) else ""
                     found[f"unmasked secret file{tag}: {p}"] = _sig(p, st)
-                if fn.lower().endswith(DATA_SUFFIXES) and st.st_size >= limit and not is_covered(p):
+                if (fn.lower().endswith(DATA_SUFFIXES) and st.st_size >= limit and not is_covered(p)
+                        and not data_trusted(p)):
                     found[f"live data ({st.st_size >> 20} MB): {p}"] = _sig(p, st)
             for fn in filenames:
                 if fn in mounts.COMPOSE_FILES and not os.path.islink(os.path.join(dirpath, fn)):
                     cf = os.path.join(dirpath, fn)
                     for b in _compose_data_binds(cf, grant):
-                        if not is_covered(b):
+                        if not is_covered(b) and not data_trusted(b):
                             try:
                                 sig = _sig(b, os.lstat(b))
                             except OSError:
@@ -250,11 +271,13 @@ def preflight(settings, name, entry, *, plan=None, code=None):
     if plan is None or code is None:
         eff = presets.effective(name, dict(entry, name=name), presets.load_presets(settings.presets_dir))
         code = eff["code"][0] if code is None else code
+    data_env, data_bind = entry.get("data_env") == "on", entry.get("data_bind") == "on"
     if plan is None:
         plan = mounts.plan(root=entry["root"], data_ro=entry.get("data_ro", []),
                            data_rw=entry.get("data_rw", []), compose=eff["compose"][0],
                            mask_skip=entry.get("mask_skip", []),
-                           swap=mounts.effective_swap(entry.get("swap")), mask=entry.get("mask", []), code=code)
+                           swap=mounts.effective_swap(entry.get("swap")), mask=entry.get("mask", []), code=code,
+                           data_env=data_env)
     # A read-only root (code = ro) is scanned as a READABLE grant: what can leave through the model API (an
     # unmasked secret, a credential in a git remote) still refuses; what could only be damaged by a write
     # (live data, compose data binds, git config escapes) is reported as a warning.
@@ -262,7 +285,9 @@ def preflight(settings, name, entry, *, plan=None, code=None):
     findings, warnings = scan(entry["root"], ([] if ro_root else [entry["root"]]) + list(entry.get("data_rw", [])),
                               entry.get("mask_skip", []), covered=mounts.hidden(plan),
                               warn_grants=entry.get("data_ro", []),
-                              readable_grants=[entry["root"]] if ro_root else [])
+                              readable_grants=[entry["root"]] if ro_root else [],
+                              env_ok=[entry["root"]] if data_env else [],
+                              data_ok=[mounts.data_dir(entry["root"])] if data_bind else [])
     return findings, warnings, (fingerprint(findings) if findings else "")
 
 

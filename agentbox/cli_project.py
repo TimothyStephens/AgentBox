@@ -112,6 +112,9 @@ def _apply_project_settings(entry, a, grant_kw, presets_map, unset=()):
         entry["mask"] = _check(a.name, "mask", list(a.mask))
     if getattr(a, "toulmin", None) is not None:
         entry["toulmin"] = a.toulmin
+    for key in session.TRUST_KEYS:
+        if getattr(a, key, None):
+            entry[key] = _check(a.name, key, getattr(a, key))
     if getattr(a, "mount", None):
         entry["mount"] = _check(a.name, "mount", a.mount)
     if getattr(a, "reviews", None):
@@ -174,7 +177,8 @@ def precheck_project_settings(s, a):
     presets_map = presets.load_presets(s.presets_dir)
     entry = {}
     _apply_project_settings(entry, a, _grant_kw(s), presets_map)
-    presets.effective(a.name, entry, presets_map)
+    eff = presets.effective(a.name, entry, presets_map)
+    _check_trust(a.name, entry, eff)
     if "build_memory" in entry:
         _check(a.name, "build_memory", entry["build_memory"], settings=s)
 
@@ -220,6 +224,9 @@ def _settle_history_secrets(name, entry, a, presets_map, before, found):
     drops the record, so `ab project show` stops listing secrets that are no longer there to rotate; and an
     edit that grants nothing new is never blocked by a stale acknowledgement."""
     accepted = list((before or {}).get("history_secrets_accepted") or [])
+    if entry.get("data_env") == "on":       # the root's env files are shown anyway: their names expose nothing
+        accepted = session.without_real_env(accepted, entry["root"],
+                                            entry.get("data_rw", []) + entry.get("data_ro", []))
     if not found:
         entry.pop("history_secrets_accepted", None)     # nothing in the history: the record is stale
         return
@@ -270,6 +277,18 @@ def _settle_grant_exposure(s, name, entry, a, presets_map, before, exposure):
     warn(grantcheck.unblocked_message(name, exposure, accepted))
 
 
+def _check_trust(name, entry, eff):
+    """project.check_trust over a registry entry: the trusted opt-outs' refusals, before anything is saved.
+    `ab project init` checks before its root exists; the root it makes is a git repository, so there Toulmin
+    means clone mode, as it will at the first session."""
+    root, mount = entry.get("root") or "", entry.get("mount", "")
+    if not root:
+        mount = mount or ("clone" if entry.get("toulmin") else "checkout")
+    session.check_trust(name, root, eff, data_env=entry.get("data_env", "off"),
+                        data_bind=entry.get("data_bind", "off"), mount=mount, toulmin=bool(entry.get("toulmin")),
+                        mask=entry.get("mask", []))
+
+
 def _validate_and_save(s, reg, name, entry, a, presets_map):
     """Validate a registry entry (preset exists, lockdown ceiling, grant overlap, build_memory, grantcheck,
     history secrets) and save it. Shared by `ab project add` and `ab project set`."""
@@ -281,7 +300,7 @@ def _validate_and_save(s, reg, name, entry, a, presets_map):
     for key in ("data_ro", "data_rw"):
         if entry.get(key):
             entry[key] = [check_grant(d, kind=key, **grant_kw) for d in entry[key]]
-    presets.effective(name, entry, presets_map)
+    _check_trust(name, entry, presets.effective(name, entry, presets_map))
     paths.check_overlaps(name, entry, reg)
     if entry.get("deploy_binds"):
         entry["deploy_binds"] = paths.check_deploy_binds(name, entry["deploy_binds"], entry, reg, **grant_kw)
@@ -403,7 +422,10 @@ def cmd_project_set(s, a):
 
 def _history_secrets(entry):
     grants = [entry["root"]] + entry.get("data_rw", []) + entry.get("data_ro", [])
-    return session.history_secrets(entry["root"], grants, entry.get("mask_skip", []))
+    found = session.history_secrets(entry["root"], grants, entry.get("mask_skip", []))
+    if entry.get("data_env") == "on":
+        found = session.without_real_env(found, entry["root"], grants[1:])
+    return found
 
 
 def cmd_project_check(s, a):
@@ -547,7 +569,8 @@ def _print_effective(s, name):
                 "deploy_binds": p.deploy_binds, "deploy_files": p.deploy_files, "deploy_compose": p.deploy_compose,
                 "deploy_external": p.deploy_external, "deploy_adopted": p.deploy_adopted,
                 "history_secrets_accepted": p.history_secrets_accepted,
-                "grant_exposure_accepted": p.grant_exposure_accepted}
+                "grant_exposure_accepted": p.grant_exposure_accepted,
+                "data_env": p.data_env, "data_bind": p.data_bind}
     print(f"project {p.name}")
     for key in projectkeys.KEYS:
         if key.display == "stored" and key.name not in stored:
@@ -574,6 +597,13 @@ def _print_effective(s, name):
             notes.append("(the project root is read-only in sessions; writable: "
                          + (", ".join(p.data_rw) if p.data_rw else "no grant -- add one outside the root with "
                             f"`ab project set {name} --data-rw DIR` for the agent's plans and notes") + ")")
+        if key.name == "data_env" and value == "on":
+            notes.append(f"(WARNING: sessions see the REAL env files (.env, .env.*, *.env) in {p.root}, not the dev "
+                         f"swap; {session.TRUST_WARNING})")
+        if key.name == "data_bind" and value == "on":
+            from . import mounts
+            notes.append(f"(WARNING: {mounts.data_dir(p.root)} is live data, visible and writable in sessions, and "
+                         f"not in the pre-session snapshot: it is yours to back up; {session.TRUST_WARNING})")
         if key.name == "compose_project" and key.name in stored and ctx["live_access"]:
             notes.append("(explicit: this stack's containers are not required to come from inside the "
                          "project root)" if p.compose_project_explicit else
@@ -786,6 +816,11 @@ def cmd_selftest(s, a):
     return 1 if fails else 0
 
 
+# The argparse help's form of project.TRUST_WARNING, worded as the user asked for it to appear (19 Nov 2026).
+_TRUST_HELP = ("only for an agent you trust: the agent can read/print/send these secrets; masks are the safety net "
+               "you are turning off")
+
+
 def _add_project_setting_args(x, *, preset_required, preset_default=None, preset_choices=None,
                               preset_note="", presets_map=None):
     """The override flags shared by `ab project init`, `ab project add` and `ab project set`: same flag spellings,
@@ -859,6 +894,19 @@ def _add_project_setting_args(x, *, preset_required, preset_default=None, preset
                    help="the Toulmin integration: sessions ask `tm` for a socket directory and a bridge, mount "
                         "them, hand the agent an MCP entry for the tool server, and report the session's "
                         "clone, base and head back (docs/agentbox_toulmin_integration.md). Default: off")
+    x.add_argument("--data-env", choices=projectkeys.BY_NAME["data_env"].values, metavar="on|off",
+                   help="`on`: sessions see the REAL env files (`.env`, `.env.*`, `*.env`) anywhere in the project "
+                        "root, read-write, instead of the masks and the dev swap (`.env.dev` shown at `.env`). "
+                        "`.netrc`, `.pgpass`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `secrets/` and every "
+                        "env file in a --data-ro/--data-rw grant stay masked. WARNING: " + _TRUST_HELP + ". "
+                        "Refused under a ceiling preset (lockdown) and in clone mode. Default: off")
+    x.add_argument("--data-bind", choices=projectkeys.BY_NAME["data_bind"].values, metavar="on|off",
+                   help="`on`: the live data in the project's `./data` is visible and WRITABLE to the agent; the "
+                        "grant check does not refuse live data or compose data binds under it, and the "
+                        "pre-session snapshot leaves it out (it is not a data backup: `./data` is yours to back "
+                        "up). Secret files in it stay masked. WARNING: " + _TRUST_HELP + ". Refused under a "
+                        "ceiling preset (lockdown), in clone mode, with a read-only root (`--code ro`), with a "
+                        "read-only-data preset and with a mask over ./data. Default: off")
     x.add_argument("--mount", choices=projectkeys.MOUNT_MODES, metavar="MODE",
                    help="how the root reaches a session: `checkout` binds your working tree (the default); "
                         "`clone` binds a fresh clone on branch agentbox/<session> at the same path and never "

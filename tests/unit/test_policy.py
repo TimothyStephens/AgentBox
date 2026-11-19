@@ -689,9 +689,9 @@ class ShowDisplayTest(SettingsCase):
     def test_the_always_inert_settings_say_so(self):
         self.project("p1", preset="build")
         out = self.show("p1")
-        self.assertIn("masks always apply and cannot be turned off", out)
         self.assertIn("caps                     refused", out)
         self.assertNotIn("opt-in", out)
+        self.assertIn("masks always apply; only the data_env setting unmasks", out)
 
     def test_an_explicit_compose_project_shows_the_waived_check(self):
         """F4: an explicit compose_project skips the check that the live stack's containers come from

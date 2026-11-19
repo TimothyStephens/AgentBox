@@ -19,6 +19,7 @@ EXPECTED_KEYS = {
     "compose", "egress", "podman", "caps", "secrets", "approvals", "data", "code",
     "data_ro", "data_rw", "extra_domains", "compose_project", "observe_logs", "dev_images",
     "mask_skip", "swap", "mask", "toulmin", "mount", "reviews", "build_memory", "profile", "base_branch",
+    "data_env", "data_bind",
     "history_secrets_accepted", "grant_exposure_accepted",
     "lan_addr", "deploy_ports", "deploy_binds", "deploy_files", "deploy_compose", "deploy_external", "deploy_adopted",
 }

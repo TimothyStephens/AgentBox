@@ -42,6 +42,8 @@ class Project:
     deploy_compose: str = ""      # the compose file, root-relative ("": the first of mounts.COMPOSE_FILES)
     deploy_external: list = field(default_factory=list)   # external volumes/networks it may use
     deploy_adopted: list = field(default_factory=list)    # hand-run stack volumes adopted by name
+    data_env: str = "off"         # "on": the root's env files are the real ones in sessions (check_trust)
+    data_bind: str = "off"        # "on": <root>/data is live data, visible, writable, not backed up
 
     def value(self, key):
         return self.eff[key][0]
@@ -138,6 +140,10 @@ def load_project(settings, name):
     paths.check_overlaps(name, {"root": root, "data_ro": data_ro, "data_rw": data_rw}, reg)
     if eff["code"][0] == "ro":
         _check_read_only_root(name, root, data_rw, eff)
+    data_env = _check(name, "data_env", p.get("data_env", "off"))
+    data_bind = _check(name, "data_bind", p.get("data_bind", "off"))
+    check_trust(name, root, eff, data_env=data_env, data_bind=data_bind, mount=p.get("mount", ""),
+                toulmin=bool(p.get("toulmin")), mask=p.get("mask", []))
     return Project(name=name, root=root, data_ro=data_ro, data_rw=data_rw,
                    mask_skip=list(p.get("mask_skip", [])), extra_domains=list(p.get("extra_domains", [])),
                    mask=_check(name, "mask", p.get("mask", [])),
@@ -161,10 +167,58 @@ def load_project(settings, name):
                    deploy_compose=str(p.get("deploy_compose") or ""),
                    deploy_external=list(p.get("deploy_external", [])),
                    deploy_adopted=list(p.get("deploy_adopted", [])),
+                   data_env=data_env, data_bind=data_bind,
                    # Explicit only when it names a DIFFERENT stack (audit F-4): storing the value the
                    # project would have had anyway waived the ownership check while changing nothing.
                    compose_project_explicit=bool(p.get("compose_project")
                                                  and p["compose_project"] != name))
+
+
+TRUST_KEYS = ("data_env", "data_bind")
+# The one text each setting's warning is built from: the session-start WARNING line, the scan record, `ab project
+# show` and the --help of both flags say the same thing.
+TRUST_WARNING = ("only for an agent you trust: the agent can read, print and send these secrets and this data; "
+                 "the masks are the safety net you are turning off")
+
+
+def trust_warnings(name, root, data_env, data_bind):
+    """The WARNING lines a session start prints (and records) for the trusted opt-outs that are on."""
+    out = []
+    if data_env == "on":
+        out.append(f"data_env is on for {name}: this session sees the REAL env files (.env, .env.*, *.env) in "
+                   f"{root} instead of the dev swap; {TRUST_WARNING}")
+    if data_bind == "on":
+        out.append(f"data_bind is on for {name}: the live data in {mounts.data_dir(root)} is visible and WRITABLE "
+                   f"to the agent and is not in the pre-session snapshot (it is yours to back up); {TRUST_WARNING}")
+    return out
+
+
+def check_trust(name, root, eff, *, data_env="off", data_bind="off", mount="", toulmin=False, mask=()):
+    """Refuse a trusted opt-out (`data_env`, `data_bind`; decisions.md, 19 Nov 2026) where it cannot mean what
+    it says. A ceiling preset (lockdown: an untrusted repo) is refused earlier, by presets.effective, since both
+    keys are ordered off < on. Run where the entry is saved (add/set/init) and where a session loads it."""
+    on = [k for k, v in (("data_env", data_env), ("data_bind", data_bind)) if v == "on"]
+    if not on:
+        return
+    code = eff["code"][0]
+    if data_bind == "on" and code == "ro":
+        raise AgentboxError(f"project {name}: data_bind = on makes {mounts.data_dir(root)} writable live data, and "
+                            "the project root is read-only (code = ro); use `--code rw`, or put the data in a "
+                            "--data-rw grant outside the root")
+    if data_bind == "on" and eff["data"][0] == "ro-only":
+        raise AgentboxError(f"project {name}: data_bind = on makes {mounts.data_dir(root)} writable live data, and "
+                            f"this preset allows read-only data only (data = ro-only); use another preset, or a "
+                            "--data-ro grant")
+    if code != "ro" and mount_mode_of(root, mount, toulmin) == "clone":
+        raise AgentboxError(f"project {name}: {' and '.join(on)} = on with clone mode would show the agent nothing: "
+                            "a session's clone holds only what is committed, and a real .env and ./data are "
+                            "untracked. Use `--mount checkout`, or turn " + " and ".join(on) + " off")
+    if data_bind == "on":
+        clash = [m for m in mask if m.rstrip("/") in (mounts.DATA_DIR, "./" + mounts.DATA_DIR)]
+        if clash:
+            raise AgentboxError(f"project {name}: data_bind = on shows {mounts.data_dir(root)} to the agent, and the "
+                                f"mask {', '.join(clash)} hides it; drop one of them (a bare-name mask covers every "
+                                "directory of that name: use a path such as ./other/data to mask another one)")
 
 
 def _check(name, key, value, **kw):

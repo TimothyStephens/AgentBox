@@ -13,11 +13,13 @@ project with no override flags starts a session with zero warnings and zero over
 that). `ab project init` shares its override flags (--preset, --egress, --data-ro, ...) with `ab project add`/`set`
 (agentbox/cli.py's `_add_project_setting_args`), so a project can be fully configured at init time too.
 
-`--data-bind` (live data in a gitignored, masked `./data` instead of a named volume) is deferred. Its future
-contract: mask `./data` in sessions (the existing cover mechanism + grantcheck), and require the user to point
-at their OWN external backup (`--data-backup <target>`); agentbox masks `./data` but does NOT back it up, and
-`init` prints that `./data` is the user's to back up. The per-session rsync snapshot is NOT a data backup
-(same disk, only as fresh as the last session start); see docs/decisions.md.
+The templates never put live data in `./data`. A project that keeps it there anyway can opt in with the
+project setting `data_bind = on` (`--data-bind on`, here as on `add`/`set`; decisions.md, 19 Nov 2026, which
+replaced the 6 Oct deferred contract of a masked `./data` plus a `--data-backup` target): `./data` is then
+visible and WRITABLE to the agent, not a grantcheck finding, and left out of the per-session snapshot. That is
+only for an agent the user trusts. The per-session rsync snapshot is NOT a data backup (same disk, only as
+fresh as the last session start), so `./data` is the user's to back up; `ab project show` and every session
+start say so.
 """
 import os
 import subprocess
