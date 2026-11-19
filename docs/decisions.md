@@ -3807,3 +3807,12 @@ reworked teardown) and `test_toulmin`; the start lines printed `[6/6]`/`[7/7]` a
 cfdee1f. Seen in passing: agentbox.slice at 4270-4291 MB of its 4400 MB cap during the run (two long-lived user
 sessions plus the itest's), which the launcher warned about. Still unconfirmed on the host: a real stopping state
 in `ab session ls`, the 30-minute limit against a real large scan, a paused terminal during teardown.
+
+## 19 Nov 2026: data_env / data_bind checked by hand on the host; pinned by test_trusted_optouts
+
+A scratch project with `--data-env on --data-bind on` (preset python), from inside a shell session: `.env` was the
+real file, `.netrc` and `tls/server.key` read 0 bytes, `./data` read and took a write that reached the host; the two
+WARNING lines printed at start, `ab project show` carried them, the end-of-session report opened with them, and the
+backup step said `./data` is not in the snapshot. `tests/integration/test_trusted_optouts.py` pins exactly that, plus
+`sub/.env` real, `secrets/` empty, no `data/` file in the snapshot, and a control project with both off (swap applies,
+no warnings). Written from the host run; the itest itself is unverified until the next `make itest`.

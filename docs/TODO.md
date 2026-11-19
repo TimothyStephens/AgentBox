@@ -31,10 +31,6 @@ None. MAGS-CodeDev was decided on 15 Nov: it stays outside agentbox as its own c
 Nothing to write; each needs real podman, the LAN or a real key, so only the user can close it. Until then each is
 **unverified** (decisions.md, 19 Nov, names what each run must show).
 
-- **`data_env` / `data_bind`** — the real `.env` readable in a session while `.netrc`/key files read empty; a dev-tier
-  container binding the root with `data_env` on (the gate's `env_visible` path); `./data` absent from a real
-  snapshot; the WARNING lines in the terminal and the scan log. No itest yet: write one when the host run shows
-  what to pin.
 - **Pi on the local model server**: `make pi-live` with a local model once the server answers (it hung on 19 Nov,
   outside agentbox); confirms the launcher's `<baseUrl>/models` query.
 - **Pi profile** (pushed and deployed 19 Nov): a Pi session should report a profile
@@ -136,6 +132,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
+| 19 Nov | `data_env` / `data_bind` verified by hand on the host and pinned by an itest, `test_trusted_optouts` (written from that run; the itest itself waits for the next `make itest`) |
 | 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is numbered the same way (`[n/3]`). |
 | 19 Nov | A session being torn down says so: `stopping.json` in its run dir (step, since when); `ab session ls` shows `stopping since HH:MM: <step>, N min`, attach, the lock refusal and registry edits say "is shutting down"; `ab session kill` ends a stuck teardown. Teardown frees the project once nothing of the session runs (before the scan and the Toulmin end), prints last through a writer thread, bounds the post-release work, and `tm` runs in its own process group (the toulmin-build stall of 18 Nov) |
 | 19 Nov | Pi: the local model server's models asked from it at start when the seed lists none; OMP and Pi sessions get the profile's `AGENTS.md` after the sandbox notes (it reached neither before); `agentbox-profile-pi` created (skills, `build.sh`, Pi check rules, 134 tests) |
