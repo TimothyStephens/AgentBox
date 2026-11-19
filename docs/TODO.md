@@ -33,10 +33,9 @@ Each needs real podman, the LAN, a real key or a running service, so only the us
 - **Pi on the local model server.** `make pi-live` with `AB_LIVE_MODEL=llama-cpp/<model>` once the server answers
   (it hung on 19 Nov, outside agentbox: a plain curl from the host hung too). Confirms the launcher's
   `<baseUrl>/models` query and Pi on the local model.
-- **The Pi profile's packages.** `./build.sh deploy` in `agentbox-profile-pi` (after its push), then
-  `ab profile install pi`: the four npm packages and EGM's skills, mirrored from the OMP profile on 19 Nov. A Pi
-  session should then report a profile hash, list the packages' paths, and offer `/skill:show-me` and the
-  `egm-*` skills.
+- **The Pi profile's packages in a session.** Deployed and installed on 19 Nov (4 npm, EGM). A Pi session should
+  report a profile hash, load the packages from the read-only tree without warnings, and offer the profile
+  skills and the `egm-*` skills.
 - **Toulmin from a Pi session.** Pi gets Toulmin through its built-in MCP (`mcp.json`, `exposure: direct`); no
   live run has used it yet.
 

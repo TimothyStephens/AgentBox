@@ -3901,3 +3901,9 @@ equivalent). Left out, with the reason in the file: pi-session-stats and pi-cont
 `ab profile install pi` therefore has something to install; unverified until the host runs it.
 TODO.md rewritten: sections renumbered (ready-to-build is §3, deferred §4), stale "unverified" rows updated,
 the watch list trimmed to what is live, the closed list cut to 13 Nov onward (older rows stay here).
+
+## 19 Nov 2026: the Pi packages install on the host
+
+`ab profile install pi` against localhost/agentbox-pi:latest (1.5.2): 4 npm packages at the OMP pins and the EGM
+checkout at 464db031e7dd, lockfile written. All three profile repos pushed and deployed with the shared `learn-repo`
+skill. Still to see: a Pi session loading the packages from the read-only tree without warnings.
