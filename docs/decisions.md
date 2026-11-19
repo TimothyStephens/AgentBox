@@ -3749,3 +3749,33 @@ exiting mid-write can leave a partial report under the session's own name). The 
 bounded by its own timeouts (about two minutes at worst) and Toulmin needs it, while the scan only informs. 14.5
 minutes was the longest scan seen (18 Nov), so 30 is not expected to cut a real one. Tests:
 `tests/unit/test_teardown.py` `TheWorkAfterTheReleaseIsBounded`.
+
+## 19 Nov 2026: the toulmin-build "ls dead, lock alive" inconsistency: no cause found in the code
+
+On 18 Nov evening `ab session ls` showed the stalled session `dead` (0c/0n); on 19 Nov morning the project lock's
+holder, pid 2227814 with a matching start time, counted as alive, and `ab session attach` called the session "alive
+but its agent container is not running" -- which needs `session_is_alive` true, i.e. `_alive(session.json)` true in
+that process. Read in the code, and ruled out:
+- *Different predicates.* `liveness._alive` (session.json) and `sessionlock.lock_holder_state` (the lock) do the same
+  thing: pid > 0, `/proc/<pid>/stat` field 22 equal to the recorded `pid_start`. Both records are written by the same
+  launcher with `_start_time(os.getpid())` (`Session._write_meta`, `projectlock.acquire` from `take_project_lock`),
+  and `_start_time`'s parse (`rsplit(")")`, index 19) is right for a command name holding `)` or spaces.
+- *A rewrite with another pid.* Only `Session._write_meta` and `Deploy.write_meta` write a `session.json`; a deploy's
+  run dir is `<prefix>deploy-<project>`, never a session's. `note_session` rewrites the lock keeping its pid.
+  `attach`, `ab screen`, `kill`, `gc`, `ls` write neither. `reserve_name` never reuses an existing run dir.
+- *A torn or missing session.json.* Written atomically (fresh temp, rename); removed only in the run-dir cleanup at
+  the very end of teardown, after the lock release, so it was present all through the stall. An unreadable one
+  would show `?` as the project.
+- *pid_start drift.* Field 22 is fixed for a process's life; there is no change to these functions since 16 Nov
+  (`git log -S pid_start`).
+So the code gives the same answer from both records for one process at one time. What is left is outside it, all
+Guessing: an `ab session ls` run where `/proc` does not show the launcher (another PID namespace -- a containerised
+or sandboxed terminal -- or a `/proc` mounted with `hidepid`), or the row read being another run dir of the same
+project. Not fixed, since nothing was found to fix; the `stopping` marker removes the ambiguity for this case from
+now on: a session in teardown shows `stopping since HH:MM: <step>`, by the teardown's own pid, never `dead`/`running`.
+On the host, `ls -la $XDG_RUNTIME_DIR/agentbox/sessions/` and `cat /proc/<pid>/stat` from the same shell as
+`ab session ls` would settle it if it recurs.
+
+Also recorded from the same incident: suspect A (a `tm` grandchild holding pipes) cannot stall `subprocess.run` on
+Python 3.11 (measured; see the first 19 Nov teardown entry). The stall's likeliest cause is a terminal write that
+blocked (suspect B), which the writer thread and the output-last order now take out of the bookkeeping.
