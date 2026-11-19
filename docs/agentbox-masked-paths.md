@@ -1,6 +1,6 @@
 # Spec: per-project masked paths in agentbox, and masking a live `data/` directory
 
-> **Status: IMPLEMENTED on 10 Nov 2026 as the `mask` project setting** (`ab project add/set --mask PATH`; `docs/decisions.md`, 10 Nov; `docs/design.md`, "The project's own masks"). The key is `mask`, not `masked_paths`; a bare name masks every file or directory of that name in the grants, `./data` masks that one path. The rest of this file is the spec it was built from and its measurements; §5.1's in-session errno probe is not an automated test yet.
+> **Status: IMPLEMENTED on 10 Nov 2026 as the `mask` project setting** (`ab project add/set --mask PATH`; `docs/decisions.md`, 10 Nov; `docs/design.md`, "The project's own masks"). The key is `mask`, not `masked_paths`; a bare name masks every file or directory of that name in the grants, `./data` masks that one path. The rest of this file is the spec it was built from and its measurements; §5.1's in-session errno probe, with §5.3's host sentinel, is `tests/integration/test_mask_errno.py` (19 Nov 2026).
 
 **Status:** implementation spec, for someone with access to the agentbox source.
 **Why this file is in this repo:** agentbox's source and per-project config are not

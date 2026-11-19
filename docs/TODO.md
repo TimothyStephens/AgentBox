@@ -51,7 +51,6 @@ authoritative; this is the *why*.
 | Model key gateway | Sessions use the Claude subscription token and per-provider key files. A per-model API-key gateway is a bigger build with no present need. |
 | Toulmin: restart a dead `tm session serve` | Recorded as a gap by the contract (1.5). Until built, Toulmin's `tm status` tells the owner the socket is dead and which command to run. |
 | Clone mode with the dev podman tier | Refused at session start. The gate would translate every bind source under the owner's path into the clone (grant volume device, cover ids, foreign-uid check, unmasked-secret walk). decisions.md, 10 Nov. |
-| The masked-paths spec's in-session errno probe (`docs/agentbox-masked-paths.md` §5.1) as an itest | The `mask` setting itself is built (10 Nov); the probe stays manual until a change touches the covers tests. |
 | `--data-bind` (live data in `./data`) | Contract already fixed: mask `./data` via covers, the user names `--data-backup <target>`, agentbox masks and does not back up. The named-volume default serves until a real project forces it. |
 | `dev/data`→`data` overlay | Deliberately not built; the substitute mechanism stays `.env`-only unless a real project forces it. |
 | Codex adapter | Step 8. The Pi adapter is built, Pi packages included (18 Nov; `ab profile install pi`, docs/pi-proposal.md). Codex waits for a need. |
@@ -130,6 +129,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 | Closed | What |
 |---|---|
 | 19 Nov | `caps` has one value, `refused`: the never-built `opt-in` is gone from the build presets, a stored one reads as `refused` with a note; a git config in a read-only grant that the launcher cannot read refuses the session |
+| 19 Nov | The masked-paths spec's in-session errno probe (§5.1, with the §5.3 host sentinel) is an itest, `test_mask_errno`; written, unverified until the host runs it |
 | 19 Nov | Pi adapter (1.5.2) built and verified on the host: `test_pi_isolation`, `make pi-live` on OpenRouter; pi-live's bash check made unguessable; the gate retries a podman 500 on a lookup (`podman run --rm` race) |
 | 18 Nov | `ab deploy --down [--volumes]`; the deploy contract (`deploy-check`); read-only project root (`code = ro`, `planner` preset); host facts moved out of the repo into agentbox.toml |
 | 18 Nov | `ab deploy` built and verified on podman (`test_deploy`, `make itest` 200/200): a reviewed commit copied out with the real `.env`, run through the gate's deploy mode; hand-run stacks refused, their volumes adoptable by name. Proposal folded into design.md |

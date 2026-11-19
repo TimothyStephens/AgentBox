@@ -3564,3 +3564,18 @@ the OMP profile's README said it was "folded into the session instructions". Cla
 the profile's CLAUDE.md after the notes. Both now do the same (`omp.profile_instructions`): the notes first, then
 the profile's `AGENTS.md`, read from `settings.profile_src(agent)` as Claude's is; nothing when the profile is off;
 a symlink is not followed. `tests/unit/test_profile_instructions.py`.
+
+## 19 Nov 2026: the masked-paths spec's in-session errno probe is an itest (written, unverified)
+
+`tests/integration/test_mask_errno.py` ports `docs/agentbox-masked-paths.md` §5.1 to the itest harness and adds
+§5.3's host sentinel. It runs in the session (a `claude --shell` session, so the agent image must be present), not
+in a container the session starts, as §3.2 requires. A project masks `./data` (non-empty on the host), `./later`
+(absent before the session), the bare name `state.json` and `cfg/.env` (also a swap target), beside the standard
+secret masks. Expected: masked directories exist and list empty, EROFS for create, mkdir and chmod, EBUSY for rmdir
+and rename (§3.2's measured table; the directory masks are read-only tmpfs mounts); masked files read zero bytes,
+EROFS for write and chmod, EBUSY for unlink and rename (read-only bind mount points); the root `.env` still shows
+`.env.dev`, `cfg/.env` reads empty (the mask wins over the swap); `dev/data` stays writable; on the host the data
+sentinel keeps its bytes and mtime and no probe write arrives. The file-mask EBUSY/EROFS values and the
+directory-mask chmod/rename values are the kernel's answers for a read-only mount point, not measured in the spec.
+Written in a sandbox without podman: py_compile passes and the module skips cleanly; **unverified until the host
+runs it** (`python3 -m unittest tests.integration.test_mask_errno -v`).
