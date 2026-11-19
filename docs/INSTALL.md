@@ -87,8 +87,11 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    yourself; the `seed/` above ships keyless copies. See `docs/PERSONALIZATION.md` for the full map of what
    to edit to personalize Claude or OMP, and whether a change affects one project or all.
 
-8. **Plugins** (both agents): `ab profile install <agent>` installs what the deployed profile's
-   `plugins.toml` declares, in a sandbox, into `~/.config/agentbox/<agent>/plugins/`, which sessions mount
+8. **Profiles and plugins** (Claude, OMP, Pi): each agent's profile repo (`agentbox-profile-<agent>`) is
+   deployed with its own `./build.sh deploy` to `~/.config/agentbox/<agent>/profile`. Pi reads its model list
+   from the OMP seed (step 6) and its settings from `~/.config/agentbox/pi/settings.json`. `ab profile install
+   <agent>` installs what the deployed profile's `plugins.toml` declares (it refuses an empty declaration:
+   there is nothing to install until one package is listed), in a sandbox, into `~/.config/agentbox/<agent>/plugins/`, which sessions mount
    read-only. Rerun it after the profile's `plugins.toml` or the agent image changes; a session says so when
    the tree is stale.
 
