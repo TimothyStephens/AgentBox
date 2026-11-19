@@ -803,9 +803,10 @@ class LongStepsSayWhatTheyDo(SessionBase):
                       f"backing up {self.root} (the pre-session snapshot)", "removing old pre-session snapshots",
                       "recording the state of"):
             self.assertRegex(text, rf"agentbox: \[\d/\d\] {re.escape(label)}")
-        for label in ("keeping the session's logs",          # teardown is not numbered yet (TODO.md)
-                      "removing the session's containers and networks", "running the end-of-session scan"):
-            self.assertIn(f"agentbox: {label}", text)
+        for n, label in enumerate(("keeping the session's logs",      # teardown is numbered on its own
+                                   "removing the session's containers and networks",
+                                   "running the end-of-session scan"), 1):
+            self.assertIn(f"agentbox: [{n}/3] {label}", text)
         self.assertGreaterEqual(text.count(": done in "), 8, text)
 
 

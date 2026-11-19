@@ -3792,3 +3792,10 @@ On the host, `ls -la $XDG_RUNTIME_DIR/agentbox/sessions/` and `cat /proc/<pid>/s
 Also recorded from the same incident: suspect A (a `tm` grandchild holding pipes) cannot stall `subprocess.run` on
 Python 3.11 (measured; see the first 19 Nov teardown entry). The stall's likeliest cause is a terminal write that
 blocked (suspect B), which the writer thread and the output-last order now take out of the bookkeeping.
+
+## 19 Nov 2026: teardown steps are numbered too
+
+After the teardown rework merged, `lifecycle._teardown` numbers its three long steps with the same `progress.Steps`
+(keeping the logs, removing the containers and networks, the end-of-session scan): `[n/3]`, or `[n/2]` when the
+session recorded no scan state. `LongStepsSayWhatTheyDo` pins it. `ab deploy`'s one step stays unnumbered (`[1/1]`
+says nothing).

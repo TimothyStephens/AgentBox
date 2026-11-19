@@ -15,7 +15,7 @@ from .errors import AgentboxError
 from .fsutil import write_private
 from .liveness import STOPPING, _alive, _start_time, session_is_alive, sessions, stopping_marker, stopping_text
 from .podman import label_filters
-from .progress import Step, stderr_line
+from .progress import Step, Steps, stderr_line
 from .state import _free_name, ephemeral_state, service_tmp
 
 
@@ -333,19 +333,22 @@ def _teardown(settings, podman, session, warn, exit_reason, limit):
     sel = {"agentbox.session": session, **settings.labels}
     started = _session_started(settings, session)
     mark = _Marker(settings, session)
+    # Numbered like the start (`[2/3]`): the scan step only when the session recorded a scan state.
+    plan = Steps(["logs", "remove"] + (["scan"] if os.path.isfile(
+        os.path.join(settings.session_run_dir(session), SCAN_STATE)) else []))
     mark.step("stopping the podman service")
     try:
         sockguard.stop_service(settings.service_dir(session))
     finally:
         mark.step("keeping the logs")
         try:
-            with Step("keeping the session's logs", warn):
+            with plan.step("logs", "keeping the session's logs", warn):
                 _keep_logs(settings, podman, session, started, warn)
         except Exception as e:
             warn(f"agentbox: could not keep the session's logs: {e!r}")
         shutil.rmtree(settings.service_dir(session), ignore_errors=True)
         mark.step("removing containers and networks")
-        with Step("removing the session's containers and networks", warn):
+        with plan.step("remove", "removing the session's containers and networks", warn):
             _remove(settings, podman, session, sel, warn)
         if settings.cgroup_parent:
             # the per-session build cgroup the gate names; empty once the builds are gone
@@ -378,7 +381,7 @@ def _teardown(settings, podman, session, warn, exit_reason, limit):
             mark.step(step)
             try:
                 if step == "end-of-session scan":
-                    with Step("running the end-of-session scan", warn):
+                    with plan.step("scan", "running the end-of-session scan", warn):
                         done, result = _within(deadline, fn)
                         if not done:
                             raise _CutShort
