@@ -3474,3 +3474,13 @@ extensions, and an installed copy of them breaks its module mapping. That flag i
 step's brief. The installed npm version is checked against the declared one when the state is written. A `[[repo]]`
 without a package.json is accepted (Pi loads a directory of conventional resource folders), unlike OMP's, which needs
 one to link. Packages are listed only when declared AND present in the tree, as Claude's plugins are.
+
+## 19 Nov 2026: first Pi host runs; pi-live step 2 now needs a token only the tool can return
+
+`make pi-image` (1.5.2) and `test_pi_isolation` 2/2 OK on the host. `make pi-live` on the local model timed out:
+Pi's CONNECT tunnels to the model server each closed after 300 s with no answer, and a plain `curl` to the same
+server from the host hung too, so the server was busy, not Pi. With `AB_LIVE_MODEL=openrouter/z-ai/glm-5.3-flash`
+step 1 passed (AB_OK in 11 s, one TLS tunnel), and step 2 failed correctly but for a test reason: the model
+answered `AB_BASH_OK` straight from the prompt without calling bash, and the old check counted the prompt's own
+echo in the events as "output". Step 2 now asks Pi to `cat` a file holding a random token and passes only when a
+bash `tool_execution_end` (field names checked in Pi 1.5.2's dist) carries it.

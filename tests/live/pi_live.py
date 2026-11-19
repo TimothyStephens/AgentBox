@@ -6,8 +6,9 @@ The keyless model seed ~/.config/agentbox/omp/models.yml (shared with OMP, P4) a
 /tmp/abt-<run>/ and is removed afterwards.
 
   1. `pi -p` must answer AB_OK (AB_LIVE_MODEL=<provider/model>, or a default model in the settings seed);
-  2. `pi -p --mode json` is asked to run `echo AB_BASH_OK` with its bash tool: the JSON events must show the bash
-     tool call and its output;
+  2. `pi -p --mode json` is asked to `cat` a file holding a random token with its bash tool: the JSON events must
+     show a bash tool call whose result holds the token (the prompt never contains it, so a model cannot answer
+     without running the tool, as one did on 19 Nov with `echo AB_BASH_OK`);
   3. the project ships a `.pi/settings.json` naming a package: nothing may be installed (no npm registry or git
      host in the proxy log) and nothing may reach pi.dev (PI_OFFLINE=1, PI_TELEMETRY=0, --no-approve);
   4. no key value may appear in any state file, log, backup or output.
@@ -16,6 +17,7 @@ AB_LIVE_EGRESS=locked|packages|open (default packages).
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 import time
@@ -28,7 +30,11 @@ MODE = os.environ.get("AB_LIVE_EGRESS", "packages")
 MODEL = os.environ.get("AB_LIVE_MODEL", "")
 REAL_CFG = os.path.expanduser("~/.config/agentbox")
 SEEDS = (("omp", "models.yml"), ("pi", "settings.json"))
-BASH_PROMPT = "Use the bash tool to run exactly this command: echo AB_BASH_OK. Then reply with its output."
+TOKEN_FILE = "ab-bash-token.txt"
+
+
+def bash_prompt(token_file):
+    return f"Use the bash tool to run exactly this command: cat {token_file}. Then reply with its output."
 FORBIDDEN_HOSTS = ("registry.npmjs.org", "pi.dev", "github.com", "codeload.github.com")
 
 
@@ -70,19 +76,24 @@ def run_pi(env, prompt_args, timeout):
         return Run(None, time.time() - started, str(e))
 
 
-def bash_events(stdout):
-    """(saw a bash tool call, saw AB_BASH_OK) from `--mode json` JSON lines."""
+def bash_events(stdout, token):
+    """(saw a bash tool call, saw `token` in a bash tool result) from `--mode json` JSON lines. Only a bash
+    tool_execution_end counts as output: the prompt and the model's own text appear in other events."""
     called = output = False
+    bash_ids = set()
     for line in stdout.splitlines():
         try:
             ev = json.loads(line)
         except ValueError:
             continue
-        text = json.dumps(ev)
-        if ev.get("type") == "tool_execution_start" and "bash" in str(ev.get("toolName", ev.get("tool", ""))):
+        if not isinstance(ev, dict) or str(ev.get("toolName", "")) != "bash":
+            continue
+        if ev.get("type") == "tool_execution_start":
             called = True
-        if "AB_BASH_OK" in text:
-            output = True
+            bash_ids.add(ev.get("toolCallId"))
+        elif ev.get("type") == "tool_execution_end" and ev.get("toolCallId") in bash_ids:
+            if token in json.dumps(ev.get("result")):
+                output = True
     return called, output
 
 
@@ -100,6 +111,9 @@ def main():
     os.makedirs(os.path.join(root, ".pi"), exist_ok=True)
     with open(os.path.join(root, ".pi", "settings.json"), "w") as f:
         json.dump({"packages": ["npm:left-pad@1.3.0", "git:github.com/example/never@main"]}, f)
+    token = f"AB_BASH_{secrets.token_hex(8)}"
+    with open(os.path.join(root, TOKEN_FILE), "w") as f:
+        f.write(token + "\n")
     print(f"[pi-live run {harness.RUN}: egress {MODE}, project {root}, seeds {', '.join(seeds) or 'none'}]",
           flush=True)
     keys = real_keys()
@@ -128,7 +142,7 @@ def main():
         section("1. timed out", redact(p1.timed_out)[-2000:])
     access1 = new_proxy_logs(seen)
     section("1. proxy access log", access1[-3000:])
-    p2 = run_pi(env, ["-p", "--mode", "json", *model, BASH_PROMPT], 900)
+    p2 = run_pi(env, ["-p", "--mode", "json", *model, bash_prompt(TOKEN_FILE)], 900)
     section("2. pi --mode json output (tail)", redact(p2.stdout + p2.stderr)[-4000:])
     if p2.timed_out:
         section("2. timed out", redact(p2.timed_out)[-2000:])
@@ -155,7 +169,7 @@ def main():
             leaks.append(label)
 
     ok1 = re.search(r"^AB_OK\s*$", p1.stdout, re.M) is not None
-    called, output = bash_events(p2.stdout)
+    called, output = bash_events(p2.stdout, token)
     ok2 = called and output
     empty = empty_proxy_logs([("1", ok1, access1), ("2", ok2, access2)])
     left = harness.leftovers()
