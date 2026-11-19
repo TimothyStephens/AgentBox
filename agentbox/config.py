@@ -97,6 +97,11 @@ DEFAULTS = {
     "repos_dir": "~/repos",  # where `ab project init` scaffolds new projects (AB_REPOS_DIR overrides)
     "session_idle_warn_hours": 6,  # ab session ls flags, and warns about, a running session idle longer than this
     "toulmin_tm_path": "",   # Toulmin's `tm` (docs/agentbox_toulmin_integration.md); empty: `tm` on PATH
+    # Build-time, read by `make base-image` (agentbox/imageopts.py), not by a session: true puts Python
+    # Playwright and its headless Chromium into agentbox-base, and so into every agent image (decisions.md,
+    # 19 Nov). Off by default: a few hundred MB that only someone testing web UIs needs. A session learns what
+    # the image actually has from its `agentbox.playwright` label, never from this setting.
+    "image_playwright": False,
 }
 
 

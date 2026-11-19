@@ -26,7 +26,8 @@
 # Why each thing that IS here:
 #   * chromium plus the Playwright/Chromium runtime libraries: OMP's browser tool uses
 #     PUPPETEER_EXECUTABLE_PATH, so ~/.omp/puppeteer is never mounted and the browser must be the image's;
-#   * python-is-python3 and debugpy: the debugger probe needs both (design: OMP adapter);
+#   * debugpy: the debugger probe needs it, and `python`, which agentbox-base has carried since 19 Nov
+#     (python-is-python3 was here; skills call `python` in every agent, so it moved down) (design: OMP adapter);
 #   * /root is 0700 in the base and Bun lives in /root/.bun. The sandbox runs as the host user
 #     (--userns=keep-id), so /root is opened to 0755 -- after a step that fails the build if /root holds
 #     anything credential-like (review 2026-10-01 #8);
@@ -38,7 +39,7 @@ ARG AB_HOME=/home/vmuser
 
 # Chromium and the shared libraries it needs. Kept as one apt step so the layer cache is one unit.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        chromium python-is-python3 \
+        chromium \
         libnspr4 libnss3 \
         libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
         libdbus-1-3 libx11-6 libx11-xcb1 libxcomposite1 libxcursor1 \
@@ -90,7 +91,8 @@ RUN chmod 0755 /root && ln -sfn "${AB_HOME}/.omp" /root/.omp
 # No PLAYWRIGHT_BROWSERS_PATH: it pointed at ~/.omp/.cache/ms-playwright, a host cache agentbox stopped
 # mounting on 4 Nov (the image carries chromium and OMP's browser tool uses PUPPETEER_EXECUTABLE_PATH, so
 # the cache was a second copy nobody read). ~/.omp is a tmpfs in a session, so leaving the variable set
-# would have pointed Playwright at an empty directory.
+# would have pointed Playwright at an empty directory. A base built with Playwright (image_playwright, 19 Nov)
+# sets it to its own read-only /opt/ms-playwright, which this layer inherits and must not override.
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_CACHE_DIR=/tmp/pip-cache

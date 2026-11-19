@@ -18,6 +18,11 @@ executable is host-mounted (only config/state are — see `PERSONALIZATION.md`).
 | `localhost/agentbox-omp:latest` | `make omp-image` → `images/omp/Containerfile` | `agentbox-base` |
 | `localhost/agentbox-<agent>-user:<key>` | `ab image build <agent>` → `<profile>/Containerfile` | the agent image above |
 
+`agentbox-base` comes in two variants from one Containerfile: stage `core` always, and stage `playwright`
+(core plus Python Playwright and its headless Chromium) when `image_playwright = true` in `agentbox.toml` or
+`make base-image PLAYWRIGHT=1`. Both are tagged `agentbox-base`; the `agentbox.playwright` label (a version, or
+`none`) says which, and every image built on it inherits the label.
+
 Each `make …-image` also tags `:<date>` for history. The agent builds are `--pull=never`, so they layer on
 the **local** base and never fetch one; they fail loudly if `agentbox-base` is missing and warn when it is
 older than `BASE_WARN_DAYS` (default 14).
@@ -40,7 +45,9 @@ node checksum of ours to keep current.
 | `podman` (podman-remote, static) | `/usr/local/bin/podman`, ahead of `/usr/bin` on PATH (so it shadows a Debian podman; Bun's directory is prepended in front of both in the OMP image) | `ADD --checksum` from GitHub in `images/base/Containerfile` | `PODMAN_REMOTE_VERSION` + `PODMAN_REMOTE_SHA256` — **5.7.0** (matches the host podman service major) |
 | the compose tool | base image site-packages | `pip --require-hashes` in the base | `images/base/requirements.txt` — **1.5.0** (with `python-dotenv` 1.2.3, `pyyaml` 6.0.3) |
 | `debugpy` (OMP only) | image site-packages | `pip --require-hashes` | `images/omp/requirements.txt` — **1.8.22** |
-| `git`, `curl`, `jq`, `rsync`, `rg`, `fd`, `gcc`/`g++`/`make`, `python3`+venv | base PATH | `apt-get install` in the base | distro version (apt verifies its own packages) |
+| `git`, `curl`, `jq`, `rsync`, `rg`, `fd`, `gcc`/`g++`/`make`, `python3`+venv, `python` (python-is-python3, since 19 Nov) | base PATH | `apt-get install` in the base | distro version (apt verifies its own packages) |
+| Python Playwright + `playwright` CLI (**opt-in**, every agent image) | base site-packages, `/usr/local/bin/playwright` | `pip --require-hashes` in the base's `playwright` stage | `PLAYWRIGHT_VERSION` in the `Makefile` and `images/base/requirements-playwright.txt` — **1.65.2** (with `greenlet` 3.5.6) |
+| Playwright's `chromium-headless-shell` (**opt-in**) + its libraries and fonts | `/opt/ms-playwright/chromium_headless_shell-1255/` (`PLAYWRIGHT_BROWSERS_PATH`), read-only | `ADD --checksum` of the zip `playwright install` would fetch; libraries by `playwright install-deps` (apt) | `PLAYWRIGHT_CHROMIUM_REVISION`/`_VERSION` + `PLAYWRIGHT_SHELL_SHA256` — **1255 / 159.0.8154.6** (the build asserts the package's `browsers.json` agrees) |
 | `chromium` + its runtime libraries (OMP only) | `/usr/bin/chromium` | `apt-get install` in the OMP layer | distro version |
 
 Nothing is host-mounted at runtime. The podman client talks over the gate's Unix socket to the **host's**
@@ -71,6 +78,7 @@ To see what a built image carries:
 podman run --rm --entrypoint "" localhost/agentbox-claude:latest claude --version
 podman run --rm --entrypoint "" localhost/agentbox-omp:latest    omp   --version
 podman image inspect localhost/agentbox-base:latest --format '{{index .Config.Labels "agentbox.base"}}'
+podman image inspect localhost/agentbox-claude:latest --format '{{index .Config.Labels "agentbox.playwright"}}'
 ```
 
 ## Upgrading
@@ -100,6 +108,24 @@ make claude-image omp-image
 
 Bun's version and checksum are `BUN_VERSION`/`BUN_SHA256` in the `Makefile`; the checksum comes from the
 release's own `SHASUMS256.txt`.
+
+### Playwright (opt-in)
+
+```bash
+# in the Makefile:
+#   PLAYWRIGHT_VERSION := <new version>            (and the same in images/base/requirements-playwright.txt,
+#                                                   with its --hash lines and greenlet's)
+#   PLAYWRIGHT_CHROMIUM_REVISION / _VERSION := what that version's driver/package/browsers.json names for
+#                                              chromium-headless-shell
+#   PLAYWRIGHT_SHELL_SHA256 := $(curl -sSfL <the PLAYWRIGHT_URL the Makefile prints> | sha256sum)
+make base-image          # with image_playwright = true, or PLAYWRIGHT=1
+make claude-image omp-image pi-image
+```
+
+The build fails on any of the three disagreeing: the package version, `browsers.json` against the browser
+pins, and the zip against its checksum. Playwright itself verifies no checksum on its downloads, which is why
+the browser is not fetched with `playwright install`; there is no published checksum either, so the first one
+is taken on the host and later builds are held to it.
 
 ### The podman client (shared by every image)
 

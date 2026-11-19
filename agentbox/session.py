@@ -9,7 +9,7 @@ import time
 
 from . import adapters, backup, cgroup, egress, grantcheck, hardening, mounts, profile, tokens
 from . import keys as keysmod
-from . import layout, scan, sockguard, toulmin, userimage
+from . import imageopts, layout, scan, sockguard, toulmin, userimage
 from .config import HOME
 from .errors import AgentboxError
 from .fsutil import inside, write_private
@@ -378,9 +378,11 @@ class Session:
         self.profile = profile.load_for_session(self.settings, self.adapter, out=self.warn,
                                                 off_reason=why)
         moved = [] if off else migrate_state_to_inbox(self.settings, p.name, self.adapter, self.warn)
+        # The harness image's label (the user layer is not resolved yet, and inherits it anyway).
         notes = sandbox_notes(p, self.egress, self.podman_live, self.podman_dev,
                               profile=self.profile, inbox=self.inbox_mount,
-                              inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter, clone=self.clone)
+                              inbox_kept=not self.inbox_is_ephemeral, adapter=self.adapter, clone=self.clone,
+                              playwright=imageopts.playwright_version(self.image_labels()))
         self.adapter.seed_state(self.settings, self.state_dir, notes, profile_on=not off)
         self.setup = self.adapter.prepare_session(self, notes)
         if self.toulmin:

@@ -38,7 +38,7 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    Installs `deploy/agentbox.slice` to `~/.config/systemd/user/agentbox.slice` and reloads the user daemon.
 
 2. **The base image** — the toolchain every session shares, whichever agent runs: node 26, git, curl, jq,
-   unzip, rsync, python3 + venv, ripgrep, fd, a C/C++ toolchain, the checksum-pinned podman client and the
+   unzip, rsync, python3 + venv (and `python`), ripgrep, fd, a C/C++ toolchain, the checksum-pinned podman client and the
    compose tool. Build it before the agent images; theirs are `--pull=never` and will say so if it is
    missing.
    ```bash
@@ -50,6 +50,28 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    reproducible one. Pin the digest once and keep it in the Makefile — a tag moves, and the agent builds
    are `--pull=never`, so they would not see it move. The image records what it was built from:
    `podman image inspect localhost/agentbox-base:latest --format '{{index .Config.Labels "agentbox.base"}}'`.
+
+   **Optional: Playwright** (Python, headless Chromium only) for testing web UIs from a session, e.g. the
+   shared `webapp-testing` skill. Off by default: it adds a few hundred MB to every agent image. To turn it on
+   for good, add to `~/.config/agentbox/agentbox.toml`:
+   ```toml
+   image_playwright = true
+   ```
+   The browser zip is pinned by checksum like every other download, and Playwright publishes none, so the
+   first time (and after each `PLAYWRIGHT_VERSION` move) take it once from the URL the Makefile names and
+   put it in the Makefile as `PLAYWRIGHT_SHELL_SHA256 := <it>`:
+   ```bash
+   curl -sSfL https://cdn.playwright.dev/builds/cft/159.0.8154.6/linux64/chrome-headless-shell-linux64.zip | sha256sum
+   make base-image OS_BASE_DIGEST=sha256:<as above>     # reads image_playwright; PLAYWRIGHT=1 or =0 overrides it once
+   ```
+   `make base-image` refuses `PLAYWRIGHT=1` without the checksum and prints this command. The build asserts the
+   Python package's version, that its `browsers.json` names the pinned browser build, and that a headless
+   page renders. Then rebuild the agent images (step 3), which inherit it; personal layers go stale and say
+   so (`ab image build <agent>`), and `ab profile install <agent>` again, as after any image change. Check it:
+   `podman image inspect localhost/agentbox-claude:latest --format '{{index .Config.Labels "agentbox.playwright"}}'`
+   prints the version (`none` without it); `ab project selftest claude <name>` runs a headless launch in the
+   session (SKIP when it is not installed); `python3 -m unittest tests.integration.test_playwright -v` loads
+   a local page through it in a real session. To turn it off, set `image_playwright = false` and rebuild.
 
 3. **The agent images**, which install each agent CLI at the pin the Makefile names (`CLAUDE_VERSION`,
    `OMP_VERSION`, plus `BUN_VERSION` for OMP's extension runtime):

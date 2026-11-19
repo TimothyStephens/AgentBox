@@ -2,7 +2,7 @@
 
 The builder's running state, updated in every commit, so a crashed session loses nothing. The spec is `docs/design.md`; deviations are in `docs/decisions.md`.
 
-**Updated:** 16 Nov 2026
+**Updated:** 19 Nov 2026
 
 ## Status (single source of truth — what this tool does and does not do)
 
@@ -34,6 +34,7 @@ Threat model: **mistake containment + cross-project isolation**, NOT a wall agai
 | **`mask`** (per-project masked paths) | **built** (10 Nov) | `--mask PATH`, repeatable: a bare name masks every file or directory of that name in the grants, `./x` or a slashed path one path under the root. Empty, read-only, hidden for grantcheck, covered for the gate, out of the backup and the scan. `docs/agentbox-masked-paths.md` was the spec. decisions.md, 10 Nov. Its in-session errno probe is `test_mask_errno` (19 Nov; not yet run on the host). |
 | **`data_bind` / `data_env`** (trusted opt-outs) | **built** (19 Nov; unit tests only, not run on the host) | Project settings, `--data-bind on`/`off` and `--data-env on`/`off`, default off, for an agent the user trusts. `data_bind`: `./data` visible and writable, not a grantcheck live-data finding, left out of the pre-session snapshot and the scan (it is the user's to back up). `data_env`: the real env files (`.env`, `.env.*`, `*.env`) of the project root instead of the masks and the dev swap; other secret names and data grants stay masked. Refused under lockdown and in clone mode; `data_bind` also with `code = ro`, a read-only-data preset or a mask over `./data`. Replaces the 6 Oct deferred contract (no `--data-backup`). decisions.md, 19 Nov. |
 | **Reviewer projects** (`--reviews`, `ab project sync`) | **built** (11 Nov) | A reviewer is an ordinary project whose root is a clone of the builder's repo; the user's `ab project sync` moves the clone to the builder's last commit (detached) and copies `reviews/*.md` into the builder's `.review/`. Neither agent reaches the other's tree. design.md, "Clone mode and the Toulmin integration". |
+| **Playwright (opt-in, in agentbox-base)** | **built, not yet built on the host** (19 Nov) | `image_playwright = true` in agentbox.toml (or `make base-image PLAYWRIGHT=1`) builds the base's `playwright` stage: Python Playwright 1.65.2 and its chromium-headless-shell (ADD --checksum; the sha256 is taken once on the host, none is published), labelled `agentbox.playwright`. Session notes mention it only when the image has it; `ab project selftest` launches it, or SKIPs when absent. Unit-tested; the build, `tests.integration.test_playwright` and the selftest line need the host. `python` (python-is-python3) is in the base for every agent. |
 | **Real projects on the box** | **the user's call** | The independent re-review (`reviews/2026-10-15-pre-real-project.md`) is done and its findings actioned; the 16 Nov review's fixes are in decisions.md. First real project: one of the user's own stacks, registered `lockdown`, run supervised. |
 
 Optional TODOs and deferred maintainability work (none of it blocks use) live in `docs/TODO.md`, which is
