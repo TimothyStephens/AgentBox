@@ -3883,3 +3883,10 @@ gets no hooks/ of its own (git uses the common one; nothing is created in the ow
 the common config has the extension on (or cannot be read: covering a file git ignores costs nothing) a missing
 `config.worktree` is created empty and covered. `tests/unit/test_worktree_covers.py` (four failing before, real
 `git worktree add`); `test_walk_equivalence`'s reference copy of the old `find_git_dirs` takes the same one change.
+
+## 19 Nov 2026: host run at 97c3ed5 (shared walk, worktree covers)
+
+`make itest` 213/213 OK (now including `test_trusted_optouts`). `ab project check toulmin-build` timed on the host
+after the shared walk: 8.2 s on the first run, 6.5 s on the second; the same work took 17.9 s inside that morning's
+session start (not the same command, and cache state unknown, so read it as roughly 2-3x, which matches the 2x
+measured in the sandbox). Teardown printed `[2/3] removing the session's containers and networks`, as numbered.

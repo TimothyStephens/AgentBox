@@ -96,7 +96,7 @@ three fixes), and `gate.py`, `session.py` and `cli.py` split along their seams (
   four has one sidecar `run -d` taking 1.7-3.2 s (one omp-live start on 18 Nov took 17 s, with 4 sessions
   running and the pool at 3.5 GB; the next start in the same run took 3.1 s) (journald was the bigger spread, gone since the k8s-file
   switch). On large trees the per-file work was fixed (mask plan, scan record, backup skips caches). **Measured 19
-  Nov** on the host: the grant step of a toulmin-build start took 17.9 s, and the cost was not the scan's per-file
+  Nov** on the host (after the shared walk: `ab project check toulmin-build` 8.2 s cold, 6.5 s warm): the grant step of a toulmin-build start took 17.9 s, and the cost was not the scan's per-file
   lstat (narrowing it would have saved about 15%) but the same tree walked four times with redundant per-directory
   syscalls. **Done 19 Nov:** the plan and the scan share one listing per directory (`mounts.Tree`); about half the
   time on a generated 21k-file tree in a session. The per-file lstat stays (the foreign-owner warning is a
