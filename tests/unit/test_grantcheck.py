@@ -523,6 +523,16 @@ class GitConfigEscapes(TempCase):
         self.assertEqual(findings, [])
         self.assertTrue(any("points outside the grant" in w for w in warnings), warnings)
 
+    def test_a_read_only_repo_with_an_unparseable_config_is_a_finding(self):
+        """Decision 19 Nov 2026: it may name a path in the writable grant, so it refuses, not warns."""
+        ref = self.mkdir("ref")
+        subprocess.run(["git", "init", "-q", ref], check=True)
+        with open(os.path.join(ref, ".git", "config"), "a") as f:
+            f.write("[core\n")
+        findings, warnings = grantcheck.scan(self.root, [self.root], warn_grants=[ref])
+        self.assertIn(os.path.join(ref, ".git", "config"), "\n".join(texts(findings)))
+        self.assertFalse(any("git config cannot be read" in w for w in warnings), warnings)
+
     def test_an_unparseable_config_is_a_finding(self):
         with open(os.path.join(self.root, ".git", "config"), "a") as f:
             f.write("[core\n")

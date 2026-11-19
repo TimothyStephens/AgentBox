@@ -386,11 +386,42 @@ class GitConfigInReadOnlyGrant(TempCase):
         self.assertEqual([m.dst for m in p.mounts if mounts.inside(m.dst, self.ref)], [self.ref])
         self.assertEqual((p.create_dirs, p.create_files), ([], []))
 
-    def test_an_unreadable_config_there_is_left_to_grantcheck(self):
-        """A read-only grant's broken config did not refuse the plan before; grantcheck reports it."""
+    def test_an_unparseable_config_there_refuses_the_plan(self):
+        """Decision 19 Nov 2026: the launcher cannot tell whether a config it cannot read names a path in a
+        writable grant, so it refuses as it does for a writable grant's config, naming the file."""
+        cfg = os.path.join(self.ref, ".git", "config")
+        with open(cfg, "a") as f:
+            f.write("[core\n")
+        with self.assertRaises(AgentboxError) as cm:
+            mounts.plan(root=self.root, data_ro=[self.ref])
+        self.assertIn(cfg, str(cm.exception))
+        self.assertIn("move the repo out of the grant", str(cm.exception))
+
+    @unittest.skipIf(os.getuid() == 0, "root reads a mode-000 file")
+    def test_an_unreadable_config_there_refuses_the_plan(self):
+        """git exits 1 on a config it cannot open, the same as "no such key", so this read as a clean config."""
+        cfg = os.path.join(self.ref, ".git", "config")
+        os.chmod(cfg, 0)
+        self.addCleanup(os.chmod, cfg, 0o644)
+        with self.assertRaises(AgentboxError) as cm:
+            mounts.plan(root=self.root, data_ro=[self.ref])
+        self.assertIn(cfg, str(cm.exception))
+        self.assertIn("make it readable or move the repo out of the grant", str(cm.exception))
+
+    @unittest.skipIf(os.getuid() == 0, "root reads a mode-000 file")
+    def test_an_unreadable_config_in_a_writable_grant_refuses_the_plan(self):
+        cfg = os.path.join(self.ref, ".git", "config")
+        os.chmod(cfg, 0)
+        self.addCleanup(os.chmod, cfg, 0o644)
+        with self.assertRaises(AgentboxError) as cm:
+            mounts.plan(root=self.ref)
+        self.assertIn(cfg, str(cm.exception))
+
+    def test_with_no_writable_grant_it_is_not_read(self):
+        """A read-only root and nothing writable: there is no path in a writable grant it could name."""
         with open(os.path.join(self.ref, ".git", "config"), "a") as f:
             f.write("[core\n")
-        mounts.plan(root=self.root, data_ro=[self.ref])
+        mounts.plan(root=self.ref, code="ro")
 
 
 class DevSwapMountPoint(TempCase):
