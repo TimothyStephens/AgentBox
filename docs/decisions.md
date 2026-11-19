@@ -3454,3 +3454,19 @@ name. Tim chose per-project state like OMP; the known files are moved to the inb
 (`pi.LOADED_AT_START`). The risk: a Pi upgrade that adds a loaded file name opens a way for one session to steer the
 next until that list is updated, so checking Pi's changelog for new agent-dir files is part of every PI_VERSION bump.
 
+## 18 Nov 2026: Pi packages (`ab profile install pi`, step 2)
+
+**What.** The Pi profile's `plugins.toml` takes OMP's `[[npm]]` and `[[repo]]` shapes (`plugins.AGENT_SECTIONS["pi"]`),
+validated the same way; `[[plugin]]` is refused for Pi (no marketplaces). `ab profile install pi` runs in the same
+hardened install container as OMP and Claude, against `agentbox-pi`, into `~/.config/agentbox/pi/plugins` (staging,
+swap, lockfile naming the image). A session mounts the tree read-only at `~/.pi/packages` and adds a `packages` list of
+local paths to the settings.json it generates. For a `[[repo]]`, `extension_dir` names the Pi package directory.
+
+**Why these choices.** npm and git are driven directly instead of `pi install`: Pi's command writes the package into
+settings.json, would need PI_OFFLINE off, allows npm install scripts, and installs into `<agent-dir>/npm` and `git`,
+which sessions cover empty. Every npm call has `--ignore-scripts` (no package code runs at install) and
+`--legacy-peer-deps`, which is what Pi 1.5.2 itself passes: Pi supplies its `@earendil-works/pi-*` packages to
+extensions, and an installed copy of them breaks its module mapping. That flag is an addition to the command in the
+step's brief. The installed npm version is checked against the declared one when the state is written. A `[[repo]]`
+without a package.json is accepted (Pi loads a directory of conventional resource folders), unlike OMP's, which needs
+one to link. Packages are listed only when declared AND present in the tree, as Claude's plugins are.

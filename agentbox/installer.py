@@ -42,6 +42,12 @@ the tree read-only at `/run/agentbox/claude/marketplaces` and generates the two 
 `plugins.toml` (adapters/claude.py). A remote source declared in settings was tried and is not used: a
 `github` or `git` source, with or without a `ref`, was silently not registered at startup, and the pin has
 to be agentbox's in any case.
+
+**Pi's tree is Claude's shape with npm in it** (18 Nov, docs/pi-proposal.md). Pi loads a package listed in
+its settings by LOCAL PATH in place and never modifies it, so the install drives npm and git itself -- npm
+packages into a prefix at `<tree>/npm` (install scripts never run), git packages checked out at their sha
+under `<tree>/git` with their runtime dependencies -- and the session lists each package's path in the
+settings.json it generates (adapters/pi.py). No `pi` command runs here (`_pi_script` says why).
 """
 import fcntl
 import json
@@ -76,7 +82,12 @@ C_TREE = os.path.join(C_OMP, "plugins")
 # Nothing Claude Code writes records this path except the `settings.json` the launcher generates per
 # session, so the install mounts it here for the same reason OMP's is: one definition, used twice.
 C_CLAUDE_TREE = "/run/agentbox/claude/marketplaces"
-TREE_DST = {"omp": C_TREE, "claude": C_CLAUDE_TREE}
+# Pi's tree (18 Nov): npm packages under `npm/`, git checkouts under `git/`, mounted read-only under the
+# session's `~/.pi` tmpfs (adapters/pi.py TREE_DST, the same path). Pi records nothing about the tree: the
+# session's generated settings.json names each package by its path here, which Pi loads in place.
+C_PI = os.path.join(HOME, ".pi")
+C_PI_TREE = os.path.join(C_PI, "packages")
+TREE_DST = {"omp": C_TREE, "claude": C_CLAUDE_TREE, "pi": C_PI_TREE}
 
 
 def tree_dst(agent):
@@ -263,10 +274,87 @@ def _link_lines(e, ext):
             f"omp plugin link {q(ext)}"]
 
 
+# What a Pi tree's state.json says, read from the tree after the installs: each npm package's version from
+# its installed package.json (and the install fails if that is not the declared version), each checkout's
+# commit. Arguments are `npm=<name>=<version>=<path>` and `repo=<name>=<sha>=<path>`.
+_PI_STATE = ("import json,subprocess,sys; out={'npm': [], 'repo': []}\n"
+             "for arg in sys.argv[2:]:\n"
+             "    kind, name, pin, path = arg.split('=', 3)\n"
+             "    if kind == 'npm':\n"
+             "        v = json.load(open(path + '/package.json')).get('version')\n"
+             "        if v != pin:\n"
+             "            sys.exit('npm package %s is at %r, not the declared %s' % (name, v, pin))\n"
+             "        out['npm'].append({'name': name, 'version': v, 'path': path})\n"
+             "    else:\n"
+             "        sha = subprocess.run(['git', '-C', path, 'rev-parse', 'HEAD'], capture_output=True, "
+             "text=True, check=True).stdout.strip()\n"
+             "        out['repo'].append({'name': name, 'commit': sha, 'path': path})\n"
+             "json.dump(out, open(sys.argv[1], 'w'), indent=1, sort_keys=True)\n")
+# npm's flags for every install, Pi's own (1.5.2, its package manager for npm sources) plus one:
+#   --ignore-scripts  no package's install scripts run, here or anywhere (a package that needs one to build
+#                     does not work under agentbox; that is the price, and it is said in design.md);
+#   --legacy-peer-deps  no peer dependencies installed: Pi supplies `@earendil-works/pi-*` and `typebox` to
+#                     its packages, and a physical copy of them breaks its module mapping (Pi's docs);
+#   --no-audit --no-fund  no extra registry calls, no noise.
+PI_NPM_FLAGS = "--no-audit --no-fund --ignore-scripts --legacy-peer-deps"
+
+
+def pi_package_path(e, *, tree=C_PI_TREE):
+    """Where an entry's Pi package is in the tree (the installer's and a session's path): an npm package in
+    the prefix's node_modules, a git package at its checkout, or the `extension_dir` inside it."""
+    if e.kind == "npm":
+        return f"{tree}/npm/node_modules/{e.name}"
+    path = f"{tree}/git/{e.name}"
+    return path if e.extension_dir == "." else f"{path}/{e.extension_dir}"
+
+
+def _pi_script(entries, *, tree=C_PI_TREE):
+    """The shell a Pi install runs: npm and git driven directly, with the image's node, npm and git.
+
+    Not `pi install`: it writes the package into settings.json (there is none worth writing in an install
+    container), it would need PI_OFFLINE off, it runs npm with install scripts allowed, and it puts packages
+    in `<agent-dir>/npm` and `<agent-dir>/git`, which a session covers empty and read-only. Driving npm and
+    git here gives the same layout under the tree, with the pin checked, and nothing executed but npm and git.
+    A session lists each package by its path, which Pi loads in place and never modifies."""
+    q = shlex.quote
+    npm_dir, git_dir = f"{tree}/npm", f"{tree}/git"
+    lines = ["set -eu", f"mkdir -p {q(npm_dir)} {q(git_dir)}"]
+    state = []
+    if any(e.kind == "npm" for e in entries):
+        # The prefix's own package.json, as Pi writes one before its first install, so npm installs here
+        # and does not go looking for a project above it.
+        lines.append(f"printf '%s\\n' {q(json.dumps({'name': 'agentbox-pi-packages', 'private': True}))} "
+                     f"> {q(npm_dir + '/package.json')}")
+    for e in entries:
+        path = pi_package_path(e, tree=tree)
+        if e.kind == "npm":
+            lines.append(f"npm install --prefix {q(npm_dir)} {PI_NPM_FLAGS} {q(e.name + '@' + e.version)}")
+            state.append(f"npm={e.name}={e.version}={path}")
+            continue
+        clone = f"{git_dir}/{e.name}"
+        missing = (f"agentbox: [[repo]] {e.name}: no directory {e.extension_dir} in {e.url} at {e.ref} "
+                   "(fix or remove the entry in plugins.toml)")
+        lines += [f"rm -rf {q(clone)}",
+                  f"git clone --quiet {q(e.url)} {q(clone)}",
+                  f"git -C {q(clone)} checkout --quiet {q(e.ref)}",
+                  f"git -C {q(clone)} rev-parse HEAD | grep -Fxq {q(e.ref)}",
+                  f"test -d {q(path)} || {{ echo {q(missing)} >&2; exit 1; }}",
+                  # A package without a package.json is a directory of conventional resource dirs, which
+                  # Pi loads as it is; one with a package.json gets its runtime dependencies.
+                  f"if [ -f {q(path + '/package.json')} ]; then npm install --prefix {q(path)} --omit=dev "
+                  f"{PI_NPM_FLAGS}; fi"]
+        state.append(f"repo={e.name}={e.ref}={clone}")
+    lines.append(f"mkdir -p {q(f'{tree}/{OURS}')}")
+    lines.append(f"python3 -I -c {q(_PI_STATE)} {q(f'{tree}/{STATE}')} " + " ".join(q(a) for a in state))
+    return "\n".join(lines) + "\n"
+
+
 def script_for(agent, entries):
     """The install script for an agent's declaration."""
     if agent == "claude":
         return _claude_script(entries)
+    if agent == "pi":
+        return _pi_script(entries)
     if agent == "omp":
         return _script(entries)
     raise AgentboxError(f"`ab profile install` has no installer for {agent}")
@@ -336,6 +424,11 @@ class Install:
             # command and writes nothing outside the tree, so it needs no second tmpfs.
             opts.append(f"--tmpfs={C_OMP}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
             tmpfs_dirs.append(C_OMP)
+        elif self.agent == "pi":
+            # The same for ~/.pi, as the Pi adapter makes it for a session: the tree's mount point is made
+            # inside a directory the container user owns, not one podman creates root-owned.
+            opts.append(f"--tmpfs={C_PI}:rw,nosuid,nodev,mode=0700,U,notmpcopyup")
+            tmpfs_dirs.append(C_PI)
         opts.append(f"--network={self.int_net}")
         env = {"HOME": HOME, "AGENTBOX_SESSION": self.name, **egress.proxy_env(self.proxy_name)}
         opts += [f"--env={k}={v}" for k, v in env.items()]
