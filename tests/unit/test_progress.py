@@ -4,7 +4,7 @@ import time
 import unittest
 
 from agentbox import backup
-from agentbox.progress import Step, elapsed
+from agentbox.progress import Step, Steps, elapsed
 
 from .helpers import TempCase
 
@@ -40,9 +40,58 @@ class StepLines(unittest.TestCase):
         time.sleep(0.15)
         self.assertEqual(out, [])
 
+    def test_a_numbered_step_carries_its_place_on_every_line(self):
+        out = []
+        with Step("checking /x", out.append, delay=0, heartbeat=0.05, position=(3, 7)) as st:
+            st.progress(0.5)
+            time.sleep(0.2)
+        self.assertEqual(out[0], "agentbox: [3/7] checking /x ...")
+        self.assertRegex(out[1], r"^agentbox: \[3/7\] checking /x: \d+\.\ds, 50%$")
+        self.assertRegex(out[-1], r"^agentbox: \[3/7\] checking /x: done in \d")
+        self.assertTrue(all(line.startswith("agentbox: [3/7] checking /x") for line in out), out)
+
+    def test_a_numbered_step_that_fails_keeps_its_number(self):
+        out = []
+        with self.assertRaises(RuntimeError):
+            with Step("doing x", out.append, delay=0, heartbeat=10, position=(1, 2)):
+                raise RuntimeError("boom")
+        self.assertRegex(out[-1], r"^agentbox: \[1/2\] doing x: stopped after ")
+
     def test_elapsed(self):
         self.assertEqual(elapsed(3.21), "3.2s")
         self.assertEqual(elapsed(125), "2m05s")
+
+
+class StepsCounter(unittest.TestCase):
+    def test_a_step_is_numbered_by_its_place_in_the_plan(self):
+        steps = Steps(["a", "b", "c"])
+        self.assertEqual(steps.total, 3)
+        self.assertEqual([steps.position(k) for k in "abc"], [(1, 3), (2, 3), (3, 3)])
+
+    def test_a_skipped_step_keeps_its_number_and_the_total_stays(self):
+        """A step too quick to print (or not reached) still uses its number: [1/3] then [3/3], never [2/2]."""
+        out = []
+        steps = Steps(["a", "b", "c"])
+        with steps.step("a", "doing a", out.append, delay=0):
+            pass
+        with steps.step("c", "doing c", out.append, delay=0):
+            pass
+        self.assertEqual([line.split(" doing")[0] for line in out], ["agentbox: [1/3]"] * 2 + ["agentbox: [3/3]"] * 2)
+        self.assertEqual(out[0], "agentbox: [1/3] doing a ...")
+        self.assertEqual(out[2], "agentbox: [3/3] doing c ...")
+        self.assertEqual(steps.ran, ["a", "c"])
+
+    def test_a_step_outside_the_plan_prints_unnumbered(self):
+        out = []
+        steps = Steps(["a"])
+        self.assertIsNone(steps.position("z"))
+        with steps.step("z", "doing z", out.append, delay=0):
+            pass
+        self.assertEqual(out[0], "agentbox: doing z ...")
+
+    def test_a_plan_cannot_name_a_step_twice(self):
+        with self.assertRaises(ValueError):
+            Steps(["a", "a"])
 
 
 class _Recorder:

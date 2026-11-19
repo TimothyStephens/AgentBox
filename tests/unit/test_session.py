@@ -1,6 +1,7 @@
 """Session assembly and lifecycle against the fake podman."""
 import json
 import os
+import re
 
 from agentbox import session
 from agentbox.errors import AgentboxError
@@ -609,6 +610,23 @@ class LauncherGitRunsSafe(SettingsCase):
 from .test_toulmin import ToulminCase  # noqa: E402  (new classes only below; see item 52's restructure above)
 
 
+class ToulminStartIsNumbered(ToulminCase):
+    def test_toulmin_on_counts_its_session_and_the_clone(self):
+        from unittest import mock
+        out = []
+        s = session.make_session(self.settings, "claude", session.load_project(self.settings, "p1"), warn=out.append)
+        with mock.patch("agentbox.progress.DELAY", 0.0):
+            s.prepare()
+            s.start_infra()
+        self.addCleanup(s.teardown)
+        firsts = [line for line in out if line.endswith(" ...") and line.startswith("agentbox: [")]
+        self.assertEqual([line.split("] ")[0] for line in firsts], [f"agentbox: [{i}/7" for i in range(1, 8)], out)
+        self.assertEqual(s.steps.plan, ["history", "toulmin", "clone", "grant", "clone-masks", "scan-state",
+                                        "infra"])
+        self.assertEqual(s.steps.ran, s.steps.plan)
+        self.assertIn("agentbox: [2/7] starting the toulmin session ...", out)
+
+
 class ToulminRecordInSessionJson(ToulminCase):
     def make(self):
         p = session.load_project(self.settings, "p1")
@@ -783,7 +801,90 @@ class LongStepsSayWhatTheyDo(SessionBase):
         text = "\n".join(out)
         for label in ("reading the git history under", f"checking {self.root} for secrets and live data",
                       f"backing up {self.root} (the pre-session snapshot)", "removing old pre-session snapshots",
-                      "recording the state of", "keeping the session's logs",
+                      "recording the state of"):
+            self.assertRegex(text, rf"agentbox: \[\d/\d\] {re.escape(label)}")
+        for label in ("keeping the session's logs",          # teardown is not numbered yet (TODO.md)
                       "removing the session's containers and networks", "running the end-of-session scan"):
             self.assertIn(f"agentbox: {label}", text)
         self.assertGreaterEqual(text.count(": done in "), 8, text)
+
+
+class StartStepsAreNumbered(SessionBase):
+    """19 Nov: a long start says where it is in the whole start, `[3/7]`, and the total counts only the steps
+    this start runs (no clone step outside clone mode, no toulmin step with toulmin off, no backup without one).
+    The delay is 0 so every step prints."""
+
+    def run_start(self, s, do_backup=True):
+        from unittest import mock
+        out = []
+        s.warn = out.append
+        with mock.patch("agentbox.progress.DELAY", 0.0):
+            s.prepare(do_backup=do_backup)
+            s.start_infra()
+        self.addCleanup(s.teardown)
+        return out
+
+    def numbered(self, out):
+        """(n, total, label) of each step's first line, in order."""
+        found = [re.match(r"^agentbox: \[(\d+)/(\d+)\] (.*) \.\.\.$", line) for line in out]
+        return [(int(m[1]), int(m[2]), m[3]) for m in found if m]
+
+    def assert_numbering(self, s, out, labels):
+        got = self.numbered(out)
+        total = len(labels)
+        self.assertEqual([(n, t) for n, t, _ in got], [(i, total) for i in range(1, total + 1)], out)
+        for (_n, _t, label), want in zip(got, labels):
+            self.assertTrue(label.startswith(want), (label, want))
+        self.assertEqual(s.steps.ran, s.steps.plan, "every planned step ran, in the planned order")
+        for line in out:                    # every line of a numbered step carries the number
+            if any(line.startswith(f"agentbox: {w}") for w in labels):
+                self.fail(f"unnumbered step line: {line}")
+
+    def test_a_plain_start(self):
+        s = self.make()
+        out = self.run_start(s)
+        self.assert_numbering(s, out, [
+            "reading the git history", f"checking {self.root} for secrets", f"backing up {self.root}",
+            "removing old pre-session snapshots", "recording the state of", "starting the session's network"])
+        self.assertIn(f"agentbox: [3/6] backing up {self.root} (the pre-session snapshot): done in ", "\n".join(out))
+
+    def test_a_start_without_a_backup(self):
+        s = self.make()
+        out = self.run_start(s, do_backup=False)
+        self.assert_numbering(s, out, [
+            "reading the git history", f"checking {self.root} for secrets", "recording the state of",
+            "starting the session's network"])
+
+    def test_each_data_rw_grant_is_its_own_backup_step(self):
+        data = self.mkdir("data-rw")
+        self.project("p2", data_rw=[data])
+        s = self.make("p2")
+        out = self.run_start(s)
+        self.assertEqual(self.numbered(out)[3][:2], (4, 7))
+        self.assertTrue(self.numbered(out)[3][2].startswith(f"backing up {data}"))
+        self.assertEqual(s.steps.ran, s.steps.plan)
+
+    def test_clone_mode(self):
+        import subprocess
+        self.write("projects/p1/a.txt", "x\n")
+        subprocess.run(["git", "-C", self.root, "add", "a.txt"], check=True)
+        subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q",
+                        "-m", "i"], check=True)
+        self.project("p1", mount="clone")
+        s = self.make()
+        out = self.run_start(s)
+        self.assert_numbering(s, out, [
+            "reading the git history", "making this session's clone", f"checking {self.root} for secrets",
+            "finding the masks in the clone", "recording the state of", "starting the session's network"])
+
+    def test_a_step_too_quick_to_print_still_uses_its_number(self):
+        from unittest import mock
+        out = []
+        s = self.make()
+        s.warn = out.append
+        with mock.patch("agentbox.progress.DELAY", 3600.0):
+            s.prepare()
+        self.addCleanup(s.teardown)
+        self.assertEqual(self.numbered(out), [], "nothing printed: every step was quick")
+        self.assertEqual(s.steps.ran, s.steps.plan[:-1], "yet each ran under its number")
+        self.assertEqual(s.steps.position("infra"), (6, 6), "the step not yet run keeps its place")

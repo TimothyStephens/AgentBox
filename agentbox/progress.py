@@ -8,6 +8,12 @@ redrawn line, so the output reads the same in a terminal, a log or a captured ru
 from a second thread, so the launcher's default `warn` is `stderr_line`, which writes a line in one call:
 `print` writes the text and the newline separately, and two threads' lines could interleave (review
 16 Nov, R-6). The cost is one sleeping thread per step.
+
+A start numbers its steps (`Steps`): every line of a step that prints at all carries `[3/7]`, where 7 is the
+number of steps this start will run. The plan of steps is fixed before the first one runs, and each step's
+number is its place in that plan, so a step too quick to print still uses its number (the user may see
+[1/7] and then [3/7]) and the total is never revised. A step that is not in the plan prints unnumbered rather
+than with a wrong number.
 """
 import sys
 import threading
@@ -28,13 +34,40 @@ def elapsed(seconds):
     return f"{seconds:.1f}s" if seconds < 60 else f"{s // 60}m{s % 60:02d}s"
 
 
+class Steps:
+    """The numbered plan of a start: `steps = Steps(["history", "grant", ...])`, then
+    `with steps.step("grant", "checking /x for secrets", out): ...`. `ran` records the keys in the order they
+    ran, so a test can check that the plan matched what happened."""
+
+    def __init__(self, plan):
+        self.plan = list(plan)
+        if len(set(self.plan)) != len(self.plan):
+            raise ValueError(f"a step is planned twice: {self.plan}")
+        self.ran = []
+
+    @property
+    def total(self):
+        return len(self.plan)
+
+    def position(self, key):
+        """(n, total) for a planned step, None for one that is not in the plan (it prints unnumbered)."""
+        return (self.plan.index(key) + 1, self.total) if key in self.plan else None
+
+    def step(self, key, label, out, **kw):
+        self.ran.append(key)
+        return Step(label, out, position=self.position(key), **kw)
+
+
 class Step:
     """`with Step("backing up /x", out) as st: ... st.progress(0.4, "12,000 of 30,000 files")`.
 
-    `out` takes one line (the session's `warn`). `progress` may be called from the step's own thread as often
+    `out` takes one line (the session's `warn`). `position`, `(n, total)`, puts `[n/total]` before the label
+    on every line (from `Steps`); without it the lines are unnumbered. `progress` may be called from the step's own thread as often
     as it likes: it only stores the latest value, which the next heartbeat prints."""
 
-    def __init__(self, label, out, *, delay=None, heartbeat=None, clock=time.monotonic):
+    def __init__(self, label, out, *, delay=None, heartbeat=None, clock=time.monotonic, position=None):
+        if position is not None:
+            label = f"[{position[0]}/{position[1]}] {label}"
         self.label, self.out, self.clock = label, out, clock
         self.delay = DELAY if delay is None else delay
         self.heartbeat = HEARTBEAT if heartbeat is None else heartbeat
