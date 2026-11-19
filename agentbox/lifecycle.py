@@ -227,6 +227,28 @@ class _Marker:
             pass                     # the marker informs; it must never stop the teardown
 
 
+END_LIMIT = 30 * 60       # seconds for the work after the release: `tm session end` and the grant scan together
+
+
+class _CutShort(Exception):
+    pass
+
+
+def _within(deadline, fn):
+    """Run fn() in a daemon thread and wait for it until `deadline` (time.monotonic()). Returns (finished,
+    result). One that is not finished is left running and no longer waited for: a daemon thread ends with the
+    process. Nothing in it holds the project any more (the lock is released before), so the only cost of
+    letting it go is the report it would have written."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return False, None
+    box = {}
+    t = threading.Thread(target=lambda: box.update(result=fn()), name="ab-teardown-step", daemon=True)
+    t.start()
+    t.join(left)
+    return (not t.is_alive()), box.get("result")
+
+
 OUTPUT_DRAIN = 10.0      # seconds teardown waits, at its very end, for its queued lines to reach the terminal
 
 
@@ -277,19 +299,20 @@ class _Outbox:
         return True
 
 
-def teardown(settings, podman, session, warn=None, exit_reason="error"):
+def teardown(settings, podman, session, warn=None, exit_reason="error", limit=None):
     """Remove everything of a session (`_teardown` says what, in which order); its output goes through a
-    thread of its own (`_Outbox`), and the scan's summary comes last, after all the bookkeeping."""
+    thread of its own (`_Outbox`), and the scan's summary comes last, after all the bookkeeping. `limit`
+    (default END_LIMIT) bounds the work after the project is released."""
     out = _Outbox(warn or stderr_line)
     try:
-        later = _teardown(settings, podman, session, out, exit_reason)
+        later = _teardown(settings, podman, session, out, exit_reason, END_LIMIT if limit is None else limit)
         for line in later:
             out(line)
     finally:
         out.drain()
 
 
-def _teardown(settings, podman, session, warn, exit_reason):
+def _teardown(settings, podman, session, warn, exit_reason, limit):
     """Remove everything of a session: the launcher's own teardown, `ab session kill` and `ab session gc` all
     come here, so each keeps the logs and runs the end-of-session scan. `exit_reason` is what the Toulmin end
     message carries: agent_exit, signal, kill, gc or error (toulmin.EXITS).
@@ -301,6 +324,8 @@ def _teardown(settings, podman, session, warn, exit_reason):
          the scan, the Toulmin MCP entry in the project's agent state;
       3. mark the session released and free the project lock: a new session of the project may start now;
       4. what only concerns this session: `tm session end`, the grant scan (the long part), its run dir.
+         The first two share one time limit (`limit` seconds); a step still running when it is up is left
+         behind with a warning naming it, and the steps after it are skipped. The run dir always goes.
     Returns the lines of the scan (its summary, the inbox count, its own warnings), for the caller to show
     after all of that: output is the one thing here that can block (19 Nov 2026).
     """
@@ -341,12 +366,37 @@ def _teardown(settings, podman, session, warn, exit_reason):
         mark.step("Toulmin session end", released=True)
         released_at = time.time()
         projectlock.release_for_session(settings, session)
-        _toulmin_end(settings, meta, session, exit_reason, warn)
+        deadline = time.monotonic() + limit
+        steps = [("the Toulmin session end (`tm session end`)", "Toulmin session end",
+                  lambda: _toulmin_end(settings, meta, session, exit_reason, warn))]
         if doc is not None:
-            mark.step("end-of-session scan")
-            with Step("running the end-of-session scan", warn):
-                later += _scan_grants(settings, session, started, doc, state, later.append,
-                                      note=lambda: _started_meanwhile(settings, meta, session, released_at)) or []
+            steps.append(("the end-of-session scan", "end-of-session scan",
+                          lambda: _scan_grants(settings, session, started, doc, state, later.append,
+                                               note=lambda: _started_meanwhile(settings, meta, session,
+                                                                               released_at))))
+        for i, (what, step, fn) in enumerate(steps):
+            mark.step(step)
+            try:
+                if step == "end-of-session scan":
+                    with Step("running the end-of-session scan", warn):
+                        done, result = _within(deadline, fn)
+                        if not done:
+                            raise _CutShort
+                else:
+                    done, result = _within(deadline, fn)
+            except _CutShort:
+                pass
+            if not done:
+                rest = [w for w, _s, _f in steps[i + 1:]]
+                later.append(f"agentbox: {what} did not finish within {_minutes(limit)} of the session's "
+                             f"removal; teardown stopped waiting for it"
+                             + (f" and skipped {', '.join(rest)}" if rest else "")
+                             + ". The project was already free; nothing of the session is running."
+                             + (" The scan report is written only if it finishes before this process exits."
+                                if step == "end-of-session scan" else ""))
+                break
+            if step == "end-of-session scan":
+                later += result or []
         mark.step("removing the run dir")
         shutil.rmtree(ephemeral_state(settings, session), ignore_errors=True)   # a lockdown session's state
         # Last: while the run dir exists its session number is taken (Session.reserve_name), so a new session
@@ -360,6 +410,10 @@ def _teardown(settings, podman, session, warn, exit_reason):
                     shutil.rmtree(os.path.join(run_dir, fn), ignore_errors=True)
             os.rmdir(run_dir)
     return later
+
+
+def _minutes(seconds):
+    return f"{seconds:g}s" if seconds < 60 else f"{seconds / 60:g} min"
 
 
 def _exited(pid, start):

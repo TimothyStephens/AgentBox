@@ -3733,3 +3733,19 @@ the session reads as dead and `gc` finishes it. `ab session kill` on a stopping 
 marker names (pid and start time checked; teardown ignores SIGTERM, so nothing gentler reaches it) and then runs the
 teardown itself; the steps are idempotent (a log or scan report already kept is not rewritten, inbox provenance
 keeps its first record). Tests: `tests/unit/test_teardown.py` `SaysItIsShuttingDown`.
+
+## 19 Nov 2026: the work after the release has a time limit (30 min)
+
+`tm session end` and the grant scan, the two steps after the project lock is released, share one limit,
+`lifecycle.END_LIMIT` (30 minutes; `teardown(limit=)` for tests). A module constant rather than a setting: nothing
+waits on these steps any more, so the limit only decides when a launcher gives up on a report, and no one has
+needed to tune it. Each step runs in a daemon thread and teardown waits for it until the deadline; one still
+running is left behind (it ends with the process), the warning names it and the steps it skipped, and the run dir
+is removed regardless. The scan runs in-process and cannot be interrupted, so "bounded" means teardown stops waiting
+for it, not that it stops: by then the lock is free and nothing of the session runs, so a slow scan holds nothing.
+Its inputs (the scan state, the start snapshot) are read before the release, so removing the run dir under a scan
+left behind takes nothing from it; its report is written only if it finishes before the process exits (a launcher
+exiting mid-write can leave a partial report under the session's own name). The Toulmin end goes first: it is
+bounded by its own timeouts (about two minutes at worst) and Toulmin needs it, while the scan only informs. 14.5
+minutes was the longest scan seen (18 Nov), so 30 is not expected to cut a real one. Tests:
+`tests/unit/test_teardown.py` `TheWorkAfterTheReleaseIsBounded`.

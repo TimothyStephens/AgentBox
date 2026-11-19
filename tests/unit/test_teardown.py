@@ -271,3 +271,48 @@ class SaysItIsShuttingDown(TeardownCase):
         self.assertEqual(child.poll(), -signal.SIGKILL)
         self.assertFalse(os.path.isdir(run))
         self.assertIn(f"killed {SID}", out)
+
+
+class TheWorkAfterTheReleaseIsBounded(TeardownCase):
+    def test_a_scan_past_the_limit_is_left_behind_with_a_warning(self):
+        run = self.old_session()
+        entered, release, report = self.blocking_scan()
+        said = []
+        with mock.patch.object(lifecycle.scan, "report", report):
+            t, box = self.in_thread(lambda: lifecycle.teardown(self.settings, self.podman, SID,
+                                                               warn=said.append, limit=1))
+            t.join(15)
+        self.assertFalse(t.is_alive(), "teardown waited past its limit")
+        self.assertTrue(entered.is_set())
+        self.assertNotIn("error", box)
+        self.assertFalse(os.path.isdir(run), "the run dir goes even so")
+        text = "\n".join(said)
+        self.assertIn("the end-of-session scan did not finish within 1s", text)
+        self.assertIn("teardown stopped waiting for it", text)
+
+    def test_a_slow_toulmin_end_cuts_short_and_the_scan_is_skipped(self):
+        self.old_session()
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        scanned = []
+        said = []
+        with mock.patch.object(lifecycle, "_toulmin_end", lambda *a: stuck.wait(20)), \
+                mock.patch.object(lifecycle.scan, "report", lambda *a, **k: scanned.append(1) or ([], "")):
+            t, box = self.in_thread(lambda: lifecycle.teardown(self.settings, self.podman, SID,
+                                                               warn=said.append, limit=1))
+            t.join(15)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(scanned, [])
+        text = "\n".join(said)
+        self.assertIn("the Toulmin session end (`tm session end`) did not finish within 1s", text)
+        self.assertIn("skipped the end-of-session scan", text)
+
+    def test_within_the_limit_nothing_is_said(self):
+        self.old_session()
+        said = []
+        with mock.patch.object(lifecycle.scan, "report", lambda *a, **k: ([], "")):
+            lifecycle.teardown(self.settings, self.podman, SID, warn=said.append, limit=30)
+        self.assertFalse([w for w in said if "did not finish" in w], said)
+
+    def test_the_default_is_thirty_minutes(self):
+        self.assertEqual(lifecycle.END_LIMIT, 30 * 60)
