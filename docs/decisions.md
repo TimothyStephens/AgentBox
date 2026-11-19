@@ -3915,3 +3915,18 @@ so the extensions load from the read-only mount. The `egm-*` skills and four of 
 list because each sets `disable-model-invocation: true` (checked in all 7 EGM SKILL.md files): they are reachable as
 `/skill:<name>`, by design. The session also noted the Pi profile's Containerfile has no built layer (`ab image build
 pi`, optional).
+
+## 19 Nov 2026: shared skills move to agentbox-skills, consumed as a pinned plugin (Tim)
+
+Five skills were byte-identical in all three profile repos. They now live in a fifth sibling repo,
+`agentbox-skills` (AgentBox-Skills on GitHub), with three new ones (`full-review`, `handoff`,
+`characterization-tests`) and eight vendored third-party skills (superpowers: systematic-debugging,
+verification-before-completion, test-driven-development; anthropics/skills: skill-creator, webapp-testing; Trail of
+Bits: differential-review, insecure-defaults, supply-chain-risk-auditor), each pinned to a commit with its licence
+and notes in its THIRD_PARTY.md. Each profile's `plugins.toml` installs it like EGM: `[[plugin]]
+agentbox@agentbox-skills` for Claude and OMP, a `[[repo]]` for Pi. No launcher change: the catalog shape was checked
+against `plugins.load` and the Claude install-time catalog check. In Claude the skills are namespaced
+(`/agentbox:<skill>`); OMP and Pi keep `/skill:<skill>`. Known limits recorded there: webapp-testing needs
+Playwright (in no image), supply-chain-risk-auditor's registry lookups are outside `packages` egress, skill-creator's
+eval scripts call `claude -p`, insecure-defaults is the last skill version upstream before it became a command, and
+differential-review's method checks out the baseline commit in the working tree (do not let it).

@@ -35,10 +35,12 @@ working *on* agentbox, on the host or inside an agentbox session.
 | Profile repos' `bash tests/run.sh` and `tools/check.py` | yes | yes |
 | `make itest`, `make *-image`, `make *-live`, `make install`, `ab profile install`, `./build.sh deploy` | yes (the user runs `*-live` and `install`) | no: no podman socket, no LAN |
 
-The grant `agentbox-dev/` holds four sibling repos: `agentbox/` (the launcher) and
+The grant `agentbox-dev/` holds five sibling repos: `agentbox/` (the launcher),
 `agentbox-profile-{claude,omp,pi}/` (the profiles the launcher's deployed clones at
-`~/.config/agentbox/<agent>/profile` come from). A change to a shared part of one profile repo
-(`build.sh`, `Containerfile`, `tools/check.py` shared rules) is mirrored in the others.
+`~/.config/agentbox/<agent>/profile` come from), and `agentbox-skills/` (the skills every profile shares,
+installed by each profile's `plugins.toml` as a plugin pinned to a commit). A change to a shared part of one
+profile repo (`build.sh`, `Containerfile`, `tools/check.py` shared rules) is mirrored in the others; a skill
+for every agent goes in `agentbox-skills`, not in a profile.
 
 ## Working loop
 

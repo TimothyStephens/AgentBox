@@ -88,7 +88,8 @@ Run these yourself; each touches your own config, `~/.local/bin`, or your user s
    to edit to personalize Claude or OMP, and whether a change affects one project or all.
 
 8. **Profiles and plugins** (Claude, OMP, Pi): each agent's profile repo (`agentbox-profile-<agent>`) is
-   deployed with its own `./build.sh deploy` to `~/.config/agentbox/<agent>/profile`. Pi reads its model list
+   deployed with its own `./build.sh deploy` to `~/.config/agentbox/<agent>/profile`. Skills shared by
+   every agent live in `agentbox-skills`, which each profile's `plugins.toml` pins as a plugin. Pi reads its model list
    from the OMP seed (step 6) and its settings from `~/.config/agentbox/pi/settings.json`. `ab profile install
    <agent>` installs what the deployed profile's `plugins.toml` declares (it refuses an empty declaration:
    there is nothing to install until one package is listed), in a sandbox, into `~/.config/agentbox/<agent>/plugins/`, which sessions mount
