@@ -136,7 +136,7 @@ Full reasoning for each is in `docs/decisions.md` under the date.
 
 | Closed | What |
 |---|---|
-| 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is still unnumbered; it gets numbered after the teardown rework lands |
+| 19 Nov | Long start steps say where they are in the whole start: `agentbox: [3/7] checking <root> for secrets and live data: 17.0s`, the total counted from the steps this start runs (plan fixed up front in `Session.start_plan`). Teardown is numbered the same way (`[n/3]`). |
 | 19 Nov | A session being torn down says so: `stopping.json` in its run dir (step, since when); `ab session ls` shows `stopping since HH:MM: <step>, N min`, attach, the lock refusal and registry edits say "is shutting down"; `ab session kill` ends a stuck teardown. Teardown frees the project once nothing of the session runs (before the scan and the Toulmin end), prints last through a writer thread, bounds the post-release work, and `tm` runs in its own process group (the toulmin-build stall of 18 Nov) |
 | 19 Nov | Pi: the local model server's models asked from it at start when the seed lists none; OMP and Pi sessions get the profile's `AGENTS.md` after the sandbox notes (it reached neither before); `agentbox-profile-pi` created (skills, `build.sh`, Pi check rules, 134 tests) |
 | 19 Nov | `caps` has one value, `refused`: the never-built `opt-in` is gone from the build presets, a stored one reads as `refused` with a note; a git config in a read-only grant that the launcher cannot read refuses the session |
