@@ -15,15 +15,16 @@ class FailureDiag(SettingsCase):
         def run(argv, check=False, **kw):
             calls.append(argv)
             out = {"inspect": "exited 137 OOMKilled=true", "logs": "squid: line a\nsquid: line b",
-                   "network": "ab-install-omp-proxy ab-install-omp"}[argv[0]]
+                   "network": '[{"name": "n", "containers": {"c1": {"name": "ab-install-omp-proxy"}, '
+                              '"c2": {"name": "ab-install-omp"}}}]'}[argv[0]]
             return mock.Mock(returncode=0, stdout=out, stderr="")
         job.podman = mock.Mock(run=run)
         text = "\n".join(job.diagnose())
         self.assertIn("exited 137 OOMKilled=true", text)
         self.assertIn("squid: line b", text)
-        self.assertIn("ab-install-omp-proxy ab-install-omp", text)
+        self.assertIn("ab-install-omp ab-install-omp-proxy", text)
         self.assertTrue(any(a[0] == "inspect" and job.proxy_name in a for a in calls))
-        self.assertTrue(any(a[:2] == ["network", "inspect"] and job.int_net in a for a in calls))
+        self.assertTrue(any(a[:2] == ["network", "inspect"] and job.int_net in a and "json" in a for a in calls))
 
 
 if __name__ == "__main__":

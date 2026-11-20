@@ -500,9 +500,18 @@ class Install:
             lg = self.podman.run(["logs", "--tail", "15", self.proxy_name], check=False)
             tail = ((lg.stdout or "") + (lg.stderr or "")).strip().splitlines()[-15:]
             out += ["proxy log: " + line for line in tail]
-            net = self.podman.run(["network", "inspect", self.int_net, "--format",
-                                   "{{range .Containers}}{{.Name}} {{end}}"], check=False)
-            out.append(f"on {self.int_net}: {(net.stdout or net.stderr or '').strip() or 'nothing'}")
+            net = self.podman.run(["network", "inspect", self.int_net, "--format", "json"], check=False)
+            try:                                     # json, not a template (tests/manual/podman_formats.sh)
+                docs = json.loads(net.stdout or "[]")
+                docs = docs if isinstance(docs, list) else [docs]
+                names = sorted(str(c.get("name") or c.get("Name") or cid)[:40]
+                               for d in docs if isinstance(d, dict)
+                               for cid, c in ((d.get("containers") or d.get("Containers") or {}).items())
+                               if isinstance(c, dict))
+                members = " ".join(names) or "nothing"
+            except ValueError:
+                members = (net.stderr or net.stdout or "").strip()[:200] or "unreadable"
+            out.append(f"on {self.int_net}: {members}")
         except Exception as e:                       # diagnosis must not hide the install's own error
             out.append(f"(could not read the install's state: {e!r})")
         return out
