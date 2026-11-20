@@ -360,3 +360,51 @@ class TheSession(OmpSessionBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfilePackages(TheSession):
+    """Pi packages that live IN the profile (`packages/<name>/`, a package.json with a `pi` manifest), as
+    pi-essentials does since 20 Nov: snapshotted with the rest of the profile, mounted read-only at
+    ~/.pi/profile-packages, and listed in settings.json after the installed tree's. Nothing is fetched for
+    them: the profile is the source, as for skills and prompts."""
+
+    def package(self, name, manifest='{"pi": {"extensions": ["./index.ts"]}}'):
+        self.write(f"config/pi/profile/packages/{name}/package.json", manifest)
+        self.write(f"config/pi/profile/packages/{name}/index.ts", "export default function () {}\n")
+
+    def test_listed_after_the_tree_and_mounted_read_only(self):
+        self.declare()
+        fake_tree(self.settings_now())
+        self.package("pi-essentials")
+        s = self.start()
+        self.assertEqual(self.settings_json(s)["packages"],
+                         [NPM_PATH, GIT_PATH, f"{pi.PROFILE_PACKAGES_DST}/pi-essentials"])
+        m = self.mounts(s).get(pi.PROFILE_PACKAGES_DST)
+        self.assertTrue(m and m.endswith(",ro"), self.mounts(s))
+        self.assertNotIn(f"src={self.settings_now().profile_src('pi')}", m,
+                         "the session's snapshot is mounted, not the live profile")
+        self.assertFalse(pi.PROFILE_PACKAGES_DST.startswith(pi.C_AGENT + "/"), "not inside the per-project agent dir")
+
+    def test_without_a_plugins_toml(self):
+        self.package("pi-essentials")
+        self.assertEqual(self.settings_json(self.start())["packages"], [f"{pi.PROFILE_PACKAGES_DST}/pi-essentials"])
+
+    def test_only_directories_with_a_package_json_and_in_name_order(self):
+        self.package("zeta")
+        self.package("alpha")
+        self.write("config/pi/profile/packages/notes/README.md", "not a package\n")
+        self.write("config/pi/profile/packages/loose.ts", "export default function () {}\n")
+        s = self.start()
+        self.assertEqual(self.settings_json(s)["packages"],
+                         [f"{pi.PROFILE_PACKAGES_DST}/alpha", f"{pi.PROFILE_PACKAGES_DST}/zeta"])
+        self.assertTrue([w for w in self.warned if "notes" in w and "package.json" in w], self.warned)
+
+    def test_no_profile_mounts_and_lists_none(self):
+        self.package("pi-essentials")
+        s = self.start(no_profile=True)
+        self.assertNotIn(pi.PROFILE_PACKAGES_DST, self.mounts(s))
+        self.assertNotIn("packages", self.settings_json(s))
+
+    def test_packages_is_a_profile_item_so_a_change_makes_a_new_profile_hash(self):
+        from agentbox import profile
+        self.assertIn("packages", profile.ITEMS)

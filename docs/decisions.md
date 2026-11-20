@@ -4040,3 +4040,16 @@ with `npm_config_offline`), `PI_LENS_DISABLE_LSP_INSTALL=1` and `PI_LENS_DISABLE
 `dist/index.js`). The cost: a language whose server or linter is not in the image gets no pi-lens checks; the fix
 for one Tim wants is to add the tool to the image, at a pin. Nothing in pi-lens sends code or prompts anywhere (no
 POST in the package); its downloads come from GitHub, unpkg and `semgrep.dev` (a rule pack).
+
+## 20 Nov 2026: Pi packages can live in the Pi profile
+
+Tim, 20 Nov: pi-essentials (Pi's example extensions with local changes, and agentbox-specific agents) is only
+ever used with agentbox, so it belongs in the Pi profile rather than in a repository of its own that the profile
+pins by sha. `packages` is now a profile item (hashed and snapshotted like `skills/`); the Pi adapter mounts the
+session's snapshot of it read-only at `~/.pi/profile-packages` and lists each `packages/<name>/` that has a
+`package.json` in the generated settings.json after the installed tree's packages. Not the alternative of
+mounting it over `agent/extensions`: that path stays covered empty, so nothing a session can write is ever a load
+path, and a package (with its manifest's themes) loads as Pi loads any package. Also not a `[[repo]]` pointing at
+the profile repository itself, which would need two commits per change (the change, then its own sha). The
+snapshot's existing refusal of symlinks keeps a `node_modules` out of the session: the package's tests and their
+dependencies stay in the profile's `tests/`. `tests/unit/test_pi_packages.py` (`ProfilePackages`).

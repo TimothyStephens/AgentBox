@@ -30,7 +30,7 @@ from .fsutil import write_private
 
 # What a profile may hold: the paths an agent LOADS. Anything else in the directory is ignored, so a stray
 # note or a README cannot become something an agent loads.
-ITEMS = ("skills", "agents", "commands", "rules", "prompts", "CLAUDE.md", "AGENTS.md", "settings.json")
+ITEMS = ("skills", "agents", "commands", "rules", "prompts", "packages", "CLAUDE.md", "AGENTS.md", "settings.json")
 # Hashed and snapshotted as well, though no session mounts them: the inputs to the user's own image layer.
 # A change to either has to produce a new profile hash, because `ab image build` reads them.
 BUILD_ITEMS = ("plugins.toml", "Containerfile")

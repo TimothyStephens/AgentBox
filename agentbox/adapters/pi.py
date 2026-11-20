@@ -19,7 +19,9 @@ profile, the inbox, keys only through `ab keys`, Toulmin through MCP -- with Pi'
   * **copied in fresh at each start:** `agent/settings.json`, from `~/.config/agentbox/pi/settings.json` when
     there is one, else `{}`, with the code-running keys refused and project trust and install telemetry forced
     off. Pi writes it in place, so it cannot be a read-only mount;
-  * **the host-owned profile:** skills at `agent/skills`, prompt templates at `agent/prompts`, read-only;
+  * **the host-owned profile:** skills at `agent/skills`, prompt templates at `agent/prompts`, and Pi packages
+    kept in the profile (`packages/<name>/`) at `~/.pi/profile-packages`, read-only; those packages are listed
+    in settings.json after the installed tree's (`profile_packages`);
   * **Pi packages** (step 2): the tree `ab profile install pi` builds from the Pi profile's `plugins.toml`
     (installer.py), mounted read-only at `~/.pi/packages`; the generated settings.json lists each declared
     package the tree holds by its path there (`packages`), which Pi loads in place and never modifies. The
@@ -62,6 +64,9 @@ REPO_CODE = (".pi",)                                   # a second layer behind -
 SETTINGS_SEED = "settings.json"
 # The installed package tree (installer.C_PI_TREE, the same path: the installer mounts it here too).
 TREE_DST = os.path.join(C_PI, "packages")
+# Pi packages kept IN the profile (`packages/<name>/`, 20 Nov: pi-essentials): the session's profile snapshot of
+# that directory, read-only, listed in settings.json after the tree's. Nothing is fetched for them.
+PROFILE_PACKAGES_DST = os.path.join(C_PI, "profile-packages")
 MODELS_SEED = ("omp", "models.yml")                    # P4: the OMP seed, shared
 # Pi's ids for agentbox's provider names (OMP's seed spells Gemini `gemini`), and the providers Pi has built in:
 # those may appear with only a key (their models are Pi's own); any other provider needs a baseUrl and models.
@@ -238,6 +243,27 @@ def package_setup(settings, warn, image_labels, packages=True):
     return [(tree, TREE_DST)], paths
 
 
+def profile_packages(snapshot_dir, warn):
+    """[package paths] for the profile's own `packages/`: each directory with a package.json, by name. Anything
+    else there is named and left out (Pi would load a bare directory of resources too, which is not what a
+    profile package is meant to be)."""
+    top = os.path.join(snapshot_dir, "packages") if snapshot_dir else None
+    if not top or not os.path.isdir(top):
+        return []
+    paths, other = [], []
+    for name in sorted(os.listdir(top)):
+        full = os.path.join(top, name)
+        if os.path.isdir(full) and os.path.isfile(os.path.join(full, "package.json")):
+            paths.append(f"{PROFILE_PACKAGES_DST}/{name}")
+        else:
+            other.append(name)
+    if other:
+        warn(f"agentbox: the Pi profile's packages/ holds {', '.join(other)}, which "
+             f"{'is not a package directory' if len(other) == 1 else 'are not package directories'} "
+             "(a directory with a package.json); not loaded")
+    return paths
+
+
 def _move_loaded_files(agent_dir, inbox, warn):
     """Move what Pi would load from its per-project agent dir at start into the inbox (LOADED_AT_START)."""
     moved = []
@@ -290,6 +316,8 @@ class PiAdapter(Adapter):
                                           model_port=s.model_port, warn=sess.warn, label="Pi")
         settings = settings_doc(s.seed_dir(self.name))
         pkg_mounts, pkg_paths = package_setup(s, sess.warn, sess.image_labels(), packages=not sess.profile_off[0])
+        if not sess.profile_off[0]:
+            pkg_paths = pkg_paths + profile_packages(getattr(sess.profile, "dir", None), sess.warn)
         if pkg_paths:
             # Added after settings_doc, which refuses `packages` in the user's seed: this list is agentbox's,
             # made from plugins.toml and the tree, and holds local paths only (nothing Pi would fetch).
@@ -354,7 +382,7 @@ ADAPTER = PiAdapter(
     required_tools=["bash", "git", "pi", "node", "rg", "fd"],
     approvals_off_args=[],
     approvals_on_args=[],                 # never used: prepare_session refuses approvals on (P1)
-    profile_mounts={"skills": f"{C_AGENT}/skills", "prompts": f"{C_AGENT}/prompts"},
+    profile_mounts={"skills": f"{C_AGENT}/skills", "prompts": f"{C_AGENT}/prompts", "packages": PROFILE_PACKAGES_DST},
     state_mirrors={C_AGENT: "agent"},     # ~/.pi/agent is a bind of <state>/agent
     inbox_mount=f"{C_AGENT}/inbox",
 )
