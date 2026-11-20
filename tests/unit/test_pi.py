@@ -206,6 +206,10 @@ class PiSession(OmpSessionBase):
         self.assertFalse(m[pi.C_AGENT].endswith(",ro"), "the per-project agent dir is Pi's to write")
         self.assertIn("--env=PI_OFFLINE=1", argv)
         self.assertIn("--env=PI_TELEMETRY=0", argv)
+        # pi-lens installs no tools, language servers or updates at runtime (its npm/pip/gem installs are
+        # unpinned); the image's tools are what it gets (decisions.md, 20 Nov). Same in OMP.
+        for var in ("PI_LENS_DISABLE_TOOL_INSTALL", "PI_LENS_DISABLE_LSP_INSTALL", "PI_LENS_DISABLE_TOOL_REFRESH"):
+            self.assertIn(f"--env={var}=1", argv)
         for rel in pi.CODE_DIRS:
             with self.subTest(code_dir=rel):
                 [cover] = [a for a in argv if a.startswith(f"--mount=type=tmpfs,dst={os.path.join(pi.C_PI, rel)},")]

@@ -4029,3 +4029,14 @@ alone and fetch `native`; a later overlay wins key by key (so Tim's `config.yml`
 value on purpose); `agent/config.yml`, which a session can write, cannot; and a listed file that is missing makes
 OMP's settings load fail, so only mounted files are listed. Not covered: not run in a live session.
 `tests/unit/test_omp.py` (`test_privacy_overlay_keeps_web_search_and_fetch_off_third_party_services`).
+
+## 20 Nov 2026: pi-lens installs nothing at runtime
+
+pi-lens 4.4.9 (in the OMP and Pi profiles) installs linters and language servers when a session first needs them,
+and refreshes them in the background. Its archive downloads are checked against sha256s pinned in the package,
+but its npm, pip, pipx and gem installs take the latest version with nothing pinned: code nobody reviewed, run in
+the session. Every OMP and Pi session now sets `PI_LENS_DISABLE_TOOL_INSTALL=1` (which also runs its `npx` calls
+with `npm_config_offline`), `PI_LENS_DISABLE_LSP_INSTALL=1` and `PI_LENS_DISABLE_TOOL_REFRESH=1` (read from its
+`dist/index.js`). The cost: a language whose server or linter is not in the image gets no pi-lens checks; the fix
+for one Tim wants is to add the tool to the image, at a pin. Nothing in pi-lens sends code or prompts anywhere (no
+POST in the package); its downloads come from GitHub, unpkg and `semgrep.dev` (a rule pack).

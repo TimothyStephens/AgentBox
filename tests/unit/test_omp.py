@@ -375,6 +375,8 @@ class OmpSession(OmpSessionBase):
         self.assertEqual(len(m), 1, "the host config.yml is mounted as the overlay")
         self.assertTrue(m[0].endswith(",ro"), m[0])
         self.assertIn(f"--env=PI_CONFIG_FILES={c}/agentbox-privacy.yml:{c}/agentbox-config.yml", argv)
+        for var in ("PI_LENS_DISABLE_TOOL_INSTALL", "PI_LENS_DISABLE_LSP_INSTALL", "PI_LENS_DISABLE_TOOL_REFRESH"):
+            self.assertIn(f"--env={var}=1", argv, "pi-lens installs nothing at runtime (as in Pi)")
         for m in mounts:
             if f"src={self.tree}" in m or f"src={os.path.realpath(self.tree)}" in m:
                 self.assertTrue(m.endswith(",ro"), m)

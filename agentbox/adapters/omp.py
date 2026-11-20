@@ -68,6 +68,11 @@ CONFIG_OVERLAY = f"{C_OMP}/agentbox-config.yml"
 # r.jina.ai. This pins search to the session model's own (`web/hosted`, no fallbacks: a model without search
 # gets none) and fetch to the in-process reader. OMP lets a later overlay win key by key, so Tim's config.yml
 # can still change one of these deliberately; the session's own agent/config.yml ranks below both and cannot.
+# pi-lens (a plugin in both the OMP and Pi profiles) installs linters and language servers at runtime, and
+# refreshes them: archives are checked against pinned sha256s, but its npm, pip, pipx and gem installs take
+# whatever is latest. Off in every OMP and Pi session (20 Nov); it uses the tools the image has.
+PI_LENS_NO_INSTALL = {"PI_LENS_DISABLE_TOOL_INSTALL": "1", "PI_LENS_DISABLE_LSP_INSTALL": "1",
+                      "PI_LENS_DISABLE_TOOL_REFRESH": "1"}
 PRIVACY_OVERLAY = f"{C_OMP}/agentbox-privacy.yml"
 PRIVACY_SETTINGS = ("modelRoles:\n  web: web/hosted\n"
                     "retry:\n  fallbackChains:\n    web: []\n"
@@ -358,7 +363,7 @@ class OmpAdapter(Adapter):
         # ~/.omp is a tmpfs owned by the session user (run/, caches, logs of this session), with the named
         # pieces mounted on top; without it the runtime creates it root-owned and OMP cannot write there.
         setup = SessionSetup(mount_root=C_OMP, tmpfs=[C_OMP], model_domains=domains, keys=used)
-        setup.env.update({"PATH": PATH, "PIP_CACHE_DIR": "/tmp/pip-cache"})
+        setup.env.update({"PATH": PATH, "PIP_CACHE_DIR": "/tmp/pip-cache", **PI_LENS_NO_INSTALL})
         on = not sess.profile_off[0]
         mounts = plugin_mounts(s, sess.warn, plugins=on)
         plugin_notes(s, sess.warn, sess.image_labels(), plugins=on)

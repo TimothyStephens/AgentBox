@@ -43,7 +43,7 @@ from ..config import HOME
 from ..errors import AgentboxError
 from ..fsutil import write_private
 from . import Adapter, SessionSetup
-from .omp import _host_of, _ip, _prepare_file, build_models, profile_instructions
+from .omp import PI_LENS_NO_INSTALL, _host_of, _ip, _prepare_file, build_models, profile_instructions
 
 C_PI = os.path.join(HOME, ".pi")                       # ~/.pi inside the session
 C_AGENT = os.path.join(C_PI, "agent")
@@ -311,7 +311,7 @@ class PiAdapter(Adapter):
         write_private(sp, json.dumps(settings, indent=1) + "\n")
 
         setup = SessionSetup(mount_root=C_PI, tmpfs=[C_PI], model_domains=domains, keys=used)
-        setup.env.update({"PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PIP_CACHE_DIR": "/tmp/pip-cache"})
+        setup.env.update({"PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PIP_CACHE_DIR": "/tmp/pip-cache", **PI_LENS_NO_INSTALL})
         setup.mounts.append((agent_dir, C_AGENT, False))
         setup.mounts += [(src, dst, True) for src, dst in pkg_mounts]
         for rel in CODE_DIRS:
