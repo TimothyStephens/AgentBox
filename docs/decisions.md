@@ -3996,3 +3996,14 @@ the time the install container runs, though `_wait_proxy` had seen squid ready. 
 read on the host before teardown (`Install.diagnose`): the proxy's state, exit code and OOM flag, its last 15 log
 lines, and the containers on the install network. (Noted in passing: podman copies the host's /etc/hosts into
 containers, so LAN host names are visible in a session though their addresses are refused.)
+
+## 20 Nov 2026: the OMP install failure was a stale aardvark-dns record; installs get per-run names
+
+The diagnostics found it: `/run/user/<uid>/containers/networks/aardvark-dns/ab-install-omp-int%int` was left from an
+install on 19 Nov at 19:04 (gateway 10.89.9.1, a container long gone at 10.89.9.3), with no such network present.
+Every later OMP install created a network of the same name on another subnet, and the container's resolver
+(the new gateway) never answered for the proxy. Claude's and Pi's install networks had no stale record, hence
+only OMP. (Why `--resolve` still worked is not explained.) Fix: each `Install` now names its container, proxy and
+networks `<prefix>install-<agent>-<6 hex>`, as sessions already have per-session names, so a leftover record can
+never be reused. The stale file is removed by the user (podman's runtime state; not agentbox's to delete).
+`tests/unit/test_install_unique_names.py`; two older installer tests now find the run's names from the calls.

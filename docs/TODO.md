@@ -33,11 +33,9 @@ Each needs real podman, the LAN, a real key or a running service, so only the us
 - **Pi on the local model server.** `make pi-live` with `AB_LIVE_MODEL=llama-cpp/<model>` once the server answers
   (it hung on 19 Nov, outside agentbox: a plain curl from the host hung too). Confirms the launcher's
   `<baseUrl>/models` query and Pi on the local model.
-- **`ab profile install omp` fails: `Could not resolve proxy: ab-install-omp-proxy`** (twice on 19 Nov, on the first
-  git clone), while the Claude and Pi installs, which share the same network and proxy code, succeed. Until it
-  works, OMP sessions have none of the shared skills (the OMP profile no longer carries copies). Suspected:
-  a stale `ab-install-omp-*` container or network from an earlier install (Guessing). Next: `podman ps -a
-  --filter name=ab-install`, `podman network ls | grep ab-install`, and the `ab-install-omp` lines of `ab.log`.
+- **`ab profile install omp` after the stale DNS record is removed** (cause found 20 Nov: an aardvark-dns record
+  for `ab-install-omp-int` left by an interrupted install; installs now use per-run names). Until it installs, OMP
+  sessions have none of the shared skills.
 - **Toulmin from a Pi session.** Pi gets Toulmin through its built-in MCP (`mcp.json`, `exposure: direct`); no
   live run has used it yet.
 
@@ -45,7 +43,13 @@ Each needs real podman, the LAN, a real key or a running service, so only the us
 
 ## 3. Ready to build — scoped, no decision needed
 
-None. Outside this repo: Tim's `pi-session-stats` and `pi-content-audit` are OMP extensions (an `omp` manifest,
+- **Do not copy the host's /etc/hosts into containers.** *What:* podman copies the host's `/etc/hosts` into every
+  container (`base_hosts_file`), so a session sees LAN host names the host has listed, though their addresses are
+  refused by the proxy and the network (seen 20 Nov in an install container). *Why:* a small information leak
+  across the sandbox wall. *Done:* session, sidecar, gate-spawned and install containers get podman's generated
+  hosts file without the host's entries (`--no-hosts` where it fits, or `--hosts-file=none`-style option of the
+  installed podman), and a test pins the flag. *Start:* `hardening.fixed_flags`, the gate's create rewrite.
+  *Gate:* unit test, then an itest reading `/etc/hosts` in a session. Outside this repo: Tim's `pi-session-stats` and `pi-content-audit` are OMP extensions (an `omp` manifest,
 `@oh-my-pi/*` imports), so the Pi profile cannot carry them until they are ported to Pi's `pi` manifest and
 `@earendil-works/*` packages.
 

@@ -508,7 +508,9 @@ class TheRun(SettingsCase):
         self.assertEqual(installer.read_lock(self.settings, "omp"), first, "the previous tree is kept")
         self.assertTrue(os.path.isfile(os.path.join(tree, "installed-marker")))
         names = [c[-1] for c in self.podman_calls() if c[:1] == ["rm"]]
-        self.assertIn(installer.Install(self.settings, "omp").proxy_name, names, "teardown did not run")
+        # each run has its own names (20 Nov), so the last run's proxy is the one that must have been removed
+        prefix = f"{self.settings.name_prefix}install-omp-"
+        self.assertTrue([n for n in names if n.startswith(prefix) and n.endswith("-proxy")], "teardown did not run")
 
     def test_a_symlinked_previous_tree_is_refused_before_anything_runs(self):
         tree = installer.tree_dir(self.settings, "omp")
@@ -573,8 +575,8 @@ class TheRun(SettingsCase):
                 installer.install(self.settings, "omp", podman=pod, warn=lambda m: None)
         self.assertIn("boom", str(cm.exception))
         names = [c[-1] for c in self.podman_calls() if c[:1] == ["rm"] or c[:2] == ["network", "rm"]]
-        job = installer.Install(self.settings, "omp")
-        for n in (job.name, job.proxy_name, job.int_net, job.egr_net):
+        run = [n for n in names if n.endswith("-proxy")][-1][:-len("-proxy")]     # this run's own name
+        for n in (run, f"{run}-proxy", f"{run}-int", f"{run}-egr"):
             self.assertIn(n, names, "an install that failed left something running")
 
     def test_nothing_declared_is_an_error_not_an_empty_tree(self):

@@ -52,6 +52,7 @@ settings.json it generates (adapters/pi.py). No `pi` command runs here (`_pi_scr
 import fcntl
 import json
 import os
+import secrets
 import shlex
 import shutil
 import stat
@@ -361,7 +362,7 @@ def script_for(agent, entries):
 
 
 class Install:
-    """One install: its networks, its proxy, its container. Named like a session (`<prefix>install-<agent>`)
+    """One install: its networks, its proxy, its container. Named like a session (`<prefix>install-<agent>-<run>`)
     and labelled the same way, so `make clean`, `ab session gc` and the leftover checks see it."""
 
     def __init__(self, settings, agent, *, podman=None, warn=None):
@@ -370,7 +371,9 @@ class Install:
         self.adapter = adapters.get(agent)
         self.podman = podman or sessionmod.Podman(settings.podman)
         self.warn = warn or (lambda m: None)
-        self.name = f"{settings.name_prefix}install-{agent}"
+        # A fresh suffix per run (20 Nov): an interrupted install can leave podman's DNS record for its network
+        # behind, and a later network of the same name was matched to it, so the proxy's name never resolved.
+        self.name = f"{settings.name_prefix}install-{agent}-{secrets.token_hex(3)}"
         self.tree = tree_dir(settings, agent)
         self.staging = staging_dir(settings, agent)
         self.run_dir = os.path.join(settings.run_dir, "installs", self.name)
