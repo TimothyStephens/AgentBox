@@ -4007,3 +4007,6 @@ only OMP. (Why `--resolve` still worked is not explained.) Fix: each `Install` n
 networks `<prefix>install-<agent>-<6 hex>`, as sessions already have per-session names, so a leftover record can
 never be reused. The stale file is removed by the user (podman's runtime state; not agentbox's to delete).
 `tests/unit/test_install_unique_names.py`; two older installer tests now find the run's names from the calls.
+After the stale record was removed (20 Nov), `ab profile install omp` installed: 2 marketplace plugins (egm,
+agentbox-skills) and 6 npm entries (the four Pi packages and the two OMP extensions), so all three agents now get
+the shared skills from agentbox-skills.
