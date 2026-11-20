@@ -4053,3 +4053,5 @@ path, and a package (with its manifest's themes) loads as Pi loads any package. 
 the profile repository itself, which would need two commits per change (the change, then its own sha). The
 snapshot's existing refusal of symlinks keeps a `node_modules` out of the session: the package's tests and their
 dependencies stay in the profile's `tests/`. `tests/unit/test_pi_packages.py` (`ProfilePackages`).
+Later the same day Tim dropped pi-lens from both profiles (their decisions.md): with installs off and no tools in
+the images, little of it worked. The three variables stay set, so it can come back alongside pinned tools.
