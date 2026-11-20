@@ -374,7 +374,7 @@ class OmpSession(OmpSessionBase):
         m = [x for x in mounts if x.split("dst=")[1].split(",")[0] == f"{c}/agentbox-config.yml"]
         self.assertEqual(len(m), 1, "the host config.yml is mounted as the overlay")
         self.assertTrue(m[0].endswith(",ro"), m[0])
-        self.assertIn(f"--env=PI_CONFIG_FILES={c}/agentbox-config.yml", argv)
+        self.assertIn(f"--env=PI_CONFIG_FILES={c}/agentbox-privacy.yml:{c}/agentbox-config.yml", argv)
         for m in mounts:
             if f"src={self.tree}" in m or f"src={os.path.realpath(self.tree)}" in m:
                 self.assertTrue(m.endswith(",ro"), m)
@@ -442,7 +442,7 @@ class OmpSession(OmpSessionBase):
         c = os.path.join(HOME, ".omp")
         m = [x for x in s.setup.mounts if x[1] == f"{c}/agentbox-config.yml"]
         self.assertEqual(m, [(os.path.join(self.cfg, "omp", "config.yml"), f"{c}/agentbox-config.yml", True)])
-        self.assertEqual(s.setup.env.get("PI_CONFIG_FILES"), f"{c}/agentbox-config.yml")
+        self.assertEqual(s.setup.env.get("PI_CONFIG_FILES"), f"{c}/agentbox-privacy.yml:{c}/agentbox-config.yml")
         self.assertFalse([x for x in s.setup.mounts if x[1] == f"{c}/agent/config.yml"],
                          "agent/config.yml is OMP's to write; a mount there makes its save EBUSY")
         s.teardown()
@@ -452,7 +452,30 @@ class OmpSession(OmpSessionBase):
         s2.prepare(do_backup=False)
         self.addCleanup(s2.teardown)
         self.assertFalse([x for x in s2.setup.mounts if x[1] == f"{c}/agentbox-config.yml"])
-        self.assertNotIn("PI_CONFIG_FILES", s2.setup.env)
+        self.assertEqual(s2.setup.env.get("PI_CONFIG_FILES"), f"{c}/agentbox-privacy.yml",
+                         "no seed: only the privacy overlay (OMP fails on a listed file that is missing)")
+
+    def test_privacy_overlay_keeps_web_search_and_fetch_off_third_party_services(self):
+        """OMP 18.13.3's default web search chain starts with Parallel's keyless public endpoint (it sends the
+        query, the session id and the model name), then Exa, Firecrawl and public scrapers; the fetch tool can
+        fall back to r.jina.ai. The overlay pins search to the session model's own (`web/hosted`, no
+        fallbacks) and fetch to the in-process reader (checked against OMP's own resolver, decisions.md
+        20 Nov). It is always there, read-only, and FIRST in PI_CONFIG_FILES: OMP lets a later file win key by
+        key, so Tim's config.yml can still change one of these on purpose, and a session's own
+        agent/config.yml (below every overlay) cannot."""
+        s = self.make()
+        c = os.path.join(HOME, ".omp")
+        m = [x for x in s.setup.mounts if x[1] == f"{c}/agentbox-privacy.yml"]
+        self.assertEqual(len(m), 1)
+        src, _dst, ro = m[0]
+        self.assertTrue(ro)
+        with open(src) as f:
+            text = f.read()
+        self.assertEqual(text, omp.PRIVACY_SETTINGS)
+        for line in ("modelRoles:\n  web: web/hosted\n", "retry:\n  fallbackChains:\n    web: []\n",
+                     "providers:\n  fetch: native\n"):
+            self.assertIn(line, text)
+        self.assertTrue(s.setup.env["PI_CONFIG_FILES"].startswith(f"{c}/agentbox-privacy.yml"))
 
     def test_every_source_a_session_mounts_is_agentboxs_own(self):
         """The property the whole `~/.omp` story was working towards, and it is structural now rather

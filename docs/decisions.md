@@ -4010,3 +4010,22 @@ never be reused. The stale file is removed by the user (podman's runtime state; 
 After the stale record was removed (20 Nov), `ab profile install omp` installed: 2 marketplace plugins (egm,
 agentbox-skills) and 6 npm entries (the four Pi packages and the two OMP extensions), so all three agents now get
 the shared skills from agentbox-skills.
+
+## 20 Nov 2026: OMP sessions keep web search and page fetches off third-party services
+
+A read of OMP 18.13.3 (the image pin) found its default web search chain is `web/parallel, web/hosted, web/exa,
+web/firecrawl, web/searxng, web/startpage, web/duckduckgo, web/ecosia, web/google, web/mojeek, web/public`
+(`pi-catalog` `rules.json`): with no API key the first is Parallel's public MCP endpoint, sent the query plus the
+session id and model name (`web/search/providers/parallel.ts`). The fetch tool's `auto` reader can fall back to
+`r.jina.ai`. The `providers.webKeyless` switch upstream added later (18.22.1) does not exist at this pin. Inside a
+`packages` session the egress allowlist refuses all of these hosts already; the overlay makes it hold in `open`
+mode too, and makes failed requests to them stop.
+
+Every OMP session now gets a read-only overlay, `~/.omp/agentbox-privacy.yml`, first in `PI_CONFIG_FILES`:
+`modelRoles.web: web/hosted` with an empty `retry.fallbackChains.web` (search is the session model's own; a model
+without search gets an error instead of a third-party engine) and `providers.fetch: native`. Checked by running
+OMP 18.13.3's own `Settings` and `resolveRoleChain` under Bun on the exact text: the chain becomes `web/hosted`
+alone and fetch `native`; a later overlay wins key by key (so Tim's `config.yml`, listed after, can override one
+value on purpose); `agent/config.yml`, which a session can write, cannot; and a listed file that is missing makes
+OMP's settings load fail, so only mounted files are listed. Not covered: not run in a live session.
+`tests/unit/test_omp.py` (`test_privacy_overlay_keeps_web_search_and_fetch_off_third_party_services`).

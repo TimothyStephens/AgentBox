@@ -235,7 +235,8 @@ class OmpWithoutTheProfile(OmpSessionBase):
         turns off the PROFILE and the plugins, not agentbox's own configuration of the agent."""
         s = self.make(no_profile=True)
         self.assertIn(omp.CONFIG_OVERLAY, self.dsts(s))
-        self.assertEqual(s.setup.env.get(omp.CONFIG_FILES_ENV), omp.CONFIG_OVERLAY)
+        self.assertEqual(s.setup.env.get(omp.CONFIG_FILES_ENV), f"{omp.PRIVACY_OVERLAY}:{omp.CONFIG_OVERLAY}")
+        self.assertIn(omp.PRIVACY_OVERLAY, self.dsts(s), "the privacy overlay is agentbox's, not the profile's")
 
     def test_the_profile_load_paths_are_dropped_as_well(self):
         s = self.make(no_profile=True)

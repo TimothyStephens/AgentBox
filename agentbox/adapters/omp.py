@@ -62,6 +62,16 @@ USER_FILES = (("config.yml", "agentbox-config.yml"),
 # `mags-codedev.yaml` is no longer a user file (15 Nov): MAGS-CodeDev f48ef34 dropped the ~/.omp/agent path
 # and reads ~/.config/mags-codedev/config.yaml only; a file mounted at the old path was simply ignored.
 CONFIG_OVERLAY = f"{C_OMP}/agentbox-config.yml"
+# agentbox's own privacy settings, always mounted and named FIRST in PI_CONFIG_FILES (20 Nov). OMP 18.13.3's
+# default web search chain starts with Parallel's keyless public endpoint, which is sent the query, the
+# session id and the model name, then Exa, Firecrawl and public scrapers; its fetch tool can fall back to
+# r.jina.ai. This pins search to the session model's own (`web/hosted`, no fallbacks: a model without search
+# gets none) and fetch to the in-process reader. OMP lets a later overlay win key by key, so Tim's config.yml
+# can still change one of these deliberately; the session's own agent/config.yml ranks below both and cannot.
+PRIVACY_OVERLAY = f"{C_OMP}/agentbox-privacy.yml"
+PRIVACY_SETTINGS = ("modelRoles:\n  web: web/hosted\n"
+                    "retry:\n  fallbackChains:\n    web: []\n"
+                    "providers:\n  fetch: native\n")
 CONFIG_FILES_ENV = "PI_CONFIG_FILES"
 # Places in the per-project agent dir OMP loads code or code-running config from. They are covered read-only
 # (empty) so one session cannot plant something every later session of the project runs (review 2026-10-01
@@ -364,6 +374,10 @@ class OmpAdapter(Adapter):
             root = sess.project.root
             setup.project_covers += [os.path.join(root, rel) for rel in REPO_CODE
                                      if os.path.lexists(os.path.join(root, rel))]
+        privacy = os.path.join(run_dir, "omp-privacy.yml")
+        write_private(privacy, PRIVACY_SETTINGS)
+        setup.mounts.append((privacy, PRIVACY_OVERLAY, True))
+        setup.env[CONFIG_FILES_ENV] = PRIVACY_OVERLAY
         empty = os.path.join(run_dir, "omp-empty")
         write_private(empty, "")
         user_dsts = {os.path.join(C_OMP, rel) for fn, rel in USER_FILES
@@ -382,7 +396,7 @@ class OmpAdapter(Adapter):
                     _prepare_file(os.path.join(agent_dir, os.path.basename(rel)))
                 setup.mounts.append((src, os.path.join(C_OMP, rel), True))
                 if fn == "config.yml":
-                    setup.env[CONFIG_FILES_ENV] = CONFIG_OVERLAY
+                    setup.env[CONFIG_FILES_ENV] = f"{PRIVACY_OVERLAY}:{CONFIG_OVERLAY}"
             else:
                 missing.append(fn)
         if missing:
